@@ -1,7 +1,9 @@
+import { useState } from "react";
 import { DashboardHeader } from "@/components/DashboardHeader";
 import { MetricCard } from "@/components/MetricCard";
 import { ConnectedAccountCard } from "@/components/ConnectedAccountCard";
 import { SmartLinkCard } from "@/components/SmartLinkCard";
+import { AddPlatformDialog, PlatformAccount } from "@/components/AddPlatformDialog";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { 
@@ -16,8 +18,61 @@ import {
   Plus,
   Link as LinkIcon
 } from "lucide-react";
+import { toast } from "sonner";
 
 const Index = () => {
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [connectedAccounts, setConnectedAccounts] = useState<PlatformAccount[]>([
+    {
+      id: "1",
+      platform: "Spotify",
+      username: "bemoremodest",
+      url: "https://open.spotify.com/artist/example",
+      status: "connected",
+      icon: Music,
+      lastSync: "2 hours ago"
+    },
+    {
+      id: "2",
+      platform: "Instagram",
+      username: "bemoremodest",
+      url: "https://instagram.com/bemoremodest",
+      status: "connected",
+      icon: Instagram,
+      lastSync: "1 hour ago"
+    },
+    {
+      id: "3",
+      platform: "YouTube",
+      username: "bemoremodest",
+      url: "https://youtube.com/@bemoremodest",
+      status: "syncing",
+      icon: Youtube,
+      lastSync: "syncing..."
+    },
+    {
+      id: "4",
+      platform: "Facebook",
+      username: "bemoremodest",
+      url: "https://facebook.com/bemoremodest",
+      status: "connected",
+      icon: Facebook,
+      lastSync: "3 hours ago"
+    }
+  ]);
+
+  const handleAddPlatform = (account: PlatformAccount) => {
+    setConnectedAccounts([...connectedAccounts, account]);
+  };
+
+  const handleRemoveAccount = (id: string) => {
+    setConnectedAccounts(connectedAccounts.filter(acc => acc.id !== id));
+    toast.success("Account disconnected");
+  };
+
+  const handleEditAccount = (id: string) => {
+    toast.info("Edit functionality - coming soon!");
+  };
   return (
     <div className="min-h-screen bg-gradient-dark">
       <DashboardHeader />
@@ -73,40 +128,35 @@ const Index = () => {
           <section className="lg:col-span-2">
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-2xl font-semibold">Connected Accounts</h3>
-              <Button variant="outline" className="gap-2">
+              <Button variant="outline" className="gap-2" onClick={() => setDialogOpen(true)}>
                 <Plus className="w-4 h-4" />
                 Connect Platform
               </Button>
             </div>
             <div className="grid gap-4">
-              <ConnectedAccountCard
-                platform="Spotify"
-                username="bemoremodest"
-                status="connected"
-                icon={Music}
-                lastSync="2 hours ago"
-              />
-              <ConnectedAccountCard
-                platform="Instagram"
-                username="bemoremodest"
-                status="connected"
-                icon={Instagram}
-                lastSync="1 hour ago"
-              />
-              <ConnectedAccountCard
-                platform="YouTube"
-                username="bemoremodest"
-                status="syncing"
-                icon={Youtube}
-                lastSync="syncing..."
-              />
-              <ConnectedAccountCard
-                platform="Facebook"
-                username="bemoremodest"
-                status="connected"
-                icon={Facebook}
-                lastSync="3 hours ago"
-              />
+              {connectedAccounts.length > 0 ? (
+                connectedAccounts.map((account) => (
+                  <ConnectedAccountCard
+                    key={account.id}
+                    platform={account.platform}
+                    username={account.username}
+                    status={account.status}
+                    icon={account.icon}
+                    lastSync={account.lastSync}
+                    url={account.url}
+                    onRemove={() => handleRemoveAccount(account.id)}
+                    onEdit={() => handleEditAccount(account.id)}
+                  />
+                ))
+              ) : (
+                <Card className="p-8 text-center bg-card/50 backdrop-blur-sm border-border border-dashed">
+                  <p className="text-muted-foreground mb-4">No platforms connected yet</p>
+                  <Button onClick={() => setDialogOpen(true)}>
+                    <Plus className="w-4 h-4 mr-2" />
+                    Connect Your First Platform
+                  </Button>
+                </Card>
+              )}
             </div>
           </section>
 
@@ -191,6 +241,12 @@ const Index = () => {
           </Card>
         </section>
       </main>
+
+      <AddPlatformDialog 
+        open={dialogOpen} 
+        onOpenChange={setDialogOpen}
+        onAdd={handleAddPlatform}
+      />
     </div>
   );
 };

@@ -23,6 +23,8 @@ interface AddPlatformDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onAdd: (platform: PlatformAccount) => void;
+  editAccount?: PlatformAccount;
+  onUpdate?: (platform: PlatformAccount) => void;
 }
 
 export interface PlatformAccount {
@@ -43,10 +45,11 @@ const platformOptions = [
   { value: "soundcloud", label: "SoundCloud", icon: Music2, placeholder: "https://soundcloud.com/username" },
 ];
 
-export const AddPlatformDialog = ({ open, onOpenChange, onAdd }: AddPlatformDialogProps) => {
-  const [selectedPlatform, setSelectedPlatform] = useState("");
-  const [url, setUrl] = useState("");
-  const [username, setUsername] = useState("");
+export const AddPlatformDialog = ({ open, onOpenChange, onAdd, editAccount, onUpdate }: AddPlatformDialogProps) => {
+  const isEditMode = !!editAccount;
+  const [selectedPlatform, setSelectedPlatform] = useState(editAccount ? platformOptions.find(p => p.label === editAccount.platform)?.value || "" : "");
+  const [url, setUrl] = useState(editAccount?.url || "");
+  const [username, setUsername] = useState(editAccount?.username || "");
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -59,18 +62,32 @@ export const AddPlatformDialog = ({ open, onOpenChange, onAdd }: AddPlatformDial
     const platformOption = platformOptions.find(p => p.value === selectedPlatform);
     if (!platformOption) return;
 
-    const newAccount: PlatformAccount = {
-      id: Date.now().toString(),
-      platform: platformOption.label,
-      username,
-      url,
-      icon: platformOption.icon,
-      status: "connected",
-      lastSync: "Just now"
-    };
+    if (isEditMode && editAccount && onUpdate) {
+      const updatedAccount: PlatformAccount = {
+        ...editAccount,
+        platform: platformOption.label,
+        username,
+        url,
+        icon: platformOption.icon,
+        lastSync: "Just now"
+      };
+      
+      onUpdate(updatedAccount);
+      toast.success(`${platformOption.label} account updated successfully!`);
+    } else {
+      const newAccount: PlatformAccount = {
+        id: Date.now().toString(),
+        platform: platformOption.label,
+        username,
+        url,
+        icon: platformOption.icon,
+        status: "connected",
+        lastSync: "Just now"
+      };
 
-    onAdd(newAccount);
-    toast.success(`${platformOption.label} account connected successfully!`);
+      onAdd(newAccount);
+      toast.success(`${platformOption.label} account connected successfully!`);
+    }
     
     // Reset form
     setSelectedPlatform("");
@@ -85,9 +102,9 @@ export const AddPlatformDialog = ({ open, onOpenChange, onAdd }: AddPlatformDial
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
-          <DialogTitle>Connect Platform</DialogTitle>
+          <DialogTitle>{isEditMode ? "Edit Platform" : "Connect Platform"}</DialogTitle>
           <DialogDescription>
-            Add your platform URL to start aggregating fan data and analytics
+            {isEditMode ? "Update your platform connection details" : "Add your platform URL to start aggregating fan data and analytics"}
           </DialogDescription>
         </DialogHeader>
         
@@ -142,7 +159,7 @@ export const AddPlatformDialog = ({ open, onOpenChange, onAdd }: AddPlatformDial
               Cancel
             </Button>
             <Button type="submit">
-              Connect Account
+              {isEditMode ? "Update Account" : "Connect Account"}
             </Button>
           </div>
         </form>

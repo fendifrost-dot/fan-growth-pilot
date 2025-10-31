@@ -22,6 +22,7 @@ import { toast } from "sonner";
 
 const Index = () => {
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingAccount, setEditingAccount] = useState<PlatformAccount | undefined>();
   const [connectedAccounts, setConnectedAccounts] = useState<PlatformAccount[]>([
     {
       id: "1",
@@ -71,7 +72,25 @@ const Index = () => {
   };
 
   const handleEditAccount = (id: string) => {
-    toast.info("Edit functionality - coming soon!");
+    const account = connectedAccounts.find(acc => acc.id === id);
+    if (account) {
+      setEditingAccount(account);
+      setDialogOpen(true);
+    }
+  };
+
+  const handleUpdateAccount = (updatedAccount: PlatformAccount) => {
+    setConnectedAccounts(connectedAccounts.map(acc => 
+      acc.id === updatedAccount.id ? updatedAccount : acc
+    ));
+    setEditingAccount(undefined);
+  };
+
+  const handleDialogClose = (open: boolean) => {
+    setDialogOpen(open);
+    if (!open) {
+      setEditingAccount(undefined);
+    }
   };
   return (
     <div className="min-h-screen bg-gradient-dark">
@@ -244,8 +263,10 @@ const Index = () => {
 
       <AddPlatformDialog 
         open={dialogOpen} 
-        onOpenChange={setDialogOpen}
+        onOpenChange={handleDialogClose}
         onAdd={handleAddPlatform}
+        editAccount={editingAccount}
+        onUpdate={handleUpdateAccount}
       />
     </div>
   );

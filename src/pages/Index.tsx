@@ -4,6 +4,7 @@ import { MetricCard } from "@/components/MetricCard";
 import { ConnectedAccountCard } from "@/components/ConnectedAccountCard";
 import { SmartLinkCard } from "@/components/SmartLinkCard";
 import { AddPlatformDialog, PlatformAccount } from "@/components/AddPlatformDialog";
+import { AddSmartLinkDialog, SmartLink } from "@/components/AddSmartLinkDialog";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { 
@@ -16,49 +17,54 @@ import {
   Youtube,
   Facebook,
   Plus,
-  Link as LinkIcon
+  Link as LinkIcon,
+  Music2,
+  Apple
 } from "lucide-react";
 import { toast } from "sonner";
 
 const Index = () => {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingAccount, setEditingAccount] = useState<PlatformAccount | undefined>();
+  const [smartLinkDialogOpen, setSmartLinkDialogOpen] = useState(false);
+  const [editingSmartLink, setEditingSmartLink] = useState<SmartLink | undefined>();
+  const [smartLinks, setSmartLinks] = useState<SmartLink[]>([]);
   const [connectedAccounts, setConnectedAccounts] = useState<PlatformAccount[]>([
     {
       id: "1",
-      platform: "Spotify",
-      username: "bemoremodest",
-      url: "https://open.spotify.com/artist/example",
-      status: "connected",
-      icon: Music,
-      lastSync: "2 hours ago"
-    },
-    {
-      id: "2",
       platform: "Instagram",
-      username: "bemoremodest",
-      url: "https://instagram.com/bemoremodest",
+      username: "fendi_frost",
+      url: "https://www.instagram.com/fendi_frost/",
       status: "connected",
       icon: Instagram,
       lastSync: "1 hour ago"
     },
     {
+      id: "2",
+      platform: "Facebook",
+      username: "FendiFrost",
+      url: "https://www.facebook.com/FendiFrost/",
+      status: "connected",
+      icon: Facebook,
+      lastSync: "2 hours ago"
+    },
+    {
       id: "3",
-      platform: "YouTube",
-      username: "bemoremodest",
-      url: "https://youtube.com/@bemoremodest",
-      status: "syncing",
-      icon: Youtube,
-      lastSync: "syncing..."
+      platform: "SoundCloud",
+      username: "fendi-frost",
+      url: "https://soundcloud.com/fendi-frost",
+      status: "connected",
+      icon: Music2,
+      lastSync: "3 hours ago"
     },
     {
       id: "4",
-      platform: "Facebook",
-      username: "bemoremodest",
-      url: "https://facebook.com/bemoremodest",
+      platform: "Apple Music",
+      username: "Fendi Frost",
+      url: "https://music.apple.com/us/artist/fendi-frost/898143348",
       status: "connected",
-      icon: Facebook,
-      lastSync: "3 hours ago"
+      icon: Apple,
+      lastSync: "4 hours ago"
     }
   ]);
 
@@ -90,6 +96,37 @@ const Index = () => {
     setDialogOpen(open);
     if (!open) {
       setEditingAccount(undefined);
+    }
+  };
+
+  const handleAddSmartLink = (link: SmartLink) => {
+    setSmartLinks([...smartLinks, link]);
+  };
+
+  const handleRemoveSmartLink = (id: string) => {
+    setSmartLinks(smartLinks.filter(link => link.id !== id));
+    toast.success("Smart link deleted");
+  };
+
+  const handleEditSmartLink = (id: string) => {
+    const link = smartLinks.find(l => l.id === id);
+    if (link) {
+      setEditingSmartLink(link);
+      setSmartLinkDialogOpen(true);
+    }
+  };
+
+  const handleUpdateSmartLink = (updatedLink: SmartLink) => {
+    setSmartLinks(smartLinks.map(link => 
+      link.id === updatedLink.id ? updatedLink : link
+    ));
+    setEditingSmartLink(undefined);
+  };
+
+  const handleSmartLinkDialogClose = (open: boolean) => {
+    setSmartLinkDialogOpen(open);
+    if (!open) {
+      setEditingSmartLink(undefined);
     }
   };
   return (
@@ -183,29 +220,32 @@ const Index = () => {
           <section>
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-2xl font-semibold">Smart Links</h3>
-              <Button variant="outline" size="icon">
+              <Button variant="outline" size="icon" onClick={() => setSmartLinkDialogOpen(true)}>
                 <Plus className="w-4 h-4" />
               </Button>
             </div>
             <div className="space-y-4">
-              <SmartLinkCard
-                title="New Album Drop"
-                url="go.bemoremodest.com/album"
-                clicks={15420}
-                conversions={1230}
-              />
-              <SmartLinkCard
-                title="Merch Collection"
-                url="go.bemoremodest.com/merch"
-                clicks={8940}
-                conversions={542}
-              />
-              <SmartLinkCard
-                title="Tour Tickets"
-                url="go.bemoremodest.com/tour"
-                clicks={22100}
-                conversions={1890}
-              />
+              {smartLinks.length > 0 ? (
+                smartLinks.map((link) => (
+                  <SmartLinkCard
+                    key={link.id}
+                    title={link.title}
+                    url={link.url}
+                    clicks={link.clicks}
+                    conversions={link.conversions}
+                    onRemove={() => handleRemoveSmartLink(link.id)}
+                    onEdit={() => handleEditSmartLink(link.id)}
+                  />
+                ))
+              ) : (
+                <Card className="p-8 text-center bg-card/50 backdrop-blur-sm border-border border-dashed">
+                  <p className="text-muted-foreground mb-4">No smart links created yet</p>
+                  <Button onClick={() => setSmartLinkDialogOpen(true)}>
+                    <Plus className="w-4 h-4 mr-2" />
+                    Create Your First Smart Link
+                  </Button>
+                </Card>
+              )}
             </div>
           </section>
         </div>
@@ -267,6 +307,14 @@ const Index = () => {
         onAdd={handleAddPlatform}
         editAccount={editingAccount}
         onUpdate={handleUpdateAccount}
+      />
+
+      <AddSmartLinkDialog
+        open={smartLinkDialogOpen}
+        onOpenChange={handleSmartLinkDialogClose}
+        onAdd={handleAddSmartLink}
+        editLink={editingSmartLink}
+        onUpdate={handleUpdateSmartLink}
       />
     </div>
   );

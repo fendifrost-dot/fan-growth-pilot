@@ -1,6 +1,6 @@
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { ExternalLink, Copy } from "lucide-react";
+import { ExternalLink, Copy, Edit, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 interface SmartLinkCardProps {
@@ -8,9 +8,11 @@ interface SmartLinkCardProps {
   url: string;
   clicks: number;
   conversions: number;
+  onRemove?: () => void;
+  onEdit?: () => void;
 }
 
-export const SmartLinkCard = ({ title, url, clicks, conversions }: SmartLinkCardProps) => {
+export const SmartLinkCard = ({ title, url, clicks, conversions, onRemove, onEdit }: SmartLinkCardProps) => {
   const copyToClipboard = () => {
     navigator.clipboard.writeText(url);
     toast.success("Link copied to clipboard!");
@@ -20,7 +22,19 @@ export const SmartLinkCard = ({ title, url, clicks, conversions }: SmartLinkCard
     <Card className="p-4 bg-card/50 backdrop-blur-sm border-border hover:shadow-glow transition-all duration-300">
       <div className="flex items-center justify-between mb-3">
         <h4 className="font-semibold">{title}</h4>
-        <ExternalLink className="w-4 h-4 text-muted-foreground" />
+        <div className="flex items-center gap-2">
+          {onEdit && (
+            <Button size="icon" variant="ghost" onClick={onEdit}>
+              <Edit className="w-4 h-4" />
+            </Button>
+          )}
+          {onRemove && (
+            <Button size="icon" variant="ghost" onClick={onRemove}>
+              <Trash2 className="w-4 h-4" />
+            </Button>
+          )}
+          <ExternalLink className="w-4 h-4 text-muted-foreground" />
+        </div>
       </div>
       
       <div className="flex items-center gap-2 mb-4 p-2 bg-muted rounded-lg">

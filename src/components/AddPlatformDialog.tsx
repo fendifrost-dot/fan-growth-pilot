@@ -16,7 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Music, Instagram, Youtube, Facebook, Music2 } from "lucide-react";
+import { Music, Instagram, Youtube, Facebook, Music2, Apple } from "lucide-react";
 import { toast } from "sonner";
 
 interface AddPlatformDialogProps {
@@ -43,6 +43,7 @@ const platformOptions = [
   { value: "youtube", label: "YouTube", icon: Youtube, placeholder: "https://youtube.com/@username" },
   { value: "facebook", label: "Facebook", icon: Facebook, placeholder: "https://facebook.com/username" },
   { value: "soundcloud", label: "SoundCloud", icon: Music2, placeholder: "https://soundcloud.com/username" },
+  { value: "applemusic", label: "Apple Music", icon: Apple, placeholder: "https://music.apple.com/us/artist/..." },
 ];
 
 export const AddPlatformDialog = ({ open, onOpenChange, onAdd, editAccount, onUpdate }: AddPlatformDialogProps) => {

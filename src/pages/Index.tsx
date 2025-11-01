@@ -1,4 +1,4 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import { DashboardHeader } from "@/components/DashboardHeader";
 import { MetricCard } from "@/components/MetricCard";
 import { ConnectedAccountCard } from "@/components/ConnectedAccountCard";
@@ -7,6 +7,8 @@ import { AddPlatformDialog, PlatformAccount } from "@/components/AddPlatformDial
 import { AddSmartLinkDialog, SmartLink } from "@/components/AddSmartLinkDialog";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { usePlatformConnections } from "@/hooks/usePlatformConnections";
+import { useSmartLinks } from "@/hooks/useSmartLinks";
 import { 
   Play, 
   Users, 
@@ -21,122 +23,31 @@ import {
   Music2,
   Apple
 } from "lucide-react";
-import { toast } from "sonner";
+
+const platformIcons: Record<string, any> = {
+  Spotify: Music,
+  Instagram: Instagram,
+  YouTube: Youtube,
+  Facebook: Facebook,
+  SoundCloud: Music2,
+  "Apple Music": Apple,
+};
 
 const Index = () => {
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [editingAccount, setEditingAccount] = useState<PlatformAccount | undefined>();
   const [smartLinkDialogOpen, setSmartLinkDialogOpen] = useState(false);
-  const [editingSmartLink, setEditingSmartLink] = useState<SmartLink | undefined>();
-  const [smartLinks, setSmartLinks] = useState<SmartLink[]>([]);
-  const [connectedAccounts, setConnectedAccounts] = useState<PlatformAccount[]>([
-    {
-      id: "1",
-      platform: "Spotify",
-      username: "Fendi Frost",
-      url: "https://open.spotify.com/artist/7rVTumlXRokJASRK6BSIsK",
-      status: "connected",
-      icon: Music,
-      lastSync: "30 minutes ago"
-    },
-    {
-      id: "2",
-      platform: "Instagram",
-      username: "fendi_frost",
-      url: "https://www.instagram.com/fendi_frost/",
-      status: "connected",
-      icon: Instagram,
-      lastSync: "1 hour ago"
-    },
-    {
-      id: "3",
-      platform: "Facebook",
-      username: "FendiFrost",
-      url: "https://www.facebook.com/FendiFrost/",
-      status: "connected",
-      icon: Facebook,
-      lastSync: "2 hours ago"
-    },
-    {
-      id: "4",
-      platform: "SoundCloud",
-      username: "fendi-frost",
-      url: "https://soundcloud.com/fendi-frost",
-      status: "connected",
-      icon: Music2,
-      lastSync: "3 hours ago"
-    },
-    {
-      id: "5",
-      platform: "Apple Music",
-      username: "Fendi Frost",
-      url: "https://music.apple.com/us/artist/fendi-frost/898143348",
-      status: "connected",
-      icon: Apple,
-      lastSync: "4 hours ago"
-    }
-  ]);
+  
+  const { connections, isLoading: connectionsLoading, removeConnection } = usePlatformConnections();
+  const { smartLinks, isLoading: linksLoading, removeSmartLink } = useSmartLinks();
 
-  const handleAddPlatform = (account: PlatformAccount) => {
-    setConnectedAccounts([...connectedAccounts, account]);
-  };
-
-  const handleRemoveAccount = (id: string) => {
-    setConnectedAccounts(connectedAccounts.filter(acc => acc.id !== id));
-    toast.success("Account disconnected");
-  };
-
-  const handleEditAccount = (id: string) => {
-    const account = connectedAccounts.find(acc => acc.id === id);
-    if (account) {
-      setEditingAccount(account);
-      setDialogOpen(true);
-    }
-  };
-
-  const handleUpdateAccount = (updatedAccount: PlatformAccount) => {
-    setConnectedAccounts(connectedAccounts.map(acc => 
-      acc.id === updatedAccount.id ? updatedAccount : acc
-    ));
-    setEditingAccount(undefined);
-  };
-
-  const handleDialogClose = (open: boolean) => {
-    setDialogOpen(open);
-    if (!open) {
-      setEditingAccount(undefined);
-    }
-  };
-
-  const handleAddSmartLink = (link: SmartLink) => {
-    setSmartLinks([...smartLinks, link]);
-  };
-
-  const handleRemoveSmartLink = (id: string) => {
-    setSmartLinks(smartLinks.filter(link => link.id !== id));
-    toast.success("Smart link deleted");
-  };
-
-  const handleEditSmartLink = (id: string) => {
-    const link = smartLinks.find(l => l.id === id);
-    if (link) {
-      setEditingSmartLink(link);
-      setSmartLinkDialogOpen(true);
-    }
-  };
-
-  const handleUpdateSmartLink = (updatedLink: SmartLink) => {
-    setSmartLinks(smartLinks.map(link => 
-      link.id === updatedLink.id ? updatedLink : link
-    ));
-    setEditingSmartLink(undefined);
-  };
-
-  const handleSmartLinkDialogClose = (open: boolean) => {
-    setSmartLinkDialogOpen(open);
-    if (!open) {
-      setEditingSmartLink(undefined);
-    }
+  const getRelativeTime = (dateString: string) => {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffInMinutes = Math.floor((now.getTime() - date.getTime()) / (1000 * 60));
+    
+    if (diffInMinutes < 60) return `${diffInMinutes} minutes ago`;
+    if (diffInMinutes < 1440) return `${Math.floor(diffInMinutes / 60)} hours ago`;
+    return `${Math.floor(diffInMinutes / 1440)} days ago`;
   };
   return (
     <div className="min-h-screen bg-gradient-dark">
@@ -199,18 +110,22 @@ const Index = () => {
               </Button>
             </div>
             <div className="grid gap-4">
-              {connectedAccounts.length > 0 ? (
-                connectedAccounts.map((account) => (
+              {connectionsLoading ? (
+                <Card className="p-8 text-center bg-card/50 backdrop-blur-sm border-border">
+                  <p className="text-muted-foreground">Loading connections...</p>
+                </Card>
+              ) : connections.length > 0 ? (
+                connections.map((connection) => (
                   <ConnectedAccountCard
-                    key={account.id}
-                    platform={account.platform}
-                    username={account.username}
-                    status={account.status}
-                    icon={account.icon}
-                    lastSync={account.lastSync}
-                    url={account.url}
-                    onRemove={() => handleRemoveAccount(account.id)}
-                    onEdit={() => handleEditAccount(account.id)}
+                    key={connection.id}
+                    platform={connection.platform}
+                    username={connection.username || "Unknown"}
+                    status={connection.is_connected ? "connected" : "error"}
+                    icon={platformIcons[connection.platform] || Music}
+                    lastSync={connection.last_synced_at ? getRelativeTime(connection.last_synced_at) : "Never"}
+                    url={connection.profile_url || "#"}
+                    onRemove={() => removeConnection(connection.id)}
+                    onEdit={() => {}}
                   />
                 ))
               ) : (
@@ -234,16 +149,20 @@ const Index = () => {
               </Button>
             </div>
             <div className="space-y-4">
-              {smartLinks.length > 0 ? (
+              {linksLoading ? (
+                <Card className="p-8 text-center bg-card/50 backdrop-blur-sm border-border">
+                  <p className="text-muted-foreground">Loading links...</p>
+                </Card>
+              ) : smartLinks.length > 0 ? (
                 smartLinks.map((link) => (
                   <SmartLinkCard
                     key={link.id}
                     title={link.title}
-                    url={link.url}
-                    clicks={link.clicks}
-                    conversions={link.conversions}
-                    onRemove={() => handleRemoveSmartLink(link.id)}
-                    onEdit={() => handleEditSmartLink(link.id)}
+                    url={link.destination_url}
+                    clicks={link.click_count || 0}
+                    conversions={link.conversion_count || 0}
+                    onRemove={() => removeSmartLink(link.id)}
+                    onEdit={() => {}}
                   />
                 ))
               ) : (
@@ -312,18 +231,12 @@ const Index = () => {
 
       <AddPlatformDialog 
         open={dialogOpen} 
-        onOpenChange={handleDialogClose}
-        onAdd={handleAddPlatform}
-        editAccount={editingAccount}
-        onUpdate={handleUpdateAccount}
+        onOpenChange={setDialogOpen}
       />
 
       <AddSmartLinkDialog
         open={smartLinkDialogOpen}
-        onOpenChange={handleSmartLinkDialogClose}
-        onAdd={handleAddSmartLink}
-        editLink={editingSmartLink}
-        onUpdate={handleUpdateSmartLink}
+        onOpenChange={setSmartLinkDialogOpen}
       />
     </div>
   );

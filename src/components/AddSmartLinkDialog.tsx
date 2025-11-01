@@ -14,7 +14,7 @@ import { toast } from "sonner";
 interface AddSmartLinkDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onAdd: (link: SmartLink) => void;
+  onAdd?: (link: SmartLink) => void;
   editLink?: SmartLink;
   onUpdate?: (link: SmartLink) => void;
 }
@@ -49,7 +49,7 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
       
       onUpdate(updatedLink);
       toast.success("Smart link updated successfully!");
-    } else {
+    } else if (onAdd) {
       const newLink: SmartLink = {
         id: Date.now().toString(),
         title,

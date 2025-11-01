@@ -22,7 +22,7 @@ import { toast } from "sonner";
 interface AddPlatformDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onAdd: (platform: PlatformAccount) => void;
+  onAdd?: (platform: PlatformAccount) => void;
   editAccount?: PlatformAccount;
   onUpdate?: (platform: PlatformAccount) => void;
 }
@@ -75,7 +75,7 @@ export const AddPlatformDialog = ({ open, onOpenChange, onAdd, editAccount, onUp
       
       onUpdate(updatedAccount);
       toast.success(`${platformOption.label} account updated successfully!`);
-    } else {
+    } else if (onAdd) {
       const newAccount: PlatformAccount = {
         id: Date.now().toString(),
         platform: platformOption.label,

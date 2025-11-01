@@ -32,6 +32,15 @@ const Index = () => {
   const [connectedAccounts, setConnectedAccounts] = useState<PlatformAccount[]>([
     {
       id: "1",
+      platform: "Spotify",
+      username: "Fendi Frost",
+      url: "https://open.spotify.com/artist/7rVTumlXRokJASRK6BSIsK",
+      status: "connected",
+      icon: Music,
+      lastSync: "30 minutes ago"
+    },
+    {
+      id: "2",
       platform: "Instagram",
       username: "fendi_frost",
       url: "https://www.instagram.com/fendi_frost/",
@@ -40,7 +49,7 @@ const Index = () => {
       lastSync: "1 hour ago"
     },
     {
-      id: "2",
+      id: "3",
       platform: "Facebook",
       username: "FendiFrost",
       url: "https://www.facebook.com/FendiFrost/",
@@ -49,7 +58,7 @@ const Index = () => {
       lastSync: "2 hours ago"
     },
     {
-      id: "3",
+      id: "4",
       platform: "SoundCloud",
       username: "fendi-frost",
       url: "https://soundcloud.com/fendi-frost",
@@ -58,7 +67,7 @@ const Index = () => {
       lastSync: "3 hours ago"
     },
     {
-      id: "4",
+      id: "5",
       platform: "Apple Music",
       username: "Fendi Frost",
       url: "https://music.apple.com/us/artist/fendi-frost/898143348",

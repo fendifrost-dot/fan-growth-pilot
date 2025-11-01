@@ -1,3 +1,4 @@
+import React, { useEffect, useState } from "react";
 import { Music, Bell, User, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useNavigate } from "react-router-dom";
@@ -11,7 +12,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useEffect, useState } from "react";
 import { User as SupabaseUser } from "@supabase/supabase-js";
 
 export const DashboardHeader = () => {

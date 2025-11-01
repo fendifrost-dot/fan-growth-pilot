@@ -14,7 +14,270 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      fan_data: {
+        Row: {
+          created_at: string | null
+          engagement_score: number | null
+          fan_email: string | null
+          fan_identifier: string | null
+          fan_name: string | null
+          fan_phone: string | null
+          id: string
+          last_interaction_at: string | null
+          metadata: Json | null
+          platform: string
+          total_interactions: number | null
+          total_streams: number | null
+          updated_at: string | null
+          user_id: string
+        }
+        Insert: {
+          created_at?: string | null
+          engagement_score?: number | null
+          fan_email?: string | null
+          fan_identifier?: string | null
+          fan_name?: string | null
+          fan_phone?: string | null
+          id?: string
+          last_interaction_at?: string | null
+          metadata?: Json | null
+          platform: string
+          total_interactions?: number | null
+          total_streams?: number | null
+          updated_at?: string | null
+          user_id: string
+        }
+        Update: {
+          created_at?: string | null
+          engagement_score?: number | null
+          fan_email?: string | null
+          fan_identifier?: string | null
+          fan_name?: string | null
+          fan_phone?: string | null
+          id?: string
+          last_interaction_at?: string | null
+          metadata?: Json | null
+          platform?: string
+          total_interactions?: number | null
+          total_streams?: number | null
+          updated_at?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "fan_data_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      link_analytics: {
+        Row: {
+          city: string | null
+          clicked_at: string | null
+          conversion_value: number | null
+          converted: boolean | null
+          country: string | null
+          device_type: string | null
+          id: string
+          ip_address: string | null
+          link_id: string
+          metadata: Json | null
+          referrer: string | null
+          user_agent: string | null
+          user_id: string
+        }
+        Insert: {
+          city?: string | null
+          clicked_at?: string | null
+          conversion_value?: number | null
+          converted?: boolean | null
+          country?: string | null
+          device_type?: string | null
+          id?: string
+          ip_address?: string | null
+          link_id: string
+          metadata?: Json | null
+          referrer?: string | null
+          user_agent?: string | null
+          user_id: string
+        }
+        Update: {
+          city?: string | null
+          clicked_at?: string | null
+          conversion_value?: number | null
+          converted?: boolean | null
+          country?: string | null
+          device_type?: string | null
+          id?: string
+          ip_address?: string | null
+          link_id?: string
+          metadata?: Json | null
+          referrer?: string | null
+          user_agent?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "link_analytics_link_id_fkey"
+            columns: ["link_id"]
+            isOneToOne: false
+            referencedRelation: "smart_links"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "link_analytics_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      platform_connections: {
+        Row: {
+          access_token: string | null
+          created_at: string | null
+          id: string
+          is_connected: boolean | null
+          last_synced_at: string | null
+          metadata: Json | null
+          platform: string
+          platform_user_id: string | null
+          profile_url: string | null
+          refresh_token: string | null
+          token_expires_at: string | null
+          updated_at: string | null
+          user_id: string
+          username: string | null
+        }
+        Insert: {
+          access_token?: string | null
+          created_at?: string | null
+          id?: string
+          is_connected?: boolean | null
+          last_synced_at?: string | null
+          metadata?: Json | null
+          platform: string
+          platform_user_id?: string | null
+          profile_url?: string | null
+          refresh_token?: string | null
+          token_expires_at?: string | null
+          updated_at?: string | null
+          user_id: string
+          username?: string | null
+        }
+        Update: {
+          access_token?: string | null
+          created_at?: string | null
+          id?: string
+          is_connected?: boolean | null
+          last_synced_at?: string | null
+          metadata?: Json | null
+          platform?: string
+          platform_user_id?: string | null
+          profile_url?: string | null
+          refresh_token?: string | null
+          token_expires_at?: string | null
+          updated_at?: string | null
+          user_id?: string
+          username?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "platform_connections_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      profiles: {
+        Row: {
+          artist_name: string | null
+          avatar_url: string | null
+          created_at: string | null
+          email: string | null
+          full_name: string | null
+          id: string
+          updated_at: string | null
+        }
+        Insert: {
+          artist_name?: string | null
+          avatar_url?: string | null
+          created_at?: string | null
+          email?: string | null
+          full_name?: string | null
+          id: string
+          updated_at?: string | null
+        }
+        Update: {
+          artist_name?: string | null
+          avatar_url?: string | null
+          created_at?: string | null
+          email?: string | null
+          full_name?: string | null
+          id?: string
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
+      smart_links: {
+        Row: {
+          click_count: number | null
+          conversion_count: number | null
+          created_at: string | null
+          destination_url: string
+          id: string
+          is_active: boolean | null
+          metadata: Json | null
+          slug: string
+          thumbnail_url: string | null
+          title: string
+          updated_at: string | null
+          user_id: string
+        }
+        Insert: {
+          click_count?: number | null
+          conversion_count?: number | null
+          created_at?: string | null
+          destination_url: string
+          id?: string
+          is_active?: boolean | null
+          metadata?: Json | null
+          slug: string
+          thumbnail_url?: string | null
+          title: string
+          updated_at?: string | null
+          user_id: string
+        }
+        Update: {
+          click_count?: number | null
+          conversion_count?: number | null
+          created_at?: string | null
+          destination_url?: string
+          id?: string
+          is_active?: boolean | null
+          metadata?: Json | null
+          slug?: string
+          thumbnail_url?: string | null
+          title?: string
+          updated_at?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "smart_links_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never

@@ -19,8 +19,7 @@ serve(async (req) => {
     }
 
     const clientId = Deno.env.get('SPOTIFY_CLIENT_ID');
-    const supabaseUrl = Deno.env.get('SUPABASE_URL');
-    const redirectUri = `${supabaseUrl}/functions/v1/spotify-callback`;
+    const redirectUri = 'https://vsemrziqxrrfcquxfnwd.supabase.co/functions/v1/spotify-callback';
 
     // Spotify OAuth scopes for maximum data aggregation
     const scopes = [

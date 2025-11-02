@@ -11,10 +11,9 @@ serve(async (req) => {
   }
 
   try {
-    const url = new URL(req.url);
-    const userId = url.searchParams.get('user_id');
+    const { user_id } = await req.json();
 
-    if (!userId) {
+    if (!user_id) {
       throw new Error('User ID is required');
     }
 
@@ -37,16 +36,12 @@ serve(async (req) => {
     spotifyAuthUrl.searchParams.append('response_type', 'code');
     spotifyAuthUrl.searchParams.append('redirect_uri', redirectUri);
     spotifyAuthUrl.searchParams.append('scope', scopes);
-    spotifyAuthUrl.searchParams.append('state', userId);
+    spotifyAuthUrl.searchParams.append('state', user_id);
 
-    console.log('Redirecting to Spotify OAuth:', spotifyAuthUrl.toString());
+    console.log('Generated Spotify OAuth URL:', spotifyAuthUrl.toString());
 
-    return new Response(null, {
-      status: 302,
-      headers: {
-        ...corsHeaders,
-        'Location': spotifyAuthUrl.toString(),
-      },
+    return new Response(JSON.stringify({ authUrl: spotifyAuthUrl.toString() }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (error) {
     console.error('Error in spotify-auth:', error);

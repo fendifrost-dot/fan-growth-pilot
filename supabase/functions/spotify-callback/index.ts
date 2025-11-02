@@ -33,7 +33,8 @@ serve(async (req) => {
 
     const clientId = Deno.env.get('SPOTIFY_CLIENT_ID');
     const clientSecret = Deno.env.get('SPOTIFY_CLIENT_SECRET');
-    const redirectUri = `${url.origin}/spotify-callback`;
+    const supabaseUrl = Deno.env.get('SUPABASE_URL');
+    const redirectUri = `${supabaseUrl}/functions/v1/spotify-callback`;
 
     // Exchange code for access token
     const tokenResponse = await fetch('https://accounts.spotify.com/api/token', {

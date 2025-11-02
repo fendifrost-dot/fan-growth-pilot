@@ -92,8 +92,8 @@ export const AddPlatformDialog = ({ open, onOpenChange, onConnect }: AddPlatform
 
         if (data?.authUrl) {
           console.log('Redirecting to:', data.authUrl);
-          // Redirect to Spotify's authorization page
-          window.location.href = data.authUrl;
+          // Redirect to Spotify's authorization page (break out of iframe)
+          window.top!.location.href = data.authUrl;
         } else {
           console.error('No authUrl in response:', data);
           toast.error("Failed to get authorization URL");

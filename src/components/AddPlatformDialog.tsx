@@ -92,8 +92,20 @@ export const AddPlatformDialog = ({ open, onOpenChange, onConnect }: AddPlatform
 
         if (data?.authUrl) {
           console.log('Redirecting to:', data.authUrl);
-          // Redirect to Spotify's authorization page (break out of iframe)
-          window.top!.location.href = data.authUrl;
+          // Open Spotify's authorization page in a new window
+          const width = 600;
+          const height = 700;
+          const left = (window.screen.width - width) / 2;
+          const top = (window.screen.height - height) / 2;
+          
+          window.open(
+            data.authUrl,
+            'spotify-auth',
+            `width=${width},height=${height},left=${left},top=${top},popup=yes`
+          );
+          
+          toast.success("Opening Spotify authorization...");
+          onOpenChange(false);
         } else {
           console.error('No authUrl in response:', data);
           toast.error("Failed to get authorization URL");

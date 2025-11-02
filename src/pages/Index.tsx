@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { DashboardHeader } from "@/components/DashboardHeader";
 import { MetricCard } from "@/components/MetricCard";
 import { ConnectedAccountCard } from "@/components/ConnectedAccountCard";
@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { usePlatformConnections } from "@/hooks/usePlatformConnections";
 import { useSmartLinks } from "@/hooks/useSmartLinks";
+import { toast } from "sonner";
 import { 
   Play, 
   Users, 
@@ -39,6 +40,20 @@ const Index = () => {
   
   const { connections, isLoading: connectionsLoading, createConnection, removeConnection } = usePlatformConnections();
   const { smartLinks, isLoading: linksLoading, removeSmartLink } = useSmartLinks();
+
+  // Handle Spotify OAuth callback
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('spotify_connected') === 'true') {
+      toast.success("Spotify connected successfully!");
+      // Clear the query parameter
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (params.get('error')) {
+      toast.error(params.get('error') || "Connection failed");
+      // Clear the query parameter
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []);
 
   const getRelativeTime = (dateString: string) => {
     const date = new Date(dateString);

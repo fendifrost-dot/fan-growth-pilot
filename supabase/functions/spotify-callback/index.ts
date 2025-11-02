@@ -19,10 +19,28 @@ serve(async (req) => {
 
     if (error) {
       console.error('Spotify OAuth error:', error);
-      return new Response(null, {
-        status: 302,
+      const html = `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>Spotify Authorization Failed</title>
+          </head>
+          <body>
+            <script>
+              if (window.opener) {
+                window.opener.location.href = window.opener.location.href + '?error=' + encodeURIComponent('Spotify authorization failed');
+                window.close();
+              } else {
+                window.location.href = '/?error=' + encodeURIComponent('Spotify authorization failed');
+              }
+            </script>
+            <p>Authorization failed. Closing window...</p>
+          </body>
+        </html>
+      `;
+      return new Response(html, {
         headers: {
-          'Location': `/?error=${encodeURIComponent('Spotify authorization failed')}`,
+          'Content-Type': 'text/html',
         },
       });
     }
@@ -106,19 +124,57 @@ serve(async (req) => {
 
     console.log('Spotify connection stored successfully for user:', userId);
 
-    return new Response(null, {
-      status: 302,
+    // Return HTML that closes popup and refreshes parent
+    const html = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Spotify Connected</title>
+        </head>
+        <body>
+          <script>
+            if (window.opener) {
+              window.opener.location.href = window.opener.location.href + '?spotify_connected=true';
+              window.close();
+            } else {
+              window.location.href = '/?spotify_connected=true';
+            }
+          </script>
+          <p>Spotify connected successfully! Closing window...</p>
+        </body>
+      </html>
+    `;
+
+    return new Response(html, {
       headers: {
-        'Location': '/?spotify_connected=true',
+        'Content-Type': 'text/html',
       },
     });
   } catch (error) {
     console.error('Error in spotify-callback:', error);
     const message = error instanceof Error ? error.message : 'Connection failed';
-    return new Response(null, {
-      status: 302,
+    const html = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Spotify Connection Failed</title>
+        </head>
+        <body>
+          <script>
+            if (window.opener) {
+              window.opener.location.href = window.opener.location.href + '?error=' + encodeURIComponent('${message}');
+              window.close();
+            } else {
+              window.location.href = '/?error=' + encodeURIComponent('${message}');
+            }
+          </script>
+          <p>Connection failed. Closing window...</p>
+        </body>
+      </html>
+    `;
+    return new Response(html, {
       headers: {
-        'Location': `/?error=${encodeURIComponent(message)}`,
+        'Content-Type': 'text/html',
       },
     });
   }

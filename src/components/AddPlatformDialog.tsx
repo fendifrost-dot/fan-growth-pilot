@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/select";
 import { Music, Instagram, Youtube, Facebook, Music2, Apple } from "lucide-react";
 import { toast } from "sonner";
+import { supabase } from "@/integrations/supabase/client";
 
 interface AddPlatformDialogProps {
   open: boolean;
@@ -56,7 +57,7 @@ export const AddPlatformDialog = ({ open, onOpenChange, onConnect }: AddPlatform
   const [username, setUsername] = useState("");
   const [pixelId, setPixelId] = useState("");
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
     const platformOption = platformOptions.find(p => p.value === selectedPlatform);
@@ -65,17 +66,28 @@ export const AddPlatformDialog = ({ open, onOpenChange, onConnect }: AddPlatform
       return;
     }
 
+    // For Spotify, initiate OAuth flow
+    if (platformOption.needsOAuth && selectedPlatform === "spotify") {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+          toast.error("Please log in to connect Spotify");
+          return;
+        }
+        
+        const authUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/spotify-auth?user_id=${user.id}`;
+        window.location.href = authUrl;
+        return;
+      } catch (error) {
+        toast.error("Failed to initiate Spotify connection");
+        console.error(error);
+        return;
+      }
+    }
+
     // Validate required fields
     if (!username) {
       toast.error("Please enter your username");
-      return;
-    }
-
-    // For Spotify, initiate OAuth flow
-    if (platformOption.needsOAuth && selectedPlatform === "spotify") {
-      toast.info("Spotify OAuth integration coming soon! For now, please connect manually.");
-      // TODO: Implement OAuth flow
-      // window.location.href = `/api/spotify-auth?user_id=${userId}`;
       return;
     }
 
@@ -142,7 +154,7 @@ export const AddPlatformDialog = ({ open, onOpenChange, onConnect }: AddPlatform
           {selectedOption?.needsOAuth && selectedPlatform === "spotify" && (
             <div className="p-3 bg-info/10 border border-info/20 rounded-md">
               <p className="text-sm text-info">
-                Spotify requires OAuth authentication for full data access. Click Connect to authorize.
+                Spotify requires OAuth authentication for full data access including streams, followers, and engagement metrics. Click Connect to authorize.
               </p>
             </div>
           )}

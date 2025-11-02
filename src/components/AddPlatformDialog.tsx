@@ -22,9 +22,13 @@ import { toast } from "sonner";
 interface AddPlatformDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onAdd?: (platform: PlatformAccount) => void;
-  editAccount?: PlatformAccount;
-  onUpdate?: (platform: PlatformAccount) => void;
+  onConnect: (connection: {
+    platform: string;
+    username: string;
+    profile_url: string;
+    access_token?: string;
+    pixel_id?: string;
+  }) => void;
 }
 
 export interface PlatformAccount {
@@ -38,62 +42,67 @@ export interface PlatformAccount {
 }
 
 const platformOptions = [
-  { value: "spotify", label: "Spotify", icon: Music, placeholder: "https://open.spotify.com/artist/..." },
-  { value: "instagram", label: "Instagram", icon: Instagram, placeholder: "https://instagram.com/username" },
-  { value: "youtube", label: "YouTube", icon: Youtube, placeholder: "https://youtube.com/@username" },
-  { value: "facebook", label: "Facebook", icon: Facebook, placeholder: "https://facebook.com/username" },
-  { value: "soundcloud", label: "SoundCloud", icon: Music2, placeholder: "https://soundcloud.com/username" },
-  { value: "applemusic", label: "Apple Music", icon: Apple, placeholder: "https://music.apple.com/us/artist/..." },
+  { value: "spotify", label: "Spotify", icon: Music, placeholder: "https://open.spotify.com/artist/...", needsOAuth: true },
+  { value: "instagram", label: "Instagram", icon: Instagram, placeholder: "https://instagram.com/username", needsOAuth: false },
+  { value: "youtube", label: "YouTube", icon: Youtube, placeholder: "https://youtube.com/@username", needsOAuth: false },
+  { value: "facebook", label: "Facebook", icon: Facebook, placeholder: "https://facebook.com/username", needsPixelId: true },
+  { value: "soundcloud", label: "SoundCloud", icon: Music2, placeholder: "https://soundcloud.com/username", needsOAuth: false },
+  { value: "applemusic", label: "Apple Music", icon: Apple, placeholder: "https://music.apple.com/us/artist/...", needsOAuth: false },
 ];
 
-export const AddPlatformDialog = ({ open, onOpenChange, onAdd, editAccount, onUpdate }: AddPlatformDialogProps) => {
-  const isEditMode = !!editAccount;
-  const [selectedPlatform, setSelectedPlatform] = useState(editAccount ? platformOptions.find(p => p.label === editAccount.platform)?.value || "" : "");
-  const [url, setUrl] = useState(editAccount?.url || "");
-  const [username, setUsername] = useState(editAccount?.username || "");
+export const AddPlatformDialog = ({ open, onOpenChange, onConnect }: AddPlatformDialogProps) => {
+  const [selectedPlatform, setSelectedPlatform] = useState("");
+  const [url, setUrl] = useState("");
+  const [username, setUsername] = useState("");
+  const [pixelId, setPixelId] = useState("");
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!selectedPlatform || !url || !username) {
-      toast.error("Please fill in all fields");
+    const platformOption = platformOptions.find(p => p.value === selectedPlatform);
+    if (!platformOption) {
+      toast.error("Please select a platform");
       return;
     }
 
-    const platformOption = platformOptions.find(p => p.value === selectedPlatform);
-    if (!platformOption) return;
-
-    if (isEditMode && editAccount && onUpdate) {
-      const updatedAccount: PlatformAccount = {
-        ...editAccount,
-        platform: platformOption.label,
-        username,
-        url,
-        icon: platformOption.icon,
-        lastSync: "Just now"
-      };
-      
-      onUpdate(updatedAccount);
-      toast.success(`${platformOption.label} account updated successfully!`);
-    } else if (onAdd) {
-      const newAccount: PlatformAccount = {
-        id: Date.now().toString(),
-        platform: platformOption.label,
-        username,
-        url,
-        icon: platformOption.icon,
-        status: "connected",
-        lastSync: "Just now"
-      };
-
-      onAdd(newAccount);
-      toast.success(`${platformOption.label} account connected successfully!`);
+    // Validate required fields
+    if (!username) {
+      toast.error("Please enter your username");
+      return;
     }
+
+    // For Spotify, initiate OAuth flow
+    if (platformOption.needsOAuth && selectedPlatform === "spotify") {
+      toast.info("Spotify OAuth integration coming soon! For now, please connect manually.");
+      // TODO: Implement OAuth flow
+      // window.location.href = `/api/spotify-auth?user_id=${userId}`;
+      return;
+    }
+
+    // For Facebook, require Pixel ID
+    if (platformOption.needsPixelId && !pixelId) {
+      toast.error("Please enter your Facebook Pixel ID");
+      return;
+    }
+
+    if (!url) {
+      toast.error("Please enter your profile URL");
+      return;
+    }
+
+    // Create the connection
+    onConnect({
+      platform: platformOption.label,
+      username,
+      profile_url: url,
+      pixel_id: platformOption.needsPixelId ? pixelId : undefined,
+    });
     
     // Reset form
     setSelectedPlatform("");
     setUrl("");
     setUsername("");
+    setPixelId("");
     onOpenChange(false);
   };
 
@@ -103,9 +112,9 @@ export const AddPlatformDialog = ({ open, onOpenChange, onAdd, editAccount, onUp
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
-          <DialogTitle>{isEditMode ? "Edit Platform" : "Connect Platform"}</DialogTitle>
+          <DialogTitle>Connect Platform</DialogTitle>
           <DialogDescription>
-            {isEditMode ? "Update your platform connection details" : "Add your platform URL to start aggregating fan data and analytics"}
+            Connect your platform to aggregate fan data, track engagement, and analyze conversions
           </DialogDescription>
         </DialogHeader>
         
@@ -122,12 +131,21 @@ export const AddPlatformDialog = ({ open, onOpenChange, onAdd, editAccount, onUp
                     <div className="flex items-center gap-2">
                       <option.icon className="w-4 h-4" />
                       {option.label}
+                      {option.needsOAuth && <span className="text-xs text-muted-foreground">(OAuth)</span>}
                     </div>
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </div>
+
+          {selectedOption?.needsOAuth && selectedPlatform === "spotify" && (
+            <div className="p-3 bg-info/10 border border-info/20 rounded-md">
+              <p className="text-sm text-info">
+                Spotify requires OAuth authentication for full data access. Click Connect to authorize.
+              </p>
+            </div>
+          )}
 
           <div className="space-y-2">
             <Label htmlFor="username">Username/Artist Name</Label>
@@ -139,6 +157,22 @@ export const AddPlatformDialog = ({ open, onOpenChange, onAdd, editAccount, onUp
               required
             />
           </div>
+
+          {selectedOption?.needsPixelId && (
+            <div className="space-y-2">
+              <Label htmlFor="pixelId">Facebook Pixel ID</Label>
+              <Input
+                id="pixelId"
+                placeholder="123456789012345"
+                value={pixelId}
+                onChange={(e) => setPixelId(e.target.value)}
+                required
+              />
+              <p className="text-xs text-muted-foreground">
+                Find your Pixel ID in Facebook Events Manager for conversion tracking
+              </p>
+            </div>
+          )}
 
           <div className="space-y-2">
             <Label htmlFor="url">Profile URL</Label>
@@ -160,7 +194,7 @@ export const AddPlatformDialog = ({ open, onOpenChange, onAdd, editAccount, onUp
               Cancel
             </Button>
             <Button type="submit">
-              {isEditMode ? "Update Account" : "Connect Account"}
+              {selectedOption?.needsOAuth ? "Authorize & Connect" : "Connect Account"}
             </Button>
           </div>
         </form>

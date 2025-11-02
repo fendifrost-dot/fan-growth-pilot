@@ -37,7 +37,7 @@ const Index = () => {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [smartLinkDialogOpen, setSmartLinkDialogOpen] = useState(false);
   
-  const { connections, isLoading: connectionsLoading, removeConnection } = usePlatformConnections();
+  const { connections, isLoading: connectionsLoading, createConnection, removeConnection } = usePlatformConnections();
   const { smartLinks, isLoading: linksLoading, removeSmartLink } = useSmartLinks();
 
   const getRelativeTime = (dateString: string) => {
@@ -232,6 +232,7 @@ const Index = () => {
       <AddPlatformDialog 
         open={dialogOpen} 
         onOpenChange={setDialogOpen}
+        onConnect={createConnection}
       />
 
       <AddSmartLinkDialog

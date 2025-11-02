@@ -53,6 +53,18 @@ const Index = () => {
       // Clear the query parameter
       window.history.replaceState({}, '', window.location.pathname);
     }
+
+    // Listen for messages from OAuth popup
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data.type === 'spotify_connected') {
+        toast.success("Spotify connected successfully!");
+        // Force refresh the connections
+        window.location.reload();
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
   }, []);
 
   const getRelativeTime = (dateString: string) => {

@@ -130,17 +130,66 @@ serve(async (req) => {
       <html>
         <head>
           <title>Spotify Connected</title>
+          <style>
+            body {
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              justify-content: center;
+              height: 100vh;
+              margin: 0;
+              background: linear-gradient(135deg, #1DB954 0%, #191414 100%);
+              color: white;
+              text-align: center;
+              padding: 20px;
+            }
+            .success {
+              font-size: 48px;
+              margin-bottom: 20px;
+            }
+            h1 {
+              margin: 0 0 10px 0;
+            }
+            button {
+              margin-top: 20px;
+              padding: 12px 24px;
+              font-size: 16px;
+              background: #1DB954;
+              border: none;
+              border-radius: 24px;
+              color: white;
+              cursor: pointer;
+              font-weight: bold;
+            }
+            button:hover {
+              background: #1ed760;
+            }
+          </style>
         </head>
         <body>
+          <div class="success">✓</div>
+          <h1>Spotify Connected!</h1>
+          <p>Your Spotify account has been successfully connected.</p>
+          <button onclick="closeWindow()">Close Window</button>
           <script>
-            if (window.opener) {
-              window.opener.location.href = window.opener.location.href + '?spotify_connected=true';
-              window.close();
-            } else {
-              window.location.href = '/?spotify_connected=true';
+            function closeWindow() {
+              if (window.opener) {
+                try {
+                  // Trigger a refresh in the parent window
+                  window.opener.postMessage({ type: 'spotify_connected' }, '*');
+                } catch (e) {
+                  console.error('Could not message parent:', e);
+                }
+                window.close();
+              } else {
+                window.location.href = '/?spotify_connected=true';
+              }
             }
+            
+            // Try to auto-close after a brief delay
+            setTimeout(closeWindow, 1500);
           </script>
-          <p>Spotify connected successfully! Closing window...</p>
         </body>
       </html>
     `;

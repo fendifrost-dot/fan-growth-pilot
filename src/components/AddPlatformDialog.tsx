@@ -75,27 +75,33 @@ export const AddPlatformDialog = ({ open, onOpenChange, onConnect }: AddPlatform
           return;
         }
         
+        console.log('Calling spotify-auth function with user_id:', user.id);
+        
         // Call the edge function to get the authorization URL
         const { data, error } = await supabase.functions.invoke('spotify-auth', {
           body: { user_id: user.id }
         });
 
+        console.log('spotify-auth response:', { data, error });
+
         if (error) {
           console.error('Spotify auth error:', error);
-          toast.error("Failed to initiate Spotify connection");
+          toast.error(`Failed to initiate Spotify connection: ${error.message}`);
           return;
         }
 
         if (data?.authUrl) {
+          console.log('Redirecting to:', data.authUrl);
           // Redirect to Spotify's authorization page
           window.location.href = data.authUrl;
         } else {
+          console.error('No authUrl in response:', data);
           toast.error("Failed to get authorization URL");
         }
         return;
       } catch (error) {
+        console.error('Spotify OAuth exception:', error);
         toast.error("Failed to initiate Spotify connection");
-        console.error(error);
         return;
       }
     }

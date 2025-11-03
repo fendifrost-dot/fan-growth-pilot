@@ -5,7 +5,7 @@ const SHOPIFY_STOREFRONT_URL = `https://${SHOPIFY_STORE_DOMAIN}/api/${SHOPIFY_AP
 
 // This will use the storefront token from Supabase secrets
 // The token is stored in environment variables via edge functions
-const SHOPIFY_STOREFRONT_TOKEN = '2b7bcb04ee6601c8a5f8e6b7a433545e';
+const SHOPIFY_STOREFRONT_TOKEN = '49a03d56b87838bcf1cc07eabdaaa3ba';
 
 export async function storefrontApiRequest(query: string, variables: any = {}) {
   try {

@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.7.1';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -11,10 +12,33 @@ serve(async (req) => {
   }
 
   try {
+    // Get the authorization header
+    const authHeader = req.headers.get('authorization');
+    if (!authHeader) {
+      throw new Error('Authentication required');
+    }
+
+    // Create Supabase client with the user's JWT
+    const supabaseClient = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
+      { global: { headers: { Authorization: authHeader } } }
+    );
+
+    // Verify the authenticated user
+    const { data: { user }, error: authError } = await supabaseClient.auth.getUser();
+    
+    if (authError || !user) {
+      console.error('Authentication failed:', authError);
+      throw new Error('Authentication failed');
+    }
+
     const { user_id } = await req.json();
 
-    if (!user_id) {
-      throw new Error('User ID is required');
+    // Verify that the requested user_id matches the authenticated user
+    if (user_id !== user.id) {
+      console.error('User ID mismatch:', { requested: user_id, authenticated: user.id });
+      throw new Error('User ID mismatch');
     }
 
     const clientId = Deno.env.get('SPOTIFY_CLIENT_ID');

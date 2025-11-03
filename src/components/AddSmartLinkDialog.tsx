@@ -13,6 +13,22 @@ import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { Upload, Image as ImageIcon, Video } from "lucide-react";
+import { z } from "zod";
+
+// Validation schema for smart link inputs
+const smartLinkSchema = z.object({
+  title: z.string().min(1, "Title is required").max(200, "Title must be less than 200 characters"),
+  slug: z.string()
+    .min(1, "Slug is required")
+    .max(100, "Slug must be less than 100 characters")
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "Slug must contain only lowercase letters, numbers, and hyphens"),
+  destination_url: z.string()
+    .url("Must be a valid URL")
+    .refine(url => !url.toLowerCase().startsWith('javascript:') && !url.toLowerCase().startsWith('data:'), 
+      "Invalid URL scheme - javascript: and data: URLs are not allowed"),
+  description: z.string().max(1000, "Description must be less than 1000 characters").optional(),
+  button_text: z.string().max(50, "Button text must be less than 50 characters").optional(),
+});
 
 interface AddSmartLinkDialogProps {
   open: boolean;
@@ -76,9 +92,22 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!title || !slug || !destinationUrl) {
-      toast.error("Please fill in title, slug, and destination URL");
-      return;
+    // Validate inputs using Zod schema
+    try {
+      smartLinkSchema.parse({
+        title,
+        slug,
+        destination_url: destinationUrl,
+        description,
+        button_text: buttonText,
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        error.errors.forEach((err) => {
+          toast.error(err.message);
+        });
+        return;
+      }
     }
 
     setIsUploading(true);

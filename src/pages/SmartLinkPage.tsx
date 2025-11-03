@@ -3,7 +3,11 @@ import { useParams, Navigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Loader2 } from "lucide-react";
+import { toast } from "sonner";
+import { z } from "zod";
 
 interface SmartLinkData {
   id: string;
@@ -20,11 +24,18 @@ interface SmartLinkData {
   user_id: string;
 }
 
+const emailSchema = z.object({
+  email: z.string().email("Please enter a valid email").trim().toLowerCase()
+});
+
 export default function SmartLinkPage() {
   const { slug } = useParams<{ slug: string }>();
   const [smartLink, setSmartLink] = useState<SmartLinkData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  const [email, setEmail] = useState("");
+  const [hasSubmittedEmail, setHasSubmittedEmail] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
     const fetchSmartLink = async () => {
@@ -50,8 +61,8 @@ export default function SmartLinkPage() {
 
         setSmartLink(data);
         
-        // Track the page view/click
-        await supabase.from("smart_links").update({
+        // Track the page view/click (non-blocking for performance)
+        supabase.from("smart_links").update({
           click_count: (data.click_count || 0) + 1
         }).eq("id", data.id);
 
@@ -65,6 +76,40 @@ export default function SmartLinkPage() {
 
     fetchSmartLink();
   }, [slug]);
+
+  const handleEmailSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    const validation = emailSchema.safeParse({ email });
+    if (!validation.success) {
+      toast.error(validation.error.errors[0].message);
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const { error } = await supabase
+        .from("smart_link_leads")
+        .insert({
+          smart_link_id: smartLink!.id,
+          email: validation.data.email,
+        });
+
+      if (error) throw error;
+
+      setHasSubmittedEmail(true);
+      toast.success("Thanks! Here's your exclusive content");
+    } catch (error) {
+      console.error("Error submitting email:", error);
+      toast.error("Failed to submit. Please try again");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleButtonClick = () => {
+    window.location.href = smartLink!.destination_url;
+  };
 
   if (isLoading) {
     return (
@@ -88,10 +133,6 @@ export default function SmartLinkPage() {
     backgroundRepeat: 'no-repeat',
   };
 
-  const handleButtonClick = () => {
-    window.location.href = smartLink.destination_url;
-  };
-
   return (
     <div className="min-h-screen flex items-center justify-center p-4" style={backgroundStyle}>
       <Card className="max-w-2xl w-full p-8 bg-card/95 backdrop-blur-sm">
@@ -102,6 +143,7 @@ export default function SmartLinkPage() {
               <img 
                 src={smartLink.image_url} 
                 alt={smartLink.title}
+                loading="lazy"
                 className="w-full h-auto rounded-lg object-cover max-h-96"
               />
             </div>
@@ -123,22 +165,61 @@ export default function SmartLinkPage() {
               <video 
                 src={smartLink.video_url}
                 controls
+                preload="metadata"
                 className="w-full h-full rounded-lg"
               />
             </div>
           )}
 
-          {/* CTA Button */}
-          <Button
-            size="lg"
-            className="w-full text-lg py-6"
-            style={{ 
-              backgroundColor: smartLink.button_color || undefined,
-            }}
-            onClick={handleButtonClick}
-          >
-            {smartLink.button_text || "Click Here"}
-          </Button>
+          {/* Email Capture Form or CTA Button */}
+          {!hasSubmittedEmail ? (
+            <form onSubmit={handleEmailSubmit} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="email" className="text-base">
+                  Get exclusive access
+                </Label>
+                <Input
+                  id="email"
+                  type="email"
+                  placeholder="Enter your email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                  disabled={isSubmitting}
+                  className="text-base"
+                />
+              </div>
+              <Button
+                type="submit"
+                size="lg"
+                className="w-full text-lg py-6"
+                disabled={isSubmitting}
+                style={{ 
+                  backgroundColor: smartLink.button_color || undefined,
+                }}
+              >
+                {isSubmitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Submitting...
+                  </>
+                ) : (
+                  "Continue"
+                )}
+              </Button>
+            </form>
+          ) : (
+            <Button
+              size="lg"
+              className="w-full text-lg py-6"
+              style={{ 
+                backgroundColor: smartLink.button_color || undefined,
+              }}
+              onClick={handleButtonClick}
+            >
+              {smartLink.button_text || "Click Here"}
+            </Button>
+          )}
         </div>
       </Card>
     </div>

@@ -228,6 +228,41 @@ export type Database = {
         }
         Relationships: []
       }
+      smart_link_leads: {
+        Row: {
+          created_at: string | null
+          email: string
+          id: string
+          metadata: Json | null
+          smart_link_id: string
+          user_id: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          email: string
+          id?: string
+          metadata?: Json | null
+          smart_link_id: string
+          user_id?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          email?: string
+          id?: string
+          metadata?: Json | null
+          smart_link_id?: string
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "smart_link_leads_smart_link_id_fkey"
+            columns: ["smart_link_id"]
+            isOneToOne: false
+            referencedRelation: "smart_links"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       smart_links: {
         Row: {
           background_color: string | null

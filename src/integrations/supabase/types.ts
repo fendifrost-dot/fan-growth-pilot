@@ -144,6 +144,7 @@ export type Database = {
           is_connected: boolean | null
           last_synced_at: string | null
           metadata: Json | null
+          pixel_id: string | null
           platform: string
           platform_user_id: string | null
           profile_url: string | null
@@ -160,6 +161,7 @@ export type Database = {
           is_connected?: boolean | null
           last_synced_at?: string | null
           metadata?: Json | null
+          pixel_id?: string | null
           platform: string
           platform_user_id?: string | null
           profile_url?: string | null
@@ -176,6 +178,7 @@ export type Database = {
           is_connected?: boolean | null
           last_synced_at?: string | null
           metadata?: Json | null
+          pixel_id?: string | null
           platform?: string
           platform_user_id?: string | null
           profile_url?: string | null

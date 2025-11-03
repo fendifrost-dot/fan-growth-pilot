@@ -10,6 +10,7 @@ import { Card } from "@/components/ui/card";
 import { usePlatformConnections } from "@/hooks/usePlatformConnections";
 import { useSmartLinks } from "@/hooks/useSmartLinks";
 import { useSpotifyStats } from "@/hooks/useSpotifyStats";
+import { useShopifyConnection } from "@/hooks/useShopifyConnection";
 import { toast } from "sonner";
 import { 
   Play, 
@@ -42,6 +43,7 @@ const Index = () => {
   const { connections, isLoading: connectionsLoading, createConnection, removeConnection } = usePlatformConnections();
   const { smartLinks, isLoading: linksLoading, removeSmartLink } = useSmartLinks();
   const { data: spotifyStats, isLoading: statsLoading } = useSpotifyStats();
+  const { isConnected: shopifyConnected, isLoading: shopifyLoading } = useShopifyConnection();
 
   // Handle Spotify OAuth callback
   useEffect(() => {
@@ -120,8 +122,8 @@ const Index = () => {
             />
             <MetricCard
               title="Merch Sales"
-              value="Connect Shopify"
-              change="No data"
+              value={shopifyLoading ? "..." : shopifyConnected ? "Connected" : "Connect Shopify"}
+              change={shopifyConnected ? "Store connected" : "No data"}
               icon={ShoppingBag}
               trend="up"
             />

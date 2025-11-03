@@ -30,6 +30,7 @@ export const useSmartLinks = () => {
       description?: string;
       image_url?: string;
       video_url?: string;
+      background_image_url?: string;
       button_text?: string;
       button_color?: string;
       background_color?: string;

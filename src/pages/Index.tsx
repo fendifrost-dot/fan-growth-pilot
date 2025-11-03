@@ -41,7 +41,7 @@ const Index = () => {
   const [smartLinkDialogOpen, setSmartLinkDialogOpen] = useState(false);
   
   const { connections, isLoading: connectionsLoading, createConnection, removeConnection } = usePlatformConnections();
-  const { smartLinks, isLoading: linksLoading, removeSmartLink } = useSmartLinks();
+  const { smartLinks, isLoading: linksLoading, createSmartLink, removeSmartLink } = useSmartLinks();
   const { data: spotifyStats, isLoading: statsLoading } = useSpotifyStats();
   const { isConnected: shopifyConnected, isLoading: shopifyLoading } = useShopifyConnection();
 
@@ -269,6 +269,7 @@ const Index = () => {
       <AddSmartLinkDialog
         open={smartLinkDialogOpen}
         onOpenChange={setSmartLinkDialogOpen}
+        onAdd={createSmartLink}
       />
     </div>
   );

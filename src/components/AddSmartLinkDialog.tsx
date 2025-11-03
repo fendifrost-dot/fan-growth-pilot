@@ -30,6 +30,7 @@ export interface SmartLink {
   description?: string;
   image_url?: string;
   video_url?: string;
+  background_image_url?: string;
   button_text?: string;
   button_color?: string;
   background_color?: string;
@@ -48,8 +49,10 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
   const [backgroundColor, setBackgroundColor] = useState(editLink?.background_color || "");
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [backgroundImageFile, setBackgroundImageFile] = useState<File | null>(null);
   const [imageUrl, setImageUrl] = useState(editLink?.image_url || "");
   const [videoUrl, setVideoUrl] = useState(editLink?.video_url || "");
+  const [backgroundImageUrl, setBackgroundImageUrl] = useState(editLink?.background_image_url || "");
   const [isUploading, setIsUploading] = useState(false);
 
   const uploadFile = async (file: File, type: 'image' | 'video'): Promise<string> => {
@@ -83,6 +86,7 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
     try {
       let finalImageUrl = imageUrl;
       let finalVideoUrl = videoUrl;
+      let finalBackgroundImageUrl = backgroundImageUrl;
 
       // Upload image if new file selected
       if (imageFile) {
@@ -94,6 +98,11 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
         finalVideoUrl = await uploadFile(videoFile, 'video');
       }
 
+      // Upload background image if new file selected
+      if (backgroundImageFile) {
+        finalBackgroundImageUrl = await uploadFile(backgroundImageFile, 'image');
+      }
+
       const linkData = {
         title,
         slug,
@@ -101,6 +110,7 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
         description,
         image_url: finalImageUrl,
         video_url: finalVideoUrl,
+        background_image_url: finalBackgroundImageUrl,
         button_text: buttonText,
         button_color: buttonColor,
         background_color: backgroundColor,
@@ -124,8 +134,10 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
       setBackgroundColor("");
       setImageFile(null);
       setVideoFile(null);
+      setBackgroundImageFile(null);
       setImageUrl("");
       setVideoUrl("");
+      setBackgroundImageUrl("");
       onOpenChange(false);
     } catch (error: any) {
       toast.error("Failed to upload files: " + error.message);
@@ -253,14 +265,35 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
             </div>
           </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="backgroundColor">Background Color</Label>
-            <Input
-              id="backgroundColor"
-              type="color"
-              value={backgroundColor}
-              onChange={(e) => setBackgroundColor(e.target.value)}
-            />
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="backgroundColor">Background Color</Label>
+              <Input
+                id="backgroundColor"
+                type="color"
+                value={backgroundColor}
+                onChange={(e) => setBackgroundColor(e.target.value)}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="backgroundImage">Background Image</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id="backgroundImage"
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => setBackgroundImageFile(e.target.files?.[0] || null)}
+                  className="flex-1"
+                />
+                <ImageIcon className="w-5 h-5 text-muted-foreground" />
+              </div>
+              {(backgroundImageUrl || backgroundImageFile) && (
+                <p className="text-xs text-muted-foreground">
+                  {backgroundImageFile ? `New: ${backgroundImageFile.name}` : "Image uploaded"}
+                </p>
+              )}
+            </div>
           </div>
 
           <div className="flex justify-end gap-3 pt-4">

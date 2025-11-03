@@ -6,15 +6,18 @@ import { toast } from "sonner";
 interface SmartLinkCardProps {
   title: string;
   url: string;
+  slug: string;
   clicks: number;
   conversions: number;
   onRemove?: () => void;
   onEdit?: () => void;
 }
 
-export const SmartLinkCard = ({ title, url, clicks, conversions, onRemove, onEdit }: SmartLinkCardProps) => {
+export const SmartLinkCard = ({ title, url, slug, clicks, conversions, onRemove, onEdit }: SmartLinkCardProps) => {
+  const smartLinkUrl = `${window.location.origin}/${slug}`;
+  
   const copyToClipboard = () => {
-    navigator.clipboard.writeText(url);
+    navigator.clipboard.writeText(smartLinkUrl);
     toast.success("Link copied to clipboard!");
   };
 
@@ -38,7 +41,7 @@ export const SmartLinkCard = ({ title, url, clicks, conversions, onRemove, onEdi
       </div>
       
       <div className="flex items-center gap-2 mb-4 p-2 bg-muted rounded-lg">
-        <code className="text-sm flex-1 truncate">{url}</code>
+        <code className="text-sm flex-1 truncate">{smartLinkUrl}</code>
         <Button size="icon" variant="ghost" onClick={copyToClipboard}>
           <Copy className="w-4 h-4" />
         </Button>

@@ -199,15 +199,25 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
 
           <div className="space-y-2">
             <Label htmlFor="slug">Slug *</Label>
-            <Input
-              id="slug"
-              placeholder="album-drop"
-              value={slug}
-              onChange={(e) => setSlug(e.target.value)}
-              required
-            />
+            <div className="flex gap-2">
+              <Input
+                id="slug"
+                placeholder="album-drop"
+                value={slug}
+                onChange={(e) => setSlug(e.target.value)}
+                required
+                className="flex-1"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setSlug(Math.random().toString(36).substring(2, 8))}
+              >
+                Generate Short
+              </Button>
+            </div>
             <p className="text-xs text-muted-foreground">
-              The unique identifier for your link (e.g., "album-drop")
+              Use a custom slug or generate a short random one
             </p>
           </div>
 

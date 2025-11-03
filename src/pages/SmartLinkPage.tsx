@@ -97,8 +97,11 @@ export default function SmartLinkPage() {
 
       if (error) throw error;
 
-      setHasSubmittedEmail(true);
-      toast.success("Thanks! Here's your exclusive content");
+      toast.success("Thanks! Redirecting...");
+      // Auto-redirect to destination after brief delay
+      setTimeout(() => {
+        window.location.href = smartLink!.destination_url;
+      }, 1000);
     } catch (error) {
       console.error("Error submitting email:", error);
       toast.error("Failed to submit. Please try again");

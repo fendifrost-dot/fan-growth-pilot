@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { usePlatformConnections } from "@/hooks/usePlatformConnections";
 import { useSmartLinks } from "@/hooks/useSmartLinks";
+import { useSpotifyStats } from "@/hooks/useSpotifyStats";
 import { toast } from "sonner";
 import { 
   Play, 
@@ -40,6 +41,7 @@ const Index = () => {
   
   const { connections, isLoading: connectionsLoading, createConnection, removeConnection } = usePlatformConnections();
   const { smartLinks, isLoading: linksLoading, removeSmartLink } = useSmartLinks();
+  const { data: spotifyStats, isLoading: statsLoading } = useSpotifyStats();
 
   // Handle Spotify OAuth callback
   useEffect(() => {
@@ -97,22 +99,22 @@ const Index = () => {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
             <MetricCard
               title="Total Plays"
-              value="2.4M"
-              change="+18% this week"
+              value={statsLoading ? "..." : spotifyStats ? `${(spotifyStats.totalPlays / 1000).toFixed(1)}K` : "Connect Spotify"}
+              change={spotifyStats ? "+18% this week" : "No data"}
               icon={Play}
               trend="up"
             />
             <MetricCard
               title="Total Followers"
-              value="156K"
-              change="+2.3K this week"
+              value={statsLoading ? "..." : spotifyStats ? spotifyStats.followers.toLocaleString() : "Connect Spotify"}
+              change={spotifyStats ? "+2.3K this week" : "No data"}
               icon={Users}
               trend="up"
             />
             <MetricCard
               title="Engagement Rate"
-              value="8.2%"
-              change="+0.4% this week"
+              value={statsLoading ? "..." : spotifyStats ? `${spotifyStats.engagementRate}%` : "Connect Spotify"}
+              change={spotifyStats ? "+0.4% this week" : "No data"}
               icon={TrendingUp}
               trend="up"
             />

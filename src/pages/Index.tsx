@@ -223,16 +223,16 @@ const Index = () => {
                 {leads.map((lead: any) => (
                   <div key={lead.id} className="flex items-center justify-between py-3 border-b border-border last:border-0">
                     <div className="flex items-center gap-3">
-                      <div className="w-2 h-2 rounded-full bg-success" />
+                      <div className={`w-2 h-2 rounded-full ${lead.converted ? 'bg-success' : 'bg-warning'}`} />
                       <div>
                         <p className="text-sm font-medium">{lead.email}</p>
                         <p className="text-xs text-muted-foreground">
-                          via {lead.smart_links?.title || 'Unknown'} ({lead.smart_links?.slug})
+                          via {lead.smart_links?.title || 'Unknown'} • {lead.converted ? `Purchased $${lead.conversion_value}` : 'Not purchased yet'}
                         </p>
                       </div>
                     </div>
                     <span className="text-xs text-muted-foreground">
-                      {getRelativeTime(lead.created_at)}
+                      {getRelativeTime(lead.converted ? lead.converted_at : lead.created_at)}
                     </span>
                   </div>
                 ))}

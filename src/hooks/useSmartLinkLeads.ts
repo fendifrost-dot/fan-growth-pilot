@@ -18,7 +18,7 @@ export const useSmartLinkLeads = () => {
           )
         `)
         .order("created_at", { ascending: false })
-        .limit(20);
+        .limit(100);
 
       if (error) throw error;
       return data;

@@ -5,3 +5,6 @@ verify_jwt = false
 
 [functions.spotify-callback]
 verify_jwt = false
+
+[functions.shopify-order-webhook]
+verify_jwt = false

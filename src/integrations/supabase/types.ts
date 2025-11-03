@@ -230,26 +230,38 @@ export type Database = {
       }
       smart_link_leads: {
         Row: {
+          conversion_value: number | null
+          converted: boolean | null
+          converted_at: string | null
           created_at: string | null
           email: string
           id: string
           metadata: Json | null
+          shopify_order_id: string | null
           smart_link_id: string
           user_id: string | null
         }
         Insert: {
+          conversion_value?: number | null
+          converted?: boolean | null
+          converted_at?: string | null
           created_at?: string | null
           email: string
           id?: string
           metadata?: Json | null
+          shopify_order_id?: string | null
           smart_link_id: string
           user_id?: string | null
         }
         Update: {
+          conversion_value?: number | null
+          converted?: boolean | null
+          converted_at?: string | null
           created_at?: string | null
           email?: string
           id?: string
           metadata?: Json | null
+          shopify_order_id?: string | null
           smart_link_id?: string
           user_id?: string | null
         }

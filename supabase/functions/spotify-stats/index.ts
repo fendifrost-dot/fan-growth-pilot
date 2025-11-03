@@ -40,19 +40,60 @@ Deno.serve(async (req) => {
       throw new Error('No Spotify connection found');
     }
 
+    // Check if token is expired and refresh if needed
+    let accessToken = connection.access_token;
+    const tokenExpiresAt = new Date(connection.token_expires_at);
+    const now = new Date();
+
+    if (now >= tokenExpiresAt) {
+      console.log('Token expired, refreshing...');
+      
+      // Refresh the token
+      const refreshResponse = await fetch('https://accounts.spotify.com/api/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Authorization': `Basic ${btoa(`${Deno.env.get('SPOTIFY_CLIENT_ID')}:${Deno.env.get('SPOTIFY_CLIENT_SECRET')}`)}`,
+        },
+        body: new URLSearchParams({
+          grant_type: 'refresh_token',
+          refresh_token: connection.refresh_token,
+        }),
+      });
+
+      if (!refreshResponse.ok) {
+        throw new Error('Failed to refresh token');
+      }
+
+      const tokenData = await refreshResponse.json();
+      accessToken = tokenData.access_token;
+      const expiresAt = new Date(Date.now() + tokenData.expires_in * 1000);
+
+      // Update the database with new token
+      await supabase
+        .from('platform_connections')
+        .update({
+          access_token: accessToken,
+          token_expires_at: expiresAt.toISOString(),
+        })
+        .eq('id', connection.id);
+
+      console.log('Token refreshed successfully');
+    }
+
     // Fetch user's profile and top tracks
     const [profileResponse, topTracksResponse, recentlyPlayedResponse, followedArtistsResponse] = await Promise.all([
       fetch('https://api.spotify.com/v1/me', {
-        headers: { 'Authorization': `Bearer ${connection.access_token}` },
+        headers: { 'Authorization': `Bearer ${accessToken}` },
       }),
       fetch('https://api.spotify.com/v1/me/top/tracks?limit=50', {
-        headers: { 'Authorization': `Bearer ${connection.access_token}` },
+        headers: { 'Authorization': `Bearer ${accessToken}` },
       }),
       fetch('https://api.spotify.com/v1/me/player/recently-played?limit=50', {
-        headers: { 'Authorization': `Bearer ${connection.access_token}` },
+        headers: { 'Authorization': `Bearer ${accessToken}` },
       }),
       fetch('https://api.spotify.com/v1/me/following?type=artist', {
-        headers: { 'Authorization': `Bearer ${connection.access_token}` },
+        headers: { 'Authorization': `Bearer ${accessToken}` },
       }),
     ]);
 

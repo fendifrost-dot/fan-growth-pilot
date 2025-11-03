@@ -231,6 +231,7 @@ export type Database = {
       smart_links: {
         Row: {
           background_color: string | null
+          background_image_url: string | null
           button_color: string | null
           button_text: string | null
           click_count: number | null
@@ -251,6 +252,7 @@ export type Database = {
         }
         Insert: {
           background_color?: string | null
+          background_image_url?: string | null
           button_color?: string | null
           button_text?: string | null
           click_count?: number | null
@@ -271,6 +273,7 @@ export type Database = {
         }
         Update: {
           background_color?: string | null
+          background_image_url?: string | null
           button_color?: string | null
           button_text?: string | null
           click_count?: number | null

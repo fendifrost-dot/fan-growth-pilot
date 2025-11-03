@@ -230,6 +230,8 @@ export type Database = {
       }
       smart_link_leads: {
         Row: {
+          album_purchased: boolean | null
+          album_purchased_at: string | null
           conversion_value: number | null
           converted: boolean | null
           converted_at: string | null
@@ -237,11 +239,14 @@ export type Database = {
           email: string
           id: string
           metadata: Json | null
+          purchase_source: string | null
           shopify_order_id: string | null
           smart_link_id: string
           user_id: string | null
         }
         Insert: {
+          album_purchased?: boolean | null
+          album_purchased_at?: string | null
           conversion_value?: number | null
           converted?: boolean | null
           converted_at?: string | null
@@ -249,11 +254,14 @@ export type Database = {
           email: string
           id?: string
           metadata?: Json | null
+          purchase_source?: string | null
           shopify_order_id?: string | null
           smart_link_id: string
           user_id?: string | null
         }
         Update: {
+          album_purchased?: boolean | null
+          album_purchased_at?: string | null
           conversion_value?: number | null
           converted?: boolean | null
           converted_at?: string | null
@@ -261,6 +269,7 @@ export type Database = {
           email?: string
           id?: string
           metadata?: Json | null
+          purchase_source?: string | null
           shopify_order_id?: string | null
           smart_link_id?: string
           user_id?: string | null

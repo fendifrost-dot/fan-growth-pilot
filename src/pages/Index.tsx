@@ -5,6 +5,8 @@ import { ConnectedAccountCard } from "@/components/ConnectedAccountCard";
 import { SmartLinkCard } from "@/components/SmartLinkCard";
 import { AddPlatformDialog, PlatformAccount } from "@/components/AddPlatformDialog";
 import { AddSmartLinkDialog, SmartLink } from "@/components/AddSmartLinkDialog";
+import { UploadEvenCSV } from "@/components/UploadEvenCSV";
+import { LeadFilters } from "@/components/LeadFilters";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { usePlatformConnections } from "@/hooks/usePlatformConnections";
@@ -12,6 +14,7 @@ import { useSmartLinks } from "@/hooks/useSmartLinks";
 import { useSpotifyStats } from "@/hooks/useSpotifyStats";
 import { useShopifyConnection } from "@/hooks/useShopifyConnection";
 import { useSmartLinkLeads } from "@/hooks/useSmartLinkLeads";
+import { useLeadSegments, type LeadSegment } from "@/hooks/useLeadSegments";
 import { toast } from "sonner";
 import { 
   Play, 
@@ -40,12 +43,25 @@ const platformIcons: Record<string, any> = {
 const Index = () => {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [smartLinkDialogOpen, setSmartLinkDialogOpen] = useState(false);
+  const [activeSegment, setActiveSegment] = useState<LeadSegment>('all');
   
   const { connections, isLoading: connectionsLoading, createConnection, removeConnection } = usePlatformConnections();
   const { smartLinks, isLoading: linksLoading, createSmartLink, removeSmartLink } = useSmartLinks();
   const { data: spotifyStats, isLoading: statsLoading } = useSpotifyStats();
   const { isConnected: shopifyConnected, isLoading: shopifyLoading } = useShopifyConnection();
   const { leads, isLoading: leadsLoading } = useSmartLinkLeads();
+  const { counts: leadCounts, filterLeads, exportSegment } = useLeadSegments(leads);
+  
+  const filteredLeads = filterLeads(activeSegment);
+  
+  const handleExportSegment = (segment: LeadSegment) => {
+    const count = exportSegment(segment);
+    if (count) {
+      toast.success(`Exported ${count} emails for Facebook Custom Audience`);
+    } else {
+      toast.error("No leads to export in this segment");
+    }
+  };
 
   // Handle Spotify OAuth callback
   useEffect(() => {
@@ -212,33 +228,64 @@ const Index = () => {
           </section>
         </div>
 
-        {/* Email Leads */}
-        <section className="mt-12">
-          <h3 className="text-2xl font-semibold mb-6">Email Leads from Smart Links</h3>
+        {/* Email Leads & Retargeting */}
+        <section className="mt-12 space-y-6">
+          <h3 className="text-2xl font-semibold">Email Leads & Retargeting</h3>
+          
+          <UploadEvenCSV />
+          
+          <LeadFilters
+            activeSegment={activeSegment}
+            onSegmentChange={setActiveSegment}
+            onExport={handleExportSegment}
+            counts={leadCounts}
+          />
+
           <Card className="p-6 bg-card/50 backdrop-blur-sm border-border">
+            <h4 className="font-semibold mb-4">
+              {activeSegment === 'all' ? 'All Leads' : 
+               activeSegment === 'cold' ? 'Cold Leads' :
+               activeSegment === 'album-only' ? 'Album Buyers' :
+               activeSegment === 'merch-only' ? 'Merch Buyers' :
+               'Super Fans'} ({filteredLeads.length})
+            </h4>
             {leadsLoading ? (
               <p className="text-center text-muted-foreground">Loading leads...</p>
-            ) : leads.length > 0 ? (
+            ) : filteredLeads.length > 0 ? (
               <div className="space-y-4">
-                {leads.map((lead: any) => (
+                {filteredLeads.map((lead: any) => (
                   <div key={lead.id} className="flex items-center justify-between py-3 border-b border-border last:border-0">
                     <div className="flex items-center gap-3">
-                      <div className={`w-2 h-2 rounded-full ${lead.converted ? 'bg-success' : 'bg-warning'}`} />
+                      <div className="flex gap-1">
+                        {lead.album_purchased && (
+                          <div className="w-2 h-2 rounded-full bg-primary" title="Album purchased" />
+                        )}
+                        {lead.converted && (
+                          <div className="w-2 h-2 rounded-full bg-success" title="Merch purchased" />
+                        )}
+                        {!lead.album_purchased && !lead.converted && (
+                          <div className="w-2 h-2 rounded-full bg-warning" title="No purchases" />
+                        )}
+                      </div>
                       <div>
                         <p className="text-sm font-medium">{lead.email}</p>
                         <p className="text-xs text-muted-foreground">
-                          via {lead.smart_links?.title || 'Unknown'} • {lead.converted ? `Purchased $${lead.conversion_value}` : 'Not purchased yet'}
+                          via {lead.smart_links?.title || 'Unknown'} • 
+                          {lead.album_purchased && ' Album '}
+                          {lead.converted && lead.album_purchased && '+ '}
+                          {lead.converted && `Merch ($${lead.conversion_value})`}
+                          {!lead.album_purchased && !lead.converted && ' No purchases yet'}
                         </p>
                       </div>
                     </div>
                     <span className="text-xs text-muted-foreground">
-                      {getRelativeTime(lead.converted ? lead.converted_at : lead.created_at)}
+                      {getRelativeTime(lead.converted ? lead.converted_at : lead.album_purchased_at || lead.created_at)}
                     </span>
                   </div>
                 ))}
               </div>
             ) : (
-              <p className="text-center text-muted-foreground">No email leads collected yet</p>
+              <p className="text-center text-muted-foreground">No leads in this segment</p>
             )}
           </Card>
         </section>

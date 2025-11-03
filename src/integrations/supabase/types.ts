@@ -230,11 +230,16 @@ export type Database = {
       }
       smart_links: {
         Row: {
+          background_color: string | null
+          button_color: string | null
+          button_text: string | null
           click_count: number | null
           conversion_count: number | null
           created_at: string | null
+          description: string | null
           destination_url: string
           id: string
+          image_url: string | null
           is_active: boolean | null
           metadata: Json | null
           slug: string
@@ -242,13 +247,19 @@ export type Database = {
           title: string
           updated_at: string | null
           user_id: string
+          video_url: string | null
         }
         Insert: {
+          background_color?: string | null
+          button_color?: string | null
+          button_text?: string | null
           click_count?: number | null
           conversion_count?: number | null
           created_at?: string | null
+          description?: string | null
           destination_url: string
           id?: string
+          image_url?: string | null
           is_active?: boolean | null
           metadata?: Json | null
           slug: string
@@ -256,13 +267,19 @@ export type Database = {
           title: string
           updated_at?: string | null
           user_id: string
+          video_url?: string | null
         }
         Update: {
+          background_color?: string | null
+          button_color?: string | null
+          button_text?: string | null
           click_count?: number | null
           conversion_count?: number | null
           created_at?: string | null
+          description?: string | null
           destination_url?: string
           id?: string
+          image_url?: string | null
           is_active?: boolean | null
           metadata?: Json | null
           slug?: string
@@ -270,6 +287,7 @@ export type Database = {
           title?: string
           updated_at?: string | null
           user_id?: string
+          video_url?: string | null
         }
         Relationships: [
           {

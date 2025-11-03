@@ -9,78 +9,144 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
+import { supabase } from "@/integrations/supabase/client";
+import { Upload, Image as ImageIcon, Video } from "lucide-react";
 
 interface AddSmartLinkDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onAdd?: (link: SmartLink) => void;
-  editLink?: SmartLink;
-  onUpdate?: (link: SmartLink) => void;
+  onAdd?: (link: any) => void;
+  editLink?: any;
+  onUpdate?: (link: any) => void;
 }
 
 export interface SmartLink {
   id: string;
   title: string;
-  url: string;
-  clicks: number;
-  conversions: number;
+  slug: string;
+  destination_url: string;
+  description?: string;
+  image_url?: string;
+  video_url?: string;
+  button_text?: string;
+  button_color?: string;
+  background_color?: string;
+  click_count: number;
+  conversion_count: number;
 }
 
 export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpdate }: AddSmartLinkDialogProps) => {
   const isEditMode = !!editLink;
   const [title, setTitle] = useState(editLink?.title || "");
-  const [url, setUrl] = useState(editLink?.url || "");
+  const [slug, setSlug] = useState(editLink?.slug || "");
+  const [destinationUrl, setDestinationUrl] = useState(editLink?.destination_url || "");
+  const [description, setDescription] = useState(editLink?.description || "");
+  const [buttonText, setButtonText] = useState(editLink?.button_text || "Click Here");
+  const [buttonColor, setButtonColor] = useState(editLink?.button_color || "");
+  const [backgroundColor, setBackgroundColor] = useState(editLink?.background_color || "");
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [imageUrl, setImageUrl] = useState(editLink?.image_url || "");
+  const [videoUrl, setVideoUrl] = useState(editLink?.video_url || "");
+  const [isUploading, setIsUploading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const uploadFile = async (file: File, type: 'image' | 'video'): Promise<string> => {
+    const fileExt = file.name.split('.').pop();
+    const fileName = `${Math.random()}.${fileExt}`;
+    const filePath = `${type}s/${fileName}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from('smart-links')
+      .upload(filePath, file);
+
+    if (uploadError) throw uploadError;
+
+    const { data } = supabase.storage
+      .from('smart-links')
+      .getPublicUrl(filePath);
+
+    return data.publicUrl;
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!title || !url) {
-      toast.error("Please fill in all fields");
+    if (!title || !slug || !destinationUrl) {
+      toast.error("Please fill in title, slug, and destination URL");
       return;
     }
 
-    if (isEditMode && editLink && onUpdate) {
-      const updatedLink: SmartLink = {
-        ...editLink,
+    setIsUploading(true);
+
+    try {
+      let finalImageUrl = imageUrl;
+      let finalVideoUrl = videoUrl;
+
+      // Upload image if new file selected
+      if (imageFile) {
+        finalImageUrl = await uploadFile(imageFile, 'image');
+      }
+
+      // Upload video if new file selected
+      if (videoFile) {
+        finalVideoUrl = await uploadFile(videoFile, 'video');
+      }
+
+      const linkData = {
         title,
-        url,
-      };
-      
-      onUpdate(updatedLink);
-      toast.success("Smart link updated successfully!");
-    } else if (onAdd) {
-      const newLink: SmartLink = {
-        id: Date.now().toString(),
-        title,
-        url,
-        clicks: 0,
-        conversions: 0,
+        slug,
+        destination_url: destinationUrl,
+        description,
+        image_url: finalImageUrl,
+        video_url: finalVideoUrl,
+        button_text: buttonText,
+        button_color: buttonColor,
+        background_color: backgroundColor,
       };
 
-      onAdd(newLink);
-      toast.success("Smart link created successfully!");
+      if (isEditMode && editLink && onUpdate) {
+        onUpdate({ ...editLink, ...linkData });
+        toast.success("Smart link updated successfully!");
+      } else if (onAdd) {
+        onAdd(linkData);
+        toast.success("Smart link created successfully!");
+      }
+      
+      // Reset form
+      setTitle("");
+      setSlug("");
+      setDestinationUrl("");
+      setDescription("");
+      setButtonText("Click Here");
+      setButtonColor("");
+      setBackgroundColor("");
+      setImageFile(null);
+      setVideoFile(null);
+      setImageUrl("");
+      setVideoUrl("");
+      onOpenChange(false);
+    } catch (error: any) {
+      toast.error("Failed to upload files: " + error.message);
+    } finally {
+      setIsUploading(false);
     }
-    
-    // Reset form
-    setTitle("");
-    setUrl("");
-    onOpenChange(false);
   };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[500px]">
+      <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{isEditMode ? "Edit Smart Link" : "Create Smart Link"}</DialogTitle>
           <DialogDescription>
-            {isEditMode ? "Update your smart link details" : "Create a trackable smart link for your campaigns"}
+            {isEditMode ? "Update your smart link details" : "Create a customizable smart link with images, videos, and more"}
           </DialogDescription>
         </DialogHeader>
         
-        <form onSubmit={handleSubmit} className="space-y-6 mt-4">
+        <form onSubmit={handleSubmit} className="space-y-4 mt-4">
           <div className="space-y-2">
-            <Label htmlFor="title">Link Title</Label>
+            <Label htmlFor="title">Link Title *</Label>
             <Input
               id="title"
               placeholder="e.g., New Album Drop"
@@ -91,25 +157,125 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="url">Short URL</Label>
+            <Label htmlFor="slug">Slug *</Label>
             <Input
-              id="url"
-              placeholder="go.bemoremodest.com/album"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
+              id="slug"
+              placeholder="album-drop"
+              value={slug}
+              onChange={(e) => setSlug(e.target.value)}
               required
             />
             <p className="text-xs text-muted-foreground">
-              Enter your custom short link URL
+              The unique identifier for your link (e.g., "album-drop")
             </p>
           </div>
 
-          <div className="flex justify-end gap-3">
+          <div className="space-y-2">
+            <Label htmlFor="destination">Destination URL *</Label>
+            <Input
+              id="destination"
+              type="url"
+              placeholder="https://example.com"
+              value={destinationUrl}
+              onChange={(e) => setDestinationUrl(e.target.value)}
+              required
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="description">Description</Label>
+            <Textarea
+              id="description"
+              placeholder="Add a description for your smart link..."
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={3}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="image">Upload Image</Label>
+            <div className="flex items-center gap-2">
+              <Input
+                id="image"
+                type="file"
+                accept="image/*"
+                onChange={(e) => setImageFile(e.target.files?.[0] || null)}
+                className="flex-1"
+              />
+              <ImageIcon className="w-5 h-5 text-muted-foreground" />
+            </div>
+            {(imageUrl || imageFile) && (
+              <p className="text-xs text-muted-foreground">
+                {imageFile ? `New: ${imageFile.name}` : "Image uploaded"}
+              </p>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="video">Upload Video</Label>
+            <div className="flex items-center gap-2">
+              <Input
+                id="video"
+                type="file"
+                accept="video/*"
+                onChange={(e) => setVideoFile(e.target.files?.[0] || null)}
+                className="flex-1"
+              />
+              <Video className="w-5 h-5 text-muted-foreground" />
+            </div>
+            {(videoUrl || videoFile) && (
+              <p className="text-xs text-muted-foreground">
+                {videoFile ? `New: ${videoFile.name}` : "Video uploaded"}
+              </p>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="buttonText">Button Text</Label>
+              <Input
+                id="buttonText"
+                placeholder="Click Here"
+                value={buttonText}
+                onChange={(e) => setButtonText(e.target.value)}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="buttonColor">Button Color</Label>
+              <Input
+                id="buttonColor"
+                type="color"
+                value={buttonColor}
+                onChange={(e) => setButtonColor(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="backgroundColor">Background Color</Label>
+            <Input
+              id="backgroundColor"
+              type="color"
+              value={backgroundColor}
+              onChange={(e) => setBackgroundColor(e.target.value)}
+            />
+          </div>
+
+          <div className="flex justify-end gap-3 pt-4">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit">
-              {isEditMode ? "Update Link" : "Create Link"}
+            <Button type="submit" disabled={isUploading}>
+              {isUploading ? (
+                <>
+                  <Upload className="w-4 h-4 mr-2 animate-spin" />
+                  Uploading...
+                </>
+              ) : (
+                isEditMode ? "Update Link" : "Create Link"
+              )}
             </Button>
           </div>
         </form>

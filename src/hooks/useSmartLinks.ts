@@ -23,7 +23,17 @@ export const useSmartLinks = () => {
   });
 
   const createMutation = useMutation({
-    mutationFn: async (link: { title: string; destination_url: string; slug: string }) => {
+    mutationFn: async (link: { 
+      title: string; 
+      destination_url: string; 
+      slug: string;
+      description?: string;
+      image_url?: string;
+      video_url?: string;
+      button_text?: string;
+      button_color?: string;
+      background_color?: string;
+    }) => {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error("Not authenticated");
 

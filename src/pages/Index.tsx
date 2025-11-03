@@ -11,6 +11,7 @@ import { usePlatformConnections } from "@/hooks/usePlatformConnections";
 import { useSmartLinks } from "@/hooks/useSmartLinks";
 import { useSpotifyStats } from "@/hooks/useSpotifyStats";
 import { useShopifyConnection } from "@/hooks/useShopifyConnection";
+import { useSmartLinkLeads } from "@/hooks/useSmartLinkLeads";
 import { toast } from "sonner";
 import { 
   Play, 
@@ -44,6 +45,7 @@ const Index = () => {
   const { smartLinks, isLoading: linksLoading, createSmartLink, removeSmartLink } = useSmartLinks();
   const { data: spotifyStats, isLoading: statsLoading } = useSpotifyStats();
   const { isConnected: shopifyConnected, isLoading: shopifyLoading } = useShopifyConnection();
+  const { leads, isLoading: leadsLoading } = useSmartLinkLeads();
 
   // Handle Spotify OAuth callback
   useEffect(() => {
@@ -210,29 +212,34 @@ const Index = () => {
           </section>
         </div>
 
-        {/* Recent Activity */}
+        {/* Email Leads */}
         <section className="mt-12">
-          <h3 className="text-2xl font-semibold mb-6">Recent Activity</h3>
+          <h3 className="text-2xl font-semibold mb-6">Email Leads from Smart Links</h3>
           <Card className="p-6 bg-card/50 backdrop-blur-sm border-border">
-            <div className="space-y-4">
-              {[
-                { action: "New follower on Instagram", time: "2 minutes ago", type: "success" },
-                { action: "Smart link clicked 152 times", time: "15 minutes ago", type: "info" },
-                { action: "3 new merch purchases", time: "1 hour ago", type: "success" },
-                { action: "Spotify playlist added your track", time: "3 hours ago", type: "info" },
-                { action: "Facebook ad performance improved", time: "5 hours ago", type: "success" }
-              ].map((activity, index) => (
-                <div key={index} className="flex items-center justify-between py-3 border-b border-border last:border-0">
-                  <div className="flex items-center gap-3">
-                    <div className={`w-2 h-2 rounded-full ${
-                      activity.type === "success" ? "bg-success" : "bg-info"
-                    }`} />
-                    <p className="text-sm">{activity.action}</p>
+            {leadsLoading ? (
+              <p className="text-center text-muted-foreground">Loading leads...</p>
+            ) : leads.length > 0 ? (
+              <div className="space-y-4">
+                {leads.map((lead: any) => (
+                  <div key={lead.id} className="flex items-center justify-between py-3 border-b border-border last:border-0">
+                    <div className="flex items-center gap-3">
+                      <div className="w-2 h-2 rounded-full bg-success" />
+                      <div>
+                        <p className="text-sm font-medium">{lead.email}</p>
+                        <p className="text-xs text-muted-foreground">
+                          via {lead.smart_links?.title || 'Unknown'} ({lead.smart_links?.slug})
+                        </p>
+                      </div>
+                    </div>
+                    <span className="text-xs text-muted-foreground">
+                      {getRelativeTime(lead.created_at)}
+                    </span>
                   </div>
-                  <span className="text-xs text-muted-foreground">{activity.time}</span>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-center text-muted-foreground">No email leads collected yet</p>
+            )}
           </Card>
         </section>
 

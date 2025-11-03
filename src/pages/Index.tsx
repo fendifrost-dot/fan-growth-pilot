@@ -120,8 +120,8 @@ const Index = () => {
             />
             <MetricCard
               title="Merch Sales"
-              value="$12.4K"
-              change="+25% this month"
+              value="Connect Shopify"
+              change="No data"
               icon={ShoppingBag}
               trend="up"
             />

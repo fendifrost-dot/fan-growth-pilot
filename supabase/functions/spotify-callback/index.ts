@@ -14,7 +14,7 @@ serve(async (req) => {
   try {
     const url = new URL(req.url);
     const code = url.searchParams.get('code');
-    const userId = url.searchParams.get('state');
+    const signedState = url.searchParams.get('state');
     const error = url.searchParams.get('error');
 
     if (error) {
@@ -45,8 +45,51 @@ serve(async (req) => {
       });
     }
 
-    if (!code || !userId) {
-      throw new Error('Missing authorization code or user ID');
+    if (!code || !signedState) {
+      throw new Error('Missing authorization code or state token');
+    }
+
+    // Verify HMAC signature and extract userId
+    const stateParts = signedState.split(':');
+    if (stateParts.length !== 3) {
+      throw new Error('Invalid state token format');
+    }
+
+    const [userId, timestamp, receivedSignature] = stateParts;
+    
+    // Check if state token is expired (15 minutes)
+    const stateAge = Date.now() - parseInt(timestamp);
+    if (stateAge > 15 * 60 * 1000) {
+      throw new Error('State token expired');
+    }
+
+    // Verify HMAC signature
+    const secret = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const statePayload = `${userId}:${timestamp}`;
+    
+    const encoder = new TextEncoder();
+    const keyData = encoder.encode(secret);
+    const key = await crypto.subtle.importKey(
+      'raw',
+      keyData,
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign', 'verify']
+    );
+    
+    const signature = await crypto.subtle.sign(
+      'HMAC',
+      key,
+      encoder.encode(statePayload)
+    );
+    
+    const expectedSignature = Array.from(new Uint8Array(signature))
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('');
+    
+    // Timing-safe comparison
+    if (receivedSignature !== expectedSignature) {
+      throw new Error('Invalid state token signature');
     }
 
     const clientId = Deno.env.get('SPOTIFY_CLIENT_ID');

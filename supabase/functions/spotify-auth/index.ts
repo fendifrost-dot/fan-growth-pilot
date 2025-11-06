@@ -55,12 +55,39 @@ serve(async (req) => {
       'user-library-read',
     ].join(' ');
 
+    // Create HMAC-signed state token with timestamp for CSRF protection
+    const timestamp = Date.now();
+    const statePayload = `${user_id}:${timestamp}`;
+    const secret = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    
+    const encoder = new TextEncoder();
+    const keyData = encoder.encode(secret);
+    const key = await crypto.subtle.importKey(
+      'raw',
+      keyData,
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+    
+    const signature = await crypto.subtle.sign(
+      'HMAC',
+      key,
+      encoder.encode(statePayload)
+    );
+    
+    const signatureHex = Array.from(new Uint8Array(signature))
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('');
+    
+    const signedState = `${statePayload}:${signatureHex}`;
+    
     const spotifyAuthUrl = new URL('https://accounts.spotify.com/authorize');
     spotifyAuthUrl.searchParams.append('client_id', clientId!);
     spotifyAuthUrl.searchParams.append('response_type', 'code');
     spotifyAuthUrl.searchParams.append('redirect_uri', redirectUri);
     spotifyAuthUrl.searchParams.append('scope', scopes);
-    spotifyAuthUrl.searchParams.append('state', user_id);
+    spotifyAuthUrl.searchParams.append('state', signedState);
 
     console.log('Generated Spotify OAuth URL:', spotifyAuthUrl.toString());
 

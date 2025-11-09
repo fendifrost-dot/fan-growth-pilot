@@ -1,6 +1,6 @@
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { ExternalLink, Copy, Edit, Trash2 } from "lucide-react";
+import { ExternalLink, Copy, Edit, Trash2, Link2 } from "lucide-react";
 import { toast } from "sonner";
 
 interface SmartLinkCardProps {
@@ -19,6 +19,13 @@ export const SmartLinkCard = ({ title, url, slug, clicks, conversions, onRemove,
   const copyToClipboard = () => {
     navigator.clipboard.writeText(smartLinkUrl);
     toast.success("Link copied to clipboard!");
+  };
+
+  const copyShortLink = () => {
+    // Create a super short, shareable version of the link
+    const shortLink = `${window.location.origin}/${slug}`;
+    navigator.clipboard.writeText(shortLink);
+    toast.success("Short link copied! Perfect for social media 🎯");
   };
 
   return (
@@ -40,12 +47,23 @@ export const SmartLinkCard = ({ title, url, slug, clicks, conversions, onRemove,
         </div>
       </div>
       
-      <div className="flex items-center gap-2 mb-4 p-2 bg-muted rounded-lg">
+      <div className="flex items-center gap-2 mb-3 p-2 bg-muted rounded-lg">
         <code className="text-sm flex-1 truncate">{smartLinkUrl}</code>
         <Button size="icon" variant="ghost" onClick={copyToClipboard}>
           <Copy className="w-4 h-4" />
         </Button>
       </div>
+
+      {/* Short Link Button */}
+      <Button 
+        variant="outline" 
+        size="sm" 
+        className="w-full mb-4 gap-2 border-primary/50 hover:bg-primary/10 hover:border-primary transition-all"
+        onClick={copyShortLink}
+      >
+        <Link2 className="w-4 h-4" />
+        Copy Short Link
+      </Button>
 
       <div className="grid grid-cols-2 gap-4">
         <div>

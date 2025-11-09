@@ -1,20 +1,19 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, lazy, Suspense } from "react";
 import { DashboardHeader } from "@/components/DashboardHeader";
 import { MetricCard } from "@/components/MetricCard";
+import { MetricCardSkeleton } from "@/components/skeletons/MetricCardSkeleton";
+import { AccountCardSkeleton } from "@/components/skeletons/AccountCardSkeleton";
+import { SmartLinkCardSkeleton } from "@/components/skeletons/SmartLinkCardSkeleton";
 import { ConnectedAccountCard } from "@/components/ConnectedAccountCard";
 import { SmartLinkCard } from "@/components/SmartLinkCard";
 import { AddPlatformDialog, PlatformAccount } from "@/components/AddPlatformDialog";
 import { AddSmartLinkDialog, SmartLink } from "@/components/AddSmartLinkDialog";
-import { UploadEvenCSV } from "@/components/UploadEvenCSV";
-import { LeadFilters } from "@/components/LeadFilters";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { usePlatformConnections } from "@/hooks/usePlatformConnections";
 import { useSmartLinks } from "@/hooks/useSmartLinks";
 import { useSpotifyStats } from "@/hooks/useSpotifyStats";
 import { useShopifyConnection } from "@/hooks/useShopifyConnection";
-import { useSmartLinkLeads } from "@/hooks/useSmartLinkLeads";
-import { useLeadSegments, type LeadSegment } from "@/hooks/useLeadSegments";
 import { toast } from "sonner";
 import { 
   Play, 
@@ -31,6 +30,9 @@ import {
   Apple
 } from "lucide-react";
 
+// Lazy load the Email Leads section (below the fold)
+const EmailLeadsSection = lazy(() => import("@/components/EmailLeadsSection").then(m => ({ default: m.EmailLeadsSection })));
+
 const platformIcons: Record<string, any> = {
   Spotify: Music,
   Instagram: Instagram,
@@ -43,26 +45,11 @@ const platformIcons: Record<string, any> = {
 const Index = () => {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [smartLinkDialogOpen, setSmartLinkDialogOpen] = useState(false);
-  const [activeSegment, setActiveSegment] = useState<LeadSegment>('all');
   
   const { connections, isLoading: connectionsLoading, createConnection, removeConnection } = usePlatformConnections();
   const { smartLinks, isLoading: linksLoading, createSmartLink, removeSmartLink } = useSmartLinks();
   const { data: spotifyStats, isLoading: statsLoading } = useSpotifyStats();
   const { isConnected: shopifyConnected, isLoading: shopifyLoading } = useShopifyConnection();
-  const { leads, isLoading: leadsLoading } = useSmartLinkLeads();
-  const { counts: leadCounts, filterLeads, exportSegment } = useLeadSegments(leads);
-  
-  const filteredLeads = filterLeads(activeSegment);
-  
-  const handleExportSegment = (segment: LeadSegment) => {
-    const count = exportSegment(segment);
-    if (count) {
-      toast.success(`Exported ${count} emails for Facebook Custom Audience`);
-    } else {
-      toast.error("No leads to export in this segment");
-    }
-  };
-
   // Handle Spotify OAuth callback
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -98,6 +85,7 @@ const Index = () => {
     if (diffInMinutes < 1440) return `${Math.floor(diffInMinutes / 60)} hours ago`;
     return `${Math.floor(diffInMinutes / 1440)} days ago`;
   };
+
   return (
     <div className="min-h-screen bg-gradient-dark">
       <DashboardHeader />
@@ -117,34 +105,45 @@ const Index = () => {
         <section className="mb-12">
           <h3 className="text-2xl font-semibold mb-6">Performance Overview</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            <MetricCard
-              title="Total Plays"
-              value={statsLoading ? "..." : spotifyStats ? `${(spotifyStats.totalPlays / 1000).toFixed(1)}K` : "Connect Spotify"}
-              change={spotifyStats ? "+18% this week" : "No data"}
-              icon={Play}
-              trend="up"
-            />
-            <MetricCard
-              title="Total Followers"
-              value={statsLoading ? "..." : spotifyStats ? spotifyStats.followers.toLocaleString() : "Connect Spotify"}
-              change={spotifyStats ? "+2.3K this week" : "No data"}
-              icon={Users}
-              trend="up"
-            />
-            <MetricCard
-              title="Engagement Rate"
-              value={statsLoading ? "..." : spotifyStats ? `${spotifyStats.engagementRate}%` : "Connect Spotify"}
-              change={spotifyStats ? "+0.4% this week" : "No data"}
-              icon={TrendingUp}
-              trend="up"
-            />
-            <MetricCard
-              title="Merch Sales"
-              value={shopifyLoading ? "..." : shopifyConnected ? "Connected" : "Connect Shopify"}
-              change={shopifyConnected ? "Store connected" : "No data"}
-              icon={ShoppingBag}
-              trend="up"
-            />
+            {statsLoading || shopifyLoading ? (
+              <>
+                <MetricCardSkeleton />
+                <MetricCardSkeleton />
+                <MetricCardSkeleton />
+                <MetricCardSkeleton />
+              </>
+            ) : (
+              <>
+                <MetricCard
+                  title="Total Plays"
+                  value={spotifyStats ? `${(spotifyStats.totalPlays / 1000).toFixed(1)}K` : "Connect Spotify"}
+                  change={spotifyStats ? "+18% this week" : "No data"}
+                  icon={Play}
+                  trend="up"
+                />
+                <MetricCard
+                  title="Total Followers"
+                  value={spotifyStats ? spotifyStats.followers.toLocaleString() : "Connect Spotify"}
+                  change={spotifyStats ? "+2.3K this week" : "No data"}
+                  icon={Users}
+                  trend="up"
+                />
+                <MetricCard
+                  title="Engagement Rate"
+                  value={spotifyStats ? `${spotifyStats.engagementRate}%` : "Connect Spotify"}
+                  change={spotifyStats ? "+0.4% this week" : "No data"}
+                  icon={TrendingUp}
+                  trend="up"
+                />
+                <MetricCard
+                  title="Merch Sales"
+                  value={shopifyConnected ? "Connected" : "Connect Shopify"}
+                  change={shopifyConnected ? "Store connected" : "No data"}
+                  icon={ShoppingBag}
+                  trend="up"
+                />
+              </>
+            )}
           </div>
         </section>
 
@@ -160,9 +159,10 @@ const Index = () => {
             </div>
             <div className="grid gap-4">
               {connectionsLoading ? (
-                <Card className="p-8 text-center bg-card/50 backdrop-blur-sm border-border">
-                  <p className="text-muted-foreground">Loading connections...</p>
-                </Card>
+                <>
+                  <AccountCardSkeleton />
+                  <AccountCardSkeleton />
+                </>
               ) : connections.length > 0 ? (
                 connections.map((connection) => (
                   <ConnectedAccountCard
@@ -199,9 +199,10 @@ const Index = () => {
             </div>
             <div className="space-y-4">
               {linksLoading ? (
-                <Card className="p-8 text-center bg-card/50 backdrop-blur-sm border-border">
-                  <p className="text-muted-foreground">Loading links...</p>
-                </Card>
+                <>
+                  <SmartLinkCardSkeleton />
+                  <SmartLinkCardSkeleton />
+                </>
               ) : smartLinks.length > 0 ? (
                 smartLinks.map((link) => (
                   <SmartLinkCard
@@ -229,67 +230,25 @@ const Index = () => {
           </section>
         </div>
 
-        {/* Email Leads & Retargeting */}
-        <section className="mt-12 space-y-6">
-          <h3 className="text-2xl font-semibold">Email Leads & Retargeting</h3>
-          
-          <UploadEvenCSV />
-          
-          <LeadFilters
-            activeSegment={activeSegment}
-            onSegmentChange={setActiveSegment}
-            onExport={handleExportSegment}
-            counts={leadCounts}
-          />
-
-          <Card className="p-6 bg-card/50 backdrop-blur-sm border-border">
-            <h4 className="font-semibold mb-4">
-              {activeSegment === 'all' ? 'All Leads' : 
-               activeSegment === 'cold' ? 'Cold Leads' :
-               activeSegment === 'album-only' ? 'Album Buyers' :
-               activeSegment === 'merch-only' ? 'Merch Buyers' :
-               'Super Fans'} ({filteredLeads.length})
-            </h4>
-            {leadsLoading ? (
-              <p className="text-center text-muted-foreground">Loading leads...</p>
-            ) : filteredLeads.length > 0 ? (
-              <div className="space-y-4">
-                {filteredLeads.map((lead: any) => (
-                  <div key={lead.id} className="flex items-center justify-between py-3 border-b border-border last:border-0">
-                    <div className="flex items-center gap-3">
-                      <div className="flex gap-1">
-                        {lead.album_purchased && (
-                          <div className="w-2 h-2 rounded-full bg-primary" title="Album purchased" />
-                        )}
-                        {lead.converted && (
-                          <div className="w-2 h-2 rounded-full bg-success" title="Merch purchased" />
-                        )}
-                        {!lead.album_purchased && !lead.converted && (
-                          <div className="w-2 h-2 rounded-full bg-warning" title="No purchases" />
-                        )}
-                      </div>
-                      <div>
-                        <p className="text-sm font-medium">{lead.email}</p>
-                        <p className="text-xs text-muted-foreground">
-                          via {lead.smart_links?.title || 'Unknown'} • 
-                          {lead.album_purchased && ' Album '}
-                          {lead.converted && lead.album_purchased && '+ '}
-                          {lead.converted && `Merch ($${lead.conversion_value})`}
-                          {!lead.album_purchased && !lead.converted && ' No purchases yet'}
-                        </p>
-                      </div>
-                    </div>
-                    <span className="text-xs text-muted-foreground">
-                      {getRelativeTime(lead.converted ? lead.converted_at : lead.album_purchased_at || lead.created_at)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="text-center text-muted-foreground">No leads in this segment</p>
-            )}
-          </Card>
-        </section>
+        {/* Email Leads & Retargeting - Lazy Loaded */}
+        <Suspense fallback={
+          <section className="mt-12 space-y-6">
+            <h3 className="text-2xl font-semibold">Email Leads & Retargeting</h3>
+            <div className="grid gap-6">
+              <Card className="p-6 bg-card/50 backdrop-blur-sm border-border animate-pulse">
+                <div className="space-y-4">
+                  <div className="h-6 w-48 bg-muted-foreground/20 rounded"></div>
+                  <div className="h-4 w-full bg-muted-foreground/20 rounded"></div>
+                  <div className="h-10 w-32 bg-muted-foreground/20 rounded"></div>
+                </div>
+              </Card>
+            </div>
+          </section>
+        }>
+          <div className="mt-12">
+            <EmailLeadsSection />
+          </div>
+        </Suspense>
 
         {/* Quick Actions */}
         <section className="mt-12 mb-8">

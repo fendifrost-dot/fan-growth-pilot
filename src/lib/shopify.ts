@@ -3,9 +3,8 @@ const SHOPIFY_API_VERSION = '2025-07';
 const SHOPIFY_STORE_DOMAIN = 'modest-streetwear-apparel.myshopify.com';
 const SHOPIFY_STOREFRONT_URL = `https://${SHOPIFY_STORE_DOMAIN}/api/${SHOPIFY_API_VERSION}/graphql.json`;
 
-// This will use the storefront token from Supabase secrets
-// The token is stored in environment variables via edge functions
-const SHOPIFY_STOREFRONT_TOKEN = '49a03d56b87838bcf1cc07eabdaaa3ba';
+// Use storefront token from environment variables
+const SHOPIFY_STOREFRONT_TOKEN = import.meta.env.VITE_SHOPIFY_STOREFRONT_TOKEN;
 
 export async function storefrontApiRequest(query: string, variables: any = {}) {
   try {

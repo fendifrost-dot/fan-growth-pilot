@@ -244,7 +244,8 @@ serve(async (req) => {
     });
   } catch (error) {
     console.error('Error in spotify-callback:', error);
-    const message = error instanceof Error ? error.message : 'Connection failed';
+    
+    // Return generic error message to user, log details server-side
     const html = `
       <!DOCTYPE html>
       <html>
@@ -254,10 +255,10 @@ serve(async (req) => {
         <body>
           <script>
             if (window.opener) {
-              window.opener.location.href = window.opener.location.href + '?error=' + encodeURIComponent('${message}');
+              window.opener.location.href = window.opener.location.href + '?error=' + encodeURIComponent('Unable to complete authentication');
               window.close();
             } else {
-              window.location.href = '/?error=' + encodeURIComponent('${message}');
+              window.location.href = '/?error=' + encodeURIComponent('Unable to complete authentication');
             }
           </script>
           <p>Connection failed. Closing window...</p>

@@ -96,9 +96,11 @@ serve(async (req) => {
     });
   } catch (error) {
     console.error('Error in spotify-auth:', error);
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return new Response(JSON.stringify({ error: message }), {
-      status: 400,
+    
+    // Return generic error message, log details server-side
+    const statusCode = error instanceof Error && error.message.includes('Authentication') ? 401 : 500;
+    return new Response(JSON.stringify({ error: 'Authentication failed. Please try again.' }), {
+      status: statusCode,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   }

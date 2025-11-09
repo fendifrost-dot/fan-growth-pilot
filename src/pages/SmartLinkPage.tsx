@@ -72,7 +72,43 @@ export default function SmartLinkPage() {
           return;
         }
 
-        setSmartLink(data);
+        // Generate signed URLs for storage paths
+        const processedLink = { ...data };
+        
+        // Process image URL
+        if (data.image_url && !data.image_url.startsWith('http')) {
+          const { data: signedUrl } = await supabase.storage
+            .from("smart-links")
+            .createSignedUrl(data.image_url, 3600); // 1 hour expiry
+
+          if (signedUrl?.signedUrl) {
+            processedLink.image_url = signedUrl.signedUrl;
+          }
+        }
+
+        // Process video URL
+        if (data.video_url && !data.video_url.startsWith('http')) {
+          const { data: signedUrl } = await supabase.storage
+            .from("smart-links")
+            .createSignedUrl(data.video_url, 3600); // 1 hour expiry
+
+          if (signedUrl?.signedUrl) {
+            processedLink.video_url = signedUrl.signedUrl;
+          }
+        }
+
+        // Process background image URL
+        if (data.background_image_url && !data.background_image_url.startsWith('http')) {
+          const { data: signedUrl } = await supabase.storage
+            .from("smart-links")
+            .createSignedUrl(data.background_image_url, 3600); // 1 hour expiry
+
+          if (signedUrl?.signedUrl) {
+            processedLink.background_image_url = signedUrl.signedUrl;
+          }
+        }
+
+        setSmartLink(processedLink);
         
         // Track the page view/click (non-blocking for performance)
         supabase.from("smart_links").update({

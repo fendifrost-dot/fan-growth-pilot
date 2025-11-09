@@ -136,11 +136,13 @@ Deno.serve(async (req) => {
     });
   } catch (error) {
     console.error('Error in spotify-stats function:', error);
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+    
+    // Return generic error message to client, log details server-side
+    const statusCode = error instanceof Error && error.message === 'Unauthorized' ? 401 : 500;
     return new Response(
-      JSON.stringify({ error: errorMessage }),
+      JSON.stringify({ error: 'Unable to fetch statistics. Please try again later.' }),
       { 
-        status: 400,
+        status: statusCode,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       }
     );

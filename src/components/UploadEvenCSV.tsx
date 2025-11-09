@@ -4,6 +4,8 @@ import { Card } from "@/components/ui/card";
 import { Upload, CheckCircle, AlertCircle } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+import Papa from "papaparse";
+import { z } from "zod";
 
 export const UploadEvenCSV = () => {
   const [isProcessing, setIsProcessing] = useState(false);
@@ -18,29 +20,60 @@ export const UploadEvenCSV = () => {
       return;
     }
 
+    // Check file size (5MB limit)
+    const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+    if (file.size > MAX_FILE_SIZE) {
+      toast.error("File size exceeds 5MB limit");
+      return;
+    }
+
     setIsProcessing(true);
     setResults(null);
 
     try {
       const text = await file.text();
-      const lines = text.split('\n').filter(line => line.trim());
-      const headers = lines[0].toLowerCase().split(',').map(h => h.trim());
+      
+      // Parse CSV with proper library
+      const parseResult = Papa.parse(text, {
+        header: true,
+        skipEmptyLines: true,
+        transformHeader: (header) => header.toLowerCase().trim()
+      });
+
+      if (parseResult.errors.length > 0) {
+        console.error("CSV parsing errors:", parseResult.errors);
+        toast.error("Invalid CSV format");
+        setIsProcessing(false);
+        return;
+      }
+
+      // Validate and extract emails
+      const emailSchema = z.string().email();
+      const rows = parseResult.data as Record<string, any>[];
       
       // Find email column
-      const emailIndex = headers.findIndex(h => h.includes('email'));
-      if (emailIndex === -1) {
+      const emailColumn = Object.keys(rows[0] || {}).find(key => 
+        key.includes('email')
+      );
+
+      if (!emailColumn) {
         toast.error("CSV must contain an 'email' column");
         setIsProcessing(false);
         return;
       }
 
-      // Extract emails from CSV
-      const emails = lines.slice(1).map(line => {
-        const cols = line.split(',').map(c => c.trim());
-        return cols[emailIndex]?.toLowerCase().replace(/"/g, '');
-      }).filter(email => email && email.includes('@'));
+      // Validate and normalize emails
+      const validEmails = rows
+        .map(row => row[emailColumn])
+        .filter(email => email)
+        .map(email => {
+          const normalized = String(email).trim().toLowerCase();
+          const validation = emailSchema.safeParse(normalized);
+          return validation.success ? validation.data : null;
+        })
+        .filter((email): email is string => email !== null);
 
-      if (emails.length === 0) {
+      if (validEmails.length === 0) {
         toast.error("No valid emails found in CSV");
         setIsProcessing(false);
         return;
@@ -53,34 +86,46 @@ export const UploadEvenCSV = () => {
       const { data: leads, error: fetchError } = await supabase
         .from("smart_link_leads")
         .select("id, email")
-        .ilike("email", `%@%`); // Get all leads with emails
+        .in("email", validEmails);
 
       if (fetchError) throw fetchError;
 
-      // Match emails and update
-      let matched = 0;
-      let unmatched = 0;
-
-      for (const email of emails) {
-        const matchedLead = leads?.find(lead => 
-          lead.email.toLowerCase() === email.toLowerCase()
-        );
-
-        if (matchedLead) {
-          const { error: updateError } = await supabase
-            .from("smart_link_leads")
-            .update({
-              album_purchased: true,
-              album_purchased_at: new Date().toISOString(),
-              purchase_source: 'even'
-            })
-            .eq('id', matchedLead.id);
-
-          if (!updateError) matched++;
-        } else {
-          unmatched++;
-        }
+      if (!leads || leads.length === 0) {
+        setResults({ matched: 0, unmatched: validEmails.length });
+        toast.info("No matching emails found between EVEN and your leads");
+        return;
       }
+
+      // Prepare batch update
+      const updates = leads.map(lead => ({
+        id: lead.id,
+        album_purchased: true,
+        album_purchased_at: new Date().toISOString(),
+        purchase_source: 'even'
+      }));
+
+      // Batch update using Promise.all for better performance
+      const updatePromises = updates.map(update =>
+        supabase
+          .from("smart_link_leads")
+          .update({
+            album_purchased: update.album_purchased,
+            album_purchased_at: update.album_purchased_at,
+            purchase_source: update.purchase_source
+          })
+          .eq('id', update.id)
+      );
+
+      const results = await Promise.all(updatePromises);
+      const errors = results.filter(r => r.error);
+      
+      if (errors.length > 0) {
+        console.error("Update errors:", errors);
+        throw new Error("Some updates failed");
+      }
+
+      const matched = updates.length;
+      const unmatched = validEmails.length - matched;
 
       setResults({ matched, unmatched });
       

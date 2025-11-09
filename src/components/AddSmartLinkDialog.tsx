@@ -88,17 +88,15 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
     const fileName = `${Math.random()}.${fileExt}`;
     const filePath = `${type}s/${fileName}`;
 
-    const { error: uploadError } = await supabase.storage
+    const { data: uploadData, error: uploadError } = await supabase.storage
       .from('smart-links')
       .upload(filePath, file);
 
     if (uploadError) throw uploadError;
 
-    const { data } = supabase.storage
-      .from('smart-links')
-      .getPublicUrl(filePath);
-
-    return data.publicUrl;
+    // Return storage path instead of public URL
+    // Signed URLs will be generated when content is accessed
+    return uploadData.path;
   };
 
   const handleSubmit = async (e: React.FormEvent) => {

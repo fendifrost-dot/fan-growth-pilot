@@ -70,6 +70,18 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
   const [videoUrl, setVideoUrl] = useState(editLink?.video_url || "");
   const [backgroundImageUrl, setBackgroundImageUrl] = useState(editLink?.background_image_url || "");
   const [isUploading, setIsUploading] = useState(false);
+  
+  // New fields for enhanced landing pages
+  const [headline, setHeadline] = useState(editLink?.headline || "");
+  const [subheadline, setSubheadline] = useState(editLink?.subheadline || "");
+  const [videoAutoplay, setVideoAutoplay] = useState(editLink?.video_autoplay || false);
+  const [showEmailForm, setShowEmailForm] = useState(editLink?.show_email_form ?? true);
+  const [bulletPoint1, setBulletPoint1] = useState(editLink?.bullet_point_1 || "");
+  const [bulletPoint2, setBulletPoint2] = useState(editLink?.bullet_point_2 || "");
+  const [bulletPoint3, setBulletPoint3] = useState(editLink?.bullet_point_3 || "");
+  const [testimonialText, setTestimonialText] = useState(editLink?.testimonial_text || "");
+  const [testimonialAuthor, setTestimonialAuthor] = useState(editLink?.testimonial_author || "");
+  const [themePreset, setThemePreset] = useState(editLink?.theme_preset || "default");
 
   const uploadFile = async (file: File, type: 'image' | 'video'): Promise<string> => {
     const fileExt = file.name.split('.').pop();
@@ -143,6 +155,16 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
         button_text: buttonText,
         button_color: buttonColor,
         background_color: backgroundColor,
+        headline,
+        subheadline,
+        video_autoplay: videoAutoplay,
+        show_email_form: showEmailForm,
+        bullet_point_1: bulletPoint1,
+        bullet_point_2: bulletPoint2,
+        bullet_point_3: bulletPoint3,
+        testimonial_text: testimonialText,
+        testimonial_author: testimonialAuthor,
+        theme_preset: themePreset,
       };
 
       if (isEditMode && editLink && onUpdate) {
@@ -167,6 +189,16 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
       setImageUrl("");
       setVideoUrl("");
       setBackgroundImageUrl("");
+      setHeadline("");
+      setSubheadline("");
+      setVideoAutoplay(false);
+      setShowEmailForm(true);
+      setBulletPoint1("");
+      setBulletPoint2("");
+      setBulletPoint3("");
+      setTestimonialText("");
+      setTestimonialAuthor("");
+      setThemePreset("default");
       onOpenChange(false);
     } catch (error: any) {
       toast.error("Failed to upload files: " + error.message);
@@ -332,6 +364,115 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
                   {backgroundImageFile ? `New: ${backgroundImageFile.name}` : "Image uploaded"}
                 </p>
               )}
+            </div>
+          </div>
+
+          {/* Enhanced Landing Page Fields */}
+          <div className="border-t pt-4 mt-4">
+            <h3 className="text-lg font-semibold mb-4">Enhanced Landing Page Options</h3>
+            
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="headline">Headline</Label>
+                <Input
+                  id="headline"
+                  placeholder="Own the Runway. Experience the Music."
+                  value={headline}
+                  onChange={(e) => setHeadline(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="subheadline">Subheadline</Label>
+                <Textarea
+                  id="subheadline"
+                  placeholder="Buy the exclusive album and unlock bonus tracks..."
+                  value={subheadline}
+                  onChange={(e) => setSubheadline(e.target.value)}
+                  rows={2}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="themePreset">Theme Preset</Label>
+                <select
+                  id="themePreset"
+                  value={themePreset}
+                  onChange={(e) => setThemePreset(e.target.value)}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <option value="default">Default</option>
+                  <option value="runway">Runway (High Fashion)</option>
+                </select>
+              </div>
+
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="videoAutoplay"
+                    checked={videoAutoplay}
+                    onChange={(e) => setVideoAutoplay(e.target.checked)}
+                    className="h-4 w-4 rounded border-input"
+                  />
+                  <Label htmlFor="videoAutoplay" className="font-normal cursor-pointer">
+                    Autoplay Video (muted, loop)
+                  </Label>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="showEmailForm"
+                    checked={showEmailForm}
+                    onChange={(e) => setShowEmailForm(e.target.checked)}
+                    className="h-4 w-4 rounded border-input"
+                  />
+                  <Label htmlFor="showEmailForm" className="font-normal cursor-pointer">
+                    Show Email Capture
+                  </Label>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>What You Get (3 bullet points)</Label>
+                <Input
+                  placeholder="Bullet point 1"
+                  value={bulletPoint1}
+                  onChange={(e) => setBulletPoint1(e.target.value)}
+                />
+                <Input
+                  placeholder="Bullet point 2"
+                  value={bulletPoint2}
+                  onChange={(e) => setBulletPoint2(e.target.value)}
+                />
+                <Input
+                  placeholder="Bullet point 3"
+                  value={bulletPoint3}
+                  onChange={(e) => setBulletPoint3(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="testimonialText">Testimonial / Fan Quote (Optional)</Label>
+                <Textarea
+                  id="testimonialText"
+                  placeholder="This music changed my life..."
+                  value={testimonialText}
+                  onChange={(e) => setTestimonialText(e.target.value)}
+                  rows={2}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="testimonialAuthor">Testimonial Author</Label>
+                <Input
+                  id="testimonialAuthor"
+                  placeholder="- Sarah M., NYC"
+                  value={testimonialAuthor}
+                  onChange={(e) => setTestimonialAuthor(e.target.value)}
+                />
+              </div>
             </div>
           </div>
 

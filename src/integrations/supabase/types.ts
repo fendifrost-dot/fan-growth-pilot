@@ -288,6 +288,9 @@ export type Database = {
         Row: {
           background_color: string | null
           background_image_url: string | null
+          bullet_point_1: string | null
+          bullet_point_2: string | null
+          bullet_point_3: string | null
           button_color: string | null
           button_text: string | null
           click_count: number | null
@@ -295,21 +298,31 @@ export type Database = {
           created_at: string | null
           description: string | null
           destination_url: string
+          headline: string | null
           id: string
           image_url: string | null
           is_active: boolean | null
           metadata: Json | null
           short_code: string | null
+          show_email_form: boolean | null
           slug: string
+          subheadline: string | null
+          testimonial_author: string | null
+          testimonial_text: string | null
+          theme_preset: string | null
           thumbnail_url: string | null
           title: string
           updated_at: string | null
           user_id: string
+          video_autoplay: boolean | null
           video_url: string | null
         }
         Insert: {
           background_color?: string | null
           background_image_url?: string | null
+          bullet_point_1?: string | null
+          bullet_point_2?: string | null
+          bullet_point_3?: string | null
           button_color?: string | null
           button_text?: string | null
           click_count?: number | null
@@ -317,21 +330,31 @@ export type Database = {
           created_at?: string | null
           description?: string | null
           destination_url: string
+          headline?: string | null
           id?: string
           image_url?: string | null
           is_active?: boolean | null
           metadata?: Json | null
           short_code?: string | null
+          show_email_form?: boolean | null
           slug: string
+          subheadline?: string | null
+          testimonial_author?: string | null
+          testimonial_text?: string | null
+          theme_preset?: string | null
           thumbnail_url?: string | null
           title: string
           updated_at?: string | null
           user_id: string
+          video_autoplay?: boolean | null
           video_url?: string | null
         }
         Update: {
           background_color?: string | null
           background_image_url?: string | null
+          bullet_point_1?: string | null
+          bullet_point_2?: string | null
+          bullet_point_3?: string | null
           button_color?: string | null
           button_text?: string | null
           click_count?: number | null
@@ -339,16 +362,23 @@ export type Database = {
           created_at?: string | null
           description?: string | null
           destination_url?: string
+          headline?: string | null
           id?: string
           image_url?: string | null
           is_active?: boolean | null
           metadata?: Json | null
           short_code?: string | null
+          show_email_form?: boolean | null
           slug?: string
+          subheadline?: string | null
+          testimonial_author?: string | null
+          testimonial_text?: string | null
+          theme_preset?: string | null
           thumbnail_url?: string | null
           title?: string
           updated_at?: string | null
           user_id?: string
+          video_autoplay?: boolean | null
           video_url?: string | null
         }
         Relationships: [

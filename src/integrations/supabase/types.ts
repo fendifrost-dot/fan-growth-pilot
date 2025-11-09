@@ -299,6 +299,7 @@ export type Database = {
           image_url: string | null
           is_active: boolean | null
           metadata: Json | null
+          short_code: string | null
           slug: string
           thumbnail_url: string | null
           title: string
@@ -320,6 +321,7 @@ export type Database = {
           image_url?: string | null
           is_active?: boolean | null
           metadata?: Json | null
+          short_code?: string | null
           slug: string
           thumbnail_url?: string | null
           title: string
@@ -341,6 +343,7 @@ export type Database = {
           image_url?: string | null
           is_active?: boolean | null
           metadata?: Json | null
+          short_code?: string | null
           slug?: string
           thumbnail_url?: string | null
           title?: string
@@ -363,7 +366,7 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      generate_short_code: { Args: never; Returns: string }
     }
     Enums: {
       [_ in never]: never

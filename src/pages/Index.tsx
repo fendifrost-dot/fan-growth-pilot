@@ -209,6 +209,7 @@ const Index = () => {
                     title={link.title}
                     url={link.destination_url}
                     slug={link.slug}
+                    shortCode={link.short_code}
                     clicks={link.click_count || 0}
                     conversions={link.conversion_count || 0}
                     onRemove={() => removeSmartLink(link.id)}

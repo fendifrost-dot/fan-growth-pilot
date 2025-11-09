@@ -7,25 +7,25 @@ interface SmartLinkCardProps {
   title: string;
   url: string;
   slug: string;
+  shortCode?: string;
   clicks: number;
   conversions: number;
   onRemove?: () => void;
   onEdit?: () => void;
 }
 
-export const SmartLinkCard = ({ title, url, slug, clicks, conversions, onRemove, onEdit }: SmartLinkCardProps) => {
+export const SmartLinkCard = ({ title, url, slug, shortCode, clicks, conversions, onRemove, onEdit }: SmartLinkCardProps) => {
   const smartLinkUrl = `${window.location.origin}/${slug}`;
+  const shortLinkUrl = shortCode ? `${window.location.origin}/${shortCode}` : smartLinkUrl;
   
   const copyToClipboard = () => {
     navigator.clipboard.writeText(smartLinkUrl);
-    toast.success("Link copied to clipboard!");
+    toast.success("Full link copied to clipboard!");
   };
 
   const copyShortLink = () => {
-    // Create a super short, shareable version of the link
-    const shortLink = `${window.location.origin}/${slug}`;
-    navigator.clipboard.writeText(shortLink);
-    toast.success("Short link copied! Perfect for social media 🎯");
+    navigator.clipboard.writeText(shortLinkUrl);
+    toast.success(`Short link copied! (${shortLinkUrl.length} chars) 🎯`);
   };
 
   return (
@@ -55,15 +55,23 @@ export const SmartLinkCard = ({ title, url, slug, clicks, conversions, onRemove,
       </div>
 
       {/* Short Link Button */}
-      <Button 
-        variant="outline" 
-        size="sm" 
-        className="w-full mb-4 gap-2 border-primary/50 hover:bg-primary/10 hover:border-primary transition-all"
-        onClick={copyShortLink}
-      >
-        <Link2 className="w-4 h-4" />
-        Copy Short Link
-      </Button>
+      {shortCode && (
+        <div className="space-y-2 mb-4">
+          <div className="flex items-center gap-2 p-2 bg-primary/10 rounded-lg border border-primary/30">
+            <code className="text-sm flex-1 truncate font-mono text-primary">{shortLinkUrl}</code>
+            <span className="text-xs text-primary/70 whitespace-nowrap">{shortLinkUrl.length} chars</span>
+          </div>
+          <Button 
+            variant="outline" 
+            size="sm" 
+            className="w-full gap-2 border-primary/50 hover:bg-primary/10 hover:border-primary transition-all"
+            onClick={copyShortLink}
+          >
+            <Link2 className="w-4 h-4" />
+            Copy Short Link
+          </Button>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-4">
         <div>

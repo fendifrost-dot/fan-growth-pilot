@@ -46,12 +46,15 @@ export default function SmartLinkPage() {
       }
 
       try {
+        // Try to fetch by short_code first (6 chars or less), then by slug
+        const isShortCode = slug.length <= 6;
+        
         const { data, error } = await supabase
           .from("smart_links")
           .select("*")
-          .eq("slug", slug)
+          .or(isShortCode ? `short_code.eq.${slug},slug.eq.${slug}` : `slug.eq.${slug}`)
           .eq("is_active", true)
-          .single();
+          .maybeSingle();
 
         if (error || !data) {
           setNotFound(true);

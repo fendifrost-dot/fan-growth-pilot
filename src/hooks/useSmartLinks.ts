@@ -38,11 +38,33 @@ export const useSmartLinks = () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error("Not authenticated");
 
+      // Generate unique short code
+      let shortCode = '';
+      let isUnique = false;
+      
+      while (!isUnique) {
+        // Generate 6-character random code
+        const characters = 'abcdefghijklmnopqrstuvwxyz0123456789';
+        shortCode = Array.from({ length: 6 }, () => 
+          characters[Math.floor(Math.random() * characters.length)]
+        ).join('');
+        
+        // Check if code already exists
+        const { data: existing } = await supabase
+          .from("smart_links")
+          .select("id")
+          .eq("short_code", shortCode)
+          .maybeSingle();
+        
+        if (!existing) isUnique = true;
+      }
+
       const { data, error } = await supabase
         .from("smart_links")
         .insert({
           ...link,
           user_id: user.id,
+          short_code: shortCode,
         })
         .select()
         .single();

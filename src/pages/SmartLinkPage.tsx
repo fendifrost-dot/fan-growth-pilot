@@ -143,6 +143,60 @@ export default function SmartLinkPage() {
     fetchSmartLink();
   }, [slug]);
 
+  // Update Open Graph meta tags when smart link loads
+  useEffect(() => {
+    if (!smartLink) return;
+
+    const currentUrl = window.location.href;
+    const title = smartLink.headline || smartLink.title;
+    const description = smartLink.subheadline || smartLink.description || "Check out this link";
+    const image = smartLink.image_url || smartLink.background_image_url;
+
+    // Update or create meta tags
+    const updateMetaTag = (property: string, content: string) => {
+      let tag = document.querySelector(`meta[property="${property}"]`) as HTMLMetaElement;
+      if (!tag) {
+        tag = document.createElement('meta');
+        tag.setAttribute('property', property);
+        document.head.appendChild(tag);
+      }
+      tag.content = content;
+    };
+
+    const updateNameTag = (name: string, content: string) => {
+      let tag = document.querySelector(`meta[name="${name}"]`) as HTMLMetaElement;
+      if (!tag) {
+        tag = document.createElement('meta');
+        tag.setAttribute('name', name);
+        document.head.appendChild(tag);
+      }
+      tag.content = content;
+    };
+
+    // Open Graph tags
+    updateMetaTag('og:title', title);
+    updateMetaTag('og:description', description);
+    updateMetaTag('og:url', currentUrl);
+    updateMetaTag('og:type', 'website');
+    if (image) {
+      updateMetaTag('og:image', image);
+      updateMetaTag('og:image:width', '1200');
+      updateMetaTag('og:image:height', '630');
+    }
+
+    // Twitter Card tags
+    updateNameTag('twitter:card', 'summary_large_image');
+    updateNameTag('twitter:title', title);
+    updateNameTag('twitter:description', description);
+    if (image) {
+      updateNameTag('twitter:image', image);
+    }
+
+    // Update page title
+    document.title = title;
+
+  }, [smartLink]);
+
   const handleEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     

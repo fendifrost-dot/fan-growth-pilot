@@ -199,11 +199,11 @@ export default function SmartLinkPage() {
   // Conversion-optimized single-screen hero layout
   if (isRunwayTheme && smartLink.video_url) {
     return (
-      <div className="min-h-screen bg-black flex items-center">
+      <div className="min-h-screen bg-black flex items-center justify-center">
         {/* Split layout: Video left, Content right on desktop; Stacked on mobile */}
-        <div className="w-full min-h-screen flex flex-col lg:flex-row">
+        <div className="w-full h-screen flex flex-col lg:flex-row">
           {/* Video Section - 60-65% width on desktop, full-width top on mobile */}
-          <div className="w-full lg:w-[65%] h-[50vh] lg:h-screen relative">
+          <div className="w-full lg:w-[65%] h-[45vh] lg:h-full relative">
             <video 
               src={smartLink.video_url}
               autoPlay
@@ -221,53 +221,53 @@ export default function SmartLinkPage() {
           </div>
 
           {/* Content Section - 35-40% width on desktop, below video on mobile */}
-          <div className="w-full lg:w-[35%] flex items-center justify-center p-6 lg:p-8 bg-black">
-            <div className="w-full max-w-xl space-y-6">
+          <div className="w-full lg:w-[35%] flex items-center justify-center p-6 lg:p-10 bg-black overflow-y-auto">
+            <div className="w-full max-w-xl space-y-5 lg:space-y-6 my-auto">
               {/* Headline */}
-              <div className="space-y-3">
-                <h1 className="text-4xl lg:text-5xl xl:text-6xl font-bold text-white font-['Playfair_Display'] leading-tight">
+              <div className="space-y-2 lg:space-y-3">
+                <h1 className="text-3xl lg:text-4xl xl:text-5xl font-bold text-white font-['Playfair_Display'] leading-tight">
                   {smartLink.headline || smartLink.title}
                 </h1>
                 {smartLink.subheadline && (
-                  <p className="text-base lg:text-lg text-zinc-300 leading-relaxed">
+                  <p className="text-sm lg:text-base text-zinc-300 leading-relaxed">
                     {smartLink.subheadline}
                   </p>
                 )}
               </div>
 
-              {/* Value Props - Tight bullets */}
+              {/* Value Props - Enhanced spacing between bullets */}
               {hasBulletPoints && (
-                <ul className="space-y-2">
+                <ul className="space-y-3 lg:space-y-4">
                   {smartLink.bullet_point_1 && (
-                    <li className="flex items-start gap-2 text-sm lg:text-base text-zinc-200">
-                      <Sparkles className="w-4 h-4 flex-shrink-0 mt-1 text-white" />
+                    <li className="flex items-start gap-2.5 text-sm lg:text-base text-zinc-200 leading-relaxed">
+                      <Sparkles className="w-4 h-4 lg:w-5 lg:h-5 flex-shrink-0 mt-0.5 text-white" />
                       <span>{smartLink.bullet_point_1}</span>
                     </li>
                   )}
                   {smartLink.bullet_point_2 && (
-                    <li className="flex items-start gap-2 text-sm lg:text-base text-zinc-200">
-                      <Sparkles className="w-4 h-4 flex-shrink-0 mt-1 text-white" />
+                    <li className="flex items-start gap-2.5 text-sm lg:text-base text-zinc-200 leading-relaxed">
+                      <Sparkles className="w-4 h-4 lg:w-5 lg:h-5 flex-shrink-0 mt-0.5 text-white" />
                       <span>{smartLink.bullet_point_2}</span>
                     </li>
                   )}
                   {smartLink.bullet_point_3 && (
-                    <li className="flex items-start gap-2 text-sm lg:text-base text-zinc-200">
-                      <Sparkles className="w-4 h-4 flex-shrink-0 mt-1 text-white" />
+                    <li className="flex items-start gap-2.5 text-sm lg:text-base text-zinc-200 leading-relaxed">
+                      <Sparkles className="w-4 h-4 lg:w-5 lg:h-5 flex-shrink-0 mt-0.5 text-white" />
                       <span>{smartLink.bullet_point_3}</span>
                     </li>
                   )}
                 </ul>
               )}
 
-              {/* Email Form + CTA - Stacked Vertically */}
+              {/* Email Form + CTA - Stacked Vertically, Prominent */}
               {showEmailCapture && !hasSubmittedEmail ? (
                 <form onSubmit={handleEmailSubmit} className="space-y-4">
-                  {/* Elevated form card */}
-                  <Card className="bg-zinc-900/80 border-zinc-800 shadow-xl p-6">
-                    <div className="space-y-4">
-                      {/* Email input - Full width, stacked above button */}
+                  {/* Elevated form card with enhanced shadow */}
+                  <Card className="bg-zinc-900/90 border-zinc-800 shadow-2xl p-5 lg:p-6">
+                    <div className="space-y-3.5 lg:space-y-4">
+                      {/* Email input - Large, full width with subtle shadow */}
                       <div className="relative w-full">
-                        <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-500 pointer-events-none" />
+                        <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-400 pointer-events-none" />
                         <Input
                           id="email"
                           type="email"
@@ -276,15 +276,15 @@ export default function SmartLinkPage() {
                           onChange={(e) => setEmail(e.target.value)}
                           required
                           disabled={isSubmitting}
-                          className="pl-11 h-12 w-full bg-black border-zinc-700 text-white placeholder:text-zinc-500 focus:border-white focus:ring-2 focus:ring-white text-base"
+                          className="pl-12 h-14 w-full bg-black/80 border-zinc-700 text-white placeholder:text-zinc-400 focus:border-white focus:ring-2 focus:ring-white text-base shadow-inner"
                         />
                       </div>
                       
-                      {/* CTA Button - Full width below email */}
+                      {/* CTA Button - Large, prominent, high contrast */}
                       <Button
                         type="submit"
                         size="lg"
-                        className="h-12 w-full bg-white text-black hover:bg-zinc-200 font-semibold focus:ring-2 focus:ring-white focus:ring-offset-2 focus:ring-offset-black text-base"
+                        className="h-14 w-full bg-white text-black hover:bg-zinc-100 font-bold focus:ring-4 focus:ring-white/50 focus:ring-offset-2 focus:ring-offset-black text-base lg:text-lg transition-all shadow-lg hover:shadow-xl"
                         disabled={isSubmitting}
                       >
                         {isSubmitting ? (
@@ -295,7 +295,7 @@ export default function SmartLinkPage() {
                       </Button>
                       
                       {/* Trust line */}
-                      <p className="text-xs text-zinc-500 text-center">
+                      <p className="text-xs text-zinc-500 text-center pt-1">
                         🔒 We'll never share your info.
                       </p>
                     </div>

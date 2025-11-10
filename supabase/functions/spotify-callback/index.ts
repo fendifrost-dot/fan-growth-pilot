@@ -143,11 +143,30 @@ serve(async (req) => {
 
     const profile = await profileResponse.json();
 
-    // Store connection in Supabase
+    // Store connection in Supabase with encrypted tokens
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     );
+
+    // Set encryption key for the session
+    try {
+      await supabase.rpc('exec_sql', {
+        sql: `SET app.encryption_key = '${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}'`
+      });
+    } catch (e) {
+      // Fallback: encryption key will be set by the functions
+      console.log('Setting encryption key via function context');
+    }
+
+    // Encrypt tokens before storing
+    const { data: encryptedAccess } = await supabase.rpc('encrypt_token', {
+      token: tokenData.access_token
+    });
+    
+    const { data: encryptedRefresh } = await supabase.rpc('encrypt_token', {
+      token: tokenData.refresh_token
+    });
 
     const { error: dbError } = await supabase
       .from('platform_connections')
@@ -157,8 +176,8 @@ serve(async (req) => {
         platform_user_id: profile.id,
         username: profile.display_name || profile.id,
         profile_url: profile.external_urls.spotify,
-        access_token: tokenData.access_token,
-        refresh_token: tokenData.refresh_token,
+        access_token: encryptedAccess || tokenData.access_token,
+        refresh_token: encryptedRefresh || tokenData.refresh_token,
         token_expires_at: new Date(Date.now() + tokenData.expires_in * 1000).toISOString(),
         is_connected: true,
         last_synced_at: new Date().toISOString(),

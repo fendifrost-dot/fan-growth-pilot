@@ -396,6 +396,8 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      decrypt_token: { Args: { encrypted_token: string }; Returns: string }
+      encrypt_token: { Args: { token: string }; Returns: string }
       generate_short_code: { Args: never; Returns: string }
       increment_link_clicks: { Args: { link_id: string }; Returns: undefined }
     }

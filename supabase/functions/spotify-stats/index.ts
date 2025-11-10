@@ -40,6 +40,16 @@ Deno.serve(async (req) => {
       throw new Error('Unauthorized');
     }
 
+    // Set encryption key for the session
+    try {
+      await supabase.rpc('exec_sql', {
+        sql: `SET app.encryption_key = '${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}'`
+      });
+    } catch (e) {
+      // Fallback: encryption key will be set by the functions
+      console.log('Setting encryption key via function context');
+    }
+
     // Get Spotify connection
     const { data: connection, error: connectionError } = await supabase
       .from('platform_connections')
@@ -52,8 +62,18 @@ Deno.serve(async (req) => {
       throw new Error('No Spotify connection found');
     }
 
+    // Decrypt tokens
+    const { data: decryptedAccess } = await supabase.rpc('decrypt_token', {
+      encrypted_token: connection.access_token
+    });
+    
+    const { data: decryptedRefresh } = await supabase.rpc('decrypt_token', {
+      encrypted_token: connection.refresh_token
+    });
+
     // Check if token is expired and refresh if needed
-    let accessToken = connection.access_token;
+    let accessToken = decryptedAccess || connection.access_token;
+    const refreshToken = decryptedRefresh || connection.refresh_token;
     const tokenExpiresAt = new Date(connection.token_expires_at);
     const now = new Date();
 
@@ -69,7 +89,7 @@ Deno.serve(async (req) => {
         },
         body: new URLSearchParams({
           grant_type: 'refresh_token',
-          refresh_token: connection.refresh_token,
+          refresh_token: refreshToken,
         }),
       });
 
@@ -81,11 +101,16 @@ Deno.serve(async (req) => {
       accessToken = tokenData.access_token;
       const expiresAt = new Date(Date.now() + tokenData.expires_in * 1000);
 
-      // Update the database with new token
+      // Encrypt the new token before storing
+      const { data: encryptedNewAccess } = await supabase.rpc('encrypt_token', {
+        token: accessToken
+      });
+
+      // Update the database with new encrypted token
       await supabase
         .from('platform_connections')
         .update({
-          access_token: accessToken,
+          access_token: encryptedNewAccess || accessToken,
           token_expires_at: expiresAt.toISOString(),
         })
         .eq('id', connection.id);

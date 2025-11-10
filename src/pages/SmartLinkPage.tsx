@@ -247,6 +247,20 @@ export default function SmartLinkPage() {
                 )}
               </div>
 
+              {/* Album Cover */}
+              {smartLink.image_url && (
+                <div className="w-full max-w-sm mx-auto animate-fade-in">
+                  <div className="relative overflow-hidden rounded-lg shadow-2xl">
+                    <img 
+                      src={smartLink.image_url} 
+                      alt={smartLink.title}
+                      loading="eager"
+                      className="w-full h-auto object-cover"
+                    />
+                  </div>
+                </div>
+              )}
+
               {/* Value Props - Enhanced spacing between bullets */}
               {hasBulletPoints && (
                 <ul className="space-y-3 lg:space-y-4">

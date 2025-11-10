@@ -265,26 +265,26 @@ export default function SmartLinkPage() {
                   {/* Elevated form card with enhanced shadow */}
                   <Card className="bg-zinc-900/90 border-zinc-800 shadow-2xl p-5 lg:p-6">
                     <div className="space-y-3.5 lg:space-y-4">
-                      {/* Email input - Large, full width with border, glow, and shadow */}
+                      {/* Email input - Enhanced contrast and accessibility */}
                       <div className="relative w-full">
-                        <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-400 pointer-events-none z-10" />
+                        <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-300 pointer-events-none z-10" />
                         <Input
                           id="email"
                           type="email"
-                          placeholder="Your email for early access"
+                          placeholder="Enter your email to unlock early access"
                           value={email}
                           onChange={(e) => setEmail(e.target.value)}
                           required
                           disabled={isSubmitting}
-                          className="pl-12 h-[50px] w-full bg-black/80 border-[1.5px] border-white/40 text-white placeholder:text-zinc-400 focus:border-white focus:ring-2 focus:ring-white/50 text-base shadow-[0_2px_8px_rgba(255,255,255,0.2)] hover:border-white/60 transition-all"
+                          className="pl-12 h-[50px] w-full bg-zinc-900/60 border-[1.5px] border-zinc-400/60 text-white placeholder:text-zinc-300 focus:border-white focus:ring-2 focus:ring-white/50 text-base shadow-[0_2px_8px_rgba(255,255,255,0.2)] hover:border-zinc-300 hover:bg-zinc-900/80 transition-all"
                         />
                       </div>
                       
-                      {/* CTA Button - Large, prominent, high contrast with hover effect */}
+                      {/* CTA Button - Premium hover with glow and scale */}
                       <Button
                         type="submit"
                         size="lg"
-                        className="h-[50px] w-full bg-white text-black hover:bg-gradient-to-br hover:from-white hover:to-zinc-100 font-bold focus:ring-4 focus:ring-white/50 focus:ring-offset-2 focus:ring-offset-black text-base lg:text-lg transition-all shadow-lg hover:shadow-xl py-3.5"
+                        className="h-[50px] w-full bg-white text-black hover:bg-white hover:brightness-110 hover:scale-[1.02] hover:shadow-[0_0_20px_rgba(255,255,255,0.5)] font-bold focus:ring-4 focus:ring-white/50 focus:ring-offset-2 focus:ring-offset-black text-base lg:text-lg transition-all duration-200 shadow-lg active:scale-[0.98]"
                         disabled={isSubmitting}
                       >
                         {isSubmitting ? (

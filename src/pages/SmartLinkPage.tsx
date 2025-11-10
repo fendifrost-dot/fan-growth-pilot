@@ -211,8 +211,12 @@ export default function SmartLinkPage() {
               loop
               playsInline
               preload="auto"
+              poster={smartLink.image_url || undefined}
               className="w-full h-full object-cover"
-            />
+            >
+              <source src={smartLink.video_url.replace('.MOV', '.webm').replace('.mov', '.webm')} type="video/webm" />
+              <source src={smartLink.video_url} type="video/mp4" />
+            </video>
             <div className="absolute inset-0 bg-black/20" />
           </div>
 
@@ -255,60 +259,47 @@ export default function SmartLinkPage() {
                 </ul>
               )}
 
-              {/* Email Form + CTA */}
+              {/* Email Form + CTA - Stacked Vertically */}
               {showEmailCapture && !hasSubmittedEmail ? (
                 <form onSubmit={handleEmailSubmit} className="space-y-4">
                   {/* Elevated form card */}
-                  <Card className="bg-zinc-900/80 border-zinc-800 shadow-xl p-5">
-                    <div className="space-y-3">
-                      {/* Email input + CTA side-by-side on desktop, stacked on mobile */}
-                      <div className="flex flex-col sm:flex-row gap-3">
-                        <div className="relative flex-1">
-                          <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none" />
-                          <Input
-                            id="email"
-                            type="email"
-                            placeholder="Your email"
-                            value={email}
-                            onChange={(e) => setEmail(e.target.value)}
-                            required
-                            disabled={isSubmitting}
-                            className="pl-10 h-12 bg-black border-zinc-700 text-white placeholder:text-zinc-500 focus:border-white"
-                          />
-                        </div>
-                        <Button
-                          type="submit"
-                          size="lg"
-                          className="h-12 px-6 bg-white text-black hover:bg-zinc-200 font-semibold whitespace-nowrap focus:ring-2 focus:ring-white focus:ring-offset-2 focus:ring-offset-black"
+                  <Card className="bg-zinc-900/80 border-zinc-800 shadow-xl p-6">
+                    <div className="space-y-4">
+                      {/* Email input - Full width, stacked above button */}
+                      <div className="relative w-full">
+                        <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-500 pointer-events-none" />
+                        <Input
+                          id="email"
+                          type="email"
+                          placeholder="Enter your email to unlock early access"
+                          value={email}
+                          onChange={(e) => setEmail(e.target.value)}
+                          required
                           disabled={isSubmitting}
-                        >
-                          {isSubmitting ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                          ) : (
-                            <>🎧 Get Early Access</>
-                          )}
-                        </Button>
+                          className="pl-11 h-12 w-full bg-black border-zinc-700 text-white placeholder:text-zinc-500 focus:border-white focus:ring-2 focus:ring-white text-base"
+                        />
                       </div>
+                      
+                      {/* CTA Button - Full width below email */}
+                      <Button
+                        type="submit"
+                        size="lg"
+                        className="h-12 w-full bg-white text-black hover:bg-zinc-200 font-semibold focus:ring-2 focus:ring-white focus:ring-offset-2 focus:ring-offset-black text-base"
+                        disabled={isSubmitting}
+                      >
+                        {isSubmitting ? (
+                          <Loader2 className="w-5 h-5 animate-spin" />
+                        ) : (
+                          <>🎧 Get Early Access</>
+                        )}
+                      </Button>
+                      
                       {/* Trust line */}
                       <p className="text-xs text-zinc-500 text-center">
                         🔒 We'll never share your info.
                       </p>
                     </div>
                   </Card>
-                  
-                  {/* Secondary CTA - link style */}
-                  {smartLink.destination_url && (
-                    <div className="text-center">
-                      <a
-                        href={smartLink.destination_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-sm text-zinc-400 hover:text-white underline underline-offset-4 transition-colors"
-                      >
-                        View Merch
-                      </a>
-                    </div>
-                  )}
                 </form>
               ) : (
                 <div className="space-y-4">

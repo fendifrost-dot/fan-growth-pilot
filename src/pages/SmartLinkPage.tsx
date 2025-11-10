@@ -72,47 +72,60 @@ export default function SmartLinkPage() {
           return;
         }
 
-        // Generate signed URLs for storage paths
+        // Generate signed URLs for storage paths in parallel for faster loading
         const processedLink = { ...data };
+        const urlPromises: Promise<void>[] = [];
         
-        // Process image URL
+        // Process all URLs in parallel for faster loading
         if (data.image_url && !data.image_url.startsWith('http')) {
-          const { data: signedUrl, error: imageError } = await supabase.storage
-            .from("smart-links")
-            .createSignedUrl(data.image_url, 3600); // 1 hour expiry
-
-          if (imageError) {
-            console.error("Error creating signed URL for image:", imageError);
-          } else if (signedUrl?.signedUrl) {
-            processedLink.image_url = signedUrl.signedUrl;
-          }
+          urlPromises.push(
+            supabase.storage
+              .from("smart-links")
+              .createSignedUrl(data.image_url, 86400)
+              .then(({ data: signedUrl, error: imageError }) => {
+                if (imageError) {
+                  console.error("Error creating signed URL for image:", imageError);
+                } else if (signedUrl?.signedUrl) {
+                  processedLink.image_url = signedUrl.signedUrl;
+                }
+              })
+          );
         }
 
-        // Process video URL
+        // Process video URL with priority and longer expiry
         if (data.video_url && !data.video_url.startsWith('http')) {
-          const { data: signedUrl, error: videoError } = await supabase.storage
-            .from("smart-links")
-            .createSignedUrl(data.video_url, 3600); // 1 hour expiry
-
-          if (videoError) {
-            console.error("Error creating signed URL for video:", videoError);
-          } else if (signedUrl?.signedUrl) {
-            processedLink.video_url = signedUrl.signedUrl;
-          }
+          urlPromises.push(
+            supabase.storage
+              .from("smart-links")
+              .createSignedUrl(data.video_url, 86400)
+              .then(({ data: signedUrl, error: videoError }) => {
+                if (videoError) {
+                  console.error("Error creating signed URL for video:", videoError);
+                } else if (signedUrl?.signedUrl) {
+                  processedLink.video_url = signedUrl.signedUrl;
+                }
+              })
+          );
         }
 
         // Process background image URL
         if (data.background_image_url && !data.background_image_url.startsWith('http')) {
-          const { data: signedUrl, error: bgError } = await supabase.storage
-            .from("smart-links")
-            .createSignedUrl(data.background_image_url, 3600); // 1 hour expiry
-
-          if (bgError) {
-            console.error("Error creating signed URL for background:", bgError);
-          } else if (signedUrl?.signedUrl) {
-            processedLink.background_image_url = signedUrl.signedUrl;
-          }
+          urlPromises.push(
+            supabase.storage
+              .from("smart-links")
+              .createSignedUrl(data.background_image_url, 86400)
+              .then(({ data: signedUrl, error: bgError }) => {
+                if (bgError) {
+                  console.error("Error creating signed URL for background:", bgError);
+                } else if (signedUrl?.signedUrl) {
+                  processedLink.background_image_url = signedUrl.signedUrl;
+                }
+              })
+          );
         }
+
+        // Wait for all URLs to be processed in parallel
+        await Promise.all(urlPromises);
 
         setSmartLink(processedLink);
         
@@ -225,8 +238,8 @@ export default function SmartLinkPage() {
               preload="auto"
               poster={smartLink.image_url || undefined}
               className="w-full h-full object-cover"
+              style={{ contentVisibility: 'auto' }}
             >
-              <source src={smartLink.video_url.replace('.MOV', '.webm').replace('.mov', '.webm')} type="video/webm" />
               <source src={smartLink.video_url} type="video/mp4" />
             </video>
             <div className="absolute inset-0 bg-black/20" />

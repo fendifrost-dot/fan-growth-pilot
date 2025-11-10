@@ -196,6 +196,142 @@ export default function SmartLinkPage() {
   const showEmailCapture = smartLink.show_email_form !== false;
   const hasBulletPoints = smartLink.bullet_point_1 || smartLink.bullet_point_2 || smartLink.bullet_point_3;
 
+  // Conversion-optimized single-screen hero layout
+  if (isRunwayTheme && smartLink.video_url) {
+    return (
+      <div className="min-h-screen bg-black flex items-center">
+        {/* Split layout: Video left, Content right on desktop; Stacked on mobile */}
+        <div className="w-full min-h-screen flex flex-col lg:flex-row">
+          {/* Video Section - 60-65% width on desktop, full-width top on mobile */}
+          <div className="w-full lg:w-[65%] h-[50vh] lg:h-screen relative">
+            <video 
+              src={smartLink.video_url}
+              autoPlay
+              muted
+              loop
+              playsInline
+              preload="auto"
+              className="w-full h-full object-cover"
+            />
+            <div className="absolute inset-0 bg-black/20" />
+          </div>
+
+          {/* Content Section - 35-40% width on desktop, below video on mobile */}
+          <div className="w-full lg:w-[35%] flex items-center justify-center p-6 lg:p-8 bg-black">
+            <div className="w-full max-w-xl space-y-6">
+              {/* Headline */}
+              <div className="space-y-3">
+                <h1 className="text-4xl lg:text-5xl xl:text-6xl font-bold text-white font-['Playfair_Display'] leading-tight">
+                  {smartLink.headline || smartLink.title}
+                </h1>
+                {smartLink.subheadline && (
+                  <p className="text-base lg:text-lg text-zinc-300 leading-relaxed">
+                    {smartLink.subheadline}
+                  </p>
+                )}
+              </div>
+
+              {/* Value Props - Tight bullets */}
+              {hasBulletPoints && (
+                <ul className="space-y-2">
+                  {smartLink.bullet_point_1 && (
+                    <li className="flex items-start gap-2 text-sm lg:text-base text-zinc-200">
+                      <Sparkles className="w-4 h-4 flex-shrink-0 mt-1 text-white" />
+                      <span>{smartLink.bullet_point_1}</span>
+                    </li>
+                  )}
+                  {smartLink.bullet_point_2 && (
+                    <li className="flex items-start gap-2 text-sm lg:text-base text-zinc-200">
+                      <Sparkles className="w-4 h-4 flex-shrink-0 mt-1 text-white" />
+                      <span>{smartLink.bullet_point_2}</span>
+                    </li>
+                  )}
+                  {smartLink.bullet_point_3 && (
+                    <li className="flex items-start gap-2 text-sm lg:text-base text-zinc-200">
+                      <Sparkles className="w-4 h-4 flex-shrink-0 mt-1 text-white" />
+                      <span>{smartLink.bullet_point_3}</span>
+                    </li>
+                  )}
+                </ul>
+              )}
+
+              {/* Email Form + CTA */}
+              {showEmailCapture && !hasSubmittedEmail ? (
+                <form onSubmit={handleEmailSubmit} className="space-y-4">
+                  {/* Elevated form card */}
+                  <Card className="bg-zinc-900/80 border-zinc-800 shadow-xl p-5">
+                    <div className="space-y-3">
+                      {/* Email input + CTA side-by-side on desktop, stacked on mobile */}
+                      <div className="flex flex-col sm:flex-row gap-3">
+                        <div className="relative flex-1">
+                          <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none" />
+                          <Input
+                            id="email"
+                            type="email"
+                            placeholder="Your email"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            required
+                            disabled={isSubmitting}
+                            className="pl-10 h-12 bg-black border-zinc-700 text-white placeholder:text-zinc-500 focus:border-white"
+                          />
+                        </div>
+                        <Button
+                          type="submit"
+                          size="lg"
+                          className="h-12 px-6 bg-white text-black hover:bg-zinc-200 font-semibold whitespace-nowrap focus:ring-2 focus:ring-white focus:ring-offset-2 focus:ring-offset-black"
+                          disabled={isSubmitting}
+                        >
+                          {isSubmitting ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <>🎧 Get Early Access</>
+                          )}
+                        </Button>
+                      </div>
+                      {/* Trust line */}
+                      <p className="text-xs text-zinc-500 text-center">
+                        🔒 We'll never share your info.
+                      </p>
+                    </div>
+                  </Card>
+                  
+                  {/* Secondary CTA - link style */}
+                  {smartLink.destination_url && (
+                    <div className="text-center">
+                      <a
+                        href={smartLink.destination_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm text-zinc-400 hover:text-white underline underline-offset-4 transition-colors"
+                      >
+                        View Merch
+                      </a>
+                    </div>
+                  )}
+                </form>
+              ) : (
+                <div className="space-y-4">
+                  <Button
+                    size="lg"
+                    className="w-full h-12 bg-white text-black hover:bg-zinc-200 font-semibold"
+                    onClick={handleButtonClick}
+                  >
+                    {smartLink.button_text || "🎧 Get Early Access"}
+                  </Button>
+                  <p className="text-xs text-zinc-500 text-center">
+                    🔒 Your information is secure
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Fallback: Original scrolling layout for non-runway themes
   return (
     <div 
       className="min-h-screen relative"

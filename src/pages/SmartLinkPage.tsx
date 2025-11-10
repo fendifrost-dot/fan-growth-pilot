@@ -77,33 +77,39 @@ export default function SmartLinkPage() {
         
         // Process image URL
         if (data.image_url && !data.image_url.startsWith('http')) {
-          const { data: signedUrl } = await supabase.storage
+          const { data: signedUrl, error: imageError } = await supabase.storage
             .from("smart-links")
             .createSignedUrl(data.image_url, 3600); // 1 hour expiry
 
-          if (signedUrl?.signedUrl) {
+          if (imageError) {
+            console.error("Error creating signed URL for image:", imageError);
+          } else if (signedUrl?.signedUrl) {
             processedLink.image_url = signedUrl.signedUrl;
           }
         }
 
         // Process video URL
         if (data.video_url && !data.video_url.startsWith('http')) {
-          const { data: signedUrl } = await supabase.storage
+          const { data: signedUrl, error: videoError } = await supabase.storage
             .from("smart-links")
             .createSignedUrl(data.video_url, 3600); // 1 hour expiry
 
-          if (signedUrl?.signedUrl) {
+          if (videoError) {
+            console.error("Error creating signed URL for video:", videoError);
+          } else if (signedUrl?.signedUrl) {
             processedLink.video_url = signedUrl.signedUrl;
           }
         }
 
         // Process background image URL
         if (data.background_image_url && !data.background_image_url.startsWith('http')) {
-          const { data: signedUrl } = await supabase.storage
+          const { data: signedUrl, error: bgError } = await supabase.storage
             .from("smart-links")
             .createSignedUrl(data.background_image_url, 3600); // 1 hour expiry
 
-          if (signedUrl?.signedUrl) {
+          if (bgError) {
+            console.error("Error creating signed URL for background:", bgError);
+          } else if (signedUrl?.signedUrl) {
             processedLink.background_image_url = signedUrl.signedUrl;
           }
         }

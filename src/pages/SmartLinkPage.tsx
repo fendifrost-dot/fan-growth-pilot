@@ -141,6 +141,20 @@ export default function SmartLinkPage() {
 
     setIsSubmitting(true);
     try {
+      // Check for duplicate email submission
+      const { data: existing } = await supabase
+        .from("smart_link_leads")
+        .select("id")
+        .eq("smart_link_id", smartLink!.id)
+        .eq("email", validation.data.email)
+        .maybeSingle();
+
+      if (existing) {
+        toast.success("You're already subscribed!");
+        setIsSubmitting(false);
+        return;
+      }
+
       const { error } = await supabase
         .from("smart_link_leads")
         .insert({

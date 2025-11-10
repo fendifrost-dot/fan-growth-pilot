@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Dialog,
   DialogContent,
@@ -83,6 +83,57 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
   const [testimonialAuthor, setTestimonialAuthor] = useState(editLink?.testimonial_author || "");
   const [themePreset, setThemePreset] = useState(editLink?.theme_preset || "default");
 
+  // Update form when editLink changes
+  useEffect(() => {
+    if (editLink) {
+      setTitle(editLink.title || "");
+      setSlug(editLink.slug || "");
+      setDestinationUrl(editLink.destination_url || "");
+      setDescription(editLink.description || "");
+      setButtonText(editLink.button_text || "Click Here");
+      setButtonColor(editLink.button_color || "");
+      setBackgroundColor(editLink.background_color || "");
+      setImageUrl(editLink.image_url || "");
+      setVideoUrl(editLink.video_url || "");
+      setBackgroundImageUrl(editLink.background_image_url || "");
+      setHeadline(editLink.headline || "");
+      setSubheadline(editLink.subheadline || "");
+      setVideoAutoplay(editLink.video_autoplay || false);
+      setShowEmailForm(editLink.show_email_form ?? true);
+      setBulletPoint1(editLink.bullet_point_1 || "");
+      setBulletPoint2(editLink.bullet_point_2 || "");
+      setBulletPoint3(editLink.bullet_point_3 || "");
+      setTestimonialText(editLink.testimonial_text || "");
+      setTestimonialAuthor(editLink.testimonial_author || "");
+      setThemePreset(editLink.theme_preset || "default");
+    } else {
+      // Reset form when not editing
+      setTitle("");
+      setSlug("");
+      setDestinationUrl("");
+      setDescription("");
+      setButtonText("Click Here");
+      setButtonColor("");
+      setBackgroundColor("");
+      setImageFile(null);
+      setVideoFile(null);
+      setBackgroundImageFile(null);
+      setImageUrl("");
+      setVideoUrl("");
+      setBackgroundImageUrl("");
+      setHeadline("");
+      setSubheadline("");
+      setVideoAutoplay(false);
+      setShowEmailForm(true);
+      setBulletPoint1("");
+      setBulletPoint2("");
+      setBulletPoint3("");
+      setTestimonialText("");
+      setTestimonialAuthor("");
+      setThemePreset("default");
+    }
+  }, [editLink]);
+
   const uploadFile = async (file: File, type: 'image' | 'video'): Promise<string> => {
     const fileExt = file.name.split('.').pop();
     const fileName = `${Math.random()}.${fileExt}`;
@@ -166,7 +217,7 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
       };
 
       if (isEditMode && editLink && onUpdate) {
-        onUpdate({ ...editLink, ...linkData });
+        onUpdate({ id: editLink.id, ...linkData });
         toast.success("Smart link updated successfully!");
       } else if (onAdd) {
         onAdd(linkData);
@@ -288,7 +339,7 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
             </div>
             {(imageUrl || imageFile) && (
               <p className="text-xs text-muted-foreground">
-                {imageFile ? `New: ${imageFile.name}` : "Image uploaded"}
+                {imageFile ? `New: ${imageFile.name}` : imageUrl ? "Current image will be kept (upload new to replace)" : "Image uploaded"}
               </p>
             )}
           </div>
@@ -307,7 +358,7 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
             </div>
             {(videoUrl || videoFile) && (
               <p className="text-xs text-muted-foreground">
-                {videoFile ? `New: ${videoFile.name}` : "Video uploaded"}
+                {videoFile ? `New: ${videoFile.name}` : videoUrl ? "Current video will be kept (upload new to replace)" : "Video uploaded"}
               </p>
             )}
           </div>
@@ -359,7 +410,7 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
               </div>
               {(backgroundImageUrl || backgroundImageFile) && (
                 <p className="text-xs text-muted-foreground">
-                  {backgroundImageFile ? `New: ${backgroundImageFile.name}` : "Image uploaded"}
+                  {backgroundImageFile ? `New: ${backgroundImageFile.name}` : backgroundImageUrl ? "Current background will be kept (upload new to replace)" : "Image uploaded"}
                 </p>
               )}
             </div>

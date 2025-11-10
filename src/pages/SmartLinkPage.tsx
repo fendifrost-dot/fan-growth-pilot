@@ -198,7 +198,7 @@ export default function SmartLinkPage() {
   return (
     <div 
       className={`min-h-screen relative flex items-center justify-center p-4 overflow-hidden ${isRunwayTheme ? 'bg-black' : ''}`} 
-      style={!isRunwayTheme ? backgroundStyle : undefined}
+      style={backgroundStyle}
     >
       {/* Animated background gradient overlay */}
       <div className={`absolute inset-0 ${isRunwayTheme ? 'bg-gradient-to-br from-black via-zinc-900 to-black' : 'bg-gradient-to-br from-black/60 via-black/40 to-black/60'} animate-fade-in`} />
@@ -261,8 +261,8 @@ export default function SmartLinkPage() {
               </div>
             )}
 
-            {/* Image with hover effect (if no video) */}
-            {!smartLink.video_url && smartLink.image_url && (
+            {/* Image with hover effect */}
+            {smartLink.image_url && (
               <div className="w-full group animate-fade-in">
                 <div className="relative overflow-hidden rounded-xl">
                   <img 

@@ -236,9 +236,10 @@ export default function SmartLinkPage() {
           <div className="w-full lg:w-[35%] flex items-center justify-center p-6 lg:p-10 bg-black overflow-y-auto">
             <div className="w-full max-w-xl space-y-5 lg:space-y-6 my-auto">
               {/* Headline */}
-              <div className="space-y-2 lg:space-y-3">
+              <div className="space-y-2 lg:space-y-3 text-center">
                 <h1 className="text-3xl lg:text-4xl xl:text-5xl font-bold text-white font-['Playfair_Display'] leading-tight">
-                  {smartLink.headline || smartLink.title}
+                  <div className="mb-2">Runway Music</div>
+                  <div>Sound of Style</div>
                 </h1>
                 {smartLink.subheadline && (
                   <p className="text-sm lg:text-base text-zinc-300 leading-relaxed">

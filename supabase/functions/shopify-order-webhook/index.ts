@@ -1,11 +1,6 @@
 import { serve } from "https://deno.land/std@0.190.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
-
 interface ShopifyOrder {
   id: number;
   email: string;
@@ -17,9 +12,9 @@ interface ShopifyOrder {
 }
 
 const handler = async (req: Request): Promise<Response> => {
-  // Handle CORS preflight requests
+  // Webhooks don't need CORS - they're server-to-server
   if (req.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders });
+    return new Response(null, { status: 200 });
   }
 
   try {
@@ -29,7 +24,7 @@ const handler = async (req: Request): Promise<Response> => {
       console.error('Missing HMAC signature header');
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
         status: 401,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -41,7 +36,7 @@ const handler = async (req: Request): Promise<Response> => {
       console.error('SHOPIFY_WEBHOOK_SECRET not configured');
       return new Response(JSON.stringify({ error: 'Server configuration error' }), {
         status: 500,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -69,7 +64,7 @@ const handler = async (req: Request): Promise<Response> => {
       console.error('Invalid webhook signature - potential unauthorized access attempt');
       return new Response(JSON.stringify({ error: 'Forbidden' }), {
         status: 403,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -91,7 +86,7 @@ const handler = async (req: Request): Promise<Response> => {
       console.log('No email found in order');
       return new Response(JSON.stringify({ success: false, error: 'No email in order' }), {
         status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -119,7 +114,7 @@ const handler = async (req: Request): Promise<Response> => {
         message: 'No unconverted leads found for this email' 
       }), {
         status: 200,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -150,14 +145,14 @@ const handler = async (req: Request): Promise<Response> => {
       email: customerEmail 
     }), {
       status: 200,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json' },
     });
 
   } catch (error: any) {
     console.error('Error processing webhook:', error);
     return new Response(JSON.stringify({ error: error.message }), {
       status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json' },
     });
   }
 };

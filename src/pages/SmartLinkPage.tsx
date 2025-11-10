@@ -116,10 +116,8 @@ export default function SmartLinkPage() {
 
         setSmartLink(processedLink);
         
-        // Track the page view/click (non-blocking for performance)
-        supabase.from("smart_links").update({
-          click_count: (data.click_count || 0) + 1
-        }).eq("id", data.id);
+        // Track the page view/click using secure RPC function (non-blocking for performance)
+        supabase.rpc('increment_link_clicks', { link_id: data.id });
 
       } catch (error) {
         console.error("Error fetching smart link:", error);

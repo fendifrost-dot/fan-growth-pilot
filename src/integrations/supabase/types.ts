@@ -397,6 +397,7 @@ export type Database = {
     }
     Functions: {
       generate_short_code: { Args: never; Returns: string }
+      increment_link_clicks: { Args: { link_id: string }; Returns: undefined }
     }
     Enums: {
       [_ in never]: never

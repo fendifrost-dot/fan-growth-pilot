@@ -265,26 +265,26 @@ export default function SmartLinkPage() {
                   {/* Elevated form card with enhanced shadow */}
                   <Card className="bg-zinc-900/90 border-zinc-800 shadow-2xl p-5 lg:p-6">
                     <div className="space-y-3.5 lg:space-y-4">
-                      {/* Email input - Large, full width with subtle shadow */}
+                      {/* Email input - Large, full width with border, glow, and shadow */}
                       <div className="relative w-full">
-                        <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-400 pointer-events-none" />
+                        <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-400 pointer-events-none z-10" />
                         <Input
                           id="email"
                           type="email"
-                          placeholder="Enter your email to unlock early access"
+                          placeholder="Your email for early access"
                           value={email}
                           onChange={(e) => setEmail(e.target.value)}
                           required
                           disabled={isSubmitting}
-                          className="pl-12 h-14 w-full bg-black/80 border-zinc-700 text-white placeholder:text-zinc-400 focus:border-white focus:ring-2 focus:ring-white text-base shadow-inner"
+                          className="pl-12 h-[50px] w-full bg-black/80 border-[1.5px] border-white/40 text-white placeholder:text-zinc-400 focus:border-white focus:ring-2 focus:ring-white/50 text-base shadow-[0_2px_8px_rgba(255,255,255,0.2)] hover:border-white/60 transition-all"
                         />
                       </div>
                       
-                      {/* CTA Button - Large, prominent, high contrast */}
+                      {/* CTA Button - Large, prominent, high contrast with hover effect */}
                       <Button
                         type="submit"
                         size="lg"
-                        className="h-14 w-full bg-white text-black hover:bg-zinc-100 font-bold focus:ring-4 focus:ring-white/50 focus:ring-offset-2 focus:ring-offset-black text-base lg:text-lg transition-all shadow-lg hover:shadow-xl"
+                        className="h-[50px] w-full bg-white text-black hover:bg-gradient-to-br hover:from-white hover:to-zinc-100 font-bold focus:ring-4 focus:ring-white/50 focus:ring-offset-2 focus:ring-offset-black text-base lg:text-lg transition-all shadow-lg hover:shadow-xl py-3.5"
                         disabled={isSubmitting}
                       >
                         {isSubmitting ? (
@@ -294,9 +294,9 @@ export default function SmartLinkPage() {
                         )}
                       </Button>
                       
-                      {/* Trust line */}
+                      {/* Trust line - refined copy */}
                       <p className="text-xs text-zinc-500 text-center pt-1">
-                        🔒 We'll never share your info.
+                        🔒 Your info stays private. No spam, ever.
                       </p>
                     </div>
                   </Card>

@@ -34,6 +34,16 @@ export const useSmartLinks = () => {
       button_text?: string;
       button_color?: string;
       background_color?: string;
+      headline?: string;
+      subheadline?: string;
+      video_autoplay?: boolean;
+      show_email_form?: boolean;
+      bullet_point_1?: string;
+      bullet_point_2?: string;
+      bullet_point_3?: string;
+      testimonial_text?: string;
+      testimonial_author?: string;
+      theme_preset?: string;
     }) => {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error("Not authenticated");
@@ -76,9 +86,17 @@ export const useSmartLinks = () => {
       queryClient.invalidateQueries({ queryKey: ["smart-links"] });
       toast.success("Smart link created");
     },
-    onError: (error) => {
-      toast.error("Failed to create smart link");
+    onError: (error: any) => {
       console.error(error);
+      
+      // Check for duplicate slug error
+      if (error?.code === '23505' && error?.message?.includes('smart_links_slug_key')) {
+        toast.error("This slug is already taken. Please choose a different one or generate a random one.");
+      } else if (error?.message) {
+        toast.error(`Failed to create smart link: ${error.message}`);
+      } else {
+        toast.error("Failed to create smart link. Please try again.");
+      }
     },
   });
 

@@ -45,9 +45,10 @@ const platformIcons: Record<string, any> = {
 const Index = () => {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [smartLinkDialogOpen, setSmartLinkDialogOpen] = useState(false);
+  const [editingLink, setEditingLink] = useState<SmartLink | null>(null);
   
   const { connections, isLoading: connectionsLoading, createConnection, removeConnection } = usePlatformConnections();
-  const { smartLinks, isLoading: linksLoading, createSmartLink, removeSmartLink } = useSmartLinks();
+  const { smartLinks, isLoading: linksLoading, createSmartLink, updateSmartLink, removeSmartLink } = useSmartLinks();
   const { data: spotifyStats, isLoading: statsLoading } = useSpotifyStats();
   const { isConnected: shopifyConnected, isLoading: shopifyLoading } = useShopifyConnection();
   // Handle Spotify OAuth callback
@@ -214,7 +215,10 @@ const Index = () => {
                     clicks={link.click_count || 0}
                     conversions={link.conversion_count || 0}
                     onRemove={() => removeSmartLink(link.id)}
-                    onEdit={() => {}}
+                    onEdit={() => {
+                      setEditingLink(link);
+                      setSmartLinkDialogOpen(true);
+                    }}
                   />
                 ))
               ) : (
@@ -283,8 +287,16 @@ const Index = () => {
 
       <AddSmartLinkDialog
         open={smartLinkDialogOpen}
-        onOpenChange={setSmartLinkDialogOpen}
+        onOpenChange={(open) => {
+          setSmartLinkDialogOpen(open);
+          if (!open) setEditingLink(null);
+        }}
         onAdd={createSmartLink}
+        editLink={editingLink}
+        onUpdate={(updatedLink) => {
+          updateSmartLink(updatedLink);
+          setEditingLink(null);
+        }}
       />
     </div>
   );

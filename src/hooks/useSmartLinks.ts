@@ -104,6 +104,58 @@ export const useSmartLinks = () => {
     },
   });
 
+  const updateMutation = useMutation({
+    mutationFn: async ({ id, ...updates }: { 
+      id: string;
+      title?: string; 
+      destination_url?: string; 
+      slug?: string;
+      description?: string;
+      image_url?: string;
+      video_url?: string;
+      background_image_url?: string;
+      button_text?: string;
+      button_color?: string;
+      background_color?: string;
+      headline?: string;
+      subheadline?: string;
+      video_autoplay?: boolean;
+      show_email_form?: boolean;
+      bullet_point_1?: string;
+      bullet_point_2?: string;
+      bullet_point_3?: string;
+      testimonial_text?: string;
+      testimonial_author?: string;
+      theme_preset?: string;
+    }) => {
+      const { data, error } = await supabase
+        .from("smart_links")
+        .update(updates)
+        .eq("id", id)
+        .select()
+        .single();
+
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["smart-links"] });
+      toast.success("Smart link updated");
+    },
+    onError: (error: any) => {
+      console.error(error);
+      
+      // Check for duplicate slug error
+      if (error?.code === '23505' && error?.message?.includes('smart_links_slug_key')) {
+        toast.error("This slug is already taken. Please choose a different one.");
+      } else if (error?.message) {
+        toast.error(`Failed to update smart link: ${error.message}`);
+      } else {
+        toast.error("Failed to update smart link. Please try again.");
+      }
+    },
+  });
+
   const removeMutation = useMutation({
     mutationFn: async (id: string) => {
       const { error } = await supabase
@@ -127,6 +179,7 @@ export const useSmartLinks = () => {
     smartLinks: smartLinks || [],
     isLoading,
     createSmartLink: createMutation.mutate,
+    updateSmartLink: updateMutation.mutate,
     removeSmartLink: removeMutation.mutate,
   };
 };

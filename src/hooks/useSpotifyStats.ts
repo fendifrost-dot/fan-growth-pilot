@@ -22,6 +22,9 @@ export const useSpotifyStats = () => {
       if (error) throw error;
       return data;
     },
-    refetchInterval: 5 * 60 * 1000, // Refetch every 5 minutes
+    refetchInterval: 30 * 1000, // Refetch every 30 seconds
+    staleTime: 0, // Always consider data stale
+    refetchOnWindowFocus: true, // Refetch when window regains focus
+    refetchOnMount: true, // Refetch on component mount
   });
 };

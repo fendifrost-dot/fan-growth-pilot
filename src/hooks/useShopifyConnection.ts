@@ -5,8 +5,11 @@ export const useShopifyConnection = () => {
   const { data: isConnected, isLoading } = useQuery({
     queryKey: ["shopify-connection"],
     queryFn: checkShopifyConnection,
-    staleTime: 5 * 60 * 1000, // Cache for 5 minutes
+    staleTime: 0, // Always consider data stale
     retry: 1,
+    refetchInterval: 30 * 1000, // Refetch every 30 seconds
+    refetchOnWindowFocus: true,
+    refetchOnMount: true,
   });
 
   return {

@@ -20,6 +20,10 @@ export const useSmartLinks = () => {
       if (error) throw error;
       return data;
     },
+    refetchInterval: 30 * 1000, // Refetch every 30 seconds
+    staleTime: 0, // Always consider data stale
+    refetchOnWindowFocus: true,
+    refetchOnMount: true,
   });
 
   const createMutation = useMutation({

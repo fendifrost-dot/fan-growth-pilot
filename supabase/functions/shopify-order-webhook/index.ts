@@ -23,7 +23,60 @@ const handler = async (req: Request): Promise<Response> => {
   }
 
   try {
-    const order: ShopifyOrder = await req.json();
+    // Verify Shopify webhook signature (HMAC-SHA256)
+    const hmacHeader = req.headers.get('x-shopify-hmac-sha256');
+    if (!hmacHeader) {
+      console.error('Missing HMAC signature header');
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Read raw body for signature verification
+    const rawBody = await req.text();
+    const webhookSecret = Deno.env.get('SHOPIFY_WEBHOOK_SECRET');
+    
+    if (!webhookSecret) {
+      console.error('SHOPIFY_WEBHOOK_SECRET not configured');
+      return new Response(JSON.stringify({ error: 'Server configuration error' }), {
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Compute expected HMAC
+    const encoder = new TextEncoder();
+    const keyData = encoder.encode(webhookSecret);
+    const key = await crypto.subtle.importKey(
+      'raw',
+      keyData,
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+    
+    const signature = await crypto.subtle.sign(
+      'HMAC',
+      key,
+      encoder.encode(rawBody)
+    );
+    
+    const expectedHmac = btoa(String.fromCharCode(...new Uint8Array(signature)));
+    
+    // Compare signatures
+    if (hmacHeader !== expectedHmac) {
+      console.error('Invalid webhook signature - potential unauthorized access attempt');
+      return new Response(JSON.stringify({ error: 'Forbidden' }), {
+        status: 403,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    console.log('Webhook signature verified successfully');
+    
+    // Parse the verified webhook data
+    const order: ShopifyOrder = JSON.parse(rawBody);
     
     console.log('Received Shopify order webhook:', { 
       orderId: order.id, 

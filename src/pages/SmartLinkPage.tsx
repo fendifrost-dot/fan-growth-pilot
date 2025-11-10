@@ -271,7 +271,7 @@ export default function SmartLinkPage() {
                         <Input
                           id="email"
                           type="email"
-                          placeholder="Enter your email to unlock early access"
+                          placeholder="Enter your email"
                           value={email}
                           onChange={(e) => setEmail(e.target.value)}
                           required

@@ -189,6 +189,7 @@ export default function SmartLinkPage() {
     backgroundSize: 'cover',
     backgroundPosition: 'center',
     backgroundRepeat: 'no-repeat',
+    backgroundAttachment: 'fixed',
   };
 
   const isRunwayTheme = smartLink.theme_preset === 'runway';
@@ -197,25 +198,25 @@ export default function SmartLinkPage() {
 
   return (
     <div 
-      className={`min-h-screen relative flex items-center justify-center p-4 overflow-hidden ${isRunwayTheme ? 'bg-black' : ''}`} 
+      className="min-h-screen relative"
       style={backgroundStyle}
     >
-      {/* Animated background gradient overlay */}
-      <div className={`absolute inset-0 ${isRunwayTheme ? 'bg-gradient-to-br from-black via-zinc-900 to-black' : 'bg-gradient-to-br from-black/60 via-black/40 to-black/60'} animate-fade-in`} />
+      {/* Background overlay */}
+      <div className={`fixed inset-0 ${isRunwayTheme ? 'bg-gradient-to-br from-black/80 via-zinc-900/80 to-black/80' : 'bg-gradient-to-br from-black/40 via-black/30 to-black/40'} pointer-events-none`} />
       
       {/* Floating particles effect */}
       {!isRunwayTheme && (
-        <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="fixed inset-0 overflow-hidden pointer-events-none">
           <div className="absolute top-1/4 left-1/4 w-64 h-64 bg-primary/10 rounded-full blur-3xl animate-pulse" />
           <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-accent/10 rounded-full blur-3xl animate-pulse delay-1000" />
         </div>
       )}
 
-      <Card className={`max-w-4xl w-full ${isRunwayTheme ? 'p-0 bg-black/90 border-zinc-800' : 'p-8 md:p-12 bg-card/95'} backdrop-blur-lg shadow-2xl animate-scale-in relative z-10 overflow-hidden`}>
-        <div className="space-y-8">
-          {/* Hero Video Section */}
+      <div className="relative z-10">
+        <div className="space-y-0">
+          {/* Hero Video Section with Parallax */}
           {smartLink.video_url && (
-            <div className="w-full relative -mt-8 md:-mt-12 -mx-8 md:-mx-12">
+            <div className="w-full relative h-[70vh] overflow-hidden">
               <video 
                 src={smartLink.video_url}
                 autoPlay={smartLink.video_autoplay}
@@ -223,7 +224,7 @@ export default function SmartLinkPage() {
                 loop={smartLink.video_autoplay}
                 controls={!smartLink.video_autoplay}
                 preload="metadata"
-                className="w-full h-auto max-h-[60vh] object-cover"
+                className="w-full h-full object-cover"
               />
               {/* Headline overlay on video */}
               {(smartLink.headline || smartLink.subheadline) && (
@@ -243,172 +244,175 @@ export default function SmartLinkPage() {
             </div>
           )}
 
-          <div className={`${isRunwayTheme || smartLink.video_url ? 'p-8 md:p-12' : ''} space-y-8`}>
-            {/* Headline/Subheadline if no video */}
-            {!smartLink.video_url && (smartLink.headline || smartLink.subheadline) && (
-              <div className="text-center space-y-4 animate-fade-in">
-                {smartLink.headline && (
-                  <h1 className={`text-4xl md:text-6xl lg:text-7xl font-bold ${isRunwayTheme ? 'text-white font-["Playfair_Display"]' : 'bg-clip-text text-transparent bg-gradient-to-r from-foreground via-primary to-foreground'}`}>
-                    {smartLink.headline}
-                  </h1>
-                )}
-                {smartLink.subheadline && (
-                  <p className={`text-lg md:text-xl max-w-3xl mx-auto leading-relaxed ${isRunwayTheme ? 'text-zinc-300' : 'text-muted-foreground'}`}>
-                    {smartLink.subheadline}
-                  </p>
-                )}
-                <div className={`h-1 w-24 mx-auto ${isRunwayTheme ? 'bg-white' : 'bg-gradient-to-r from-transparent via-primary to-transparent'}`} />
-              </div>
-            )}
-
-            {/* Image with hover effect */}
-            {smartLink.image_url && (
-              <div className="w-full group animate-fade-in">
-                <div className="relative overflow-hidden rounded-xl">
-                  <img 
-                    src={smartLink.image_url} 
-                    alt={smartLink.title}
-                    loading="lazy"
-                    className="w-full h-auto object-cover max-h-96 transition-transform duration-500 group-hover:scale-105"
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+          {/* Content Card */}
+          <div className={`relative z-10 max-w-4xl mx-auto p-4 ${smartLink.video_url ? '-mt-20' : 'mt-8'}`}>
+            <Card className={`${isRunwayTheme ? 'bg-black/90 border-zinc-800' : 'bg-card/95'} backdrop-blur-lg shadow-2xl p-8 md:p-12 space-y-8`}>
+              {/* Headline/Subheadline if no video */}
+              {!smartLink.video_url && (smartLink.headline || smartLink.subheadline) && (
+                <div className="text-center space-y-4 animate-fade-in">
+                  {smartLink.headline && (
+                    <h1 className={`text-4xl md:text-6xl lg:text-7xl font-bold ${isRunwayTheme ? 'text-white font-["Playfair_Display"]' : 'bg-clip-text text-transparent bg-gradient-to-r from-foreground via-primary to-foreground'}`}>
+                      {smartLink.headline}
+                    </h1>
+                  )}
+                  {smartLink.subheadline && (
+                    <p className={`text-lg md:text-xl max-w-3xl mx-auto leading-relaxed ${isRunwayTheme ? 'text-zinc-300' : 'text-muted-foreground'}`}>
+                      {smartLink.subheadline}
+                    </p>
+                  )}
+                  <div className={`h-1 w-24 mx-auto ${isRunwayTheme ? 'bg-white' : 'bg-gradient-to-r from-transparent via-primary to-transparent'}`} />
                 </div>
-              </div>
-            )}
+              )}
 
-            {/* Title (if no headline) */}
-            {!smartLink.headline && (
-              <div className="space-y-2 animate-fade-in text-center">
-                <h1 className={`text-5xl md:text-6xl font-bold ${isRunwayTheme ? 'text-white font-["Playfair_Display"]' : 'bg-clip-text text-transparent bg-gradient-to-r from-foreground via-primary to-foreground'}`}>
-                  {smartLink.title}
-                </h1>
-                <div className={`h-1 w-24 mx-auto ${isRunwayTheme ? 'bg-white' : 'bg-gradient-to-r from-transparent via-primary to-transparent'}`} />
-              </div>
-            )}
-
-            {/* Description */}
-            {smartLink.description && !smartLink.subheadline && (
-              <p className={`text-lg md:text-xl leading-relaxed max-w-xl mx-auto animate-fade-in text-center ${isRunwayTheme ? 'text-zinc-300' : 'text-muted-foreground'}`}>
-                {smartLink.description}
-              </p>
-            )}
-
-            {/* What You Get Section */}
-            {hasBulletPoints && (
-              <div className={`max-w-2xl mx-auto space-y-6 p-8 rounded-xl animate-fade-in ${isRunwayTheme ? 'bg-zinc-900/50 border border-zinc-800' : 'bg-muted/30'}`}>
-                <h2 className={`text-2xl md:text-3xl font-bold text-center ${isRunwayTheme ? 'text-white font-["Playfair_Display"]' : ''}`}>
-                  What You Get
-                </h2>
-                <ul className="space-y-4">
-                  {smartLink.bullet_point_1 && (
-                    <li className={`flex items-start gap-3 text-lg ${isRunwayTheme ? 'text-zinc-200' : 'text-foreground'}`}>
-                      <Sparkles className={`w-6 h-6 flex-shrink-0 mt-1 ${isRunwayTheme ? 'text-white' : 'text-primary'}`} />
-                      <span>{smartLink.bullet_point_1}</span>
-                    </li>
-                  )}
-                  {smartLink.bullet_point_2 && (
-                    <li className={`flex items-start gap-3 text-lg ${isRunwayTheme ? 'text-zinc-200' : 'text-foreground'}`}>
-                      <Sparkles className={`w-6 h-6 flex-shrink-0 mt-1 ${isRunwayTheme ? 'text-white' : 'text-primary'}`} />
-                      <span>{smartLink.bullet_point_2}</span>
-                    </li>
-                  )}
-                  {smartLink.bullet_point_3 && (
-                    <li className={`flex items-start gap-3 text-lg ${isRunwayTheme ? 'text-zinc-200' : 'text-foreground'}`}>
-                      <Sparkles className={`w-6 h-6 flex-shrink-0 mt-1 ${isRunwayTheme ? 'text-white' : 'text-primary'}`} />
-                      <span>{smartLink.bullet_point_3}</span>
-                    </li>
-                  )}
-                </ul>
-              </div>
-            )}
-
-            {/* Testimonial Section */}
-            {smartLink.testimonial_text && (
-              <div className={`max-w-2xl mx-auto text-center space-y-4 p-8 rounded-xl animate-fade-in ${isRunwayTheme ? 'bg-zinc-900/50 border border-zinc-800' : 'bg-muted/30'}`}>
-                <div className={`text-4xl ${isRunwayTheme ? 'text-white' : 'text-primary'}`}>"</div>
-                <p className={`text-lg md:text-xl italic leading-relaxed ${isRunwayTheme ? 'text-zinc-200 font-["Playfair_Display"]' : 'text-foreground'}`}>
-                  {smartLink.testimonial_text}
-                </p>
-                {smartLink.testimonial_author && (
-                  <p className={`text-sm font-semibold ${isRunwayTheme ? 'text-zinc-400' : 'text-muted-foreground'}`}>
-                    {smartLink.testimonial_author}
-                  </p>
-                )}
-              </div>
-            )}
-
-            {/* Email Capture Form or Direct CTA */}
-            <div className="animate-fade-in pt-4 text-center">
-              {showEmailCapture && !hasSubmittedEmail ? (
-                <form onSubmit={handleEmailSubmit} className="space-y-6 max-w-md mx-auto">
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-center gap-2">
-                      <Sparkles className={`w-5 h-5 ${isRunwayTheme ? 'text-white' : 'text-primary'}`} />
-                      <Label htmlFor="email" className={`text-lg font-semibold ${isRunwayTheme ? 'text-white' : ''}`}>
-                        Get Exclusive Access
-                      </Label>
-                      <Sparkles className={`w-5 h-5 ${isRunwayTheme ? 'text-white' : 'text-primary'}`} />
-                    </div>
-                    <div className="relative">
-                      <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground pointer-events-none" />
-                      <Input
-                        id="email"
-                        type="email"
-                        placeholder="Enter your email address"
-                        value={email}
-                        onChange={(e) => setEmail(e.target.value)}
-                        required
-                        disabled={isSubmitting}
-                        className={`text-base pl-12 h-14 rounded-xl border-2 transition-colors ${isRunwayTheme ? 'bg-zinc-900 border-zinc-700 text-white placeholder:text-zinc-500 focus:border-white' : 'border-border/50 focus:border-primary/50 bg-background/50'}`}
-                      />
-                    </div>
+              {/* Image with hover effect */}
+              {smartLink.image_url && (
+                <div className="w-full group animate-fade-in">
+                  <div className="relative overflow-hidden rounded-xl">
+                    <img 
+                      src={smartLink.image_url} 
+                      alt={smartLink.title}
+                      loading="lazy"
+                      className="w-full h-auto object-cover max-h-96 transition-transform duration-500 group-hover:scale-105"
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
                   </div>
+                </div>
+              )}
+
+              {/* Title (if no headline) */}
+              {!smartLink.headline && (
+                <div className="space-y-2 animate-fade-in text-center">
+                  <h1 className={`text-5xl md:text-6xl font-bold ${isRunwayTheme ? 'text-white font-["Playfair_Display"]' : 'bg-clip-text text-transparent bg-gradient-to-r from-foreground via-primary to-foreground'}`}>
+                    {smartLink.title}
+                  </h1>
+                  <div className={`h-1 w-24 mx-auto ${isRunwayTheme ? 'bg-white' : 'bg-gradient-to-r from-transparent via-primary to-transparent'}`} />
+                </div>
+              )}
+
+              {/* Description */}
+              {smartLink.description && !smartLink.subheadline && (
+                <p className={`text-lg md:text-xl leading-relaxed max-w-xl mx-auto animate-fade-in text-center ${isRunwayTheme ? 'text-zinc-300' : 'text-muted-foreground'}`}>
+                  {smartLink.description}
+                </p>
+              )}
+
+              {/* What You Get Section */}
+              {hasBulletPoints && (
+                <div className={`max-w-2xl mx-auto space-y-6 p-8 rounded-xl animate-fade-in ${isRunwayTheme ? 'bg-zinc-900/50 border border-zinc-800' : 'bg-muted/30'}`}>
+                  <h2 className={`text-2xl md:text-3xl font-bold text-center ${isRunwayTheme ? 'text-white font-["Playfair_Display"]' : ''}`}>
+                    What You Get
+                  </h2>
+                  <ul className="space-y-4">
+                    {smartLink.bullet_point_1 && (
+                      <li className={`flex items-start gap-3 text-lg ${isRunwayTheme ? 'text-zinc-200' : 'text-foreground'}`}>
+                        <Sparkles className={`w-6 h-6 flex-shrink-0 mt-1 ${isRunwayTheme ? 'text-white' : 'text-primary'}`} />
+                        <span>{smartLink.bullet_point_1}</span>
+                      </li>
+                    )}
+                    {smartLink.bullet_point_2 && (
+                      <li className={`flex items-start gap-3 text-lg ${isRunwayTheme ? 'text-zinc-200' : 'text-foreground'}`}>
+                        <Sparkles className={`w-6 h-6 flex-shrink-0 mt-1 ${isRunwayTheme ? 'text-white' : 'text-primary'}`} />
+                        <span>{smartLink.bullet_point_2}</span>
+                      </li>
+                    )}
+                    {smartLink.bullet_point_3 && (
+                      <li className={`flex items-start gap-3 text-lg ${isRunwayTheme ? 'text-zinc-200' : 'text-foreground'}`}>
+                        <Sparkles className={`w-6 h-6 flex-shrink-0 mt-1 ${isRunwayTheme ? 'text-white' : 'text-primary'}`} />
+                        <span>{smartLink.bullet_point_3}</span>
+                      </li>
+                    )}
+                  </ul>
+                </div>
+              )}
+
+              {/* Testimonial Section */}
+              {smartLink.testimonial_text && (
+                <div className={`max-w-2xl mx-auto text-center space-y-4 p-8 rounded-xl animate-fade-in ${isRunwayTheme ? 'bg-zinc-900/50 border border-zinc-800' : 'bg-muted/30'}`}>
+                  <div className={`text-4xl ${isRunwayTheme ? 'text-white' : 'text-primary'}`}>"</div>
+                  <p className={`text-lg md:text-xl italic leading-relaxed ${isRunwayTheme ? 'text-zinc-200 font-["Playfair_Display"]' : 'text-foreground'}`}>
+                    {smartLink.testimonial_text}
+                  </p>
+                  {smartLink.testimonial_author && (
+                    <p className={`text-sm font-semibold ${isRunwayTheme ? 'text-zinc-400' : 'text-muted-foreground'}`}>
+                      {smartLink.testimonial_author}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* Email Capture Form or Direct CTA */}
+              <div className="animate-fade-in pt-4 text-center">
+                {showEmailCapture && !hasSubmittedEmail ? (
+                  <form onSubmit={handleEmailSubmit} className="space-y-6 max-w-md mx-auto">
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-center gap-2">
+                        <Sparkles className={`w-5 h-5 ${isRunwayTheme ? 'text-white' : 'text-primary'}`} />
+                        <Label htmlFor="email" className={`text-lg font-semibold ${isRunwayTheme ? 'text-white' : ''}`}>
+                          Get Exclusive Access
+                        </Label>
+                        <Sparkles className={`w-5 h-5 ${isRunwayTheme ? 'text-white' : 'text-primary'}`} />
+                      </div>
+                      <div className="relative">
+                        <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground pointer-events-none" />
+                        <Input
+                          id="email"
+                          type="email"
+                          placeholder="Enter your email address"
+                          value={email}
+                          onChange={(e) => setEmail(e.target.value)}
+                          required
+                          disabled={isSubmitting}
+                          className={`text-base pl-12 h-14 rounded-xl border-2 transition-colors ${isRunwayTheme ? 'bg-zinc-900 border-zinc-700 text-white placeholder:text-zinc-500 focus:border-white' : 'border-border/50 focus:border-primary/50 bg-background/50'}`}
+                        />
+                      </div>
+                    </div>
+                    <Button
+                      type="submit"
+                      size="lg"
+                      className={`w-full text-lg py-7 rounded-xl font-semibold shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105 ${isRunwayTheme ? 'bg-white text-black hover:bg-zinc-200' : ''}`}
+                      disabled={isSubmitting}
+                      style={!isRunwayTheme && smartLink.button_color ? { 
+                        backgroundColor: smartLink.button_color,
+                      } : undefined}
+                    >
+                      {isSubmitting ? (
+                        <>
+                          <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                          Submitting...
+                        </>
+                      ) : (
+                        <>
+                          {smartLink.button_text || "Get Access Now"}
+                          <Sparkles className="w-5 h-5 ml-2" />
+                        </>
+                      )}
+                    </Button>
+                  </form>
+                ) : (
                   <Button
-                    type="submit"
                     size="lg"
-                    className={`w-full text-lg py-7 rounded-xl font-semibold shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105 ${isRunwayTheme ? 'bg-white text-black hover:bg-zinc-200' : ''}`}
-                    disabled={isSubmitting}
+                    className={`w-full max-w-md text-lg py-7 rounded-xl font-semibold shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105 ${isRunwayTheme ? 'bg-white text-black hover:bg-zinc-200' : ''}`}
                     style={!isRunwayTheme && smartLink.button_color ? { 
                       backgroundColor: smartLink.button_color,
                     } : undefined}
+                    onClick={handleButtonClick}
                   >
-                    {isSubmitting ? (
-                      <>
-                        <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                        Submitting...
-                      </>
-                    ) : (
-                      <>
-                        {smartLink.button_text || "Get Access Now"}
-                        <Sparkles className="w-5 h-5 ml-2" />
-                      </>
-                    )}
+                    {smartLink.button_text || "Click Here"}
+                    <Sparkles className="w-5 h-5 ml-2" />
                   </Button>
-                </form>
-              ) : (
-                <Button
-                  size="lg"
-                  className={`w-full max-w-md text-lg py-7 rounded-xl font-semibold shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105 ${isRunwayTheme ? 'bg-white text-black hover:bg-zinc-200' : ''}`}
-                  style={!isRunwayTheme && smartLink.button_color ? { 
-                    backgroundColor: smartLink.button_color,
-                  } : undefined}
-                  onClick={handleButtonClick}
-                >
-                  {smartLink.button_text || "Click Here"}
-                  <Sparkles className="w-5 h-5 ml-2" />
-                </Button>
-              )}
-            </div>
+                )}
+              </div>
 
-            {/* Trust badge */}
-            {showEmailCapture && (
-              <p className={`text-xs text-center animate-fade-in ${isRunwayTheme ? 'text-zinc-500' : 'text-muted-foreground/60'}`}>
-                🔒 Your information is secure and will never be shared
-              </p>
-            )}
+              {/* Trust badge */}
+              {showEmailCapture && (
+                <p className={`text-xs text-center animate-fade-in ${isRunwayTheme ? 'text-zinc-500' : 'text-muted-foreground/60'}`}>
+                  🔒 Your information is secure and will never be shared
+                </p>
+              )}
+            </Card>
           </div>
         </div>
-      </Card>
+      </div>
     </div>
   );
 }

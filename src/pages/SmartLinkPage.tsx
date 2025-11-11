@@ -150,7 +150,8 @@ export default function SmartLinkPage() {
     const currentUrl = window.location.href;
     const title = smartLink.headline || smartLink.title;
     const description = smartLink.subheadline || smartLink.description || "Check out this link";
-    const image = smartLink.image_url || smartLink.background_image_url;
+    // Use Runway Music album artwork as fallback for consistent branding
+    const image = smartLink.image_url || smartLink.background_image_url || `${window.location.origin}/og-runway-music.png`;
 
     // Update or create meta tags
     const updateMetaTag = (property: string, content: string) => {

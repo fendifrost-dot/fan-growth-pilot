@@ -12,6 +12,19 @@ import SmartLinkPage from "./pages/SmartLinkPage";
 
 const queryClient = new QueryClient();
 
+const RootRoute = () => {
+  // Redirect to 404 if visiting links subdomain root
+  if (window.location.hostname.startsWith('links.')) {
+    return <NotFound />;
+  }
+  // Otherwise show protected dashboard
+  return (
+    <ProtectedRoute>
+      <Index />
+    </ProtectedRoute>
+  );
+};
+
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
@@ -20,11 +33,7 @@ const App = () => (
       <BrowserRouter>
         <Routes>
           <Route path="/auth" element={<Auth />} />
-          <Route path="/" element={
-            <ProtectedRoute>
-              <Index />
-            </ProtectedRoute>
-          } />
+          <Route path="/" element={<RootRoute />} />
           {/* Public smart link pages */}
           <Route path="/:slug" element={<SmartLinkPage />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}

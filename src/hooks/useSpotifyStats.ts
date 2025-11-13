@@ -22,6 +22,7 @@ export const useSpotifyStats = () => {
       if (error) throw error;
       return data;
     },
+    retry: 1, // Only retry once on failure
     refetchInterval: 30 * 1000, // Refetch every 30 seconds
     staleTime: 0, // Always consider data stale
     refetchOnWindowFocus: true, // Refetch when window regains focus

@@ -46,6 +46,7 @@ export default function SmartLinkPage() {
   const [email, setEmail] = useState("");
   const [hasSubmittedEmail, setHasSubmittedEmail] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [videoLoaded, setVideoLoaded] = useState(false);
 
   useEffect(() => {
     const fetchSmartLink = async () => {
@@ -290,10 +291,14 @@ export default function SmartLinkPage() {
               muted
               loop
               playsInline
-              preload="metadata"
+              preload="auto"
               poster={smartLink.image_url || undefined}
               className="w-full h-full object-cover"
-              style={{ contentVisibility: 'auto' }}
+              onLoadedData={() => setVideoLoaded(true)}
+              onCanPlay={(e) => {
+                const video = e.currentTarget;
+                video.play().catch(err => console.log('Video autoplay prevented:', err));
+              }}
             >
               <source src={smartLink.video_url} type="video/mp4" />
             </video>

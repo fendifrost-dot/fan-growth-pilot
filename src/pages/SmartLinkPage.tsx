@@ -290,7 +290,7 @@ export default function SmartLinkPage() {
               muted
               loop
               playsInline
-              preload="auto"
+              preload="metadata"
               poster={smartLink.image_url || undefined}
               className="w-full h-full object-cover"
               style={{ contentVisibility: 'auto' }}

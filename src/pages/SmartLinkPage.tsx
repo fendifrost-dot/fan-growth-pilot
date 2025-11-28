@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useParams, Navigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Loader2, Mail, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { z } from "zod";
+import Hls from "hls.js";
 
 interface SmartLinkData {
   id: string;
@@ -47,6 +48,7 @@ export default function SmartLinkPage() {
   const [hasSubmittedEmail, setHasSubmittedEmail] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [videoLoaded, setVideoLoaded] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
     const fetchSmartLink = async () => {
@@ -199,6 +201,67 @@ export default function SmartLinkPage() {
 
   }, [smartLink]);
 
+  // Initialize HLS.js for adaptive streaming
+  useEffect(() => {
+    if (!smartLink?.video_url || !videoRef.current) return;
+
+    const video = videoRef.current;
+    const videoUrl = smartLink.video_url;
+
+    // Check if URL is an HLS manifest
+    const isHLS = videoUrl.includes('.m3u8');
+
+    if (isHLS && Hls.isSupported()) {
+      const hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: true,
+        backBufferLength: 90,
+        maxBufferLength: 30,
+        maxMaxBufferLength: 60,
+        startLevel: -1, // Auto start level
+      });
+
+      hls.loadSource(videoUrl);
+      hls.attachMedia(video);
+
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        console.log('HLS manifest loaded, starting playback');
+        video.play().catch(err => console.log('Autoplay prevented:', err));
+      });
+
+      hls.on(Hls.Events.ERROR, (event, data) => {
+        if (data.fatal) {
+          console.error('Fatal HLS error:', data);
+          switch (data.type) {
+            case Hls.ErrorTypes.NETWORK_ERROR:
+              console.log('Network error, trying to recover...');
+              hls.startLoad();
+              break;
+            case Hls.ErrorTypes.MEDIA_ERROR:
+              console.log('Media error, trying to recover...');
+              hls.recoverMediaError();
+              break;
+            default:
+              console.log('Unrecoverable error, destroying HLS instance');
+              hls.destroy();
+              break;
+          }
+        }
+      });
+
+      return () => {
+        hls.destroy();
+      };
+    } else if (isHLS && video.canPlayType('application/vnd.apple.mpegurl')) {
+      // Native HLS support (Safari, iOS)
+      video.src = videoUrl;
+      video.addEventListener('loadedmetadata', () => {
+        video.play().catch(err => console.log('Autoplay prevented:', err));
+      });
+    }
+    // For non-HLS videos, the video element handles it natively
+  }, [smartLink]);
+
   const handleEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
@@ -286,7 +349,7 @@ export default function SmartLinkPage() {
           {/* Video Section - 60-65% width on desktop, full-width top on mobile */}
           <div className="w-full lg:w-[65%] h-[45vh] lg:h-full relative">
             <video 
-              src={smartLink.video_url}
+              ref={videoRef}
               autoPlay
               muted
               loop
@@ -295,18 +358,11 @@ export default function SmartLinkPage() {
               poster={smartLink.image_url || undefined}
               className="w-full h-full object-cover"
               onLoadedData={() => setVideoLoaded(true)}
-              onCanPlay={(e) => {
-                const video = e.currentTarget;
-                // Force play immediately when enough data is buffered
-                video.play().catch(err => console.log('Video autoplay prevented:', err));
-              }}
-              onLoadedMetadata={(e) => {
-                // Start loading video data immediately after metadata loads
-                const video = e.currentTarget;
-                video.load();
-              }}
             >
-              <source src={smartLink.video_url} type="video/mp4" />
+              {/* Source will be set by HLS.js for .m3u8 files, or natively for .mp4 */}
+              {smartLink.video_url && !smartLink.video_url.includes('.m3u8') && (
+                <source src={smartLink.video_url} type="video/mp4" />
+              )}
             </video>
             <div className="absolute inset-0 bg-black/20" />
           </div>

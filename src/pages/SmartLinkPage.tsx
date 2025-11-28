@@ -291,13 +291,19 @@ export default function SmartLinkPage() {
               muted
               loop
               playsInline
-              preload="auto"
+              preload="metadata"
               poster={smartLink.image_url || undefined}
               className="w-full h-full object-cover"
               onLoadedData={() => setVideoLoaded(true)}
               onCanPlay={(e) => {
                 const video = e.currentTarget;
+                // Force play immediately when enough data is buffered
                 video.play().catch(err => console.log('Video autoplay prevented:', err));
+              }}
+              onLoadedMetadata={(e) => {
+                // Start loading video data immediately after metadata loads
+                const video = e.currentTarget;
+                video.load();
               }}
             >
               <source src={smartLink.video_url} type="video/mp4" />

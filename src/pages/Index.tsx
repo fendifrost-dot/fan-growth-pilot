@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { usePlatformConnections } from "@/hooks/usePlatformConnections";
 import { useSmartLinks } from "@/hooks/useSmartLinks";
-import { useSpotifyStats } from "@/hooks/useSpotifyStats";
+import { useArtistStats } from "@/hooks/useArtistStats";
 import { useShopifyConnection } from "@/hooks/useShopifyConnection";
 import { toast } from "sonner";
 import { 
@@ -49,7 +49,7 @@ const Index = () => {
   
   const { connections, isLoading: connectionsLoading, createConnection, removeConnection } = usePlatformConnections();
   const { smartLinks, isLoading: linksLoading, createSmartLink, updateSmartLink, removeSmartLink } = useSmartLinks();
-  const { data: spotifyStats, isLoading: statsLoading } = useSpotifyStats();
+  const { stats: artistStats, isLoading: statsLoading, refresh: refreshStats, isRefreshing } = useArtistStats();
   const { isConnected: shopifyConnected, isLoading: shopifyLoading } = useShopifyConnection();
   // Handle Spotify OAuth callback
   useEffect(() => {
@@ -104,7 +104,12 @@ const Index = () => {
 
         {/* Key Metrics */}
         <section className="mb-12">
-          <h3 className="text-2xl font-semibold mb-6">Performance Overview</h3>
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="text-2xl font-semibold">Performance Overview</h3>
+            <Button variant="outline" size="sm" onClick={() => refreshStats()} disabled={isRefreshing}>
+              {isRefreshing ? "Refreshing…" : "↻ Refresh Stats"}
+            </Button>
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
             {statsLoading || shopifyLoading ? (
               <>
@@ -116,24 +121,24 @@ const Index = () => {
             ) : (
               <>
                 <MetricCard
-                  title="Total Plays"
-                  value={spotifyStats ? `${(spotifyStats.totalPlays / 1000).toFixed(1)}K` : "Connect Spotify"}
-                  change={spotifyStats ? "+18% this week" : "No data"}
+                  title="Monthly Listeners"
+                  value={artistStats ? `${(artistStats.spotify.monthly_listeners / 1000).toFixed(1)}K` : "No data"}
+                  change="Spotify"
                   icon={Play}
                   trend="up"
                 />
                 <MetricCard
-                  title="Total Followers"
-                  value={spotifyStats ? spotifyStats.followers.toLocaleString() : "Connect Spotify"}
-                  change={spotifyStats ? "+2.3K this week" : "No data"}
+                  title="Spotify Followers"
+                  value={artistStats ? `${(artistStats.spotify.followers / 1000).toFixed(1)}K` : "No data"}
+                  change="Spotify"
                   icon={Users}
                   trend="up"
                 />
                 <MetricCard
-                  title="Engagement Rate"
-                  value={spotifyStats ? `${spotifyStats.engagementRate}%` : "Connect Spotify"}
-                  change={spotifyStats ? "+0.4% this week" : "No data"}
-                  icon={TrendingUp}
+                  title="IG Followers"
+                  value={artistStats ? `${(artistStats.instagram.followers / 1000).toFixed(1)}K` : "No data"}
+                  change="Instagram"
+                  icon={Instagram}
                   trend="up"
                 />
                 <MetricCard

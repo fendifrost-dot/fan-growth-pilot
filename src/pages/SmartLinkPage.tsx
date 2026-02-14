@@ -146,59 +146,10 @@ export default function SmartLinkPage() {
     fetchSmartLink();
   }, [slug]);
 
-  // Update Open Graph meta tags when smart link loads
+  // Update page title only — OG/Twitter tags are injected server-side by Cloudflare Worker
   useEffect(() => {
     if (!smartLink) return;
-
-    const currentUrl = window.location.href;
-    const title = smartLink.headline || smartLink.title;
-    const description = smartLink.subheadline || smartLink.description || "Check out this link";
-    // Use Runway Music album artwork as fallback for consistent branding
-    const image = smartLink.image_url || smartLink.background_image_url || `${window.location.origin}/og-runway-music.png`;
-
-    // Update or create meta tags
-    const updateMetaTag = (property: string, content: string) => {
-      let tag = document.querySelector(`meta[property="${property}"]`) as HTMLMetaElement;
-      if (!tag) {
-        tag = document.createElement('meta');
-        tag.setAttribute('property', property);
-        document.head.appendChild(tag);
-      }
-      tag.content = content;
-    };
-
-    const updateNameTag = (name: string, content: string) => {
-      let tag = document.querySelector(`meta[name="${name}"]`) as HTMLMetaElement;
-      if (!tag) {
-        tag = document.createElement('meta');
-        tag.setAttribute('name', name);
-        document.head.appendChild(tag);
-      }
-      tag.content = content;
-    };
-
-    // Open Graph tags
-    updateMetaTag('og:title', title);
-    updateMetaTag('og:description', description);
-    updateMetaTag('og:url', currentUrl);
-    updateMetaTag('og:type', 'website');
-    if (image) {
-      updateMetaTag('og:image', image);
-      updateMetaTag('og:image:width', '1200');
-      updateMetaTag('og:image:height', '630');
-    }
-
-    // Twitter Card tags
-    updateNameTag('twitter:card', 'summary_large_image');
-    updateNameTag('twitter:title', title);
-    updateNameTag('twitter:description', description);
-    if (image) {
-      updateNameTag('twitter:image', image);
-    }
-
-    // Update page title
-    document.title = title;
-
+    document.title = smartLink.headline || smartLink.title;
   }, [smartLink]);
 
   // Initialize HLS.js for adaptive streaming
@@ -212,20 +163,24 @@ export default function SmartLinkPage() {
     const isHLS = videoUrl.includes('.m3u8');
 
     if (isHLS && Hls.isSupported()) {
+      const hlsStartTime = performance.now();
       const hls = new Hls({
         enableWorker: true,
         lowLatencyMode: true,
-        backBufferLength: 90,
-        maxBufferLength: 30,
-        maxMaxBufferLength: 60,
-        startLevel: -1, // Auto start level
+        backBufferLength: 30,
+        maxBufferLength: 10,
+        maxMaxBufferLength: 30,
+        startLevel: 0, // Start with lowest quality for fastest first frame
+        startFragPrefetch: true, // Prefetch first segment immediately
+        testBandwidth: false, // Skip bandwidth test, use startLevel directly
       });
 
       hls.loadSource(videoUrl);
       hls.attachMedia(video);
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        console.log('HLS manifest loaded, starting playback');
+        const manifestTime = performance.now() - hlsStartTime;
+        console.log(`[HLS] Manifest parsed in ${manifestTime.toFixed(0)}ms`);
         video.play().catch(err => console.log('Autoplay prevented:', err));
       });
 

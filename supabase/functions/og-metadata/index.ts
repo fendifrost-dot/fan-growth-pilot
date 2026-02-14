@@ -14,7 +14,7 @@ const OG_IMAGE_MAP: Record<string, string> = {
   chakra: `${LINKS_DOMAIN}/og-chakra.png`,
 };
 
-const DEFAULT_OG_IMAGE = `${LINKS_DOMAIN}/og-runway-music.png`;
+const DEFAULT_OG_IMAGE = `${LINKS_DOMAIN}/og-runwaymusic.png`;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {

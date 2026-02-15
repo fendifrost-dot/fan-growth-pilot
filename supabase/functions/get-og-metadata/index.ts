@@ -3,12 +3,11 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
+    "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
 const LINKS_DOMAIN = "https://links.fendifrost.com";
 
-// Dedicated public OG images per slug (stable URLs, no signed URLs needed)
 const OG_IMAGE_MAP: Record<string, string> = {
   runwaymusic: `${LINKS_DOMAIN}/og-runwaymusic.png`,
   chakra: `${LINKS_DOMAIN}/og-chakra.png`,
@@ -16,7 +15,7 @@ const OG_IMAGE_MAP: Record<string, string> = {
 
 const DEFAULT_OG_IMAGE = `${LINKS_DOMAIN}/og-runwaymusic.png`;
 
-Deno.serve(async (req) => {
+Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
@@ -36,7 +35,6 @@ Deno.serve(async (req) => {
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    // Fetch smart link data by slug or short_code
     const { data, error } = await supabase
       .from("smart_links")
       .select("title, headline, subheadline, description, image_url, slug, theme_preset")
@@ -45,7 +43,6 @@ Deno.serve(async (req) => {
       .maybeSingle();
 
     if (error || !data) {
-      // Return minimal metadata for unknown slugs
       return new Response(
         JSON.stringify({
           title: "Page Not Found",
@@ -83,12 +80,11 @@ Deno.serve(async (req) => {
       headers: {
         ...corsHeaders,
         "Content-Type": "application/json",
-        // Cache per slug path for 1 hour, stale-while-revalidate for 24h
         "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400",
       },
     });
   } catch (err) {
-    console.error("og-metadata error:", err);
+    console.error("get-og-metadata error:", err);
     return new Response(
       JSON.stringify({ error: "Internal server error" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }

@@ -9,8 +9,14 @@ verify_jwt = false
 [functions.shopify-order-webhook]
 verify_jwt = false
 
-[functions.og-metadata]
+[functions.get-og-metadata]
+verify_jwt = false
+
+[functions.ogmetadata]
 verify_jwt = false
 
 [functions.fetch-public-spotify-data]
+verify_jwt = false
+
+[functions.healthcheck]
 verify_jwt = false

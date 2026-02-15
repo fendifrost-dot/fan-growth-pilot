@@ -8,3 +8,9 @@ verify_jwt = false
 
 [functions.shopify-order-webhook]
 verify_jwt = false
+
+[functions.og-metadata]
+verify_jwt = false
+
+[functions.fetch-public-spotify-data]
+verify_jwt = false

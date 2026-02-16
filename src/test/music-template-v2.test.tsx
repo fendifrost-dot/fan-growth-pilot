@@ -274,6 +274,57 @@ describe("Fold-first structure (CTA before email trigger)", () => {
   });
 });
 
+// ─── Video background regression (default theme) ───
+
+describe("Video background on default theme", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockInsertResult = { data: null, error: null };
+  });
+
+  it("renders a <video> element when video_url exists (default theme)", async () => {
+    mockSmartLinkData = makeSmartLink({
+      video_url: "https://example.com/heartchakra.mp4",
+      theme_preset: "default",
+    });
+    const container = await renderSmartLinkPage("heartchakra");
+    const video = container.querySelector("video");
+    expect(video).toBeTruthy();
+  });
+
+  it("CTA still renders when video_url is present", async () => {
+    mockSmartLinkData = makeSmartLink({
+      video_url: "https://example.com/heartchakra.mp4",
+      theme_preset: "default",
+    });
+    const container = await renderSmartLinkPage("heartchakra");
+    const cta = container.querySelector('[data-testid="album-cta"]');
+    expect(cta).toBeTruthy();
+  });
+
+  it("CTA appears before email trigger even with video background", async () => {
+    mockSmartLinkData = makeSmartLink({
+      video_url: "https://example.com/heartchakra.mp4",
+      theme_preset: "default",
+      show_email_form: true,
+    });
+    const container = await renderSmartLinkPage("heartchakra");
+    const cta = container.querySelector('[data-testid="album-cta"]');
+    const trigger = container.querySelector('[data-testid="email-plaque-trigger"]');
+    expect(cta).toBeTruthy();
+    expect(trigger).toBeTruthy();
+    const position = cta!.compareDocumentPosition(trigger!);
+    expect(position & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("does NOT render <video> when video_url is null (default theme)", async () => {
+    mockSmartLinkData = makeSmartLink({ video_url: null, theme_preset: "default" });
+    const container = await renderSmartLinkPage("heartchakra");
+    const video = container.querySelector("video");
+    expect(video).toBeNull();
+  });
+});
+
 // ─── Email capture accordion ───
 
 describe("Email capture accordion", () => {

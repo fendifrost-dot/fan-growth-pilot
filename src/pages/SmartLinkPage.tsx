@@ -410,8 +410,22 @@ export default function SmartLinkPage() {
       className="min-h-[100dvh] relative flex flex-col items-center justify-center overflow-hidden"
       style={{ backgroundColor: smartLink.background_color || '#000000' }}
     >
-      {/* Blurred background from cover art */}
-      {smartLink.image_url && (
+      {/* Layer 1: Video background (preferred) or blurred cover art */}
+      {smartLink.video_url ? (
+        <video
+          ref={videoRef}
+          autoPlay muted loop playsInline
+          preload="metadata"
+          poster={smartLink.image_url || undefined}
+          className="absolute inset-0 w-full h-full object-cover"
+          onLoadedData={() => setVideoLoaded(true)}
+          data-testid="background-video"
+        >
+          {!smartLink.video_url.includes('.m3u8') && (
+            <source src={smartLink.video_url} type="video/mp4" />
+          )}
+        </video>
+      ) : smartLink.image_url ? (
         <div
           className="absolute inset-0 bg-cover bg-center"
           style={{
@@ -420,7 +434,7 @@ export default function SmartLinkPage() {
             transform: 'scale(1.2)',
           }}
         />
-      )}
+      ) : null}
       <div className="absolute inset-0 bg-black/40" />
 
       {/* Hero content — vertically centered, tight spacing */}

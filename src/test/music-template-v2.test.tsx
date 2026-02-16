@@ -225,6 +225,55 @@ describe("No fashion leakage on music pages", () => {
   });
 });
 
+// ─── DOM order: CTA before email trigger ───
+
+describe("Fold-first structure (CTA before email trigger)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockInsertResult = { data: null, error: null };
+  });
+
+  it("album-cta appears before email-plaque-trigger in DOM for heartchakra (default)", async () => {
+    mockSmartLinkData = makeSmartLink({ slug: "heartchakra", theme_preset: "default" });
+    const container = await renderSmartLinkPage("heartchakra");
+    const cta = container.querySelector('[data-testid="album-cta"]');
+    const trigger = container.querySelector('[data-testid="email-plaque-trigger"]');
+    expect(cta).toBeTruthy();
+    expect(trigger).toBeTruthy();
+    // compareDocumentPosition bit 4 = DOCUMENT_POSITION_FOLLOWING
+    const position = cta!.compareDocumentPosition(trigger!);
+    expect(position & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("album-cta appears before email-plaque-trigger in DOM for runwaymusic (runway)", async () => {
+    mockSmartLinkData = makeSmartLink({
+      slug: "runwaymusic",
+      title: "Runway Music",
+      theme_preset: "runway",
+      video_url: "https://example.com/video.mp4",
+    });
+    const container = await renderSmartLinkPage("runwaymusic");
+    const cta = container.querySelector('[data-testid="album-cta"]');
+    const trigger = container.querySelector('[data-testid="email-plaque-trigger"]');
+    expect(cta).toBeTruthy();
+    expect(trigger).toBeTruthy();
+    const position = cta!.compareDocumentPosition(trigger!);
+    expect(position & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("bullet points are NOT in DOM when accordion is collapsed", async () => {
+    mockSmartLinkData = makeSmartLink({
+      show_email_form: true,
+      bullet_point_1: "Early Access",
+      bullet_point_2: "Behind the Scenes",
+      bullet_point_3: "Drop Alerts",
+    });
+    const container = await renderSmartLinkPage("heartchakra");
+    const bullets = container.querySelector('[data-testid="bullet-points"]');
+    expect(bullets).toBeNull();
+  });
+});
+
 // ─── Email capture accordion ───
 
 describe("Email capture accordion", () => {

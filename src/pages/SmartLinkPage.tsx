@@ -362,9 +362,13 @@ export default function SmartLinkPage() {
               {/* Headline */}
               <div className="space-y-1 text-center">
                 <h1 className="text-3xl lg:text-4xl xl:text-5xl font-bold text-white font-['Playfair_Display'] leading-tight">
-                  <div className="mb-1">Runway Music</div>
-                  <div className="text-2xl lg:text-3xl xl:text-4xl font-normal italic opacity-90">The Sound of Style</div>
+                  {smartLink.headline || smartLink.title}
                 </h1>
+                {(smartLink.subheadline || smartLink.description) && (
+                  <p className="text-xl lg:text-2xl xl:text-3xl font-normal italic text-white/90">
+                    {smartLink.subheadline || smartLink.description}
+                  </p>
+                )}
               </div>
 
               {/* Album Cover — compact */}

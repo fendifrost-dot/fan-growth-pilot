@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Loader2, Mail, Sparkles, ChevronDown } from "lucide-react";
+import { Loader2, Mail, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 import { z } from "zod";
 import Hls from "hls.js";
@@ -271,8 +271,8 @@ export default function SmartLinkPage() {
   const bulletPointsBlock = hasBulletPoints ? (
     <ul className="space-y-3 pt-3 pb-1" data-testid="bullet-points">
       {[smartLink.bullet_point_1, smartLink.bullet_point_2, smartLink.bullet_point_3].filter(Boolean).map((bp, i) => (
-        <li key={i} className="flex items-start gap-2.5 text-sm text-zinc-300 leading-relaxed">
-          <Sparkles className="w-4 h-4 flex-shrink-0 mt-0.5 text-white/70" />
+        <li key={i} className="flex items-start gap-3 text-sm text-zinc-300 leading-relaxed">
+          <span className="flex-shrink-0 mt-1.5 w-1.5 h-1.5 rounded-full bg-zinc-500" />
           <span>{bp}</span>
         </li>
       ))}
@@ -389,10 +389,10 @@ export default function SmartLinkPage() {
               <Button
                 size="lg"
                 data-testid="album-cta"
-                className="w-full h-[50px] bg-white text-black hover:bg-white hover:brightness-110 hover:scale-[1.02] hover:shadow-[0_0_20px_rgba(255,255,255,0.5)] font-bold text-base lg:text-lg transition-all duration-200 shadow-lg active:scale-[0.98]"
+                className="w-full h-[50px] bg-white text-black hover:bg-white hover:brightness-110 hover:scale-[1.02] hover:shadow-[0_0_20px_rgba(255,255,255,0.5)] font-extrabold tracking-wide text-base lg:text-lg uppercase transition-all duration-200 shadow-lg active:scale-[0.98]"
                 onClick={handleAlbumClick}
               >
-                🎧 {ctaLabel}
+                {ctaLabel}
               </Button>
 
               {/* SECONDARY — Collapsible email + bullets */}
@@ -416,12 +416,12 @@ export default function SmartLinkPage() {
           className="absolute inset-0 bg-cover bg-center"
           style={{
             backgroundImage: `url(${smartLink.image_url})`,
-            filter: 'blur(60px) brightness(0.3)',
+            filter: 'blur(14px) brightness(0.55)',
             transform: 'scale(1.2)',
           }}
         />
       )}
-      <div className="absolute inset-0 bg-black/50" />
+      <div className="absolute inset-0 bg-black/40" />
 
       {/* Hero content — vertically centered, tight spacing */}
       <div className="relative z-10 w-full max-w-sm mx-auto px-5 py-8 flex flex-col items-center text-center space-y-4" data-testid="hero-content">
@@ -453,12 +453,11 @@ export default function SmartLinkPage() {
         <Button
           size="lg"
           data-testid="album-cta"
-          className="w-full h-[50px] bg-white text-black hover:bg-white hover:brightness-110 hover:scale-[1.02] hover:shadow-[0_0_20px_rgba(255,255,255,0.5)] font-bold text-base transition-all duration-200 shadow-lg active:scale-[0.98]"
+          className="w-full h-[50px] bg-white text-black hover:bg-white hover:brightness-110 hover:scale-[1.02] hover:shadow-[0_0_20px_rgba(255,255,255,0.5)] font-extrabold tracking-wide text-base uppercase transition-all duration-200 shadow-lg active:scale-[0.98]"
           style={smartLink.button_color ? { backgroundColor: smartLink.button_color } : undefined}
           onClick={handleAlbumClick}
         >
           {ctaLabel}
-          <Sparkles className="w-5 h-5 ml-2" />
         </Button>
 
         {/* SECONDARY — Collapsible email + bullets */}

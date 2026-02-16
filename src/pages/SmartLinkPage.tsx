@@ -271,7 +271,7 @@ export default function SmartLinkPage() {
   const bulletPointsBlock = hasBulletPoints ? (
     <ul className="space-y-3 pt-3 pb-1" data-testid="bullet-points">
       {[smartLink.bullet_point_1, smartLink.bullet_point_2, smartLink.bullet_point_3].filter(Boolean).map((bp, i) => (
-        <li key={i} className="flex items-start gap-3 text-sm text-zinc-300 leading-relaxed">
+        <li key={i} className="flex items-start gap-3 text-sm text-white leading-relaxed">
           <span className="flex-shrink-0 mt-1.5 w-1.5 h-1.5 rounded-full bg-zinc-500" />
           <span>{bp}</span>
         </li>
@@ -293,40 +293,38 @@ export default function SmartLinkPage() {
         </button>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="space-y-4 pt-2">
+        <div className="mt-3 rounded-xl bg-[#0B0B0B]/90 backdrop-blur-sm border border-white/10 shadow-lg p-5 lg:p-6 space-y-4">
           {bulletPointsBlock}
           {hasSubmittedEmail ? (
-            <Card className="bg-zinc-900/90 border-zinc-800 p-4 text-center">
-              <p className="text-zinc-300 text-sm">Thanks for subscribing! You'll get exclusive drops and updates. 🎶</p>
-            </Card>
+            <div className="text-center">
+              <p className="text-white text-sm">Thanks for subscribing! You'll get exclusive drops and updates.</p>
+            </div>
           ) : (
             <form onSubmit={handleEmailSubmit} data-testid="email-form">
-              <Card className="bg-zinc-900/80 border-zinc-800 shadow-2xl p-5">
-                <div className="space-y-3">
-                  <p className="text-xs text-zinc-400 text-center">Get exclusive drops, early access & behind-the-scenes content.</p>
-                  <div className="relative w-full">
-                    <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-300 pointer-events-none z-10" />
-                    <Input
-                      type="email"
-                      placeholder="Enter your email"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      required
-                      disabled={isSubmitting}
-                      className="pl-12 h-[44px] w-full bg-zinc-900/60 border-[1.5px] border-zinc-400/60 text-white placeholder:text-zinc-300 focus:border-white focus:ring-2 focus:ring-white/50 text-sm"
-                    />
-                  </div>
-                  <Button
-                    type="submit"
-                    size="sm"
-                    className="w-full bg-zinc-700 text-white hover:bg-zinc-600 font-semibold"
+              <div className="space-y-3">
+                <p className="text-xs text-zinc-400 text-center">Get exclusive drops, early access & behind-the-scenes content.</p>
+                <div className="relative w-full">
+                  <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-300 pointer-events-none z-10" />
+                  <Input
+                    type="email"
+                    placeholder="Enter your email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    required
                     disabled={isSubmitting}
-                  >
-                    {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : "Subscribe"}
-                  </Button>
-                  <p className="text-xs text-zinc-600 text-center">🔒 No spam, ever.</p>
+                    className="pl-12 h-[44px] w-full bg-black border-[1.5px] border-zinc-400/60 text-white placeholder:text-zinc-300 focus:border-white focus:ring-2 focus:ring-white/50 text-sm"
+                  />
                 </div>
-              </Card>
+                <Button
+                  type="submit"
+                  size="sm"
+                  className="w-full bg-zinc-700 text-white hover:bg-zinc-600 font-semibold"
+                  disabled={isSubmitting}
+                >
+                  {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : "Subscribe"}
+                </Button>
+                <p className="text-xs text-zinc-600 text-center">No spam, ever.</p>
+              </div>
             </form>
           )}
         </div>

@@ -2,15 +2,11 @@ import React, { useState, useEffect, lazy, Suspense } from "react";
 import { DashboardHeader } from "@/components/DashboardHeader";
 import { MetricCard } from "@/components/MetricCard";
 import { MetricCardSkeleton } from "@/components/skeletons/MetricCardSkeleton";
-import { AccountCardSkeleton } from "@/components/skeletons/AccountCardSkeleton";
 import { SmartLinkCardSkeleton } from "@/components/skeletons/SmartLinkCardSkeleton";
-import { ConnectedAccountCard } from "@/components/ConnectedAccountCard";
 import { SmartLinkCard } from "@/components/SmartLinkCard";
-import { AddPlatformDialog, PlatformAccount } from "@/components/AddPlatformDialog";
 import { AddSmartLinkDialog, SmartLink } from "@/components/AddSmartLinkDialog";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { usePlatformConnections } from "@/hooks/usePlatformConnections";
 import { useSmartLinks } from "@/hooks/useSmartLinks";
 import { useArtistStats } from "@/hooks/useArtistStats";
 import { useShopifyConnection } from "@/hooks/useShopifyConnection";
@@ -20,72 +16,33 @@ import {
   Users, 
   TrendingUp, 
   ShoppingBag,
-  Music,
   Instagram,
-  Youtube,
-  Facebook,
   Plus,
   Link as LinkIcon,
-  Music2,
-  Apple
 } from "lucide-react";
 
 // Lazy load the Email Leads section (below the fold)
 const EmailLeadsSection = lazy(() => import("@/components/EmailLeadsSection").then(m => ({ default: m.EmailLeadsSection })));
 
-const platformIcons: Record<string, any> = {
-  Spotify: Music,
-  Instagram: Instagram,
-  YouTube: Youtube,
-  Facebook: Facebook,
-  SoundCloud: Music2,
-  "Apple Music": Apple,
-};
-
 const Index = () => {
-  const [dialogOpen, setDialogOpen] = useState(false);
   const [smartLinkDialogOpen, setSmartLinkDialogOpen] = useState(false);
   const [editingLink, setEditingLink] = useState<SmartLink | null>(null);
   
-  const { connections, isLoading: connectionsLoading, createConnection, removeConnection } = usePlatformConnections();
   const { smartLinks, isLoading: linksLoading, createSmartLink, updateSmartLink, removeSmartLink } = useSmartLinks();
   const { stats: artistStats, isLoading: statsLoading, refresh: refreshStats, isRefreshing } = useArtistStats();
   const { isConnected: shopifyConnected, isLoading: shopifyLoading } = useShopifyConnection();
+
   // Handle Spotify OAuth callback
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('spotify_connected') === 'true') {
       toast.success("Spotify connected successfully!");
-      // Clear the query parameter
       window.history.replaceState({}, '', window.location.pathname);
     } else if (params.get('error')) {
       toast.error(params.get('error') || "Connection failed");
-      // Clear the query parameter
       window.history.replaceState({}, '', window.location.pathname);
     }
-
-    // Listen for messages from OAuth popup
-    const handleMessage = (event: MessageEvent) => {
-      if (event.data.type === 'spotify_connected') {
-        toast.success("Spotify connected successfully!");
-        // Force refresh the connections
-        window.location.reload();
-      }
-    };
-
-    window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
   }, []);
-
-  const getRelativeTime = (dateString: string) => {
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffInMinutes = Math.floor((now.getTime() - date.getTime()) / (1000 * 60));
-    
-    if (diffInMinutes < 60) return `${diffInMinutes} minutes ago`;
-    if (diffInMinutes < 1440) return `${Math.floor(diffInMinutes / 60)} hours ago`;
-    return `${Math.floor(diffInMinutes / 1440)} days ago`;
-  };
 
   return (
     <div className="min-h-screen bg-gradient-dark">
@@ -153,95 +110,54 @@ const Index = () => {
           </div>
         </section>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Connected Accounts */}
-          <section className="lg:col-span-2">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-2xl font-semibold">Connected Accounts</h3>
-              <Button variant="outline" className="gap-2" onClick={() => setDialogOpen(true)}>
-                <Plus className="w-4 h-4" />
-                Connect Platform
-              </Button>
-            </div>
-            <div className="grid gap-4">
-              {connectionsLoading ? (
-                <>
-                  <AccountCardSkeleton />
-                  <AccountCardSkeleton />
-                </>
-              ) : connections.length > 0 ? (
-                connections.map((connection) => (
-                  <ConnectedAccountCard
-                    key={connection.id}
-                    platform={connection.platform}
-                    username={connection.username || "Unknown"}
-                    status={connection.is_connected ? "connected" : "error"}
-                    icon={platformIcons[connection.platform] || Music}
-                    lastSync={connection.last_synced_at ? getRelativeTime(connection.last_synced_at) : "Never"}
-                    url={connection.profile_url || "#"}
-                    onRemove={() => removeConnection(connection.id)}
-                    onEdit={() => {}}
-                  />
-                ))
-              ) : (
-                <Card className="p-8 text-center bg-card/50 backdrop-blur-sm border-border border-dashed">
-                  <p className="text-muted-foreground mb-4">No platforms connected yet</p>
-                  <Button onClick={() => setDialogOpen(true)}>
-                    <Plus className="w-4 h-4 mr-2" />
-                    Connect Your First Platform
-                  </Button>
-                </Card>
-              )}
-            </div>
-          </section>
-
-          {/* Smart Links */}
-          <section>
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-2xl font-semibold">Smart Links</h3>
-              <Button variant="outline" size="icon" onClick={() => setSmartLinkDialogOpen(true)}>
-                <Plus className="w-4 h-4" />
-              </Button>
-            </div>
-            <div className="space-y-4">
-              {linksLoading ? (
-                <>
-                  <SmartLinkCardSkeleton />
-                  <SmartLinkCardSkeleton />
-                </>
-              ) : smartLinks.length > 0 ? (
-                smartLinks.map((link) => (
-                  <SmartLinkCard
-                    key={link.id}
-                    title={link.title}
-                    url={link.destination_url}
-                    slug={link.slug}
-                    shortCode={link.short_code}
-                    clicks={link.click_count || 0}
-                    conversions={link.conversion_count || 0}
-                    onRemove={() => removeSmartLink(link.id)}
-                    onEdit={() => {
-                      setEditingLink(link);
-                      setSmartLinkDialogOpen(true);
-                    }}
-                  />
-                ))
-              ) : (
-                <Card className="p-8 text-center bg-card/50 backdrop-blur-sm border-border border-dashed">
-                  <p className="text-muted-foreground mb-4">No smart links created yet</p>
-                  <Button onClick={() => setSmartLinkDialogOpen(true)}>
-                    <Plus className="w-4 h-4 mr-2" />
-                    Create Your First Smart Link
-                  </Button>
-                </Card>
-              )}
-            </div>
-          </section>
-        </div>
+        {/* Smart Links — full width now that Connected Accounts is removed */}
+        <section className="mb-12">
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="text-2xl font-semibold">Smart Links</h3>
+            <Button variant="outline" className="gap-2" onClick={() => setSmartLinkDialogOpen(true)}>
+              <Plus className="w-4 h-4" />
+              Create Smart Link
+            </Button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {linksLoading ? (
+              <>
+                <SmartLinkCardSkeleton />
+                <SmartLinkCardSkeleton />
+              </>
+            ) : smartLinks.length > 0 ? (
+              smartLinks.map((link) => (
+                <SmartLinkCard
+                  key={link.id}
+                  title={link.title}
+                  url={link.destination_url}
+                  slug={link.slug}
+                  shortCode={link.short_code}
+                  ogImageUrl={link.og_image_url}
+                  clicks={link.click_count || 0}
+                  conversions={link.conversion_count || 0}
+                  onRemove={() => removeSmartLink(link.id)}
+                  onEdit={() => {
+                    setEditingLink(link);
+                    setSmartLinkDialogOpen(true);
+                  }}
+                />
+              ))
+            ) : (
+              <Card className="p-8 text-center bg-card/50 backdrop-blur-sm border-border border-dashed col-span-full">
+                <p className="text-muted-foreground mb-4">No smart links created yet</p>
+                <Button onClick={() => setSmartLinkDialogOpen(true)}>
+                  <Plus className="w-4 h-4 mr-2" />
+                  Create Your First Smart Link
+                </Button>
+              </Card>
+            )}
+          </div>
+        </section>
 
         {/* Email Leads & Retargeting - Lazy Loaded */}
         <Suspense fallback={
-          <section className="mt-12 space-y-6">
+          <section className="space-y-6">
             <h3 className="text-2xl font-semibold">Email Leads & Retargeting</h3>
             <div className="grid gap-6">
               <Card className="p-6 bg-card/50 backdrop-blur-sm border-border animate-pulse">
@@ -254,9 +170,7 @@ const Index = () => {
             </div>
           </section>
         }>
-          <div className="mt-12">
-            <EmailLeadsSection />
-          </div>
+          <EmailLeadsSection />
         </Suspense>
 
         {/* Quick Actions */}
@@ -266,29 +180,17 @@ const Index = () => {
               <div>
                 <h3 className="text-2xl font-bold mb-2">Ready to grow your fanbase?</h3>
                 <p className="text-primary-foreground/80">
-                  Create a new smart link or connect another platform to expand your reach
+                  Create a new smart link to expand your reach
                 </p>
               </div>
-              <div className="flex gap-4">
-                <Button size="lg" variant="secondary">
-                  <LinkIcon className="w-5 h-5 mr-2" />
-                  Create Smart Link
-                </Button>
-                <Button size="lg" variant="outline" className="bg-transparent border-primary-foreground text-primary-foreground hover:bg-primary-foreground hover:text-primary">
-                  <Plus className="w-5 h-5 mr-2" />
-                  Add Platform
-                </Button>
-              </div>
+              <Button size="lg" variant="secondary" onClick={() => setSmartLinkDialogOpen(true)}>
+                <LinkIcon className="w-5 h-5 mr-2" />
+                Create Smart Link
+              </Button>
             </div>
           </Card>
         </section>
       </main>
-
-      <AddPlatformDialog 
-        open={dialogOpen} 
-        onOpenChange={setDialogOpen}
-        onConnect={createConnection}
-      />
 
       <AddSmartLinkDialog
         open={smartLinkDialogOpen}

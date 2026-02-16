@@ -1,0 +1,1 @@
+ALTER TABLE public.smart_links ADD COLUMN og_image_url text;

@@ -303,6 +303,7 @@ export type Database = {
           image_url: string | null
           is_active: boolean | null
           metadata: Json | null
+          og_image_url: string | null
           short_code: string | null
           show_email_form: boolean | null
           slug: string
@@ -335,6 +336,7 @@ export type Database = {
           image_url?: string | null
           is_active?: boolean | null
           metadata?: Json | null
+          og_image_url?: string | null
           short_code?: string | null
           show_email_form?: boolean | null
           slug: string
@@ -367,6 +369,7 @@ export type Database = {
           image_url?: string | null
           is_active?: boolean | null
           metadata?: Json | null
+          og_image_url?: string | null
           short_code?: string | null
           show_email_form?: boolean | null
           slug?: string

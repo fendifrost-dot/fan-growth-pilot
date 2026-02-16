@@ -293,7 +293,7 @@ export default function SmartLinkPage() {
         </button>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="mt-3 rounded-xl bg-[#0B0B0B]/90 backdrop-blur-sm border border-white/10 shadow-lg p-5 lg:p-6 space-y-4">
+        <div className="relative z-10 mt-3 rounded-xl bg-black/95 backdrop-blur-md border border-white/10 shadow-lg p-5 lg:p-6 space-y-4">
           {bulletPointsBlock}
           {hasSubmittedEmail ? (
             <div className="text-center">
@@ -415,7 +415,7 @@ export default function SmartLinkPage() {
           autoPlay muted loop playsInline
           preload="metadata"
           poster={smartLink.image_url || undefined}
-          className="absolute inset-0 w-full h-full object-cover"
+          className="absolute inset-0 z-0 w-full h-full object-cover"
           onLoadedData={() => setVideoLoaded(true)}
           data-testid="background-video"
         >

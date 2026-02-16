@@ -82,6 +82,7 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
   const [testimonialText, setTestimonialText] = useState(editLink?.testimonial_text || "");
   const [testimonialAuthor, setTestimonialAuthor] = useState(editLink?.testimonial_author || "");
   const [themePreset, setThemePreset] = useState(editLink?.theme_preset || "default");
+  const [ogImageUrl, setOgImageUrl] = useState(editLink?.og_image_url || "");
 
   // Update form when editLink changes
   useEffect(() => {
@@ -106,6 +107,7 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
       setTestimonialText(editLink.testimonial_text || "");
       setTestimonialAuthor(editLink.testimonial_author || "");
       setThemePreset(editLink.theme_preset || "default");
+      setOgImageUrl(editLink.og_image_url || "");
     } else {
       // Reset form when not editing
       setTitle("");
@@ -131,6 +133,7 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
       setTestimonialText("");
       setTestimonialAuthor("");
       setThemePreset("default");
+      setOgImageUrl("");
     }
   }, [editLink]);
 
@@ -214,6 +217,7 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
         testimonial_text: testimonialText,
         testimonial_author: testimonialAuthor,
         theme_preset: themePreset,
+        og_image_url: ogImageUrl || null,
       };
 
       if (isEditMode && editLink && onUpdate) {
@@ -248,6 +252,7 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
       setTestimonialText("");
       setTestimonialAuthor("");
       setThemePreset("default");
+      setOgImageUrl("");
       onOpenChange(false);
     } catch (error: any) {
       toast.error("Failed to upload files: " + error.message);
@@ -413,6 +418,24 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
                   {backgroundImageFile ? `New: ${backgroundImageFile.name}` : backgroundImageUrl ? "Current background will be kept (upload new to replace)" : "Image uploaded"}
                 </p>
               )}
+            </div>
+          </div>
+
+          {/* Social Preview Image URL */}
+          <div className="border-t pt-4 mt-4">
+            <h3 className="text-lg font-semibold mb-4">Social Preview (Open Graph)</h3>
+            <div className="space-y-2">
+              <Label htmlFor="ogImageUrl">Social Share Card Image URL</Label>
+              <Input
+                id="ogImageUrl"
+                type="url"
+                placeholder="https://links.fendifrost.com/og-mylink.png"
+                value={ogImageUrl}
+                onChange={(e) => setOgImageUrl(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Public URL for the image shown when this link is shared on social media (1200×630px recommended). Must be a publicly accessible URL.
+              </p>
             </div>
           </div>
 

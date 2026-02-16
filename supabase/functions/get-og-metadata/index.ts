@@ -7,12 +7,6 @@ const corsHeaders = {
 };
 
 const LINKS_DOMAIN = "https://links.fendifrost.com";
-
-const OG_IMAGE_MAP: Record<string, string> = {
-  runwaymusic: `${LINKS_DOMAIN}/og-runwaymusic.png`,
-  chakra: `${LINKS_DOMAIN}/og-chakra.png`,
-};
-
 const DEFAULT_OG_IMAGE = `${LINKS_DOMAIN}/og-runwaymusic.png`;
 
 Deno.serve(async (req: Request) => {
@@ -37,7 +31,7 @@ Deno.serve(async (req: Request) => {
 
     const { data, error } = await supabase
       .from("smart_links")
-      .select("title, headline, subheadline, description, image_url, slug, theme_preset")
+      .select("title, headline, subheadline, description, image_url, slug, theme_preset, og_image_url")
       .or(`slug.eq.${slug},short_code.eq.${slug}`)
       .eq("is_active", true)
       .maybeSingle();
@@ -64,7 +58,8 @@ Deno.serve(async (req: Request) => {
 
     const title = data.headline || data.title;
     const description = data.subheadline || data.description || "";
-    const ogImage = OG_IMAGE_MAP[data.slug] || DEFAULT_OG_IMAGE;
+    // Use og_image_url if set, otherwise fall back to default
+    const ogImage = data.og_image_url || DEFAULT_OG_IMAGE;
     const canonicalUrl = `${LINKS_DOMAIN}/${data.slug}`;
 
     const metadata = {

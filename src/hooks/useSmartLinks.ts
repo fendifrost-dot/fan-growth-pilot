@@ -48,6 +48,7 @@ export const useSmartLinks = () => {
       testimonial_text?: string;
       testimonial_author?: string;
       theme_preset?: string;
+      og_image_url?: string | null;
     }) => {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error("Not authenticated");
@@ -127,6 +128,7 @@ export const useSmartLinks = () => {
       testimonial_text?: string;
       testimonial_author?: string;
       theme_preset?: string;
+      og_image_url?: string | null;
     }) => {
       const { data, error } = await supabase
         .from("smart_links")

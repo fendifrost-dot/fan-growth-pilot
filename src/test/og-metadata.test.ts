@@ -3,10 +3,10 @@ import { describe, it, expect } from "vitest";
 const EDGE_FN_URL = `https://vsemrziqxrrfcquxfnwd.supabase.co/functions/v1/get-og-metadata`;
 
 describe("get-og-metadata edge function", () => {
-  it("returns different metadata for runwaymusic vs HeartChakra", async () => {
+  it("returns different metadata for runwaymusic vs heartchakra", async () => {
     const [runwayRes, chakraRes] = await Promise.all([
       fetch(`${EDGE_FN_URL}?slug=runwaymusic`),
-      fetch(`${EDGE_FN_URL}?slug=HeartChakra`),
+      fetch(`${EDGE_FN_URL}?slug=heartchakra`),
     ]);
 
     expect(runwayRes.ok).toBe(true);
@@ -23,7 +23,7 @@ describe("get-og-metadata edge function", () => {
 
     // Canonical URLs must be different and correct
     expect(runway.canonical).toBe("https://links.fendifrost.com/runwaymusic");
-    expect(chakra.canonical).toBe("https://links.fendifrost.com/HeartChakra");
+    expect(chakra.canonical).toBe("https://links.fendifrost.com/heartchakra");
 
     // og:url must match canonical
     expect(runway.url).toBe(runway.canonical);
@@ -87,8 +87,8 @@ describe("Integration: live URL metadata delivery", () => {
     expect(html).toMatch(/og:url[^>]*content="https:\/\/links\.fendifrost\.com\/runwaymusic"/i);
   });
 
-  it("GET /HeartChakra returns different OG tags from /runwaymusic", async () => {
-    const res = await fetch(`${LINKS_DOMAIN}/HeartChakra`, {
+  it("GET /heartchakra returns different OG tags from /runwaymusic", async () => {
+    const res = await fetch(`${LINKS_DOMAIN}/heartchakra`, {
       headers: { "User-Agent": "Mozilla/5.0" },
     });
     
@@ -100,7 +100,6 @@ describe("Integration: live URL metadata delivery", () => {
     const html = await res.text();
 
     // The Cloudflare Worker injects slug-specific tags BEFORE the static fallback tags.
-    // Extract the first og:title to verify the Worker injected the correct one.
     const firstOgTitle = html.match(/og:title[^>]*content="([^"]*)"/i);
     expect(firstOgTitle).not.toBeNull();
     expect(firstOgTitle![1]).toContain("Some Hearts Break Louder");

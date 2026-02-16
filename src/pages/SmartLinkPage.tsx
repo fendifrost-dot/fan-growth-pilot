@@ -144,7 +144,7 @@ export default function SmartLinkPage() {
 
   // Initialize HLS.js for adaptive streaming
   useEffect(() => {
-    if (!smartLink?.video_url || !videoRef.current) return;
+    if (!smartLink?.video_url || !videoRef?.current) return;
 
     const video = videoRef.current;
     const videoUrl = smartLink.video_url;
@@ -244,7 +244,7 @@ export default function SmartLinkPage() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-black">
+      <div className="min-h-[100dvh] flex items-center justify-center bg-black">
         <Loader2 className="w-8 h-8 animate-spin text-white" />
       </div>
     );
@@ -254,24 +254,12 @@ export default function SmartLinkPage() {
     return <Navigate to="/404" replace />;
   }
 
-  const backgroundStyle: React.CSSProperties = {
-    backgroundColor: smartLink.background_color || '#000000',
-    backgroundImage: smartLink.background_image_url 
-      ? `url(${smartLink.background_image_url})` 
-      : undefined,
-    backgroundSize: 'cover',
-    backgroundPosition: 'center',
-    backgroundRepeat: 'no-repeat',
-    backgroundAttachment: 'fixed',
-  };
-
   const isRunwayTheme = smartLink.theme_preset === 'runway';
   const isMusicTemplate = isRunwayTheme || smartLink.theme_preset === 'default';
   const showEmailCapture = smartLink.show_email_form !== false;
   const hasBulletPoints = smartLink.bullet_point_1 || smartLink.bullet_point_2 || smartLink.bullet_point_3;
 
-  // Music Template v2 CTA label resolver:
-  // If button_text is null/empty OR equals "Click Here" (case-insensitive) → "Listen Now"
+  // Music Template v2 CTA label resolver
   const resolveCtaLabel = (raw: string | undefined | null): string => {
     const trimmed = (raw ?? "").trim();
     if (!trimmed || trimmed.toLowerCase() === "click here") return "Listen Now";
@@ -279,19 +267,86 @@ export default function SmartLinkPage() {
   };
   const ctaLabel = resolveCtaLabel(smartLink.button_text);
 
+  // ─── Shared: Bullet points (rendered inside accordion only) ───
+  const bulletPointsBlock = hasBulletPoints ? (
+    <ul className="space-y-3 pt-3 pb-1" data-testid="bullet-points">
+      {[smartLink.bullet_point_1, smartLink.bullet_point_2, smartLink.bullet_point_3].filter(Boolean).map((bp, i) => (
+        <li key={i} className="flex items-start gap-2.5 text-sm text-zinc-300 leading-relaxed">
+          <Sparkles className="w-4 h-4 flex-shrink-0 mt-0.5 text-white/70" />
+          <span>{bp}</span>
+        </li>
+      ))}
+    </ul>
+  ) : null;
+
+  // ─── Shared: Email accordion (bullets + email form inside) ───
+  const emailAccordionBlock = showEmailCapture ? (
+    <Collapsible open={emailPlaqueOpen} onOpenChange={setEmailPlaqueOpen}>
+      <CollapsibleTrigger asChild>
+        <button
+          data-testid="email-plaque-trigger"
+          className="w-full flex items-center justify-center gap-2 py-2 text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
+        >
+          <Mail className="w-4 h-4" />
+          {hasSubmittedEmail ? "You're subscribed! ✓" : "Unlock extras & updates"}
+          <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${emailPlaqueOpen ? 'rotate-180' : ''}`} />
+        </button>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="space-y-4 pt-2">
+          {bulletPointsBlock}
+          {hasSubmittedEmail ? (
+            <Card className="bg-zinc-900/90 border-zinc-800 p-4 text-center">
+              <p className="text-zinc-300 text-sm">Thanks for subscribing! You'll get exclusive drops and updates. 🎶</p>
+            </Card>
+          ) : (
+            <form onSubmit={handleEmailSubmit} data-testid="email-form">
+              <Card className="bg-zinc-900/80 border-zinc-800 shadow-2xl p-5">
+                <div className="space-y-3">
+                  <p className="text-xs text-zinc-400 text-center">Get exclusive drops, early access & behind-the-scenes content.</p>
+                  <div className="relative w-full">
+                    <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-300 pointer-events-none z-10" />
+                    <Input
+                      type="email"
+                      placeholder="Enter your email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      required
+                      disabled={isSubmitting}
+                      className="pl-12 h-[44px] w-full bg-zinc-900/60 border-[1.5px] border-zinc-400/60 text-white placeholder:text-zinc-300 focus:border-white focus:ring-2 focus:ring-white/50 text-sm"
+                    />
+                  </div>
+                  <Button
+                    type="submit"
+                    size="sm"
+                    className="w-full bg-zinc-700 text-white hover:bg-zinc-600 font-semibold"
+                    disabled={isSubmitting}
+                  >
+                    {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : "Subscribe"}
+                  </Button>
+                  <p className="text-xs text-zinc-600 text-center">🔒 No spam, ever.</p>
+                </div>
+              </Card>
+            </form>
+          )}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  ) : null;
+
   // ─── Runway Theme: Split Video + Content ───
   if (isRunwayTheme && smartLink.video_url) {
     return (
-      <div className="min-h-screen bg-black flex items-center justify-center">
-        <div className="w-full h-screen flex flex-col lg:flex-row">
+      <div className="min-h-[100dvh] bg-black flex items-center justify-center">
+        <div className="w-full min-h-[100dvh] flex flex-col lg:flex-row">
           {/* Video Section */}
-          <div className="w-full lg:w-[65%] h-[45vh] lg:h-full relative">
+          <div className="w-full lg:w-[65%] h-[40vh] lg:h-auto lg:min-h-[100dvh] relative flex-shrink-0">
             <video 
               ref={videoRef}
               autoPlay muted loop playsInline
               preload="metadata"
               poster={smartLink.image_url || undefined}
-              className="w-full h-full object-cover"
+              className="w-full h-full object-cover absolute inset-0"
               onLoadedData={() => setVideoLoaded(true)}
             >
               {smartLink.video_url && !smartLink.video_url.includes('.m3u8') && (
@@ -301,25 +356,20 @@ export default function SmartLinkPage() {
             <div className="absolute inset-0 bg-black/20" />
           </div>
 
-          {/* Content Section */}
-          <div className="w-full lg:w-[35%] flex items-center justify-center p-6 lg:p-10 bg-black overflow-y-auto">
-            <div className="w-full max-w-xl space-y-5 lg:space-y-6 my-auto">
+          {/* Content Section — tight, CTA-dominant */}
+          <div className="w-full lg:w-[35%] flex items-center justify-center px-5 py-6 lg:p-8 bg-black" data-testid="hero-content">
+            <div className="w-full max-w-xl space-y-4 my-auto">
               {/* Headline */}
-              <div className="space-y-2 lg:space-y-3 text-center">
+              <div className="space-y-1 text-center">
                 <h1 className="text-3xl lg:text-4xl xl:text-5xl font-bold text-white font-['Playfair_Display'] leading-tight">
-                  <div className="mb-2">Runway Music</div>
+                  <div className="mb-1">Runway Music</div>
                   <div className="text-2xl lg:text-3xl xl:text-4xl font-normal italic opacity-90">The Sound of Style</div>
                 </h1>
-                {smartLink.subheadline && (
-                  <p className="text-sm lg:text-base text-zinc-300 leading-relaxed">
-                    {smartLink.subheadline}
-                  </p>
-                )}
               </div>
 
-              {/* Album Cover */}
+              {/* Album Cover — compact */}
               {smartLink.image_url && (
-                <div className="w-full max-w-sm mx-auto animate-fade-in">
+                <div className="w-full max-w-[200px] mx-auto">
                   <div className="relative overflow-hidden rounded-lg shadow-2xl">
                     <img 
                       src={smartLink.image_url} 
@@ -331,19 +381,7 @@ export default function SmartLinkPage() {
                 </div>
               )}
 
-              {/* Value Props */}
-              {hasBulletPoints && (
-                <ul className="space-y-3 lg:space-y-4">
-                  {[smartLink.bullet_point_1, smartLink.bullet_point_2, smartLink.bullet_point_3].filter(Boolean).map((bp, i) => (
-                    <li key={i} className="flex items-start gap-2.5 text-sm lg:text-base text-zinc-200 leading-relaxed">
-                      <Sparkles className="w-4 h-4 lg:w-5 lg:h-5 flex-shrink-0 mt-0.5 text-white" />
-                      <span>{bp}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-
-              {/* PRIMARY CTA — Always visible album button */}
+              {/* PRIMARY CTA — Always visible */}
               <Button
                 size="lg"
                 data-testid="album-cta"
@@ -353,57 +391,8 @@ export default function SmartLinkPage() {
                 🎧 {ctaLabel}
               </Button>
 
-              {/* SECONDARY — Collapsible email capture plaque */}
-              {showEmailCapture && (
-                <Collapsible open={emailPlaqueOpen} onOpenChange={setEmailPlaqueOpen}>
-                  <CollapsibleTrigger asChild>
-                    <button
-                      data-testid="email-plaque-trigger"
-                      className="w-full flex items-center justify-center gap-2 py-3 text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
-                    >
-                      <Mail className="w-4 h-4" />
-                      {hasSubmittedEmail ? "You're subscribed! ✓" : "Unlock extras & updates"}
-                      <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${emailPlaqueOpen ? 'rotate-180' : ''}`} />
-                    </button>
-                  </CollapsibleTrigger>
-                  <CollapsibleContent>
-                    {hasSubmittedEmail ? (
-                      <Card className="bg-zinc-900/90 border-zinc-800 p-4 text-center">
-                        <p className="text-zinc-300 text-sm">Thanks for subscribing! You'll get exclusive drops and updates. 🎶</p>
-                      </Card>
-                    ) : (
-                      <form onSubmit={handleEmailSubmit} data-testid="email-form">
-                        <Card className="bg-zinc-900/90 border-zinc-800 shadow-2xl p-5">
-                          <div className="space-y-3">
-                            <p className="text-xs text-zinc-400 text-center">Get exclusive drops, early access & behind-the-scenes content.</p>
-                            <div className="relative w-full">
-                              <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-300 pointer-events-none z-10" />
-                              <Input
-                                type="email"
-                                placeholder="Enter your email"
-                                value={email}
-                                onChange={(e) => setEmail(e.target.value)}
-                                required
-                                disabled={isSubmitting}
-                                className="pl-12 h-[44px] w-full bg-zinc-900/60 border-[1.5px] border-zinc-400/60 text-white placeholder:text-zinc-300 focus:border-white focus:ring-2 focus:ring-white/50 text-sm"
-                              />
-                            </div>
-                            <Button
-                              type="submit"
-                              size="sm"
-                              className="w-full bg-zinc-700 text-white hover:bg-zinc-600 font-semibold"
-                              disabled={isSubmitting}
-                            >
-                              {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : "Subscribe"}
-                            </Button>
-                            <p className="text-xs text-zinc-600 text-center">🔒 No spam, ever.</p>
-                          </div>
-                        </Card>
-                      </form>
-                    )}
-                  </CollapsibleContent>
-                </Collapsible>
-              )}
+              {/* SECONDARY — Collapsible email + bullets */}
+              {emailAccordionBlock}
             </div>
           </div>
         </div>
@@ -411,205 +400,88 @@ export default function SmartLinkPage() {
     );
   }
 
-  // ─── Default / Fallback Theme ───
+  // ─── Default Theme (Template v2): Full-bleed hero ───
   return (
-    <div className="min-h-screen relative" style={backgroundStyle}>
-      <div className={`fixed inset-0 bg-gradient-to-br from-black/40 via-black/30 to-black/40 pointer-events-none`} />
-      
-      {!isRunwayTheme && (
-        <div className="fixed inset-0 overflow-hidden pointer-events-none">
-          <div className="absolute top-1/4 left-1/4 w-64 h-64 bg-primary/10 rounded-full blur-3xl animate-pulse" />
-          <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-accent/10 rounded-full blur-3xl animate-pulse delay-1000" />
+    <div
+      className="min-h-[100dvh] relative flex flex-col items-center justify-center overflow-hidden"
+      style={{ backgroundColor: smartLink.background_color || '#000000' }}
+    >
+      {/* Blurred background from cover art */}
+      {smartLink.image_url && (
+        <div
+          className="absolute inset-0 bg-cover bg-center"
+          style={{
+            backgroundImage: `url(${smartLink.image_url})`,
+            filter: 'blur(60px) brightness(0.3)',
+            transform: 'scale(1.2)',
+          }}
+        />
+      )}
+      <div className="absolute inset-0 bg-black/50" />
+
+      {/* Hero content — vertically centered, tight spacing */}
+      <div className="relative z-10 w-full max-w-sm mx-auto px-5 py-8 flex flex-col items-center text-center space-y-4" data-testid="hero-content">
+        {/* Cover art */}
+        {smartLink.image_url && (
+          <div className="w-[200px] h-[200px] flex-shrink-0">
+            <img
+              src={smartLink.image_url}
+              alt={smartLink.title}
+              loading="eager"
+              className="w-full h-full object-cover rounded-lg shadow-2xl"
+            />
+          </div>
+        )}
+
+        {/* Title + subheadline */}
+        <div className="space-y-1">
+          <h1 className="text-2xl font-bold text-white leading-tight">
+            {smartLink.headline || smartLink.title}
+          </h1>
+          {(smartLink.subheadline || smartLink.description) && (
+            <p className="text-sm text-zinc-300 leading-snug">
+              {smartLink.subheadline || smartLink.description}
+            </p>
+          )}
+        </div>
+
+        {/* PRIMARY CTA — above the fold */}
+        <Button
+          size="lg"
+          data-testid="album-cta"
+          className="w-full h-[50px] bg-white text-black hover:bg-white hover:brightness-110 hover:scale-[1.02] hover:shadow-[0_0_20px_rgba(255,255,255,0.5)] font-bold text-base transition-all duration-200 shadow-lg active:scale-[0.98]"
+          style={smartLink.button_color ? { backgroundColor: smartLink.button_color } : undefined}
+          onClick={handleAlbumClick}
+        >
+          {ctaLabel}
+          <Sparkles className="w-5 h-5 ml-2" />
+        </Button>
+
+        {/* SECONDARY — Collapsible email + bullets */}
+        {emailAccordionBlock}
+
+        {/* Trust badge */}
+        {showEmailCapture && (
+          <p className="text-xs text-zinc-500">
+            🔒 Your information is secure and will never be shared
+          </p>
+        )}
+      </div>
+
+      {/* Testimonial below fold */}
+      {smartLink.testimonial_text && (
+        <div className="relative z-10 w-full max-w-sm mx-auto px-5 pb-8 text-center space-y-2">
+          <div className="text-2xl text-white/40">"</div>
+          <p className="text-sm italic text-zinc-400 leading-relaxed">
+            {smartLink.testimonial_text}
+          </p>
+          {smartLink.testimonial_author && (
+            <p className="text-xs text-zinc-500 font-semibold">
+              {smartLink.testimonial_author}
+            </p>
+          )}
         </div>
       )}
-
-      <div className="relative z-10">
-        <div className="space-y-0">
-          {/* Hero Video Section */}
-          {smartLink.video_url && (
-            <div className="w-full relative h-[70vh] overflow-hidden">
-              <video 
-                src={smartLink.video_url}
-                autoPlay={smartLink.video_autoplay}
-                muted={smartLink.video_autoplay}
-                loop={smartLink.video_autoplay}
-                controls={!smartLink.video_autoplay}
-                preload="metadata"
-                className="w-full h-full object-cover"
-              />
-              {(smartLink.headline || smartLink.subheadline) && (
-                <div className="absolute inset-0 bg-gradient-to-t from-black via-black/50 to-transparent flex flex-col items-center justify-end p-8 text-center">
-                  {smartLink.headline && (
-                    <h1 className="text-4xl md:text-6xl lg:text-7xl font-bold text-white mb-4">
-                      {smartLink.headline}
-                    </h1>
-                  )}
-                  {smartLink.subheadline && (
-                    <p className="text-lg md:text-xl text-white/90 max-w-3xl leading-relaxed">
-                      {smartLink.subheadline}
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Content Card */}
-          <div className={`relative z-10 max-w-4xl mx-auto p-4 ${smartLink.video_url ? '-mt-20' : 'mt-8'}`}>
-            <Card className="bg-card/95 backdrop-blur-lg shadow-2xl p-8 md:p-12 space-y-8">
-              {/* Headline/Subheadline if no video */}
-              {!smartLink.video_url && (smartLink.headline || smartLink.subheadline) && (
-                <div className="text-center space-y-4 animate-fade-in">
-                  {smartLink.headline && (
-                    <h1 className="text-4xl md:text-6xl lg:text-7xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-foreground via-primary to-foreground">
-                      {smartLink.headline}
-                    </h1>
-                  )}
-                  {smartLink.subheadline && (
-                    <p className="text-lg md:text-xl max-w-3xl mx-auto leading-relaxed text-muted-foreground">
-                      {smartLink.subheadline}
-                    </p>
-                  )}
-                  <div className="h-1 w-24 mx-auto bg-gradient-to-r from-transparent via-primary to-transparent" />
-                </div>
-              )}
-
-              {/* Image */}
-              {smartLink.image_url && (
-                <div className="w-full group animate-fade-in">
-                  <div className="relative overflow-hidden rounded-xl">
-                    <img 
-                      src={smartLink.image_url} 
-                      alt={smartLink.title}
-                      loading="lazy"
-                      className="w-full h-auto object-cover max-h-96 transition-transform duration-500 group-hover:scale-105"
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* Title (if no headline) */}
-              {!smartLink.headline && (
-                <div className="space-y-2 animate-fade-in text-center">
-                  <h1 className="text-5xl md:text-6xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-foreground via-primary to-foreground">
-                    {smartLink.title}
-                  </h1>
-                  <div className="h-1 w-24 mx-auto bg-gradient-to-r from-transparent via-primary to-transparent" />
-                </div>
-              )}
-
-              {/* Description */}
-              {smartLink.description && !smartLink.subheadline && (
-                <p className="text-lg md:text-xl leading-relaxed max-w-xl mx-auto animate-fade-in text-center text-muted-foreground">
-                  {smartLink.description}
-                </p>
-              )}
-
-              {/* What You Get */}
-              {hasBulletPoints && (
-                <div className="max-w-2xl mx-auto space-y-6 p-8 rounded-xl animate-fade-in bg-muted/30">
-                  <h2 className="text-2xl md:text-3xl font-bold text-center">What You Get</h2>
-                  <ul className="space-y-4">
-                    {[smartLink.bullet_point_1, smartLink.bullet_point_2, smartLink.bullet_point_3].filter(Boolean).map((bp, i) => (
-                      <li key={i} className="flex items-start gap-3 text-lg text-foreground">
-                        <Sparkles className="w-6 h-6 flex-shrink-0 mt-1 text-primary" />
-                        <span>{bp}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {/* Testimonial */}
-              {smartLink.testimonial_text && (
-                <div className="max-w-2xl mx-auto text-center space-y-4 p-8 rounded-xl animate-fade-in bg-muted/30">
-                  <div className="text-4xl text-primary">"</div>
-                  <p className="text-lg md:text-xl italic leading-relaxed text-foreground">
-                    {smartLink.testimonial_text}
-                  </p>
-                  {smartLink.testimonial_author && (
-                    <p className="text-sm font-semibold text-muted-foreground">
-                      {smartLink.testimonial_author}
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {/* PRIMARY CTA — always visible album/destination button */}
-              <div className="animate-fade-in pt-4 text-center space-y-4">
-                <Button
-                  size="lg"
-                  data-testid="album-cta"
-                  className="w-full max-w-md text-lg py-7 rounded-xl font-semibold shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105"
-                  style={smartLink.button_color ? { backgroundColor: smartLink.button_color } : undefined}
-                  onClick={handleAlbumClick}
-                >
-                  {ctaLabel}
-                  <Sparkles className="w-5 h-5 ml-2" />
-                </Button>
-
-                {/* SECONDARY — Collapsible email plaque */}
-                {showEmailCapture && (
-                  <Collapsible open={emailPlaqueOpen} onOpenChange={setEmailPlaqueOpen}>
-                    <CollapsibleTrigger asChild>
-                      <button
-                        data-testid="email-plaque-trigger"
-                        className="mx-auto flex items-center justify-center gap-2 py-3 text-sm text-muted-foreground hover:text-foreground transition-colors"
-                      >
-                        <Mail className="w-4 h-4" />
-                        {hasSubmittedEmail ? "You're subscribed! ✓" : "Unlock extras & updates"}
-                        <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${emailPlaqueOpen ? 'rotate-180' : ''}`} />
-                      </button>
-                    </CollapsibleTrigger>
-                    <CollapsibleContent>
-                      {hasSubmittedEmail ? (
-                        <Card className="max-w-md mx-auto bg-muted/50 border-border p-4 text-center">
-                          <p className="text-muted-foreground text-sm">Thanks for subscribing! You'll get exclusive drops and updates. 🎶</p>
-                        </Card>
-                      ) : (
-                        <form onSubmit={handleEmailSubmit} className="max-w-md mx-auto" data-testid="email-form">
-                          <Card className="bg-muted/50 border-border p-5">
-                            <div className="space-y-3">
-                              <p className="text-xs text-muted-foreground text-center">Get exclusive drops, early access & behind-the-scenes content.</p>
-                              <div className="relative w-full">
-                                <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground pointer-events-none" />
-                                <Input
-                                  type="email"
-                                  placeholder="Enter your email address"
-                                  value={email}
-                                  onChange={(e) => setEmail(e.target.value)}
-                                  required
-                                  disabled={isSubmitting}
-                                  className="text-base pl-12 h-14 rounded-xl border-2 border-border/50 focus:border-primary/50 bg-background/50"
-                                />
-                              </div>
-                              <Button
-                                type="submit"
-                                className="w-full font-semibold"
-                                disabled={isSubmitting}
-                              >
-                                {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : "Subscribe"}
-                              </Button>
-                              <p className="text-xs text-muted-foreground/60 text-center">🔒 No spam, ever.</p>
-                            </div>
-                          </Card>
-                        </form>
-                      )}
-                    </CollapsibleContent>
-                  </Collapsible>
-                )}
-              </div>
-
-              {/* Trust badge */}
-              {showEmailCapture && (
-                <p className="text-xs text-center animate-fade-in text-muted-foreground/60">
-                  🔒 Your information is secure and will never be shared
-                </p>
-              )}
-            </Card>
-          </div>
-        </div>
-      </div>
     </div>
   );
 }

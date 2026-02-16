@@ -60,7 +60,7 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
   const [slug, setSlug] = useState(editLink?.slug || "");
   const [destinationUrl, setDestinationUrl] = useState(editLink?.destination_url || "");
   const [description, setDescription] = useState(editLink?.description || "");
-  const [buttonText, setButtonText] = useState(editLink?.button_text || "Click Here");
+  const [buttonText, setButtonText] = useState(editLink?.button_text || "Listen Now");
   const [buttonColor, setButtonColor] = useState(editLink?.button_color || "");
   const [backgroundColor, setBackgroundColor] = useState(editLink?.background_color || "");
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -91,7 +91,7 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
       setSlug(editLink.slug || "");
       setDestinationUrl(editLink.destination_url || "");
       setDescription(editLink.description || "");
-      setButtonText(editLink.button_text || "Click Here");
+      setButtonText(editLink.button_text || "Listen Now");
       setButtonColor(editLink.button_color || "");
       setBackgroundColor(editLink.background_color || "");
       setImageUrl(editLink.image_url || "");
@@ -114,7 +114,7 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
       setSlug("");
       setDestinationUrl("");
       setDescription("");
-      setButtonText("Click Here");
+      setButtonText("Listen Now");
       setButtonColor("");
       setBackgroundColor("");
       setImageFile(null);
@@ -233,7 +233,7 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
       setSlug("");
       setDestinationUrl("");
       setDescription("");
-      setButtonText("Click Here");
+      setButtonText("Listen Now");
       setButtonColor("");
       setBackgroundColor("");
       setImageFile(null);
@@ -373,7 +373,7 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
               <Label htmlFor="buttonText">Button Text</Label>
               <Input
                 id="buttonText"
-                placeholder="Click Here"
+                placeholder="Listen Now"
                 value={buttonText}
                 onChange={(e) => setButtonText(e.target.value)}
               />

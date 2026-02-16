@@ -266,8 +266,18 @@ export default function SmartLinkPage() {
   };
 
   const isRunwayTheme = smartLink.theme_preset === 'runway';
+  const isMusicTemplate = isRunwayTheme || smartLink.theme_preset === 'default';
   const showEmailCapture = smartLink.show_email_form !== false;
   const hasBulletPoints = smartLink.bullet_point_1 || smartLink.bullet_point_2 || smartLink.bullet_point_3;
+
+  // Music Template v2 CTA label resolver:
+  // If button_text is null/empty OR equals "Click Here" (case-insensitive) → "Listen Now"
+  const resolveCtaLabel = (raw: string | undefined | null): string => {
+    const trimmed = (raw ?? "").trim();
+    if (!trimmed || trimmed.toLowerCase() === "click here") return "Listen Now";
+    return trimmed;
+  };
+  const ctaLabel = resolveCtaLabel(smartLink.button_text);
 
   // ─── Runway Theme: Split Video + Content ───
   if (isRunwayTheme && smartLink.video_url) {
@@ -340,7 +350,7 @@ export default function SmartLinkPage() {
                 className="w-full h-[50px] bg-white text-black hover:bg-white hover:brightness-110 hover:scale-[1.02] hover:shadow-[0_0_20px_rgba(255,255,255,0.5)] font-bold text-base lg:text-lg transition-all duration-200 shadow-lg active:scale-[0.98]"
                 onClick={handleAlbumClick}
               >
-                🎧 {smartLink.button_text || "Go to Album"}
+                🎧 {ctaLabel}
               </Button>
 
               {/* SECONDARY — Collapsible email capture plaque */}
@@ -534,7 +544,7 @@ export default function SmartLinkPage() {
                   style={smartLink.button_color ? { backgroundColor: smartLink.button_color } : undefined}
                   onClick={handleAlbumClick}
                 >
-                  {smartLink.button_text || "Go to Album"}
+                  {ctaLabel}
                   <Sparkles className="w-5 h-5 ml-2" />
                 </Button>
 

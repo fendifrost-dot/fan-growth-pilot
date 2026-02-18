@@ -69,39 +69,22 @@ export default {
 
     // Inject dynamic metadata if we have it
     if (metadata) {
-      // Replace existing OG tags
-      html = html.replace(
-        /<meta property="og:title"[^>]*>/,
-        `<meta property="og:title" content="${escapeHtml(metadata.title)}" />`
-      );
-      html = html.replace(
-        /<meta property="og:description"[^>]*>/,
-        `<meta property="og:description" content="${escapeHtml(metadata.description)}" />`
-      );
-      html = html.replace(
-        /<meta property="og:image"[^>]*>/,
-        `<meta property="og:image" content="${escapeHtml(metadata.image)}" />`
-      );
+      // STRIP all existing OG and Twitter meta tags to prevent duplicates
+      html = html.replace(/<meta property="og:[^"]*"[^>]*>\s*/gi, "");
+      html = html.replace(/<meta name="twitter:(title|description|image)"[^>]*>\s*/gi, "");
 
-      // Add og:url (doesn't exist in original)
-      html = html.replace(
-        /<meta property="og:type"[^>]*>/,
-        `<meta property="og:url" content="${escapeHtml(metadata.url)}" />\n    <meta property="og:type" content="website" />`
-      );
-
-      // Replace Twitter tags
-      html = html.replace(
-        /<meta name="twitter:title"[^>]*>/,
-        `<meta name="twitter:title" content="${escapeHtml(metadata.title)}" />`
-      );
-      html = html.replace(
-        /<meta name="twitter:description"[^>]*>/,
-        `<meta name="twitter:description" content="${escapeHtml(metadata.description)}" />`
-      );
-      html = html.replace(
-        /<meta name="twitter:image"[^>]*>/,
-        `<meta name="twitter:image" content="${escapeHtml(metadata.image)}" />`
-      );
+      // Build the single authoritative OG + Twitter block
+      const metaBlock = [
+        `<meta property="og:title" content="${escapeHtml(metadata.title)}" />`,
+        `<meta property="og:description" content="${escapeHtml(metadata.description)}" />`,
+        `<meta property="og:type" content="website" />`,
+        `<meta property="og:image" content="${escapeHtml(metadata.image)}" />`,
+        `<meta property="og:url" content="${escapeHtml(metadata.url)}" />`,
+        `<meta name="twitter:title" content="${escapeHtml(metadata.title)}" />`,
+        `<meta name="twitter:description" content="${escapeHtml(metadata.description)}" />`,
+        `<meta name="twitter:image" content="${escapeHtml(metadata.image)}" />`,
+        `<link rel="canonical" href="${escapeHtml(metadata.canonical)}" />`,
+      ].join("\n    ");
 
       // Replace page title
       html = html.replace(
@@ -109,10 +92,10 @@ export default {
         `<title>${escapeHtml(metadata.title)}</title>`
       );
 
-      // Add canonical link (inject before </head>)
+      // Inject the single block before </head>
       html = html.replace(
         /<\/head>/,
-        `  <link rel="canonical" href="${escapeHtml(metadata.canonical)}" />\n  </head>`
+        `    ${metaBlock}\n  </head>`
       );
     }
 

@@ -56,6 +56,7 @@ export default function SmartLinkPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const accordionFiredRef = useRef(false);
   const videoPlayFiredRef = useRef(false);
+  const ctaDebounceRef = useRef(false);
 
   useEffect(() => {
     const fetchSmartLink = async () => {
@@ -126,7 +127,7 @@ export default function SmartLinkPage() {
         await Promise.all(urlPromises);
         setSmartLink(processedLink);
         
-        supabase.rpc('increment_link_clicks', { link_id: data.id });
+        void Promise.resolve(supabase.rpc('increment_link_clicks', { link_id: data.id })).catch(() => {});
 
       } catch (error) {
         console.error("Error fetching smart link:", error);
@@ -230,7 +231,7 @@ export default function SmartLinkPage() {
 
       if (error) throw error;
 
-      supabase.rpc('increment_email_submit', { link_id: smartLink!.id });
+      void Promise.resolve(supabase.rpc('increment_email_submit', { link_id: smartLink!.id })).catch(() => {});
       toast.success("You're in! Check your email for exclusives 🎉");
       setHasSubmittedEmail(true);
     } catch (error) {
@@ -242,7 +243,11 @@ export default function SmartLinkPage() {
   };
 
   const handleAlbumClick = () => {
-    supabase.rpc('increment_cta_click', { link_id: smartLink!.id });
+    if (!ctaDebounceRef.current) {
+      ctaDebounceRef.current = true;
+      void Promise.resolve(supabase.rpc('increment_cta_click', { link_id: smartLink!.id })).catch(() => {});
+      setTimeout(() => { ctaDebounceRef.current = false; }, 400);
+    }
     window.location.href = smartLink!.destination_url;
   };
 
@@ -250,14 +255,14 @@ export default function SmartLinkPage() {
     setEmailPlaqueOpen(open);
     if (open && !accordionFiredRef.current) {
       accordionFiredRef.current = true;
-      supabase.rpc('increment_accordion_open', { link_id: smartLink!.id });
+      void Promise.resolve(supabase.rpc('increment_accordion_open', { link_id: smartLink!.id })).catch(() => {});
     }
   };
 
   const handleVideoPlay = () => {
     if (!videoPlayFiredRef.current && smartLink) {
       videoPlayFiredRef.current = true;
-      supabase.rpc('increment_video_play', { link_id: smartLink.id });
+      void Promise.resolve(supabase.rpc('increment_video_play', { link_id: smartLink.id })).catch(() => {});
     }
   };
 

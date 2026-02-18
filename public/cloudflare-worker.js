@@ -21,7 +21,7 @@
  *     -d '{"files":["https://links.fendifrost.com/runwaymusic"]}'
  */
 
-const OG_METADATA_URL = "https://vsemrziqxrrfcquxfnwd.supabase.co/functions/v1/og-metadata";
+const OG_METADATA_URL = "https://vsemrziqxrrfcquxfnwd.supabase.co/functions/v1/get-og-metadata";
 
 export default {
   async fetch(request, env) {

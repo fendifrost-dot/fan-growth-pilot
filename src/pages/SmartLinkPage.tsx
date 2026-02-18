@@ -54,6 +54,8 @@ export default function SmartLinkPage() {
   const [emailPlaqueOpen, setEmailPlaqueOpen] = useState(false);
   const [videoLoaded, setVideoLoaded] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const accordionFiredRef = useRef(false);
+  const videoPlayFiredRef = useRef(false);
 
   useEffect(() => {
     const fetchSmartLink = async () => {
@@ -228,6 +230,7 @@ export default function SmartLinkPage() {
 
       if (error) throw error;
 
+      supabase.rpc('increment_email_submit', { link_id: smartLink!.id });
       toast.success("You're in! Check your email for exclusives 🎉");
       setHasSubmittedEmail(true);
     } catch (error) {
@@ -239,7 +242,23 @@ export default function SmartLinkPage() {
   };
 
   const handleAlbumClick = () => {
+    supabase.rpc('increment_cta_click', { link_id: smartLink!.id });
     window.location.href = smartLink!.destination_url;
+  };
+
+  const handleAccordionChange = (open: boolean) => {
+    setEmailPlaqueOpen(open);
+    if (open && !accordionFiredRef.current) {
+      accordionFiredRef.current = true;
+      supabase.rpc('increment_accordion_open', { link_id: smartLink!.id });
+    }
+  };
+
+  const handleVideoPlay = () => {
+    if (!videoPlayFiredRef.current && smartLink) {
+      videoPlayFiredRef.current = true;
+      supabase.rpc('increment_video_play', { link_id: smartLink.id });
+    }
   };
 
   if (isLoading) {
@@ -281,7 +300,7 @@ export default function SmartLinkPage() {
 
   // ─── Shared: Email accordion (bullets + email form inside) ───
   const emailAccordionBlock = showEmailCapture ? (
-    <Collapsible open={emailPlaqueOpen} onOpenChange={setEmailPlaqueOpen}>
+    <Collapsible open={emailPlaqueOpen} onOpenChange={handleAccordionChange}>
       <CollapsibleTrigger asChild>
         <button
           data-testid="email-plaque-trigger"
@@ -417,6 +436,7 @@ export default function SmartLinkPage() {
           poster={smartLink.image_url || undefined}
           className="absolute inset-0 z-0 w-full h-full object-cover"
           onLoadedData={() => setVideoLoaded(true)}
+          onPlay={handleVideoPlay}
           data-testid="background-video"
         >
           {!smartLink.video_url.includes('.m3u8') && (

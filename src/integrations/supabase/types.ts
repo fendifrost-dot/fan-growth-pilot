@@ -286,6 +286,7 @@ export type Database = {
       }
       smart_links: {
         Row: {
+          accordion_open_count: number
           background_color: string | null
           background_image_url: string | null
           bullet_point_1: string | null
@@ -296,8 +297,10 @@ export type Database = {
           click_count: number | null
           conversion_count: number | null
           created_at: string | null
+          cta_click_count: number
           description: string | null
           destination_url: string
+          email_submit_count: number
           headline: string | null
           id: string
           image_url: string | null
@@ -316,9 +319,11 @@ export type Database = {
           updated_at: string | null
           user_id: string
           video_autoplay: boolean | null
+          video_play_count: number
           video_url: string | null
         }
         Insert: {
+          accordion_open_count?: number
           background_color?: string | null
           background_image_url?: string | null
           bullet_point_1?: string | null
@@ -329,8 +334,10 @@ export type Database = {
           click_count?: number | null
           conversion_count?: number | null
           created_at?: string | null
+          cta_click_count?: number
           description?: string | null
           destination_url: string
+          email_submit_count?: number
           headline?: string | null
           id?: string
           image_url?: string | null
@@ -349,9 +356,11 @@ export type Database = {
           updated_at?: string | null
           user_id: string
           video_autoplay?: boolean | null
+          video_play_count?: number
           video_url?: string | null
         }
         Update: {
+          accordion_open_count?: number
           background_color?: string | null
           background_image_url?: string | null
           bullet_point_1?: string | null
@@ -362,8 +371,10 @@ export type Database = {
           click_count?: number | null
           conversion_count?: number | null
           created_at?: string | null
+          cta_click_count?: number
           description?: string | null
           destination_url?: string
+          email_submit_count?: number
           headline?: string | null
           id?: string
           image_url?: string | null
@@ -382,6 +393,7 @@ export type Database = {
           updated_at?: string | null
           user_id?: string
           video_autoplay?: boolean | null
+          video_play_count?: number
           video_url?: string | null
         }
         Relationships: [
@@ -402,7 +414,14 @@ export type Database = {
       decrypt_token: { Args: { encrypted_token: string }; Returns: string }
       encrypt_token: { Args: { token: string }; Returns: string }
       generate_short_code: { Args: never; Returns: string }
+      increment_accordion_open: {
+        Args: { link_id: string }
+        Returns: undefined
+      }
+      increment_cta_click: { Args: { link_id: string }; Returns: undefined }
+      increment_email_submit: { Args: { link_id: string }; Returns: undefined }
       increment_link_clicks: { Args: { link_id: string }; Returns: undefined }
+      increment_video_play: { Args: { link_id: string }; Returns: undefined }
     }
     Enums: {
       [_ in never]: never

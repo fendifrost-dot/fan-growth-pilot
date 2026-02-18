@@ -69,9 +69,8 @@ export default {
 
     // Inject dynamic metadata if we have it
     if (metadata) {
-      // STRIP all existing OG and Twitter meta tags to prevent duplicates
-      html = html.replace(/<meta property="og:[^"]*"[^>]*>\s*/gi, "");
-      html = html.replace(/<meta name="twitter:(title|description|image)"[^>]*>\s*/gi, "");
+      // STRIP ALL existing OG and Twitter meta tags to prevent duplicates
+      html = html.replace(/<meta\s+(property|name)="(og:[^"]+|twitter:[^"]+)"[^>]*>\s*/gi, "");
 
       // Build the single authoritative OG + Twitter block
       const metaBlock = [
@@ -80,6 +79,8 @@ export default {
         `<meta property="og:type" content="website" />`,
         `<meta property="og:image" content="${escapeHtml(metadata.image)}" />`,
         `<meta property="og:url" content="${escapeHtml(metadata.url)}" />`,
+        `<meta name="twitter:card" content="summary_large_image" />`,
+        `<meta name="twitter:site" content="@Fendi_Frost" />`,
         `<meta name="twitter:title" content="${escapeHtml(metadata.title)}" />`,
         `<meta name="twitter:description" content="${escapeHtml(metadata.description)}" />`,
         `<meta name="twitter:image" content="${escapeHtml(metadata.image)}" />`,

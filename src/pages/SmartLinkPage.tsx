@@ -246,6 +246,14 @@ export default function SmartLinkPage() {
     if (!ctaDebounceRef.current) {
       ctaDebounceRef.current = true;
       void Promise.resolve(supabase.rpc('increment_cta_click', { link_id: smartLink!.id })).catch(() => {});
+      // Fire Meta Pixel custom event for retargeting CTA clickers
+      if (typeof window !== 'undefined' && (window as any).fbq) {
+        (window as any).fbq('trackCustom', 'CTAClick', {
+          smart_link_id: smartLink!.id,
+          smart_link_slug: smartLink!.slug,
+          destination_url: smartLink!.destination_url,
+        });
+      }
       setTimeout(() => { ctaDebounceRef.current = false; }, 400);
     }
     window.location.href = smartLink!.destination_url;

@@ -12,6 +12,7 @@ describe("SmartLinkCard: canonical URL and per-link images", () => {
         url="https://even.biz/heartchakra"
         slug="HeartChakra"
         clicks={42}
+        ctaClicks={10}
         conversions={5}
         ogImageUrl="https://links.fendifrost.com/og-chakra.png"
       />
@@ -25,10 +26,10 @@ describe("SmartLinkCard: canonical URL and per-link images", () => {
 
   it("renders different thumbnails for two links with different og_image_url", () => {
     const { container: c1 } = render(
-      <SmartLinkCard title="Runway Music" url="https://even.biz/runway" slug="runwaymusic" clicks={100} conversions={10} ogImageUrl="https://links.fendifrost.com/og-runwaymusic.png" />
+      <SmartLinkCard title="Runway Music" url="https://even.biz/runway" slug="runwaymusic" clicks={100} ctaClicks={20} conversions={10} ogImageUrl="https://links.fendifrost.com/og-runwaymusic.png" />
     );
     const { container: c2 } = render(
-      <SmartLinkCard title="Heart Chakra" url="https://even.biz/heartchakra" slug="HeartChakra" clicks={42} conversions={5} ogImageUrl="https://links.fendifrost.com/og-chakra.png" />
+      <SmartLinkCard title="Heart Chakra" url="https://even.biz/heartchakra" slug="HeartChakra" clicks={42} ctaClicks={8} conversions={5} ogImageUrl="https://links.fendifrost.com/og-chakra.png" />
     );
 
     const img1 = c1.querySelector("img")!;
@@ -40,7 +41,7 @@ describe("SmartLinkCard: canonical URL and per-link images", () => {
 
   it("uses default fallback image when ogImageUrl is null", () => {
     const { container } = render(
-      <SmartLinkCard title="No Image Link" url="https://example.com" slug="test" clicks={0} conversions={0} ogImageUrl={null} />
+      <SmartLinkCard title="No Image Link" url="https://example.com" slug="test" clicks={0} ctaClicks={0} conversions={0} ogImageUrl={null} />
     );
     const img = container.querySelector("img")!;
     expect(img.src).toContain("og-runwaymusic.png");
@@ -48,7 +49,7 @@ describe("SmartLinkCard: canonical URL and per-link images", () => {
 
   it("does not display short link section", () => {
     const { container } = render(
-      <SmartLinkCard title="Test" url="https://example.com" slug="test" shortCode="abc123" clicks={0} conversions={0} />
+      <SmartLinkCard title="Test" url="https://example.com" slug="test" shortCode="abc123" clicks={0} ctaClicks={0} conversions={0} />
     );
     expect(container.textContent).not.toContain("Copy Short Link");
   });

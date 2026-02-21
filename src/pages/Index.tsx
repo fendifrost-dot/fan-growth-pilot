@@ -135,6 +135,7 @@ const Index = () => {
                   shortCode={link.short_code}
                   ogImageUrl={link.og_image_url}
                   clicks={link.click_count || 0}
+                  ctaClicks={link.cta_click_count || 0}
                   conversions={link.conversion_count || 0}
                   onRemove={() => removeSmartLink(link.id)}
                   onEdit={() => {

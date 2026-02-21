@@ -11,12 +11,13 @@ interface SmartLinkCardProps {
   shortCode?: string;
   clicks: number;
   conversions: number;
+  ctaClicks: number;
   ogImageUrl?: string | null;
   onRemove?: () => void;
   onEdit?: () => void;
 }
 
-export const SmartLinkCard = ({ title, slug, ogImageUrl, clicks, conversions, onRemove, onEdit }: SmartLinkCardProps) => {
+export const SmartLinkCard = ({ title, slug, ogImageUrl, clicks, ctaClicks, conversions, onRemove, onEdit }: SmartLinkCardProps) => {
   const canonicalUrl = getCanonicalUrl(slug);
   const thumbnailSrc = ogImageUrl || DEFAULT_OG_IMAGE;
 
@@ -61,10 +62,14 @@ export const SmartLinkCard = ({ title, slug, ogImageUrl, clicks, conversions, on
         </Button>
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-3 gap-4">
         <div>
-          <p className="text-xs text-muted-foreground">Clicks</p>
+          <p className="text-xs text-muted-foreground">Page Views</p>
           <p className="text-2xl font-bold">{clicks.toLocaleString()}</p>
+        </div>
+        <div>
+          <p className="text-xs text-muted-foreground">EVEN Clicks</p>
+          <p className="text-2xl font-bold">{ctaClicks.toLocaleString()}</p>
         </div>
         <div>
           <p className="text-xs text-muted-foreground">Conversions</p>

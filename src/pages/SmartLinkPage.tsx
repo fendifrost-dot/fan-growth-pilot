@@ -197,6 +197,12 @@ export default function SmartLinkPage() {
     }
   }, [smartLink]);
 
+  const firePixel = (eventName: string, params?: Record<string, any>) => {
+    if (typeof window !== 'undefined' && (window as any).fbq) {
+      (window as any).fbq('trackCustom', eventName, params);
+    }
+  };
+
   const handleEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
@@ -232,6 +238,7 @@ export default function SmartLinkPage() {
       if (error) throw error;
 
       void Promise.resolve(supabase.rpc('increment_email_submit', { link_id: smartLink!.id })).catch(() => {});
+      firePixel('EmailSignup', { smart_link_id: smartLink!.id, smart_link_slug: smartLink!.slug });
       toast.success("You're in! Check your email for exclusives 🎉");
       setHasSubmittedEmail(true);
     } catch (error) {
@@ -264,6 +271,7 @@ export default function SmartLinkPage() {
     if (open && !accordionFiredRef.current) {
       accordionFiredRef.current = true;
       void Promise.resolve(supabase.rpc('increment_accordion_open', { link_id: smartLink!.id })).catch(() => {});
+      firePixel('AccordionOpen', { smart_link_id: smartLink!.id, smart_link_slug: smartLink!.slug });
     }
   };
 
@@ -271,6 +279,7 @@ export default function SmartLinkPage() {
     if (!videoPlayFiredRef.current && smartLink) {
       videoPlayFiredRef.current = true;
       void Promise.resolve(supabase.rpc('increment_video_play', { link_id: smartLink.id })).catch(() => {});
+      firePixel('VideoPlay', { smart_link_id: smartLink.id, smart_link_slug: smartLink.slug });
     }
   };
 

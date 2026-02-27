@@ -198,9 +198,33 @@ export default function SmartLinkPage() {
   }, [smartLink]);
 
   const firePixel = (eventName: string, params?: Record<string, any>) => {
+    // Generate a unique event ID for deduplication between pixel + CAPI
+    const eventId = `${eventName}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+
+    // Client-side pixel
     if (typeof window !== 'undefined' && (window as any).fbq) {
-      (window as any).fbq('trackCustom', eventName, params);
+      (window as any).fbq('trackCustom', eventName, params, { eventID: eventId });
     }
+
+    // Server-side CAPI (fire-and-forget)
+    const getCookie = (name: string) => {
+      const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+      return match ? match[2] : undefined;
+    };
+
+    supabase.functions.invoke('meta-conversions', {
+      body: {
+        event_name: eventName,
+        event_id: eventId,
+        event_source_url: window.location.href,
+        user_data: {
+          client_user_agent: navigator.userAgent,
+          fbp: getCookie('_fbp'),
+          fbc: getCookie('_fbc'),
+        },
+        custom_data: params || {},
+      },
+    }).catch((err) => console.warn('CAPI fire-and-forget error:', err));
   };
 
   const handleEmailSubmit = async (e: React.FormEvent) => {

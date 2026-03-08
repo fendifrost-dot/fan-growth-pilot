@@ -19,7 +19,7 @@ export const useArtistStats = () => {
       const { data, error } = await supabase
         .from("fan_data")
         .select("*")
-        .in("fan_identifier", ["spotify_artist_stats", "instagram_stats", "facebook_stats"]);
+        .in("fan_identifier", ["spotify_artist_stats", "instagram_stats", "facebook_stats", "youtube_channel_stats"]);
 
       if (error) throw error;
 

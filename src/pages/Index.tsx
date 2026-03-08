@@ -19,6 +19,7 @@ import {
   Instagram,
   Plus,
   Link as LinkIcon,
+  Youtube,
 } from "lucide-react";
 
 // Lazy load the Email Leads section (below the fold)

@@ -26,3 +26,6 @@ verify_jwt = false
 
 [functions.project-stats]
 verify_jwt = false
+
+[functions.instagram-messaging]
+verify_jwt = false

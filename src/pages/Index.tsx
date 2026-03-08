@@ -68,9 +68,10 @@ const Index = () => {
               {isRefreshing ? "Refreshing…" : "↻ Refresh Stats"}
             </Button>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
             {statsLoading || shopifyLoading ? (
               <>
+                <MetricCardSkeleton />
                 <MetricCardSkeleton />
                 <MetricCardSkeleton />
                 <MetricCardSkeleton />
@@ -100,10 +101,17 @@ const Index = () => {
                   trend="up"
                 />
                 <MetricCard
-                  title="Merch Sales"
-                  value={shopifyConnected ? "Connected" : "Connect Shopify"}
-                  change={shopifyConnected ? "Store connected" : "No data"}
-                  icon={ShoppingBag}
+                  title="YT Subscribers"
+                  value={artistStats ? `${(artistStats.youtube.subscribers / 1000).toFixed(1)}K` : "No data"}
+                  change="YouTube"
+                  icon={Youtube}
+                  trend="up"
+                />
+                <MetricCard
+                  title="YT Total Views"
+                  value={artistStats ? `${(artistStats.youtube.total_views / 1000).toFixed(1)}K` : "No data"}
+                  change="YouTube"
+                  icon={Youtube}
                   trend="up"
                 />
               </>

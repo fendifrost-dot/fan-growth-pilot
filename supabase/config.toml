@@ -32,3 +32,9 @@ verify_jwt = false
 
 [functions.youtube-stats]
 verify_jwt = false
+
+[functions.youtube-auth]
+verify_jwt = false
+
+[functions.youtube-callback]
+verify_jwt = false

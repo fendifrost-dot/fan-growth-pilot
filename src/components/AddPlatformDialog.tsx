@@ -45,7 +45,7 @@ export interface PlatformAccount {
 const platformOptions = [
   { value: "spotify", label: "Spotify", icon: Music, placeholder: "https://open.spotify.com/artist/...", needsOAuth: true },
   { value: "instagram", label: "Instagram", icon: Instagram, placeholder: "https://instagram.com/username", needsOAuth: false },
-  { value: "youtube", label: "YouTube", icon: Youtube, placeholder: "https://youtube.com/@username", needsOAuth: false },
+  { value: "youtube", label: "YouTube", icon: Youtube, placeholder: "https://youtube.com/@username", needsOAuth: true },
   { value: "facebook", label: "Facebook", icon: Facebook, placeholder: "https://facebook.com/username", needsPixelId: true },
   { value: "soundcloud", label: "SoundCloud", icon: Music2, placeholder: "https://soundcloud.com/username", needsOAuth: false },
   { value: "applemusic", label: "Apple Music", icon: Apple, placeholder: "https://music.apple.com/us/artist/...", needsOAuth: false },

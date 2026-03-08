@@ -29,3 +29,6 @@ verify_jwt = false
 
 [functions.instagram-messaging]
 verify_jwt = false
+
+[functions.youtube-stats]
+verify_jwt = false

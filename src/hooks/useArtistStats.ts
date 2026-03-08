@@ -5,6 +5,7 @@ export interface ArtistStats {
   spotify: { followers: number; monthly_listeners: number };
   instagram: { followers: number };
   facebook: { followers: number };
+  youtube: { subscribers: number; total_views: number };
   updated_at: string | null;
 }
 
@@ -18,13 +19,14 @@ export const useArtistStats = () => {
       const { data, error } = await supabase
         .from("fan_data")
         .select("*")
-        .in("fan_identifier", ["spotify_artist_stats", "instagram_stats", "facebook_stats"]);
+        .in("fan_identifier", ["spotify_artist_stats", "instagram_stats", "facebook_stats", "youtube_channel_stats"]);
 
       if (error) throw error;
 
       const spotify = data?.find((d) => d.fan_identifier === "spotify_artist_stats");
       const instagram = data?.find((d) => d.fan_identifier === "instagram_stats");
       const facebook = data?.find((d) => d.fan_identifier === "facebook_stats");
+      const youtube = data?.find((d) => d.fan_identifier === "youtube_channel_stats");
 
       const meta = (row: any) => (row?.metadata && typeof row.metadata === "object" ? row.metadata : {}) as Record<string, any>;
 
@@ -38,6 +40,10 @@ export const useArtistStats = () => {
         },
         facebook: {
           followers: meta(facebook).followers ?? facebook?.total_interactions ?? 0,
+        },
+        youtube: {
+          subscribers: meta(youtube).subscribers ?? youtube?.total_interactions ?? 0,
+          total_views: meta(youtube).total_views ?? youtube?.total_streams ?? 0,
         },
         updated_at: spotify?.updated_at ?? null,
       };

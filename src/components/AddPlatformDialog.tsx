@@ -75,45 +75,67 @@ export const AddPlatformDialog = ({ open, onOpenChange, onConnect }: AddPlatform
           return;
         }
         
-        console.log('Calling spotify-auth function with user_id:', user.id);
-        
-        // Call the edge function to get the authorization URL
         const { data, error } = await supabase.functions.invoke('spotify-auth', {
           body: { user_id: user.id }
         });
 
-        console.log('spotify-auth response:', { data, error });
-
         if (error) {
-          console.error('Spotify auth error:', error);
           toast.error(`Failed to initiate Spotify connection: ${error.message}`);
           return;
         }
 
         if (data?.authUrl) {
-          console.log('Redirecting to:', data.authUrl);
-          // Open Spotify's authorization page in a new window
           const width = 600;
           const height = 700;
           const left = (window.screen.width - width) / 2;
           const top = (window.screen.height - height) / 2;
-          
-          window.open(
-            data.authUrl,
-            'spotify-auth',
-            `width=${width},height=${height},left=${left},top=${top},popup=yes`
-          );
-          
+          window.open(data.authUrl, 'spotify-auth', `width=${width},height=${height},left=${left},top=${top},popup=yes`);
           toast.success("Opening Spotify authorization...");
           onOpenChange(false);
         } else {
-          console.error('No authUrl in response:', data);
           toast.error("Failed to get authorization URL");
         }
         return;
       } catch (error) {
         console.error('Spotify OAuth exception:', error);
         toast.error("Failed to initiate Spotify connection");
+        return;
+      }
+    }
+
+    // For YouTube, initiate Google OAuth flow
+    if (platformOption.needsOAuth && selectedPlatform === "youtube") {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+          toast.error("Please log in to connect YouTube");
+          return;
+        }
+
+        const { data, error } = await supabase.functions.invoke('youtube-auth', {
+          body: { user_id: user.id }
+        });
+
+        if (error) {
+          toast.error(`Failed to initiate YouTube connection: ${error.message}`);
+          return;
+        }
+
+        if (data?.authUrl) {
+          const width = 600;
+          const height = 700;
+          const left = (window.screen.width - width) / 2;
+          const top = (window.screen.height - height) / 2;
+          window.open(data.authUrl, 'youtube-auth', `width=${width},height=${height},left=${left},top=${top},popup=yes`);
+          toast.success("Opening YouTube authorization...");
+          onOpenChange(false);
+        } else {
+          toast.error("Failed to get authorization URL");
+        }
+        return;
+      } catch (error) {
+        console.error('YouTube OAuth exception:', error);
+        toast.error("Failed to initiate YouTube connection");
         return;
       }
     }

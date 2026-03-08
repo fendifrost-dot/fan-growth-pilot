@@ -5,6 +5,7 @@ export interface ArtistStats {
   spotify: { followers: number; monthly_listeners: number };
   instagram: { followers: number };
   facebook: { followers: number };
+  youtube: { subscribers: number; total_views: number };
   updated_at: string | null;
 }
 

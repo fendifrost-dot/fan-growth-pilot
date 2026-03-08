@@ -33,11 +33,15 @@ const Index = () => {
   const { stats: artistStats, isLoading: statsLoading, refresh: refreshStats, isRefreshing } = useArtistStats();
   const { isConnected: shopifyConnected, isLoading: shopifyLoading } = useShopifyConnection();
 
-  // Handle Spotify OAuth callback
+  // Handle OAuth callbacks
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('spotify_connected') === 'true') {
       toast.success("Spotify connected successfully!");
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (params.get('youtube_connected') === 'true') {
+      toast.success("YouTube connected successfully! Full analytics are now available.");
+      refreshStats();
       window.history.replaceState({}, '', window.location.pathname);
     } else if (params.get('error')) {
       toast.error(params.get('error') || "Connection failed");

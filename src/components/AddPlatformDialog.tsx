@@ -206,10 +206,12 @@ export const AddPlatformDialog = ({ open, onOpenChange, onConnect }: AddPlatform
             </Select>
           </div>
 
-          {selectedOption?.needsOAuth && selectedPlatform === "spotify" && (
+          {selectedOption?.needsOAuth && (selectedPlatform === "spotify" || selectedPlatform === "youtube") && (
             <div className="p-3 bg-info/10 border border-info/20 rounded-md">
               <p className="text-sm text-info">
-                Spotify requires OAuth authentication for full data access including streams, followers, and engagement metrics. Click Connect to authorize.
+                {selectedPlatform === "spotify"
+                  ? "Spotify requires OAuth authentication for full data access including streams, followers, and engagement metrics. Click Connect to authorize."
+                  : "YouTube requires Google OAuth for full analytics including watch time, demographics, and traffic sources. Click Connect to authorize."}
               </p>
             </div>
           )}

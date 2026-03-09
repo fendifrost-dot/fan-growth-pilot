@@ -7,6 +7,10 @@ import { SmartLinkCard } from "@/components/SmartLinkCard";
 import { SoundCloudTopTracks } from "@/components/SoundCloudTopTracks";
 import { AddSmartLinkDialog, SmartLink } from "@/components/AddSmartLinkDialog";
 import { AddPlatformDialog } from "@/components/AddPlatformDialog";
+import { IntelligenceControl } from "@/components/IntelligenceControl";
+import { FanDatabaseOverview } from "@/components/FanDatabaseOverview";
+import { MomentumAlerts } from "@/components/MomentumAlerts";
+import { MarketingRecommendations } from "@/components/MarketingRecommendations";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useSmartLinks } from "@/hooks/useSmartLinks";
@@ -240,6 +244,23 @@ const Index = () => {
         }>
           <EmailLeadsSection />
         </Suspense>
+
+        {/* Fan Intelligence Engine Control */}
+        <section className="mb-12">
+          <h3 className="text-2xl font-semibold mb-6">Fan Intelligence</h3>
+          <IntelligenceControl />
+        </section>
+
+        {/* Fan Database + Momentum + Recommendations */}
+        <section className="mb-12">
+          <h3 className="text-2xl font-semibold mb-6">Fan Database</h3>
+          <FanDatabaseOverview />
+        </section>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-12">
+          <MomentumAlerts />
+          <MarketingRecommendations />
+        </div>
 
         {/* Quick Actions */}
         <section className="mt-12 mb-8">

@@ -14,6 +14,86 @@ export type Database = {
   }
   public: {
     Tables: {
+      analytics_snapshots: {
+        Row: {
+          chartmetric_rank: number | null
+          fb_followers: number | null
+          id: string
+          ig_followers: number | null
+          metadata: Json | null
+          monthly_listeners: number | null
+          pandora_listeners: number | null
+          playlist_count: number | null
+          playlist_reach: number | null
+          secondary_market: string | null
+          shazams: number | null
+          snapshot_at: string
+          soundcloud_followers: number | null
+          soundcloud_plays: number | null
+          spotify_followers: number | null
+          tiktok_views: number | null
+          top_market: string | null
+          user_id: string
+          x_followers: number | null
+          youtube_subscribers: number | null
+          youtube_views: number | null
+        }
+        Insert: {
+          chartmetric_rank?: number | null
+          fb_followers?: number | null
+          id?: string
+          ig_followers?: number | null
+          metadata?: Json | null
+          monthly_listeners?: number | null
+          pandora_listeners?: number | null
+          playlist_count?: number | null
+          playlist_reach?: number | null
+          secondary_market?: string | null
+          shazams?: number | null
+          snapshot_at?: string
+          soundcloud_followers?: number | null
+          soundcloud_plays?: number | null
+          spotify_followers?: number | null
+          tiktok_views?: number | null
+          top_market?: string | null
+          user_id: string
+          x_followers?: number | null
+          youtube_subscribers?: number | null
+          youtube_views?: number | null
+        }
+        Update: {
+          chartmetric_rank?: number | null
+          fb_followers?: number | null
+          id?: string
+          ig_followers?: number | null
+          metadata?: Json | null
+          monthly_listeners?: number | null
+          pandora_listeners?: number | null
+          playlist_count?: number | null
+          playlist_reach?: number | null
+          secondary_market?: string | null
+          shazams?: number | null
+          snapshot_at?: string
+          soundcloud_followers?: number | null
+          soundcloud_plays?: number | null
+          spotify_followers?: number | null
+          tiktok_views?: number | null
+          top_market?: string | null
+          user_id?: string
+          x_followers?: number | null
+          youtube_subscribers?: number | null
+          youtube_views?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "analytics_snapshots_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       fan_data: {
         Row: {
           created_at: string | null
@@ -66,6 +146,152 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "fan_data_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      fan_events: {
+        Row: {
+          campaign_id: string | null
+          city: string | null
+          country: string | null
+          created_at: string | null
+          device_type: string | null
+          event_source: string | null
+          event_type: string
+          fan_profile_id: string | null
+          id: string
+          metadata: Json | null
+          occurred_at: string
+          song_slug: string | null
+          user_id: string
+          value: number | null
+        }
+        Insert: {
+          campaign_id?: string | null
+          city?: string | null
+          country?: string | null
+          created_at?: string | null
+          device_type?: string | null
+          event_source?: string | null
+          event_type: string
+          fan_profile_id?: string | null
+          id?: string
+          metadata?: Json | null
+          occurred_at?: string
+          song_slug?: string | null
+          user_id: string
+          value?: number | null
+        }
+        Update: {
+          campaign_id?: string | null
+          city?: string | null
+          country?: string | null
+          created_at?: string | null
+          device_type?: string | null
+          event_source?: string | null
+          event_type?: string
+          fan_profile_id?: string | null
+          id?: string
+          metadata?: Json | null
+          occurred_at?: string
+          song_slug?: string | null
+          user_id?: string
+          value?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "fan_events_fan_profile_id_fkey"
+            columns: ["fan_profile_id"]
+            isOneToOne: false
+            referencedRelation: "fan_profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "fan_events_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      fan_profiles: {
+        Row: {
+          city: string | null
+          country: string | null
+          created_at: string | null
+          email: string | null
+          fan_score: number
+          fan_tier: string
+          first_song: string | null
+          first_source: string | null
+          first_touch_at: string | null
+          id: string
+          last_touch_at: string | null
+          metadata: Json | null
+          phone: string | null
+          region: string | null
+          total_cta_clicks: number
+          total_email_signups: number
+          total_page_views: number
+          total_purchase_value: number
+          total_purchases: number
+          updated_at: string | null
+          user_id: string
+        }
+        Insert: {
+          city?: string | null
+          country?: string | null
+          created_at?: string | null
+          email?: string | null
+          fan_score?: number
+          fan_tier?: string
+          first_song?: string | null
+          first_source?: string | null
+          first_touch_at?: string | null
+          id?: string
+          last_touch_at?: string | null
+          metadata?: Json | null
+          phone?: string | null
+          region?: string | null
+          total_cta_clicks?: number
+          total_email_signups?: number
+          total_page_views?: number
+          total_purchase_value?: number
+          total_purchases?: number
+          updated_at?: string | null
+          user_id: string
+        }
+        Update: {
+          city?: string | null
+          country?: string | null
+          created_at?: string | null
+          email?: string | null
+          fan_score?: number
+          fan_tier?: string
+          first_song?: string | null
+          first_source?: string | null
+          first_touch_at?: string | null
+          id?: string
+          last_touch_at?: string | null
+          metadata?: Json | null
+          phone?: string | null
+          region?: string | null
+          total_cta_clicks?: number
+          total_email_signups?: number
+          total_page_views?: number
+          total_purchase_value?: number
+          total_purchases?: number
+          updated_at?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "fan_profiles_user_id_fkey"
             columns: ["user_id"]
             isOneToOne: false
             referencedRelation: "profiles"
@@ -129,6 +355,138 @@ export type Database = {
           },
           {
             foreignKeyName: "link_analytics_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      marketing_actions: {
+        Row: {
+          action_payload: Json | null
+          action_type: string
+          created_at: string | null
+          executed_at: string | null
+          id: string
+          priority: string
+          recommendation_text: string
+          related_city: string | null
+          related_fan_profile_id: string | null
+          related_momentum_event_id: string | null
+          related_song: string | null
+          status: string
+          updated_at: string | null
+          user_id: string
+        }
+        Insert: {
+          action_payload?: Json | null
+          action_type: string
+          created_at?: string | null
+          executed_at?: string | null
+          id?: string
+          priority?: string
+          recommendation_text: string
+          related_city?: string | null
+          related_fan_profile_id?: string | null
+          related_momentum_event_id?: string | null
+          related_song?: string | null
+          status?: string
+          updated_at?: string | null
+          user_id: string
+        }
+        Update: {
+          action_payload?: Json | null
+          action_type?: string
+          created_at?: string | null
+          executed_at?: string | null
+          id?: string
+          priority?: string
+          recommendation_text?: string
+          related_city?: string | null
+          related_fan_profile_id?: string | null
+          related_momentum_event_id?: string | null
+          related_song?: string | null
+          status?: string
+          updated_at?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "marketing_actions_related_fan_profile_id_fkey"
+            columns: ["related_fan_profile_id"]
+            isOneToOne: false
+            referencedRelation: "fan_profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "marketing_actions_related_momentum_event_id_fkey"
+            columns: ["related_momentum_event_id"]
+            isOneToOne: false
+            referencedRelation: "momentum_events"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "marketing_actions_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      momentum_events: {
+        Row: {
+          absolute_change: number | null
+          current_value: number | null
+          detected_at: string
+          id: string
+          metadata: Json | null
+          metric_name: string
+          metric_source: string
+          percent_change: number | null
+          previous_value: number | null
+          related_city: string | null
+          related_song: string | null
+          severity: string
+          status: string
+          user_id: string
+        }
+        Insert: {
+          absolute_change?: number | null
+          current_value?: number | null
+          detected_at?: string
+          id?: string
+          metadata?: Json | null
+          metric_name: string
+          metric_source?: string
+          percent_change?: number | null
+          previous_value?: number | null
+          related_city?: string | null
+          related_song?: string | null
+          severity?: string
+          status?: string
+          user_id: string
+        }
+        Update: {
+          absolute_change?: number | null
+          current_value?: number | null
+          detected_at?: string
+          id?: string
+          metadata?: Json | null
+          metric_name?: string
+          metric_source?: string
+          percent_change?: number | null
+          previous_value?: number | null
+          related_city?: string | null
+          related_song?: string | null
+          severity?: string
+          status?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "momentum_events_user_id_fkey"
             columns: ["user_id"]
             isOneToOne: false
             referencedRelation: "profiles"
@@ -399,6 +757,47 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "smart_links_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      system_logs: {
+        Row: {
+          created_at: string | null
+          duration_ms: number | null
+          id: string
+          message: string | null
+          metadata: Json | null
+          process_name: string
+          status: string
+          user_id: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          duration_ms?: number | null
+          id?: string
+          message?: string | null
+          metadata?: Json | null
+          process_name: string
+          status?: string
+          user_id?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          duration_ms?: number | null
+          id?: string
+          message?: string | null
+          metadata?: Json | null
+          process_name?: string
+          status?: string
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "system_logs_user_id_fkey"
             columns: ["user_id"]
             isOneToOne: false
             referencedRelation: "profiles"

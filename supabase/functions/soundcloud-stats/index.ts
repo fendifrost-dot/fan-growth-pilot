@@ -158,6 +158,8 @@ Deno.serve(async (req) => {
     }
 
     const totalPlays = topTracks.reduce((sum: number, t: any) => sum + t.playback_count, 0);
+    
+    console.log('[soundcloud-stats] Calculated total_plays:', totalPlays);
 
     const result = {
       user_id: scUser.id,
@@ -174,6 +176,12 @@ Deno.serve(async (req) => {
       has_oauth: true,
       updated_at: new Date().toISOString(),
     };
+
+    console.log('[soundcloud-stats] FINAL RESULT:', JSON.stringify({
+      followers: result.followers,
+      total_plays: result.total_plays,
+      track_count: result.track_count
+    }));
 
     // Persist to fan_data
     const now = new Date().toISOString();

@@ -245,6 +245,23 @@ const Index = () => {
           <EmailLeadsSection />
         </Suspense>
 
+        {/* Fan Intelligence Engine Control */}
+        <section className="mb-12">
+          <h3 className="text-2xl font-semibold mb-6">Fan Intelligence</h3>
+          <IntelligenceControl />
+        </section>
+
+        {/* Fan Database + Momentum + Recommendations */}
+        <section className="mb-12">
+          <h3 className="text-2xl font-semibold mb-6">Fan Database</h3>
+          <FanDatabaseOverview />
+        </section>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-12">
+          <MomentumAlerts />
+          <MarketingRecommendations />
+        </div>
+
         {/* Quick Actions */}
         <section className="mt-12 mb-8">
           <Card className="p-8 bg-gradient-gold text-primary-foreground">

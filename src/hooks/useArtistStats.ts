@@ -1,6 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 
+/**
+ * Interface for a SoundCloud track as stored in fan_data.metadata.top_tracks
+ */
 export interface SoundCloudTrack {
   id: number;
   title: string;
@@ -13,21 +16,51 @@ export interface SoundCloudTrack {
   created_at: string;
 }
 
+/**
+ * Interface for SoundCloud stats
+ */
+export interface SoundCloudStats {
+  followers: number;
+  total_plays: number;
+  total_likes: number;
+  total_comments: number;
+  total_reposts: number;
+  top_tracks: SoundCloudTrack[];
+}
+
+/**
+ * Interface for all artist stats across platforms
+ */
 export interface ArtistStats {
-  spotify: { followers: number; monthly_listeners: number };
-  instagram: { followers: number };
-  facebook: { followers: number };
-  youtube: { subscribers: number; total_views: number };
-  soundcloud: {
+  spotify: {
     followers: number;
-    total_plays: number;
-    total_likes: number;
-    total_comments: number;
-    total_reposts: number;
-    top_tracks: SoundCloudTrack[];
+    monthly_listeners: number;
   };
+  instagram: {
+    followers: number;
+  };
+  facebook: {
+    followers: number;
+  };
+  youtube: {
+    subscribers: number;
+    total_views: number;
+  };
+  soundcloud: SoundCloudStats;
   updated_at: string | null;
 }
+
+/**
+ * Default SoundCloud stats when no data is available
+ */
+const defaultSoundCloudStats: SoundCloudStats = {
+  followers: 0,
+  total_plays: 0,
+  total_likes: 0,
+  total_comments: 0,
+  total_reposts: 0,
+  top_tracks: [],
+};
 
 export const useArtistStats = () => {
   const queryClient = useQueryClient();
@@ -49,31 +82,42 @@ export const useArtistStats = () => {
       const youtube = data?.find((d) => d.fan_identifier === "youtube_channel_stats");
       const soundcloud = data?.find((d) => d.fan_identifier === "soundcloud_user_stats");
 
-      const meta = (row: any) => (row?.metadata && typeof row.metadata === "object" ? row.metadata : {}) as Record<string, any>;
+      // Safe metadata accessor
+      const meta = (row: typeof data[number] | undefined): Record<string, unknown> => {
+        if (!row) return {};
+        if (row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)) {
+          return row.metadata as Record<string, unknown>;
+        }
+        return {};
+      };
+
+      // Parse SoundCloud stats with safe fallbacks
+      const scMeta = meta(soundcloud);
+      const soundcloudStats: SoundCloudStats = {
+        followers: typeof scMeta.followers === "number" ? scMeta.followers : (soundcloud?.total_interactions ?? 0),
+        total_plays: typeof scMeta.total_plays === "number" ? scMeta.total_plays : (soundcloud?.total_streams ?? 0),
+        total_likes: typeof scMeta.total_likes === "number" ? scMeta.total_likes : 0,
+        total_comments: typeof scMeta.total_comments === "number" ? scMeta.total_comments : 0,
+        total_reposts: typeof scMeta.total_reposts === "number" ? scMeta.total_reposts : 0,
+        top_tracks: Array.isArray(scMeta.top_tracks) ? scMeta.top_tracks as SoundCloudTrack[] : [],
+      };
 
       return {
         spotify: {
-          followers: meta(spotify).followers ?? spotify?.total_interactions ?? 0,
-          monthly_listeners: meta(spotify).monthly_listeners ?? spotify?.total_streams ?? 0,
+          followers: typeof meta(spotify).followers === "number" ? meta(spotify).followers as number : (spotify?.total_interactions ?? 0),
+          monthly_listeners: typeof meta(spotify).monthly_listeners === "number" ? meta(spotify).monthly_listeners as number : (spotify?.total_streams ?? 0),
         },
         instagram: {
-          followers: meta(instagram).followers ?? instagram?.total_interactions ?? 0,
+          followers: typeof meta(instagram).followers === "number" ? meta(instagram).followers as number : (instagram?.total_interactions ?? 0),
         },
         facebook: {
-          followers: meta(facebook).followers ?? facebook?.total_interactions ?? 0,
+          followers: typeof meta(facebook).followers === "number" ? meta(facebook).followers as number : (facebook?.total_interactions ?? 0),
         },
         youtube: {
-          subscribers: meta(youtube).subscribers ?? youtube?.total_interactions ?? 0,
-          total_views: meta(youtube).total_views ?? youtube?.total_streams ?? 0,
+          subscribers: typeof meta(youtube).subscribers === "number" ? meta(youtube).subscribers as number : (youtube?.total_interactions ?? 0),
+          total_views: typeof meta(youtube).total_views === "number" ? meta(youtube).total_views as number : (youtube?.total_streams ?? 0),
         },
-        soundcloud: {
-          followers: meta(soundcloud).followers ?? soundcloud?.total_interactions ?? 0,
-          total_plays: meta(soundcloud).total_plays ?? soundcloud?.total_streams ?? 0,
-          total_likes: meta(soundcloud).total_likes ?? 0,
-          total_comments: meta(soundcloud).total_comments ?? 0,
-          total_reposts: meta(soundcloud).total_reposts ?? 0,
-          top_tracks: meta(soundcloud).top_tracks ?? [],
-        },
+        soundcloud: soundcloudStats,
         updated_at: spotify?.updated_at ?? null,
       };
     },

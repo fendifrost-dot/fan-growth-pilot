@@ -69,6 +69,10 @@ export const useArtistStats = () => {
         soundcloud: {
           followers: meta(soundcloud).followers ?? soundcloud?.total_interactions ?? 0,
           total_plays: meta(soundcloud).total_plays ?? soundcloud?.total_streams ?? 0,
+          total_likes: meta(soundcloud).total_likes ?? 0,
+          total_comments: meta(soundcloud).total_comments ?? 0,
+          total_reposts: meta(soundcloud).total_reposts ?? 0,
+          top_tracks: meta(soundcloud).top_tracks ?? [],
         },
         updated_at: spotify?.updated_at ?? null,
       };

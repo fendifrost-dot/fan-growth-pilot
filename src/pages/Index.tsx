@@ -29,6 +29,7 @@ const EmailLeadsSection = lazy(() => import("@/components/EmailLeadsSection").th
 
 const Index = () => {
   const [smartLinkDialogOpen, setSmartLinkDialogOpen] = useState(false);
+  const [platformDialogOpen, setPlatformDialogOpen] = useState(false);
   const [editingLink, setEditingLink] = useState<SmartLink | null>(null);
   
   const { smartLinks, isLoading: linksLoading, createSmartLink, updateSmartLink, removeSmartLink } = useSmartLinks();

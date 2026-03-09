@@ -48,6 +48,10 @@ const Index = () => {
       toast.success("YouTube connected successfully! Full analytics are now available.");
       refreshStats();
       window.history.replaceState({}, '', window.location.pathname);
+    } else if (params.get('soundcloud_connected') === 'true') {
+      toast.success("SoundCloud connected successfully! Your stats will now update.");
+      refreshStats();
+      window.history.replaceState({}, '', window.location.pathname);
     } else if (params.get('error')) {
       toast.error(params.get('error') || "Connection failed");
       window.history.replaceState({}, '', window.location.pathname);

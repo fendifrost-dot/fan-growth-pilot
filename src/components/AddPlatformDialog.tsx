@@ -47,7 +47,7 @@ const platformOptions = [
   { value: "instagram", label: "Instagram", icon: Instagram, placeholder: "https://instagram.com/username", needsOAuth: false },
   { value: "youtube", label: "YouTube", icon: Youtube, placeholder: "https://youtube.com/@username", needsOAuth: true },
   { value: "facebook", label: "Facebook", icon: Facebook, placeholder: "https://facebook.com/username", needsPixelId: true },
-  { value: "soundcloud", label: "SoundCloud", icon: Music2, placeholder: "https://soundcloud.com/username", needsOAuth: false },
+  { value: "soundcloud", label: "SoundCloud", icon: Music2, placeholder: "https://soundcloud.com/username", needsOAuth: true },
   { value: "applemusic", label: "Apple Music", icon: Apple, placeholder: "https://music.apple.com/us/artist/...", needsOAuth: false },
 ];
 
@@ -140,6 +140,43 @@ export const AddPlatformDialog = ({ open, onOpenChange, onConnect }: AddPlatform
       }
     }
 
+    // For SoundCloud, initiate OAuth flow
+    if (platformOption.needsOAuth && selectedPlatform === "soundcloud") {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+          toast.error("Please log in to connect SoundCloud");
+          return;
+        }
+
+        const { data, error } = await supabase.functions.invoke('soundcloud-auth', {
+          body: { user_id: user.id }
+        });
+
+        if (error) {
+          toast.error(`Failed to initiate SoundCloud connection: ${error.message}`);
+          return;
+        }
+
+        if (data?.authUrl) {
+          const width = 600;
+          const height = 700;
+          const left = (window.screen.width - width) / 2;
+          const top = (window.screen.height - height) / 2;
+          window.open(data.authUrl, 'soundcloud-auth', `width=${width},height=${height},left=${left},top=${top},popup=yes`);
+          toast.success("Opening SoundCloud authorization...");
+          onOpenChange(false);
+        } else {
+          toast.error("Failed to get authorization URL");
+        }
+        return;
+      } catch (error) {
+        console.error('SoundCloud OAuth exception:', error);
+        toast.error("Failed to initiate SoundCloud connection");
+        return;
+      }
+    }
+
     // Validate required fields
     if (!username) {
       toast.error("Please enter your username");
@@ -206,12 +243,14 @@ export const AddPlatformDialog = ({ open, onOpenChange, onConnect }: AddPlatform
             </Select>
           </div>
 
-          {selectedOption?.needsOAuth && (selectedPlatform === "spotify" || selectedPlatform === "youtube") && (
+          {selectedOption?.needsOAuth && (selectedPlatform === "spotify" || selectedPlatform === "youtube" || selectedPlatform === "soundcloud") && (
             <div className="p-3 bg-info/10 border border-info/20 rounded-md">
               <p className="text-sm text-info">
                 {selectedPlatform === "spotify"
                   ? "Spotify requires OAuth authentication for full data access including streams, followers, and engagement metrics. Click Connect to authorize."
-                  : "YouTube requires Google OAuth for full analytics including watch time, demographics, and traffic sources. Click Connect to authorize."}
+                  : selectedPlatform === "youtube"
+                  ? "YouTube requires Google OAuth for full analytics including watch time, demographics, and traffic sources. Click Connect to authorize."
+                  : "SoundCloud requires OAuth for access to your followers, plays, and track statistics. Click Connect to authorize."}
               </p>
             </div>
           )}

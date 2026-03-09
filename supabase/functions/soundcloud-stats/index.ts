@@ -33,9 +33,32 @@ async function refreshAccessToken(refreshToken: string): Promise<{ access_token:
   return await res.json();
 }
 
+/** Fetch ALL tracks by paginating through the API */
+async function fetchAllTracks(accessToken: string): Promise<any[]> {
+  const allTracks: any[] = [];
+  let url: string | null = `${SOUNDCLOUD_API_BASE}/me/tracks?limit=200&linked_partitioning=1`;
+
+  while (url) {
+    const res = await fetch(url, {
+      headers: { Authorization: `OAuth ${accessToken}` },
+    });
+    if (!res.ok) {
+      console.error('[soundcloud-stats] tracks page error:', res.status);
+      break;
+    }
+    const data = await res.json();
+    const tracks = data.collection || data;
+    if (Array.isArray(tracks)) {
+      allTracks.push(...tracks);
+    }
+    url = data.next_href || null;
+  }
+
+  console.log(`[soundcloud-stats] Fetched ${allTracks.length} total tracks`);
+  return allTracks;
+}
+
 Deno.serve(async (req) => {
-  console.log('[soundcloud-stats] ========== FUNCTION INVOKED ==========');
-  
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
@@ -46,17 +69,12 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     );
 
-    // Authenticate user
     const authHeader = req.headers.get('Authorization');
     if (!authHeader) throw new Error('No authorization header');
     const token = authHeader.replace('Bearer ', '');
     const { data: { user }, error: userError } = await supabase.auth.getUser(token);
     if (userError || !user) throw new Error('Unauthorized');
-    
-    console.log('[soundcloud-stats] Authenticated user:', user.id);
 
-    // Check if user has OAuth connection for SoundCloud
-    console.log('[soundcloud-stats] Querying platform_connections...');
     const { data: connection, error: connError } = await supabase
       .from('platform_connections')
       .select('*')
@@ -65,101 +83,62 @@ Deno.serve(async (req) => {
       .eq('is_connected', true)
       .maybeSingle();
 
-    console.log('[soundcloud-stats] Connection query error:', connError);
-    console.log('[soundcloud-stats] Connection found:', !!connection);
-    if (connection) {
-      console.log('[soundcloud-stats] Connection ID:', connection.id);
-      console.log('[soundcloud-stats] is_connected:', connection.is_connected);
-      console.log('[soundcloud-stats] access_token present:', !!connection.access_token, 'length:', connection.access_token?.length);
-      console.log('[soundcloud-stats] username:', connection.username);
-    }
-
     if (!connection?.access_token) {
-      console.error('[soundcloud-stats] No access token found!');
       throw new Error('SoundCloud not connected. Please connect via OAuth first.');
     }
 
     let accessToken = connection.access_token;
 
-    // Check if token is expired and refresh if needed
+    // Refresh if expired
     const isExpired = connection.token_expires_at && new Date(connection.token_expires_at) < new Date();
-    
     if (isExpired && connection.refresh_token) {
       const refreshed = await refreshAccessToken(connection.refresh_token);
       if (refreshed) {
         accessToken = refreshed.access_token;
-        const newExpiry = refreshed.expires_in 
-          ? new Date(Date.now() + refreshed.expires_in * 1000).toISOString() 
+        const newExpiry = refreshed.expires_in
+          ? new Date(Date.now() + refreshed.expires_in * 1000).toISOString()
           : null;
         await supabase
           .from('platform_connections')
-          .update({ 
-            access_token: refreshed.access_token, 
-            token_expires_at: newExpiry, 
-            updated_at: new Date().toISOString() 
-          })
+          .update({ access_token: refreshed.access_token, token_expires_at: newExpiry, updated_at: new Date().toISOString() })
           .eq('id', connection.id);
       } else {
         throw new Error('Failed to refresh SoundCloud token. Please reconnect.');
       }
     }
 
-    // Fetch user data
-    console.log('[soundcloud-stats] Fetching /me from SoundCloud API...');
+    // Fetch user profile
     const userRes = await fetch(`${SOUNDCLOUD_API_BASE}/me`, {
       headers: { Authorization: `OAuth ${accessToken}` },
     });
-
-    console.log('[soundcloud-stats] /me response status:', userRes.status);
-    
-    if (!userRes.ok) {
-      const errText = await userRes.text();
-      console.error('[soundcloud-stats] SoundCloud /me error:', userRes.status, errText);
-      throw new Error(`SoundCloud API error: ${userRes.status}`);
-    }
-
+    if (!userRes.ok) throw new Error(`SoundCloud API error: ${userRes.status}`);
     const scUser = await userRes.json();
-    console.log('[soundcloud-stats] RAW SoundCloud user data:', JSON.stringify({
-      id: scUser.id,
-      username: scUser.username,
-      followers_count: scUser.followers_count,
-      followings_count: scUser.followings_count,
-      track_count: scUser.track_count,
-      playlist_count: scUser.playlist_count
+
+    // Fetch ALL tracks
+    const allTracks = await fetchAllTracks(accessToken);
+
+    const mappedTracks = allTracks.map((t: any) => ({
+      id: t.id,
+      title: t.title,
+      artwork_url: t.artwork_url,
+      playback_count: t.playback_count || 0,
+      likes_count: t.likes_count || t.favoritings_count || 0,
+      comment_count: t.comment_count || 0,
+      reposts_count: t.reposts_count || 0,
+      duration_ms: t.duration || 0,
+      permalink_url: t.permalink_url,
+      created_at: t.created_at,
     }));
 
-    // Fetch recent tracks
-    let topTracks: any[] = [];
-    try {
-      const tracksRes = await fetch(`${SOUNDCLOUD_API_BASE}/me/tracks?limit=10`, {
-        headers: { Authorization: `OAuth ${accessToken}` },
-      });
-      if (tracksRes.ok) {
-        const tracksData = await tracksRes.json();
-        const tracks = tracksData.collection || tracksData;
-        if (Array.isArray(tracks)) {
-          topTracks = tracks.map((t: any) => ({
-            id: t.id,
-            title: t.title,
-            artwork_url: t.artwork_url,
-            playback_count: t.playback_count || 0,
-            likes_count: t.likes_count || t.favoritings_count || 0,
-            comment_count: t.comment_count || 0,
-            reposts_count: t.reposts_count || 0,
-            duration_ms: t.duration || 0,
-            permalink_url: t.permalink_url,
-            created_at: t.created_at,
-          }));
-          topTracks.sort((a: any, b: any) => b.playback_count - a.playback_count);
-        }
-      }
-    } catch (err) {
-      console.error('Error fetching SoundCloud tracks (non-fatal):', err);
-    }
+    // Sort by plays descending
+    mappedTracks.sort((a: any, b: any) => b.playback_count - a.playback_count);
 
-    const totalPlays = topTracks.reduce((sum: number, t: any) => sum + t.playback_count, 0);
-    
-    console.log('[soundcloud-stats] Calculated total_plays:', totalPlays);
+    const totalPlays = mappedTracks.reduce((sum: number, t: any) => sum + t.playback_count, 0);
+    const totalLikes = mappedTracks.reduce((sum: number, t: any) => sum + t.likes_count, 0);
+    const totalComments = mappedTracks.reduce((sum: number, t: any) => sum + t.comment_count, 0);
+    const totalReposts = mappedTracks.reduce((sum: number, t: any) => sum + t.reposts_count, 0);
+
+    console.log(`[soundcloud-stats] All-time totals: ${totalPlays} plays, ${totalLikes} likes, ${totalComments} comments, ${totalReposts} reposts`);
 
     const result = {
       user_id: scUser.id,
@@ -171,17 +150,14 @@ Deno.serve(async (req) => {
       track_count: scUser.track_count || 0,
       playlist_count: scUser.playlist_count || 0,
       total_plays: totalPlays,
-      top_tracks: topTracks.slice(0, 5),
+      total_likes: totalLikes,
+      total_comments: totalComments,
+      total_reposts: totalReposts,
+      top_tracks: mappedTracks.slice(0, 10),
       profile_url: scUser.permalink_url,
       has_oauth: true,
       updated_at: new Date().toISOString(),
     };
-
-    console.log('[soundcloud-stats] FINAL RESULT:', JSON.stringify({
-      followers: result.followers,
-      total_plays: result.total_plays,
-      track_count: result.track_count
-    }));
 
     // Persist to fan_data
     const now = new Date().toISOString();
@@ -199,6 +175,9 @@ Deno.serve(async (req) => {
         track_count: result.track_count,
         playlist_count: result.playlist_count,
         total_plays: result.total_plays,
+        total_likes: result.total_likes,
+        total_comments: result.total_comments,
+        total_reposts: result.total_reposts,
         avatar_url: result.avatar_url,
         top_tracks: result.top_tracks,
         source: 'soundcloud_oauth',
@@ -214,21 +193,16 @@ Deno.serve(async (req) => {
       .maybeSingle();
 
     if (existing) {
-      console.log('[soundcloud-stats] Updating existing fan_data row:', existing.id);
-      const { error: updateErr } = await supabase
+      await supabase
         .from('fan_data')
         .update({ ...fanDataPayload, last_interaction_at: now, updated_at: now })
         .eq('id', existing.id);
-      if (updateErr) console.error('[soundcloud-stats] fan_data update error:', updateErr);
     } else {
-      console.log('[soundcloud-stats] Inserting new fan_data row');
-      const { error: insertErr } = await supabase
+      await supabase
         .from('fan_data')
         .insert({ ...fanDataPayload, user_id: user.id, last_interaction_at: now });
-      if (insertErr) console.error('[soundcloud-stats] fan_data insert error:', insertErr);
     }
 
-    console.log('[soundcloud-stats] ========== RETURNING SUCCESS ==========');
     return new Response(JSON.stringify(result), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });

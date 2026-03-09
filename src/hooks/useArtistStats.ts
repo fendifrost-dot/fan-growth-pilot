@@ -1,12 +1,31 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 
+export interface SoundCloudTrack {
+  id: number;
+  title: string;
+  artwork_url: string | null;
+  playback_count: number;
+  likes_count: number;
+  comment_count: number;
+  reposts_count: number;
+  permalink_url: string;
+  created_at: string;
+}
+
 export interface ArtistStats {
   spotify: { followers: number; monthly_listeners: number };
   instagram: { followers: number };
   facebook: { followers: number };
   youtube: { subscribers: number; total_views: number };
-  soundcloud: { followers: number; total_plays: number };
+  soundcloud: {
+    followers: number;
+    total_plays: number;
+    total_likes: number;
+    total_comments: number;
+    total_reposts: number;
+    top_tracks: SoundCloudTrack[];
+  };
   updated_at: string | null;
 }
 
@@ -50,6 +69,10 @@ export const useArtistStats = () => {
         soundcloud: {
           followers: meta(soundcloud).followers ?? soundcloud?.total_interactions ?? 0,
           total_plays: meta(soundcloud).total_plays ?? soundcloud?.total_streams ?? 0,
+          total_likes: meta(soundcloud).total_likes ?? 0,
+          total_comments: meta(soundcloud).total_comments ?? 0,
+          total_reposts: meta(soundcloud).total_reposts ?? 0,
+          top_tracks: meta(soundcloud).top_tracks ?? [],
         },
         updated_at: spotify?.updated_at ?? null,
       };

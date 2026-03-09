@@ -68,9 +68,16 @@ export const AddPlatformDialog = ({ open, onOpenChange, onConnect }: AddPlatform
 
     // For Spotify, initiate OAuth flow
     if (platformOption.needsOAuth && selectedPlatform === "spotify") {
+      const width = 600;
+      const height = 700;
+      const left = (window.screen.width - width) / 2;
+      const top = (window.screen.height - height) / 2;
+      const popup = window.open('about:blank', 'spotify-auth', `width=${width},height=${height},left=${left},top=${top},popup=yes`);
+
       try {
         const { data: { user } } = await supabase.auth.getUser();
         if (!user) {
+          popup?.close();
           toast.error("Please log in to connect Spotify");
           return;
         }
@@ -80,23 +87,26 @@ export const AddPlatformDialog = ({ open, onOpenChange, onConnect }: AddPlatform
         });
 
         if (error) {
+          popup?.close();
           toast.error(`Failed to initiate Spotify connection: ${error.message}`);
           return;
         }
 
         if (data?.authUrl) {
-          const width = 600;
-          const height = 700;
-          const left = (window.screen.width - width) / 2;
-          const top = (window.screen.height - height) / 2;
-          window.open(data.authUrl, 'spotify-auth', `width=${width},height=${height},left=${left},top=${top},popup=yes`);
+          if (popup) {
+            popup.location.href = data.authUrl;
+          } else {
+            window.location.href = data.authUrl;
+          }
           toast.success("Opening Spotify authorization...");
           onOpenChange(false);
         } else {
+          popup?.close();
           toast.error("Failed to get authorization URL");
         }
         return;
       } catch (error) {
+        popup?.close();
         console.error('Spotify OAuth exception:', error);
         toast.error("Failed to initiate Spotify connection");
         return;
@@ -105,9 +115,16 @@ export const AddPlatformDialog = ({ open, onOpenChange, onConnect }: AddPlatform
 
     // For YouTube, initiate Google OAuth flow
     if (platformOption.needsOAuth && selectedPlatform === "youtube") {
+      const width = 600;
+      const height = 700;
+      const left = (window.screen.width - width) / 2;
+      const top = (window.screen.height - height) / 2;
+      const popup = window.open('about:blank', 'youtube-auth', `width=${width},height=${height},left=${left},top=${top},popup=yes`);
+
       try {
         const { data: { user } } = await supabase.auth.getUser();
         if (!user) {
+          popup?.close();
           toast.error("Please log in to connect YouTube");
           return;
         }
@@ -117,23 +134,26 @@ export const AddPlatformDialog = ({ open, onOpenChange, onConnect }: AddPlatform
         });
 
         if (error) {
+          popup?.close();
           toast.error(`Failed to initiate YouTube connection: ${error.message}`);
           return;
         }
 
         if (data?.authUrl) {
-          const width = 600;
-          const height = 700;
-          const left = (window.screen.width - width) / 2;
-          const top = (window.screen.height - height) / 2;
-          window.open(data.authUrl, 'youtube-auth', `width=${width},height=${height},left=${left},top=${top},popup=yes`);
+          if (popup) {
+            popup.location.href = data.authUrl;
+          } else {
+            window.location.href = data.authUrl;
+          }
           toast.success("Opening YouTube authorization...");
           onOpenChange(false);
         } else {
+          popup?.close();
           toast.error("Failed to get authorization URL");
         }
         return;
       } catch (error) {
+        popup?.close();
         console.error('YouTube OAuth exception:', error);
         toast.error("Failed to initiate YouTube connection");
         return;

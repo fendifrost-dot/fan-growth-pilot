@@ -24,6 +24,8 @@ interface SoundCloudTrack {
   duration: number;
   permalink_url: string;
   created_at: string;
+  sharing?: string;
+  user?: { id: number; [key: string]: unknown };
 }
 
 interface MappedTrack {

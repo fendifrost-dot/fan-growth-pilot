@@ -135,16 +135,19 @@ Deno.serve(async (req) => {
           }
         }
 
-        // 2b. Backfill fan_events (idempotent: check if already backfilled)
-        const { data: existingEvent } = await supabase
+        // 2b. Backfill fan_events (idempotent: check if already backfilled by lead_id in metadata)
+        const { data: existingEvents } = await supabase
           .from('fan_events')
-          .select('id')
+          .select('id, metadata')
           .eq('user_id', userId)
-          .eq('event_type', 'email_capture')
-          .eq('metadata->>lead_id', lead.id)
-          .maybeSingle();
+          .eq('event_type', 'email_capture');
 
-        if (!existingEvent) {
+        const alreadyBackfilled = existingEvents?.some(e => {
+          const md = e.metadata as Record<string, unknown> | null;
+          return md?.lead_id === lead.id;
+        });
+
+        if (!alreadyBackfilled) {
           // Get fan_profile_id
           const { data: fanProfile } = await supabase
             .from('fan_profiles')

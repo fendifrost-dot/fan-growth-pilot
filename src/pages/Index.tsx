@@ -4,6 +4,7 @@ import { MetricCard } from "@/components/MetricCard";
 import { MetricCardSkeleton } from "@/components/skeletons/MetricCardSkeleton";
 import { SmartLinkCardSkeleton } from "@/components/skeletons/SmartLinkCardSkeleton";
 import { SmartLinkCard } from "@/components/SmartLinkCard";
+import { SoundCloudTopTracks } from "@/components/SoundCloudTopTracks";
 import { AddSmartLinkDialog, SmartLink } from "@/components/AddSmartLinkDialog";
 import { AddPlatformDialog } from "@/components/AddPlatformDialog";
 import { Button } from "@/components/ui/button";

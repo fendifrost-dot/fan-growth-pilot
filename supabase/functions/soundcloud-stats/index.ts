@@ -34,6 +34,8 @@ async function refreshAccessToken(refreshToken: string): Promise<{ access_token:
 }
 
 Deno.serve(async (req) => {
+  console.log('[soundcloud-stats] ========== FUNCTION INVOKED ==========');
+  
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
@@ -50,9 +52,12 @@ Deno.serve(async (req) => {
     const token = authHeader.replace('Bearer ', '');
     const { data: { user }, error: userError } = await supabase.auth.getUser(token);
     if (userError || !user) throw new Error('Unauthorized');
+    
+    console.log('[soundcloud-stats] Authenticated user:', user.id);
 
     // Check if user has OAuth connection for SoundCloud
-    const { data: connection } = await supabase
+    console.log('[soundcloud-stats] Querying platform_connections...');
+    const { data: connection, error: connError } = await supabase
       .from('platform_connections')
       .select('*')
       .eq('user_id', user.id)
@@ -60,7 +65,17 @@ Deno.serve(async (req) => {
       .eq('is_connected', true)
       .maybeSingle();
 
+    console.log('[soundcloud-stats] Connection query error:', connError);
+    console.log('[soundcloud-stats] Connection found:', !!connection);
+    if (connection) {
+      console.log('[soundcloud-stats] Connection ID:', connection.id);
+      console.log('[soundcloud-stats] is_connected:', connection.is_connected);
+      console.log('[soundcloud-stats] access_token present:', !!connection.access_token, 'length:', connection.access_token?.length);
+      console.log('[soundcloud-stats] username:', connection.username);
+    }
+
     if (!connection?.access_token) {
+      console.error('[soundcloud-stats] No access token found!');
       throw new Error('SoundCloud not connected. Please connect via OAuth first.');
     }
 
@@ -90,17 +105,28 @@ Deno.serve(async (req) => {
     }
 
     // Fetch user data
+    console.log('[soundcloud-stats] Fetching /me from SoundCloud API...');
     const userRes = await fetch(`${SOUNDCLOUD_API_BASE}/me`, {
       headers: { Authorization: `OAuth ${accessToken}` },
     });
 
+    console.log('[soundcloud-stats] /me response status:', userRes.status);
+    
     if (!userRes.ok) {
       const errText = await userRes.text();
-      console.error('SoundCloud /me error:', userRes.status, errText);
+      console.error('[soundcloud-stats] SoundCloud /me error:', userRes.status, errText);
       throw new Error(`SoundCloud API error: ${userRes.status}`);
     }
 
     const scUser = await userRes.json();
+    console.log('[soundcloud-stats] RAW SoundCloud user data:', JSON.stringify({
+      id: scUser.id,
+      username: scUser.username,
+      followers_count: scUser.followers_count,
+      followings_count: scUser.followings_count,
+      track_count: scUser.track_count,
+      playlist_count: scUser.playlist_count
+    }));
 
     // Fetch recent tracks
     let topTracks: any[] = [];
@@ -132,6 +158,8 @@ Deno.serve(async (req) => {
     }
 
     const totalPlays = topTracks.reduce((sum: number, t: any) => sum + t.playback_count, 0);
+    
+    console.log('[soundcloud-stats] Calculated total_plays:', totalPlays);
 
     const result = {
       user_id: scUser.id,
@@ -148,6 +176,12 @@ Deno.serve(async (req) => {
       has_oauth: true,
       updated_at: new Date().toISOString(),
     };
+
+    console.log('[soundcloud-stats] FINAL RESULT:', JSON.stringify({
+      followers: result.followers,
+      total_plays: result.total_plays,
+      track_count: result.track_count
+    }));
 
     // Persist to fan_data
     const now = new Date().toISOString();
@@ -180,21 +214,26 @@ Deno.serve(async (req) => {
       .maybeSingle();
 
     if (existing) {
-      await supabase
+      console.log('[soundcloud-stats] Updating existing fan_data row:', existing.id);
+      const { error: updateErr } = await supabase
         .from('fan_data')
         .update({ ...fanDataPayload, last_interaction_at: now, updated_at: now })
         .eq('id', existing.id);
+      if (updateErr) console.error('[soundcloud-stats] fan_data update error:', updateErr);
     } else {
-      await supabase
+      console.log('[soundcloud-stats] Inserting new fan_data row');
+      const { error: insertErr } = await supabase
         .from('fan_data')
         .insert({ ...fanDataPayload, user_id: user.id, last_interaction_at: now });
+      if (insertErr) console.error('[soundcloud-stats] fan_data insert error:', insertErr);
     }
 
+    console.log('[soundcloud-stats] ========== RETURNING SUCCESS ==========');
     return new Response(JSON.stringify(result), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (error) {
-    console.error('Error in soundcloud-stats:', error);
+    console.error('[soundcloud-stats] ERROR:', error);
     const statusCode = error instanceof Error && error.message === 'Unauthorized' ? 401 : 500;
     return new Response(
       JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),

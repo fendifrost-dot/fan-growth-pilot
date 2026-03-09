@@ -6,6 +6,10 @@ const corsHeaders = {
 };
 
 Deno.serve(async (req) => {
+  console.log('[soundcloud-callback] ========== CALLBACK INVOKED ==========');
+  console.log('[soundcloud-callback] Method:', req.method);
+  console.log('[soundcloud-callback] Full URL:', req.url);
+  
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
@@ -16,14 +20,20 @@ Deno.serve(async (req) => {
   const error = url.searchParams.get('error');
   const errorDescription = url.searchParams.get('error_description');
 
+  console.log('[soundcloud-callback] code present:', !!code, 'length:', code?.length);
+  console.log('[soundcloud-callback] state present:', !!state, 'value:', state);
+  console.log('[soundcloud-callback] error:', error);
+  console.log('[soundcloud-callback] errorDescription:', errorDescription);
+
   const FRONTEND_URL = Deno.env.get('FRONTEND_URL') || 'https://fan-growth-pilot.lovable.app';
 
   if (error) {
-    console.error('SoundCloud OAuth error:', error, errorDescription);
+    console.error('[soundcloud-callback] SoundCloud OAuth error:', error, errorDescription);
     return Response.redirect(`${FRONTEND_URL}/?error=${encodeURIComponent(errorDescription || error)}`, 302);
   }
 
   if (!code || !state) {
+    console.error('[soundcloud-callback] Missing code or state');
     return Response.redirect(`${FRONTEND_URL}/?error=Missing+code+or+state`, 302);
   }
 
@@ -71,6 +81,10 @@ Deno.serve(async (req) => {
     }
 
     // Exchange code for token
+    console.log('[soundcloud-callback] Exchanging code for token...');
+    console.log('[soundcloud-callback] redirect_uri:', redirectUri);
+    console.log('[soundcloud-callback] code_verifier present:', !!codeVerifier, 'length:', codeVerifier?.length);
+    
     const tokenRes = await fetch('https://secure.soundcloud.com/oauth/token', {
       method: 'POST',
       headers: {
@@ -87,31 +101,53 @@ Deno.serve(async (req) => {
       }),
     });
 
+    console.log('[soundcloud-callback] Token response status:', tokenRes.status);
+    
     if (!tokenRes.ok) {
       const errorText = await tokenRes.text();
-      console.error('Token exchange failed:', tokenRes.status, errorText);
+      console.error('[soundcloud-callback] Token exchange failed:', tokenRes.status, errorText);
       return Response.redirect(`${FRONTEND_URL}/?error=Token+exchange+failed`, 302);
     }
 
     const tokenData = await tokenRes.json();
+    console.log('[soundcloud-callback] Token data keys:', Object.keys(tokenData));
+    
     const accessToken = tokenData.access_token;
     const refreshToken = tokenData.refresh_token;
     const expiresIn = tokenData.expires_in;
+    
+    console.log('[soundcloud-callback] access_token present:', !!accessToken, 'length:', accessToken?.length);
+    console.log('[soundcloud-callback] refresh_token present:', !!refreshToken);
+    console.log('[soundcloud-callback] expires_in:', expiresIn);
 
     // Fetch user info
+    console.log('[soundcloud-callback] Fetching user info from SoundCloud API...');
     const userRes = await fetch('https://api.soundcloud.com/me', {
       headers: { Authorization: `OAuth ${accessToken}` },
     });
+    
+    console.log('[soundcloud-callback] User info response status:', userRes.status);
 
     let scUser: any = {};
     if (userRes.ok) {
       scUser = await userRes.json();
+      console.log('[soundcloud-callback] SoundCloud user:', {
+        id: scUser.id,
+        username: scUser.username,
+        followers_count: scUser.followers_count,
+        track_count: scUser.track_count
+      });
+    } else {
+      const userErrText = await userRes.text();
+      console.error('[soundcloud-callback] User info fetch failed:', userErrText);
     }
 
     // Update the connection with tokens and user info
     const tokenExpiry = expiresIn ? new Date(Date.now() + expiresIn * 1000).toISOString() : null;
 
-    await supabase
+    console.log('[soundcloud-callback] Updating platform_connections row id:', connection.id);
+    
+    const { error: updateError } = await supabase
       .from('platform_connections')
       .update({
         access_token: accessToken,
@@ -136,7 +172,17 @@ Deno.serve(async (req) => {
       })
       .eq('id', connection.id);
 
-    console.log('SoundCloud connected successfully for user:', connection.user_id);
+    if (updateError) {
+      console.error('[soundcloud-callback] DB update error:', updateError);
+    } else {
+      console.log('[soundcloud-callback] ========== DB UPDATE SUCCESS ==========');
+      console.log('[soundcloud-callback] Connection ID:', connection.id);
+      console.log('[soundcloud-callback] User ID:', connection.user_id);
+      console.log('[soundcloud-callback] is_connected: true');
+      console.log('[soundcloud-callback] access_token stored: YES');
+    }
+
+    console.log('[soundcloud-callback] Redirecting to frontend with success...');
     return Response.redirect(`${FRONTEND_URL}/?soundcloud_connected=true`, 302);
   } catch (err) {
     console.error('SoundCloud callback error:', err);

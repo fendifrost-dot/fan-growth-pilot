@@ -22,6 +22,10 @@ async function generateCodeChallenge(verifier: string): Promise<string> {
 }
 
 Deno.serve(async (req) => {
+  console.log('[soundcloud-auth] ========== FUNCTION INVOKED ==========');
+  console.log('[soundcloud-auth] Method:', req.method);
+  console.log('[soundcloud-auth] Headers:', JSON.stringify(Object.fromEntries(req.headers.entries())));
+  
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
@@ -86,6 +90,9 @@ Deno.serve(async (req) => {
     const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
     const redirectUri = `${SUPABASE_URL}/functions/v1/soundcloud-callback`;
 
+    console.log('[soundcloud-auth] SUPABASE_URL:', SUPABASE_URL);
+    console.log('[soundcloud-auth] Redirect URI:', redirectUri);
+
     // Build SoundCloud OAuth 2.1 authorization URL
     const authUrl = new URL('https://secure.soundcloud.com/authorize');
     authUrl.searchParams.set('client_id', SOUNDCLOUD_CLIENT_ID);
@@ -95,6 +102,9 @@ Deno.serve(async (req) => {
     authUrl.searchParams.set('code_challenge_method', 'S256');
     authUrl.searchParams.set('state', state);
     authUrl.searchParams.set('scope', 'non-expiring');
+
+    console.log('[soundcloud-auth] Generated Auth URL:', authUrl.toString());
+    console.log('[soundcloud-auth] ========== RETURNING AUTH URL ==========');
 
     return new Response(JSON.stringify({ authUrl: authUrl.toString() }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },

@@ -110,24 +110,44 @@ Deno.serve(async (req) => {
     }
 
     const tokenData = await tokenRes.json();
+    console.log('[soundcloud-callback] Token data keys:', Object.keys(tokenData));
+    
     const accessToken = tokenData.access_token;
     const refreshToken = tokenData.refresh_token;
     const expiresIn = tokenData.expires_in;
+    
+    console.log('[soundcloud-callback] access_token present:', !!accessToken, 'length:', accessToken?.length);
+    console.log('[soundcloud-callback] refresh_token present:', !!refreshToken);
+    console.log('[soundcloud-callback] expires_in:', expiresIn);
 
     // Fetch user info
+    console.log('[soundcloud-callback] Fetching user info from SoundCloud API...');
     const userRes = await fetch('https://api.soundcloud.com/me', {
       headers: { Authorization: `OAuth ${accessToken}` },
     });
+    
+    console.log('[soundcloud-callback] User info response status:', userRes.status);
 
     let scUser: any = {};
     if (userRes.ok) {
       scUser = await userRes.json();
+      console.log('[soundcloud-callback] SoundCloud user:', {
+        id: scUser.id,
+        username: scUser.username,
+        followers_count: scUser.followers_count,
+        track_count: scUser.track_count
+      });
+    } else {
+      const userErrText = await userRes.text();
+      console.error('[soundcloud-callback] User info fetch failed:', userErrText);
     }
 
     // Update the connection with tokens and user info
     const tokenExpiry = expiresIn ? new Date(Date.now() + expiresIn * 1000).toISOString() : null;
 
-    await supabase
+    console.log('[soundcloud-callback] Updating platform_connections row id:', connection.id);
+    
+    const { error: updateError } = await supabase
       .from('platform_connections')
       .update({
         access_token: accessToken,
@@ -152,7 +172,17 @@ Deno.serve(async (req) => {
       })
       .eq('id', connection.id);
 
-    console.log('SoundCloud connected successfully for user:', connection.user_id);
+    if (updateError) {
+      console.error('[soundcloud-callback] DB update error:', updateError);
+    } else {
+      console.log('[soundcloud-callback] ========== DB UPDATE SUCCESS ==========');
+      console.log('[soundcloud-callback] Connection ID:', connection.id);
+      console.log('[soundcloud-callback] User ID:', connection.user_id);
+      console.log('[soundcloud-callback] is_connected: true');
+      console.log('[soundcloud-callback] access_token stored: YES');
+    }
+
+    console.log('[soundcloud-callback] Redirecting to frontend with success...');
     return Response.redirect(`${FRONTEND_URL}/?soundcloud_connected=true`, 302);
   } catch (err) {
     console.error('SoundCloud callback error:', err);

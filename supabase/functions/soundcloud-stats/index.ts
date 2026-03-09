@@ -214,21 +214,26 @@ Deno.serve(async (req) => {
       .maybeSingle();
 
     if (existing) {
-      await supabase
+      console.log('[soundcloud-stats] Updating existing fan_data row:', existing.id);
+      const { error: updateErr } = await supabase
         .from('fan_data')
         .update({ ...fanDataPayload, last_interaction_at: now, updated_at: now })
         .eq('id', existing.id);
+      if (updateErr) console.error('[soundcloud-stats] fan_data update error:', updateErr);
     } else {
-      await supabase
+      console.log('[soundcloud-stats] Inserting new fan_data row');
+      const { error: insertErr } = await supabase
         .from('fan_data')
         .insert({ ...fanDataPayload, user_id: user.id, last_interaction_at: now });
+      if (insertErr) console.error('[soundcloud-stats] fan_data insert error:', insertErr);
     }
 
+    console.log('[soundcloud-stats] ========== RETURNING SUCCESS ==========');
     return new Response(JSON.stringify(result), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (error) {
-    console.error('Error in soundcloud-stats:', error);
+    console.error('[soundcloud-stats] ERROR:', error);
     const statusCode = error instanceof Error && error.message === 'Unauthorized' ? 401 : 500;
     return new Response(
       JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),

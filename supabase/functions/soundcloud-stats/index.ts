@@ -34,6 +34,8 @@ async function refreshAccessToken(refreshToken: string): Promise<{ access_token:
 }
 
 Deno.serve(async (req) => {
+  console.log('[soundcloud-stats] ========== FUNCTION INVOKED ==========');
+  
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
@@ -50,9 +52,12 @@ Deno.serve(async (req) => {
     const token = authHeader.replace('Bearer ', '');
     const { data: { user }, error: userError } = await supabase.auth.getUser(token);
     if (userError || !user) throw new Error('Unauthorized');
+    
+    console.log('[soundcloud-stats] Authenticated user:', user.id);
 
     // Check if user has OAuth connection for SoundCloud
-    const { data: connection } = await supabase
+    console.log('[soundcloud-stats] Querying platform_connections...');
+    const { data: connection, error: connError } = await supabase
       .from('platform_connections')
       .select('*')
       .eq('user_id', user.id)
@@ -60,7 +65,17 @@ Deno.serve(async (req) => {
       .eq('is_connected', true)
       .maybeSingle();
 
+    console.log('[soundcloud-stats] Connection query error:', connError);
+    console.log('[soundcloud-stats] Connection found:', !!connection);
+    if (connection) {
+      console.log('[soundcloud-stats] Connection ID:', connection.id);
+      console.log('[soundcloud-stats] is_connected:', connection.is_connected);
+      console.log('[soundcloud-stats] access_token present:', !!connection.access_token, 'length:', connection.access_token?.length);
+      console.log('[soundcloud-stats] username:', connection.username);
+    }
+
     if (!connection?.access_token) {
+      console.error('[soundcloud-stats] No access token found!');
       throw new Error('SoundCloud not connected. Please connect via OAuth first.');
     }
 

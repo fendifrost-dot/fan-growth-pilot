@@ -22,6 +22,8 @@ export interface SoundCloudTrack {
 export interface SoundCloudStats {
   followers: number;
   total_plays: number;
+  total_plays_all_tracks: number;
+  total_plays_public_catalog: number;
   total_likes: number;
   total_comments: number;
   total_reposts: number;

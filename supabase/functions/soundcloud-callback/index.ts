@@ -81,6 +81,10 @@ Deno.serve(async (req) => {
     }
 
     // Exchange code for token
+    console.log('[soundcloud-callback] Exchanging code for token...');
+    console.log('[soundcloud-callback] redirect_uri:', redirectUri);
+    console.log('[soundcloud-callback] code_verifier present:', !!codeVerifier, 'length:', codeVerifier?.length);
+    
     const tokenRes = await fetch('https://secure.soundcloud.com/oauth/token', {
       method: 'POST',
       headers: {
@@ -97,9 +101,11 @@ Deno.serve(async (req) => {
       }),
     });
 
+    console.log('[soundcloud-callback] Token response status:', tokenRes.status);
+    
     if (!tokenRes.ok) {
       const errorText = await tokenRes.text();
-      console.error('Token exchange failed:', tokenRes.status, errorText);
+      console.error('[soundcloud-callback] Token exchange failed:', tokenRes.status, errorText);
       return Response.redirect(`${FRONTEND_URL}/?error=Token+exchange+failed`, 302);
     }
 

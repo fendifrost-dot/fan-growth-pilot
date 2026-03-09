@@ -56,8 +56,12 @@ const Index = () => {
 
   // Auto-populate YouTube stats on mount if data is missing
   useEffect(() => {
-    if (!statsLoading && artistStats && artistStats.youtube.subscribers === 0 && artistStats.youtube.total_views === 0) {
-      refreshStats();
+    if (!statsLoading && artistStats) {
+      const ytMissing = artistStats.youtube.subscribers === 0 && artistStats.youtube.total_views === 0;
+      const scMissing = artistStats.soundcloud.followers === 0 && artistStats.soundcloud.total_plays === 0;
+      if (ytMissing || scMissing) {
+        refreshStats();
+      }
     }
   }, [statsLoading]);
 

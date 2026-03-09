@@ -255,47 +255,52 @@ export const AddPlatformDialog = ({ open, onOpenChange, onConnect }: AddPlatform
             </div>
           )}
 
-          <div className="space-y-2">
-            <Label htmlFor="username">Username/Artist Name</Label>
-            <Input
-              id="username"
-              placeholder="yourusername"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              required
-            />
-          </div>
+          {/* Only show username/URL fields for non-OAuth platforms */}
+          {!(selectedOption?.needsOAuth && (selectedPlatform === "spotify" || selectedPlatform === "youtube" || selectedPlatform === "soundcloud")) && (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="username">Username/Artist Name</Label>
+                <Input
+                  id="username"
+                  placeholder="yourusername"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  required
+                />
+              </div>
 
-          {selectedOption?.needsPixelId && (
-            <div className="space-y-2">
-              <Label htmlFor="pixelId">Facebook Pixel ID</Label>
-              <Input
-                id="pixelId"
-                placeholder="123456789012345"
-                value={pixelId}
-                onChange={(e) => setPixelId(e.target.value)}
-                required
-              />
-              <p className="text-xs text-muted-foreground">
-                Find your Pixel ID in Facebook Events Manager for conversion tracking
-              </p>
-            </div>
+              {selectedOption?.needsPixelId && (
+                <div className="space-y-2">
+                  <Label htmlFor="pixelId">Facebook Pixel ID</Label>
+                  <Input
+                    id="pixelId"
+                    placeholder="123456789012345"
+                    value={pixelId}
+                    onChange={(e) => setPixelId(e.target.value)}
+                    required
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Find your Pixel ID in Facebook Events Manager for conversion tracking
+                  </p>
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <Label htmlFor="url">Profile URL</Label>
+                <Input
+                  id="url"
+                  type="url"
+                  placeholder={selectedOption?.placeholder || "https://..."}
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  required
+                />
+                <p className="text-xs text-muted-foreground">
+                  Enter the full URL to your {selectedOption?.label || "platform"} profile
+                </p>
+              </div>
+            </>
           )}
-
-          <div className="space-y-2">
-            <Label htmlFor="url">Profile URL</Label>
-            <Input
-              id="url"
-              type="url"
-              placeholder={selectedOption?.placeholder || "https://..."}
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              required
-            />
-            <p className="text-xs text-muted-foreground">
-              Enter the full URL to your {selectedOption?.label || "platform"} profile
-            </p>
-          </div>
 
           <div className="flex justify-end gap-3">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>

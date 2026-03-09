@@ -35,6 +35,7 @@ const Index = () => {
   const { smartLinks, isLoading: linksLoading, createSmartLink, updateSmartLink, removeSmartLink } = useSmartLinks();
   const { stats: artistStats, isLoading: statsLoading, refresh: refreshStats, isRefreshing } = useArtistStats();
   const { isConnected: shopifyConnected, isLoading: shopifyLoading } = useShopifyConnection();
+  const { createConnection } = usePlatformConnections();
 
   // Handle OAuth callbacks
   useEffect(() => {

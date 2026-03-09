@@ -229,8 +229,11 @@ const Index = () => {
           setEditingLink(null);
         }}
       />
-    </div>
-  );
+      <AddPlatformDialog
+        open={platformDialogOpen}
+        onOpenChange={setPlatformDialogOpen}
+        onConnect={createConnection}
+      />
 };
 
 export default Index;

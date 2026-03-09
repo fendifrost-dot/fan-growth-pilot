@@ -22,6 +22,7 @@ import {
   Plus,
   Link as LinkIcon,
   Youtube,
+  Music2,
 } from "lucide-react";
 
 // Lazy load the Email Leads section (below the fold)
@@ -55,8 +56,12 @@ const Index = () => {
 
   // Auto-populate YouTube stats on mount if data is missing
   useEffect(() => {
-    if (!statsLoading && artistStats && artistStats.youtube.subscribers === 0 && artistStats.youtube.total_views === 0) {
-      refreshStats();
+    if (!statsLoading && artistStats) {
+      const ytMissing = artistStats.youtube.subscribers === 0 && artistStats.youtube.total_views === 0;
+      const scMissing = artistStats.soundcloud.followers === 0 && artistStats.soundcloud.total_plays === 0;
+      if (ytMissing || scMissing) {
+        refreshStats();
+      }
     }
   }, [statsLoading]);
 
@@ -89,9 +94,11 @@ const Index = () => {
               </Button>
             </div>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 gap-6">
             {statsLoading || shopifyLoading ? (
               <>
+                <MetricCardSkeleton />
+                <MetricCardSkeleton />
                 <MetricCardSkeleton />
                 <MetricCardSkeleton />
                 <MetricCardSkeleton />
@@ -133,6 +140,20 @@ const Index = () => {
                   value={artistStats ? `${(artistStats.youtube.total_views / 1000).toFixed(1)}K` : "No data"}
                   change="YouTube"
                   icon={Youtube}
+                  trend="up"
+                />
+                <MetricCard
+                  title="SC Followers"
+                  value={artistStats ? `${(artistStats.soundcloud.followers / 1000).toFixed(1)}K` : "No data"}
+                  change="SoundCloud"
+                  icon={Music2}
+                  trend="up"
+                />
+                <MetricCard
+                  title="SC Total Plays"
+                  value={artistStats ? `${(artistStats.soundcloud.total_plays / 1000).toFixed(1)}K` : "No data"}
+                  change="SoundCloud"
+                  icon={Music2}
                   trend="up"
                 />
               </>

@@ -38,3 +38,6 @@ verify_jwt = false
 
 [functions.youtube-callback]
 verify_jwt = false
+
+[functions.soundcloud-stats]
+verify_jwt = false

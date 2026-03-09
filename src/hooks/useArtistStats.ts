@@ -6,6 +6,7 @@ export interface ArtistStats {
   instagram: { followers: number };
   facebook: { followers: number };
   youtube: { subscribers: number; total_views: number };
+  soundcloud: { followers: number; total_plays: number };
   updated_at: string | null;
 }
 
@@ -19,7 +20,7 @@ export const useArtistStats = () => {
       const { data, error } = await supabase
         .from("fan_data")
         .select("*")
-        .in("fan_identifier", ["spotify_artist_stats", "instagram_stats", "facebook_stats", "youtube_channel_stats"]);
+        .in("fan_identifier", ["spotify_artist_stats", "instagram_stats", "facebook_stats", "youtube_channel_stats", "soundcloud_user_stats"]);
 
       if (error) throw error;
 
@@ -27,6 +28,7 @@ export const useArtistStats = () => {
       const instagram = data?.find((d) => d.fan_identifier === "instagram_stats");
       const facebook = data?.find((d) => d.fan_identifier === "facebook_stats");
       const youtube = data?.find((d) => d.fan_identifier === "youtube_channel_stats");
+      const soundcloud = data?.find((d) => d.fan_identifier === "soundcloud_user_stats");
 
       const meta = (row: any) => (row?.metadata && typeof row.metadata === "object" ? row.metadata : {}) as Record<string, any>;
 
@@ -45,6 +47,10 @@ export const useArtistStats = () => {
           subscribers: meta(youtube).subscribers ?? youtube?.total_interactions ?? 0,
           total_views: meta(youtube).total_views ?? youtube?.total_streams ?? 0,
         },
+        soundcloud: {
+          followers: meta(soundcloud).followers ?? soundcloud?.total_interactions ?? 0,
+          total_plays: meta(soundcloud).total_plays ?? soundcloud?.total_streams ?? 0,
+        },
         updated_at: spotify?.updated_at ?? null,
       };
     },
@@ -58,6 +64,7 @@ export const useArtistStats = () => {
       const [spotifyResult] = await Promise.allSettled([
         supabase.functions.invoke("fetch-public-spotify-data"),
         supabase.functions.invoke("youtube-stats", { body: {} }),
+        supabase.functions.invoke("soundcloud-stats", { body: {} }),
       ]);
       if (spotifyResult.status === "rejected") throw spotifyResult.reason;
       const { error } = spotifyResult.value;

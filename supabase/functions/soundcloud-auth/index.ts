@@ -47,9 +47,9 @@ Deno.serve(async (req) => {
     }
 
     // Generate PKCE values
-    const codeVerifier = encodeBase64url(crypto.getRandomValues(new Uint8Array(32)));
+    const codeVerifier = base64UrlEncode(crypto.getRandomValues(new Uint8Array(32)));
     const codeChallenge = await generateCodeChallenge(codeVerifier);
-    const state = encodeBase64url(crypto.getRandomValues(new Uint8Array(16)));
+    const state = base64UrlEncode(crypto.getRandomValues(new Uint8Array(16)));
 
     // Store state and code_verifier temporarily in platform_connections (or use metadata)
     // We'll store in the metadata of an existing/new connection record

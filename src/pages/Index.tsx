@@ -138,6 +138,20 @@ const Index = () => {
                   icon={Youtube}
                   trend="up"
                 />
+                <MetricCard
+                  title="SC Followers"
+                  value={artistStats ? `${(artistStats.soundcloud.followers / 1000).toFixed(1)}K` : "No data"}
+                  change="SoundCloud"
+                  icon={Music2}
+                  trend="up"
+                />
+                <MetricCard
+                  title="SC Total Plays"
+                  value={artistStats ? `${(artistStats.soundcloud.total_plays / 1000).toFixed(1)}K` : "No data"}
+                  change="SoundCloud"
+                  icon={Music2}
+                  trend="up"
+                />
               </>
             )}
           </div>

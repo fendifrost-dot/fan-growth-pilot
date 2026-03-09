@@ -169,15 +169,18 @@ Deno.serve(async (req) => {
 
           // If they purchased, add that event too
           if (lead.album_purchased && lead.album_purchased_at) {
-            const { data: existingPurchase } = await supabase
+            const { data: purchaseEvents } = await supabase
               .from('fan_events')
-              .select('id')
+              .select('id, metadata')
               .eq('user_id', userId)
-              .eq('event_type', 'album_purchased')
-              .eq('metadata->>lead_id', lead.id)
-              .maybeSingle();
+              .eq('event_type', 'album_purchased');
 
-            if (!existingPurchase) {
+            const purchaseAlreadyLogged = purchaseEvents?.some(e => {
+              const md = e.metadata as Record<string, unknown> | null;
+              return md?.lead_id === lead.id;
+            });
+
+            if (!purchaseAlreadyLogged) {
               await supabase.from('fan_events').insert({
                 user_id: userId,
                 fan_profile_id: fanProfile?.id || null,

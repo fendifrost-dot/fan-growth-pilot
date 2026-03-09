@@ -98,6 +98,8 @@ const Index = () => {
                 <MetricCardSkeleton />
                 <MetricCardSkeleton />
                 <MetricCardSkeleton />
+                <MetricCardSkeleton />
+                <MetricCardSkeleton />
               </>
             ) : (
               <>

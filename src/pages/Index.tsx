@@ -5,11 +5,13 @@ import { MetricCardSkeleton } from "@/components/skeletons/MetricCardSkeleton";
 import { SmartLinkCardSkeleton } from "@/components/skeletons/SmartLinkCardSkeleton";
 import { SmartLinkCard } from "@/components/SmartLinkCard";
 import { AddSmartLinkDialog, SmartLink } from "@/components/AddSmartLinkDialog";
+import { AddPlatformDialog } from "@/components/AddPlatformDialog";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useSmartLinks } from "@/hooks/useSmartLinks";
 import { useArtistStats } from "@/hooks/useArtistStats";
 import { useShopifyConnection } from "@/hooks/useShopifyConnection";
+import { usePlatformConnections } from "@/hooks/usePlatformConnections";
 import { toast } from "sonner";
 import { 
   Play, 
@@ -27,11 +29,13 @@ const EmailLeadsSection = lazy(() => import("@/components/EmailLeadsSection").th
 
 const Index = () => {
   const [smartLinkDialogOpen, setSmartLinkDialogOpen] = useState(false);
+  const [platformDialogOpen, setPlatformDialogOpen] = useState(false);
   const [editingLink, setEditingLink] = useState<SmartLink | null>(null);
   
   const { smartLinks, isLoading: linksLoading, createSmartLink, updateSmartLink, removeSmartLink } = useSmartLinks();
   const { stats: artistStats, isLoading: statsLoading, refresh: refreshStats, isRefreshing } = useArtistStats();
   const { isConnected: shopifyConnected, isLoading: shopifyLoading } = useShopifyConnection();
+  const { createConnection } = usePlatformConnections();
 
   // Handle OAuth callbacks
   useEffect(() => {
@@ -68,9 +72,15 @@ const Index = () => {
         <section className="mb-12">
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-2xl font-semibold">Performance Overview</h3>
-            <Button variant="outline" size="sm" onClick={() => refreshStats()} disabled={isRefreshing}>
-              {isRefreshing ? "Refreshing…" : "↻ Refresh Stats"}
-            </Button>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={() => setPlatformDialogOpen(true)}>
+                <Plus className="w-4 h-4" />
+                Connect Platform
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => refreshStats()} disabled={isRefreshing}>
+                {isRefreshing ? "Refreshing…" : "↻ Refresh Stats"}
+              </Button>
+            </div>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
             {statsLoading || shopifyLoading ? (
@@ -218,6 +228,12 @@ const Index = () => {
           updateSmartLink(updatedLink);
           setEditingLink(null);
         }}
+      />
+
+      <AddPlatformDialog
+        open={platformDialogOpen}
+        onOpenChange={setPlatformDialogOpen}
+        onConnect={createConnection}
       />
     </div>
   );

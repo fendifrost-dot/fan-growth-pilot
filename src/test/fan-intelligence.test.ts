@@ -158,3 +158,63 @@ describe("Fan Tier Classification", () => {
     expect(classifyTier(100)).toBe("superfan");
   });
 });
+
+// ── Purchase Backfill Independence Tests ──
+
+describe("Purchase Backfill Independence", () => {
+  // Simulates the backfill logic extracted from fan-intelligence/index.ts
+  function simulateBackfill(
+    lead: { id: string; email: string; album_purchased: boolean; album_purchased_at: string | null },
+    existingEmailEvents: { metadata: { lead_id: string } }[],
+    existingPurchaseEvents: { metadata: { lead_id: string } }[],
+  ): { email_capture_created: boolean; album_purchased_created: boolean } {
+    const result = { email_capture_created: false, album_purchased_created: false };
+
+    // Email capture dedup (by lead_id in metadata)
+    const alreadyBackfilled = existingEmailEvents.some(e => e.metadata.lead_id === lead.id);
+    if (!alreadyBackfilled) {
+      result.email_capture_created = true;
+    }
+
+    // Purchase backfill runs INDEPENDENTLY
+    if (lead.album_purchased && lead.album_purchased_at) {
+      const purchaseAlreadyLogged = existingPurchaseEvents.some(e => e.metadata.lead_id === lead.id);
+      if (!purchaseAlreadyLogged) {
+        result.album_purchased_created = true;
+      }
+    }
+
+    return result;
+  }
+
+  it("first run: creates email_capture only (no purchase yet)", () => {
+    const lead = { id: "lead-1", email: "fan@test.com", album_purchased: false, album_purchased_at: null };
+    const result = simulateBackfill(lead, [], []);
+    expect(result.email_capture_created).toBe(true);
+    expect(result.album_purchased_created).toBe(false);
+  });
+
+  it("later run: lead now has album_purchased=true, email already backfilled → creates purchase only", () => {
+    const lead = { id: "lead-1", email: "fan@test.com", album_purchased: true, album_purchased_at: "2025-01-15T00:00:00Z" };
+    const existingEmailEvents = [{ metadata: { lead_id: "lead-1" } }];
+    const result = simulateBackfill(lead, existingEmailEvents, []);
+    expect(result.email_capture_created).toBe(false);
+    expect(result.album_purchased_created).toBe(true);
+  });
+
+  it("rerun after purchase backfill: creates zero duplicates", () => {
+    const lead = { id: "lead-1", email: "fan@test.com", album_purchased: true, album_purchased_at: "2025-01-15T00:00:00Z" };
+    const existingEmailEvents = [{ metadata: { lead_id: "lead-1" } }];
+    const existingPurchaseEvents = [{ metadata: { lead_id: "lead-1" } }];
+    const result = simulateBackfill(lead, existingEmailEvents, existingPurchaseEvents);
+    expect(result.email_capture_created).toBe(false);
+    expect(result.album_purchased_created).toBe(false);
+  });
+
+  it("first run with purchase already true: creates both events", () => {
+    const lead = { id: "lead-2", email: "buyer@test.com", album_purchased: true, album_purchased_at: "2025-01-10T00:00:00Z" };
+    const result = simulateBackfill(lead, [], []);
+    expect(result.email_capture_created).toBe(true);
+    expect(result.album_purchased_created).toBe(true);
+  });
+});

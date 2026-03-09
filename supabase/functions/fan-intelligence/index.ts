@@ -147,15 +147,16 @@ Deno.serve(async (req) => {
           return md?.lead_id === lead.id;
         });
 
-        if (!alreadyBackfilled) {
-          // Get fan_profile_id
-          const { data: fanProfile } = await supabase
-            .from('fan_profiles')
-            .select('id')
-            .eq('user_id', userId)
-            .eq('email', email)
-            .maybeSingle();
+        // Get fan_profile_id (needed for both email_capture and purchase backfill)
+        const { data: fanProfile } = await supabase
+          .from('fan_profiles')
+          .select('id')
+          .eq('user_id', userId)
+          .eq('email', email)
+          .maybeSingle();
 
+        // Backfill email_capture event (idempotent by lead_id)
+        if (!alreadyBackfilled) {
           await supabase.from('fan_events').insert({
             user_id: userId,
             fan_profile_id: fanProfile?.id || null,
@@ -166,33 +167,33 @@ Deno.serve(async (req) => {
             metadata: { lead_id: lead.id, smart_link_title: lead.smart_links?.title },
           });
           result.events_backfilled++;
+        }
 
-          // If they purchased, add that event too
-          if (lead.album_purchased && lead.album_purchased_at) {
-            const { data: purchaseEvents } = await supabase
-              .from('fan_events')
-              .select('id, metadata')
-              .eq('user_id', userId)
-              .eq('event_type', 'album_purchased');
+        // Backfill album_purchased event independently (idempotent by lead_id)
+        if (lead.album_purchased && lead.album_purchased_at) {
+          const { data: purchaseEvents } = await supabase
+            .from('fan_events')
+            .select('id, metadata')
+            .eq('user_id', userId)
+            .eq('event_type', 'album_purchased');
 
-            const purchaseAlreadyLogged = purchaseEvents?.some(e => {
-              const md = e.metadata as Record<string, unknown> | null;
-              return md?.lead_id === lead.id;
+          const purchaseAlreadyLogged = purchaseEvents?.some(e => {
+            const md = e.metadata as Record<string, unknown> | null;
+            return md?.lead_id === lead.id;
+          });
+
+          if (!purchaseAlreadyLogged) {
+            await supabase.from('fan_events').insert({
+              user_id: userId,
+              fan_profile_id: fanProfile?.id || null,
+              event_type: 'album_purchased',
+              event_source: lead.purchase_source || 'shopify',
+              song_slug: lead.smart_links?.slug || null,
+              value: lead.conversion_value || 0,
+              occurred_at: lead.album_purchased_at,
+              metadata: { lead_id: lead.id, shopify_order_id: lead.shopify_order_id },
             });
-
-            if (!purchaseAlreadyLogged) {
-              await supabase.from('fan_events').insert({
-                user_id: userId,
-                fan_profile_id: fanProfile?.id || null,
-                event_type: 'album_purchased',
-                event_source: lead.purchase_source || 'shopify',
-                song_slug: lead.smart_links?.slug || null,
-                value: lead.conversion_value || 0,
-                occurred_at: lead.album_purchased_at,
-                metadata: { lead_id: lead.id, shopify_order_id: lead.shopify_order_id },
-              });
-              result.events_backfilled++;
-            }
+            result.events_backfilled++;
           }
         }
       }

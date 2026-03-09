@@ -63,10 +63,10 @@ Deno.serve(async (req) => {
     snapshot_created: false,
     errors: [],
   };
+  let userId: string | null = null;
 
   try {
     // Determine user_id
-    let userId: string;
     const authHeader = req.headers.get('Authorization');
     if (authHeader && authHeader !== `Bearer ${Deno.env.get('SUPABASE_ANON_KEY')}`) {
       const token = authHeader.replace('Bearer ', '');
@@ -135,16 +135,19 @@ Deno.serve(async (req) => {
           }
         }
 
-        // 2b. Backfill fan_events (idempotent: check if already backfilled)
-        const { data: existingEvent } = await supabase
+        // 2b. Backfill fan_events (idempotent: check if already backfilled by lead_id in metadata)
+        const { data: existingEvents } = await supabase
           .from('fan_events')
-          .select('id')
+          .select('id, metadata')
           .eq('user_id', userId)
-          .eq('event_type', 'email_capture')
-          .eq('metadata->>lead_id', lead.id)
-          .maybeSingle();
+          .eq('event_type', 'email_capture');
 
-        if (!existingEvent) {
+        const alreadyBackfilled = existingEvents?.some(e => {
+          const md = e.metadata as Record<string, unknown> | null;
+          return md?.lead_id === lead.id;
+        });
+
+        if (!alreadyBackfilled) {
           // Get fan_profile_id
           const { data: fanProfile } = await supabase
             .from('fan_profiles')
@@ -166,15 +169,18 @@ Deno.serve(async (req) => {
 
           // If they purchased, add that event too
           if (lead.album_purchased && lead.album_purchased_at) {
-            const { data: existingPurchase } = await supabase
+            const { data: purchaseEvents } = await supabase
               .from('fan_events')
-              .select('id')
+              .select('id, metadata')
               .eq('user_id', userId)
-              .eq('event_type', 'album_purchased')
-              .eq('metadata->>lead_id', lead.id)
-              .maybeSingle();
+              .eq('event_type', 'album_purchased');
 
-            if (!existingPurchase) {
+            const purchaseAlreadyLogged = purchaseEvents?.some(e => {
+              const md = e.metadata as Record<string, unknown> | null;
+              return md?.lead_id === lead.id;
+            });
+
+            if (!purchaseAlreadyLogged) {
               await supabase.from('fan_events').insert({
                 user_id: userId,
                 fan_profile_id: fanProfile?.id || null,
@@ -533,6 +539,7 @@ Deno.serve(async (req) => {
     // Log failure
     try {
       await supabase.from('system_logs').insert({
+        ...(userId ? { user_id: userId } : {}),
         process_name: 'fan-intelligence',
         status: 'error',
         message: error instanceof Error ? error.message : 'Unknown error',

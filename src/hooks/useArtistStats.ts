@@ -99,7 +99,9 @@ export const useArtistStats = () => {
       const scMeta = meta(soundcloud);
       const soundcloudStats: SoundCloudStats = {
         followers: typeof scMeta.followers === "number" ? scMeta.followers : (soundcloud?.total_interactions ?? 0),
-        total_plays: typeof scMeta.total_plays === "number" ? scMeta.total_plays : (soundcloud?.total_streams ?? 0),
+        total_plays: typeof scMeta.total_plays_public_catalog === "number" ? scMeta.total_plays_public_catalog : (typeof scMeta.total_plays === "number" ? scMeta.total_plays as number : (soundcloud?.total_streams ?? 0)),
+        total_plays_all_tracks: typeof scMeta.total_plays_all_tracks === "number" ? scMeta.total_plays_all_tracks as number : 0,
+        total_plays_public_catalog: typeof scMeta.total_plays_public_catalog === "number" ? scMeta.total_plays_public_catalog as number : 0,
         total_likes: typeof scMeta.total_likes === "number" ? scMeta.total_likes : 0,
         total_comments: typeof scMeta.total_comments === "number" ? scMeta.total_comments : 0,
         total_reposts: typeof scMeta.total_reposts === "number" ? scMeta.total_reposts : 0,

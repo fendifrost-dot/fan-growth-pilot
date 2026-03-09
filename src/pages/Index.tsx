@@ -5,11 +5,13 @@ import { MetricCardSkeleton } from "@/components/skeletons/MetricCardSkeleton";
 import { SmartLinkCardSkeleton } from "@/components/skeletons/SmartLinkCardSkeleton";
 import { SmartLinkCard } from "@/components/SmartLinkCard";
 import { AddSmartLinkDialog, SmartLink } from "@/components/AddSmartLinkDialog";
+import { AddPlatformDialog } from "@/components/AddPlatformDialog";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useSmartLinks } from "@/hooks/useSmartLinks";
 import { useArtistStats } from "@/hooks/useArtistStats";
 import { useShopifyConnection } from "@/hooks/useShopifyConnection";
+import { usePlatformConnections } from "@/hooks/usePlatformConnections";
 import { toast } from "sonner";
 import { 
   Play, 

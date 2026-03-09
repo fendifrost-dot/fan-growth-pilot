@@ -105,17 +105,28 @@ Deno.serve(async (req) => {
     }
 
     // Fetch user data
+    console.log('[soundcloud-stats] Fetching /me from SoundCloud API...');
     const userRes = await fetch(`${SOUNDCLOUD_API_BASE}/me`, {
       headers: { Authorization: `OAuth ${accessToken}` },
     });
 
+    console.log('[soundcloud-stats] /me response status:', userRes.status);
+    
     if (!userRes.ok) {
       const errText = await userRes.text();
-      console.error('SoundCloud /me error:', userRes.status, errText);
+      console.error('[soundcloud-stats] SoundCloud /me error:', userRes.status, errText);
       throw new Error(`SoundCloud API error: ${userRes.status}`);
     }
 
     const scUser = await userRes.json();
+    console.log('[soundcloud-stats] RAW SoundCloud user data:', JSON.stringify({
+      id: scUser.id,
+      username: scUser.username,
+      followers_count: scUser.followers_count,
+      followings_count: scUser.followings_count,
+      track_count: scUser.track_count,
+      playlist_count: scUser.playlist_count
+    }));
 
     // Fetch recent tracks
     let topTracks: any[] = [];

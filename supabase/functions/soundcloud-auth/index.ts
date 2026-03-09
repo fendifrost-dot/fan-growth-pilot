@@ -22,6 +22,10 @@ async function generateCodeChallenge(verifier: string): Promise<string> {
 }
 
 Deno.serve(async (req) => {
+  console.log('[soundcloud-auth] ========== FUNCTION INVOKED ==========');
+  console.log('[soundcloud-auth] Method:', req.method);
+  console.log('[soundcloud-auth] Headers:', JSON.stringify(Object.fromEntries(req.headers.entries())));
+  
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }

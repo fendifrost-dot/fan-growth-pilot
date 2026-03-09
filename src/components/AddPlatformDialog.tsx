@@ -140,6 +140,43 @@ export const AddPlatformDialog = ({ open, onOpenChange, onConnect }: AddPlatform
       }
     }
 
+    // For SoundCloud, initiate OAuth flow
+    if (platformOption.needsOAuth && selectedPlatform === "soundcloud") {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+          toast.error("Please log in to connect SoundCloud");
+          return;
+        }
+
+        const { data, error } = await supabase.functions.invoke('soundcloud-auth', {
+          body: { user_id: user.id }
+        });
+
+        if (error) {
+          toast.error(`Failed to initiate SoundCloud connection: ${error.message}`);
+          return;
+        }
+
+        if (data?.authUrl) {
+          const width = 600;
+          const height = 700;
+          const left = (window.screen.width - width) / 2;
+          const top = (window.screen.height - height) / 2;
+          window.open(data.authUrl, 'soundcloud-auth', `width=${width},height=${height},left=${left},top=${top},popup=yes`);
+          toast.success("Opening SoundCloud authorization...");
+          onOpenChange(false);
+        } else {
+          toast.error("Failed to get authorization URL");
+        }
+        return;
+      } catch (error) {
+        console.error('SoundCloud OAuth exception:', error);
+        toast.error("Failed to initiate SoundCloud connection");
+        return;
+      }
+    }
+
     // Validate required fields
     if (!username) {
       toast.error("Please enter your username");

@@ -167,7 +167,7 @@ const Index = () => {
         </section>
 
         {/* SoundCloud Top Tracks */}
-        {artistStats && artistStats.soundcloud.top_tracks.length > 0 && (
+        {artistStats && artistStats.soundcloud.top_tracks?.length > 0 && (
           <SoundCloudTopTracks
             tracks={artistStats.soundcloud.top_tracks}
             totalPlays={artistStats.soundcloud.total_plays}

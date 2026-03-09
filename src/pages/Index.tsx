@@ -53,6 +53,13 @@ const Index = () => {
     }
   }, []);
 
+  // Auto-populate YouTube stats on mount if data is missing
+  useEffect(() => {
+    if (!statsLoading && artistStats && artistStats.youtube.subscribers === 0 && artistStats.youtube.total_views === 0) {
+      refreshStats();
+    }
+  }, [statsLoading]);
+
   return (
     <div className="min-h-screen bg-gradient-dark">
       <DashboardHeader />

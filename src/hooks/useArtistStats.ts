@@ -52,12 +52,17 @@ export const useArtistStats = () => {
     refetchOnWindowFocus: true,
   });
 
-  // Trigger a refresh by calling the edge function
+  // Trigger a refresh by calling both Spotify and YouTube edge functions in parallel
   const refreshMutation = useMutation({
     mutationFn: async () => {
-      const { data, error } = await supabase.functions.invoke("fetch-public-spotify-data");
+      const [spotifyResult] = await Promise.allSettled([
+        supabase.functions.invoke("fetch-public-spotify-data"),
+        supabase.functions.invoke("youtube-stats", { body: {} }),
+      ]);
+      if (spotifyResult.status === "rejected") throw spotifyResult.reason;
+      const { error } = spotifyResult.value;
       if (error) throw error;
-      return data as ArtistStats;
+      return spotifyResult.value.data as ArtistStats;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["artist-stats"] });

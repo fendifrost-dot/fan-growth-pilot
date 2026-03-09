@@ -22,6 +22,7 @@ import {
   Plus,
   Link as LinkIcon,
   Youtube,
+  Music2,
 } from "lucide-react";
 
 // Lazy load the Email Leads section (below the fold)

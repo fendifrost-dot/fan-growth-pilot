@@ -159,11 +159,22 @@ Deno.serve(async (req) => {
       }
 
       if (!channelId) {
-        const searchUrl = `${YOUTUBE_API_BASE}/search?part=snippet&type=channel&q=${encodeURIComponent(channelHandle)}&maxResults=1&key=${YOUTUBE_API_KEY}`;
-        const searchRes = await fetch(searchUrl);
-        const searchData = await searchRes.json();
-        if (!searchRes.ok) throw new Error(`YouTube API error: ${searchData.error?.message || 'Unknown'}`);
-        channelId = searchData.items?.[0]?.snippet?.channelId || null;
+        // Try forHandle first (works for @handles)
+        const handleClean = channelHandle.startsWith('@') ? channelHandle.substring(1) : channelHandle;
+        const handleUrl = `${YOUTUBE_API_BASE}/channels?part=id&forHandle=${encodeURIComponent(handleClean)}&key=${YOUTUBE_API_KEY}`;
+        const handleRes = await fetch(handleUrl);
+        const handleData = await handleRes.json();
+        channelId = handleData.items?.[0]?.id || null;
+
+        // Fallback to search if forHandle fails
+        if (!channelId) {
+          const searchUrl = `${YOUTUBE_API_BASE}/search?part=snippet&type=channel&q=${encodeURIComponent(channelHandle)}&maxResults=1&key=${YOUTUBE_API_KEY}`;
+          const searchRes = await fetch(searchUrl);
+          const searchData = await searchRes.json();
+          if (!searchRes.ok) throw new Error(`YouTube API error: ${searchData.error?.message || 'Unknown'}`);
+          channelId = searchData.items?.[0]?.snippet?.channelId || null;
+        }
+
         if (!channelId) throw new Error(`Channel not found for: ${channelHandle}`);
       }
     }

@@ -63,10 +63,10 @@ Deno.serve(async (req) => {
     snapshot_created: false,
     errors: [],
   };
+  let userId: string | null = null;
 
   try {
     // Determine user_id
-    let userId: string;
     const authHeader = req.headers.get('Authorization');
     if (authHeader && authHeader !== `Bearer ${Deno.env.get('SUPABASE_ANON_KEY')}`) {
       const token = authHeader.replace('Bearer ', '');

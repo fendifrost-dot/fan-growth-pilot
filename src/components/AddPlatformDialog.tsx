@@ -142,35 +142,54 @@ export const AddPlatformDialog = ({ open, onOpenChange, onConnect }: AddPlatform
 
     // For SoundCloud, initiate OAuth flow
     if (platformOption.needsOAuth && selectedPlatform === "soundcloud") {
+      // CRITICAL: Open popup SYNCHRONOUSLY in the click handler context
+      // before any async calls, otherwise the browser blocks it as a popup.
+      const width = 600;
+      const height = 700;
+      const left = (window.screen.width - width) / 2;
+      const top = (window.screen.height - height) / 2;
+      const popup = window.open('about:blank', 'soundcloud-auth', `width=${width},height=${height},left=${left},top=${top},popup=yes`);
+      console.log('[SoundCloud OAuth] Popup opened synchronously:', !!popup);
+
       try {
         const { data: { user } } = await supabase.auth.getUser();
         if (!user) {
+          popup?.close();
           toast.error("Please log in to connect SoundCloud");
           return;
         }
 
+        console.log('[SoundCloud OAuth] Invoking soundcloud-auth edge function...');
         const { data, error } = await supabase.functions.invoke('soundcloud-auth', {
           body: { user_id: user.id }
         });
 
+        console.log('[SoundCloud OAuth] Response:', JSON.stringify({ data, error: error?.message }));
+
         if (error) {
+          popup?.close();
           toast.error(`Failed to initiate SoundCloud connection: ${error.message}`);
           return;
         }
 
         if (data?.authUrl) {
-          const width = 600;
-          const height = 700;
-          const left = (window.screen.width - width) / 2;
-          const top = (window.screen.height - height) / 2;
-          window.open(data.authUrl, 'soundcloud-auth', `width=${width},height=${height},left=${left},top=${top},popup=yes`);
+          console.log('[SoundCloud OAuth] Setting popup URL to:', data.authUrl);
+          if (popup) {
+            popup.location.href = data.authUrl;
+          } else {
+            // Fallback: popup was blocked even synchronously
+            console.warn('[SoundCloud OAuth] Popup was blocked, using redirect');
+            window.location.href = data.authUrl;
+          }
           toast.success("Opening SoundCloud authorization...");
           onOpenChange(false);
         } else {
+          popup?.close();
           toast.error("Failed to get authorization URL");
         }
         return;
       } catch (error) {
+        popup?.close();
         console.error('SoundCloud OAuth exception:', error);
         toast.error("Failed to initiate SoundCloud connection");
         return;

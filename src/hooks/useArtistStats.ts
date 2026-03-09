@@ -58,6 +58,8 @@ export interface ArtistStats {
 const defaultSoundCloudStats: SoundCloudStats = {
   followers: 0,
   total_plays: 0,
+  total_plays_all_tracks: 0,
+  total_plays_public_catalog: 0,
   total_likes: 0,
   total_comments: 0,
   total_reposts: 0,

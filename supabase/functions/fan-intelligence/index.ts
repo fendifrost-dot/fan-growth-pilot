@@ -539,6 +539,7 @@ Deno.serve(async (req) => {
     // Log failure
     try {
       await supabase.from('system_logs').insert({
+        ...(userId ? { user_id: userId } : {}),
         process_name: 'fan-intelligence',
         status: 'error',
         message: error instanceof Error ? error.message : 'Unknown error',

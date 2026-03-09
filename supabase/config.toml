@@ -47,3 +47,6 @@ verify_jwt = false
 
 [functions.soundcloud-callback]
 verify_jwt = false
+
+[functions.scrape-chartmetric]
+verify_jwt = false

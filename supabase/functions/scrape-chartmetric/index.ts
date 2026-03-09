@@ -74,107 +74,81 @@ function parseChartmetricMarkdown(markdown: string): ScrapedData {
     }
   }
 
-  // Quick Social Stats section
+  // Helper: find next numeric value within N lines (skipping image/icon lines)
+  const findNextValue = (startIdx: number, range = 5): number => {
+    for (let j = startIdx; j < Math.min(lines.length, startIdx + range); j++) {
+      const val = lines[j].trim();
+      if (/^[\d.,]+[KMB]?$/i.test(val)) {
+        return parseNumber(val);
+      }
+    }
+    return 0;
+  };
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
-    const nextLine = (lines[i + 1] || '').trim();
-    const nextNextLine = (lines[i + 2] || '').trim();
 
-    // Pattern: label on one line, icon on next, value on the line after
-    if (line === 'IG Followers') {
-      // Value is 2 lines down (past the icon line)
-      const valLine = lines.slice(i + 1, i + 4).find(l => /^\d/.test(l.trim()));
-      if (valLine) data.ig_followers = parseNumber(valLine.trim());
-    }
-    if (line === 'Spotify Followers' && !lines[i - 2]?.includes('Streaming Stats')) {
-      const valLine = lines.slice(i + 1, i + 4).find(l => /^\d/.test(l.trim()));
-      if (valLine) data.spotify_followers = parseNumber(valLine.trim());
-    }
-    if (line === 'X Followers') {
-      const valLine = lines.slice(i + 1, i + 4).find(l => /^\d/.test(l.trim()));
-      if (valLine) data.x_followers = parseNumber(valLine.trim());
-    }
-    if (line === 'Facebook Followers') {
-      const valLine = lines.slice(i + 1, i + 4).find(l => /^\d/.test(l.trim()));
-      if (valLine) data.fb_followers = parseNumber(valLine.trim());
-    }
+    // Quick Social Stats - label then icon then value pattern
+    if (line === 'IG Followers') data.ig_followers = findNextValue(i + 1);
+    if (line === 'Spotify Followers' && i < 80) data.spotify_followers = findNextValue(i + 1);
+    if (line === 'X Followers') data.x_followers = findNextValue(i + 1);
+    if (line === 'Facebook Followers') data.fb_followers = findNextValue(i + 1);
 
-    // Monthly Listeners (in the hero section)
+    // Monthly Listeners in hero section (value appears BEFORE the label)
     if (line === 'Monthly Listeners' && i < 50) {
-      // Look backward for the value
-      for (let j = i - 1; j >= Math.max(0, i - 3); j--) {
+      for (let j = i - 1; j >= Math.max(0, i - 5); j--) {
         const val = lines[j].trim();
-        if (/^[\d.]+[KMB]?$/i.test(val)) {
+        if (/^[\d.,]+[KMB]?$/i.test(val)) {
           data.monthly_listeners = parseNumber(val);
           break;
         }
       }
     }
 
-    // Chartmetric rank
-    if (/^\d[\d,.]*[KMB]?st$/i.test(line)) {
+    // Chartmetric rank (e.g. "332.5Kst")
+    if (/^[\d.,]+[KMB]?st$/i.test(line)) {
       data.chartmetric_rank = parseNumber(line.replace(/st$/i, ''));
     }
 
-    // Streaming Stats section
+    // Streaming Stats - Spotify section
     if (line === 'Followers' && lines.slice(Math.max(0, i - 5), i).some(l => l.includes('Spotify'))) {
-      const valLine = lines.slice(i + 1, i + 3).find(l => /^\d/.test(l.trim()));
-      if (valLine && data.spotify_followers === 0) data.spotify_followers = parseNumber(valLine.trim());
+      const val = findNextValue(i + 1);
+      if (val && data.spotify_followers === 0) data.spotify_followers = val;
     }
-    if (line === 'Playlist Count') {
-      const valLine = lines.slice(i + 1, i + 3).find(l => /^\d/.test(l.trim()));
-      if (valLine) data.playlist_count = parseNumber(valLine.trim());
-    }
-    if (line === 'Playlist Reach') {
-      const valLine = lines.slice(i + 1, i + 3).find(l => /^\d/.test(l.trim()));
-      if (valLine) data.playlist_reach = parseNumber(valLine.trim());
-    }
+    if (line === 'Playlist Count') data.playlist_count = findNextValue(i + 1);
+    if (line === 'Playlist Reach') data.playlist_reach = findNextValue(i + 1);
 
     // Shazam
-    if (line === 'Shazams') {
-      const valLine = lines.slice(i + 1, i + 3).find(l => /^\d/.test(l.trim()));
-      if (valLine) data.shazam_count = parseNumber(valLine.trim());
-    }
+    if (line === 'Shazams') data.shazam_count = findNextValue(i + 1);
 
     // TikTok
-    if (line === 'Post Count') {
-      const valLine = lines.slice(i + 1, i + 3).find(l => /^\d/.test(l.trim()));
-      if (valLine) data.tiktok_post_count = parseNumber(valLine.trim());
-    }
-    if (line === 'Top Video Views') {
-      const valLine = lines.slice(i + 1, i + 3).find(l => /^\d/.test(l.trim()));
-      if (valLine) data.tiktok_top_video_views = parseNumber(valLine.trim());
-    }
+    if (line === 'Post Count') data.tiktok_post_count = findNextValue(i + 1);
+    if (line === 'Top Video Views') data.tiktok_top_video_views = findNextValue(i + 1);
 
     // YouTube
-    if (line === 'mostPopularVideo') {
-      const valLine = lines.slice(i + 1, i + 3).find(l => /^\d/.test(l.trim()));
-      if (valLine) data.youtube_most_popular_video = parseNumber(valLine.trim());
-    }
+    if (line === 'mostPopularVideo') data.youtube_most_popular_video = findNextValue(i + 1);
 
     // Pandora
     if (line === 'Monthly Listeners' && lines.slice(Math.max(0, i - 5), i).some(l => l.includes('Pandora'))) {
-      const valLine = lines.slice(i + 1, i + 3).find(l => /^\d/.test(l.trim()));
-      if (valLine) data.pandora_monthly_listeners = parseNumber(valLine.trim());
+      data.pandora_monthly_listeners = findNextValue(i + 1);
     }
     if (line === 'Streams' && lines.slice(Math.max(0, i - 5), i).some(l => l.includes('Pandora'))) {
-      const valLine = lines.slice(i + 1, i + 3).find(l => /^\d/.test(l.trim()));
-      if (valLine) data.pandora_streams = parseNumber(valLine.trim());
+      data.pandora_streams = findNextValue(i + 1);
     }
 
     // Audience Summary
     if (line === 'Primary Market') {
-      const valLine = lines.slice(i + 1, i + 3).find(l => l.trim().length > 0 && !l.includes('!['));
+      const valLine = lines.slice(i + 1, i + 4).find(l => l.trim().length > 0 && !l.includes('![') && !l.startsWith('#'));
       if (valLine) data.primary_market = valLine.trim();
     }
     if (line === 'Secondary') {
-      const valLine = lines.slice(i + 1, i + 3).find(l => l.trim().length > 0 && !l.includes('!['));
+      const valLine = lines.slice(i + 1, i + 4).find(l => l.trim().length > 0 && !l.includes('![') && !l.startsWith('#'));
       if (valLine) data.secondary_market = valLine.trim();
     }
   }
 
-  // Parse top tracks from markdown links
-  const trackPattern = /\*\*(.+?)\*\*.*?([\d.]+[KMB]?)\s*Streams/gi;
+  // Parse top tracks: pattern like **TrackName**\n...\n2.7M Streams
+  const trackPattern = /\*\*(.+?)\*\*[^*]*?([\d.,]+[KMB]?)\s*Streams/gi;
   let trackMatch;
   const seenTracks = new Set<string>();
   while ((trackMatch = trackPattern.exec(markdown)) !== null) {
@@ -185,21 +159,27 @@ function parseChartmetricMarkdown(markdown: string): ScrapedData {
     }
   }
 
-  // Parse similar artists (first occurrence only, before duplicates)
-  const similarSection = markdown.indexOf('### Similar Artists');
-  if (similarSection !== -1) {
-    const similarContent = markdown.slice(similarSection, markdown.indexOf('### Artist FAQ') > 0 ? markdown.indexOf('### Artist FAQ') : undefined);
-    const artistPattern = /\*\*(.+?)\*\*.*?\n.*?(United States|[A-Z][a-z]+(?:\s[A-Z][a-z]+)*).*?\n.*?(hip-hop\/rap|drill|r&b|pop|[a-z/-]+)/gi;
-    let artistMatch;
+  // Parse similar artists from the Similar Artists section
+  const similarIdx = markdown.indexOf('Similar Artists');
+  const faqIdx = markdown.indexOf('Artist FAQ');
+  if (similarIdx !== -1) {
+    const endIdx = faqIdx > similarIdx ? faqIdx : undefined;
+    const similarContent = markdown.slice(similarIdx, endIdx);
+    // Pattern: **ArtistName**\n...\nCountry\n...\ngenre
+    const artistBlocks = similarContent.split('**').filter((_,i) => i % 2 === 1);
     const seenArtists = new Set<string>();
-    while ((artistMatch = artistPattern.exec(similarContent)) !== null) {
-      const name = artistMatch[1].trim();
-      if (!seenArtists.has(name) && seenArtists.size < 20) {
-        seenArtists.add(name);
+    for (const name of artistBlocks) {
+      const trimmed = name.trim();
+      if (trimmed && !seenArtists.has(trimmed) && seenArtists.size < 20 && !trimmed.includes('http')) {
+        seenArtists.add(trimmed);
+        // Find country and genre after this artist name
+        const afterArtist = similarContent.split(`**${trimmed}**`)[1] || '';
+        const countryMatch = afterArtist.match(/United States|[A-Z][a-z]+(?:\s[A-Z][a-z]+)*/);
+        const genreMatch = afterArtist.match(/hip-hop\/rap|drill|r&b|pop|soul|trap/i);
         data.similar_artists.push({
-          name,
-          country: artistMatch[2]?.trim() || '',
-          genre: artistMatch[3]?.trim() || '',
+          name: trimmed,
+          country: countryMatch?.[0] || '',
+          genre: genreMatch?.[0] || '',
         });
       }
     }

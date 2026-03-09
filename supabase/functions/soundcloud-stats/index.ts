@@ -24,6 +24,8 @@ interface SoundCloudTrack {
   duration: number;
   permalink_url: string;
   created_at: string;
+  sharing?: string;
+  user?: { id: number; [key: string]: unknown };
 }
 
 interface MappedTrack {
@@ -190,8 +192,33 @@ Deno.serve(async (req) => {
     // Fetch ALL tracks with pagination
     const allTracks = await fetchAllTracks(accessToken);
 
+    // Classify tracks
+    const authenticUserId = scUser.id;
+    const publicTracks: SoundCloudTrack[] = [];
+    const privateTracks: SoundCloudTrack[] = [];
+    const repostedTracks: SoundCloudTrack[] = [];
+
+    for (const t of allTracks) {
+      const isOwnTrack = t.user?.id === authenticUserId;
+      const isPublic = t.sharing === 'public';
+
+      if (!isOwnTrack) {
+        repostedTracks.push(t);
+      } else if (isPublic) {
+        publicTracks.push(t);
+      } else {
+        privateTracks.push(t);
+      }
+    }
+
+    console.log('[soundcloud-stats] ===== TRACK CLASSIFICATION =====');
+    console.log(`  - Total tracks returned: ${allTracks.length}`);
+    console.log(`  - Public (own) tracks:   ${publicTracks.length}`);
+    console.log(`  - Private/unlisted:      ${privateTracks.length}`);
+    console.log(`  - Reposted tracks:       ${repostedTracks.length}`);
+
     // Map tracks to our format
-    const mappedTracks: MappedTrack[] = allTracks.map((t: SoundCloudTrack) => ({
+    const mapTrack = (t: SoundCloudTrack): MappedTrack => ({
       id: t.id,
       title: t.title,
       artwork_url: t.artwork_url,
@@ -202,25 +229,39 @@ Deno.serve(async (req) => {
       duration_ms: t.duration || 0,
       permalink_url: t.permalink_url,
       created_at: t.created_at,
-    }));
+    });
 
-    // Sort by plays descending to get top tracks
-    mappedTracks.sort((a, b) => b.playback_count - a.playback_count);
+    const allMapped = allTracks.map(mapTrack);
+    const publicMapped = publicTracks.map(mapTrack);
 
-    // Calculate all-time totals
-    const totalPlays = mappedTracks.reduce((sum, t) => sum + t.playback_count, 0);
-    const totalLikes = mappedTracks.reduce((sum, t) => sum + t.likes_count, 0);
-    const totalComments = mappedTracks.reduce((sum, t) => sum + t.comment_count, 0);
-    const totalReposts = mappedTracks.reduce((sum, t) => sum + t.reposts_count, 0);
-    
-    console.log('[soundcloud-stats] All-time totals:');
-    console.log(`  - Total plays: ${totalPlays}`);
-    console.log(`  - Total likes: ${totalLikes}`);
-    console.log(`  - Total comments: ${totalComments}`);
-    console.log(`  - Total reposts: ${totalReposts}`);
+    // Sort by plays descending
+    allMapped.sort((a, b) => b.playback_count - a.playback_count);
+    publicMapped.sort((a, b) => b.playback_count - a.playback_count);
 
-    // Get top 10 tracks
-    const topTracks = mappedTracks.slice(0, 10);
+    // Calculate totals for ALL tracks
+    const totalPlaysAllTracks = allMapped.reduce((sum, t) => sum + t.playback_count, 0);
+    const totalLikesAll = allMapped.reduce((sum, t) => sum + t.likes_count, 0);
+    const totalCommentsAll = allMapped.reduce((sum, t) => sum + t.comment_count, 0);
+    const totalRepostsAll = allMapped.reduce((sum, t) => sum + t.reposts_count, 0);
+
+    // Calculate totals for PUBLIC CATALOG only
+    const totalPlaysPublicCatalog = publicMapped.reduce((sum, t) => sum + t.playback_count, 0);
+    const totalLikesPublic = publicMapped.reduce((sum, t) => sum + t.likes_count, 0);
+    const totalCommentsPublic = publicMapped.reduce((sum, t) => sum + t.comment_count, 0);
+    const totalRepostsPublic = publicMapped.reduce((sum, t) => sum + t.reposts_count, 0);
+
+    console.log('[soundcloud-stats] ===== PLAY TOTALS =====');
+    console.log(`  - total_plays_all_tracks:     ${totalPlaysAllTracks}`);
+    console.log(`  - total_plays_public_catalog:  ${totalPlaysPublicCatalog}`);
+    console.log(`  - total_likes (all):           ${totalLikesAll}`);
+    console.log(`  - total_likes (public):        ${totalLikesPublic}`);
+    console.log(`  - total_comments (all):        ${totalCommentsAll}`);
+    console.log(`  - total_comments (public):     ${totalCommentsPublic}`);
+    console.log(`  - total_reposts (all):         ${totalRepostsAll}`);
+    console.log(`  - total_reposts (public):      ${totalRepostsPublic}`);
+
+    // Top 10 from public catalog
+    const topTracks = publicMapped.slice(0, 10);
 
     const result = {
       user_id: scUser.id,
@@ -231,10 +272,18 @@ Deno.serve(async (req) => {
       following: scUser.followings_count || 0,
       track_count: scUser.track_count || 0,
       playlist_count: scUser.playlist_count || 0,
-      total_plays: totalPlays,
-      total_likes: totalLikes,
-      total_comments: totalComments,
-      total_reposts: totalReposts,
+      total_plays_all_tracks: totalPlaysAllTracks,
+      total_plays_public_catalog: totalPlaysPublicCatalog,
+      total_plays: totalPlaysPublicCatalog, // main metric = public catalog
+      total_likes: totalLikesPublic,
+      total_comments: totalCommentsPublic,
+      total_reposts: totalRepostsPublic,
+      track_breakdown: {
+        total_returned: allTracks.length,
+        public_own: publicTracks.length,
+        private_unlisted: privateTracks.length,
+        reposted: repostedTracks.length,
+      },
       top_tracks: topTracks,
       profile_url: scUser.permalink_url,
       has_oauth: true,
@@ -247,7 +296,7 @@ Deno.serve(async (req) => {
       platform: 'SoundCloud',
       fan_identifier: 'soundcloud_user_stats',
       fan_name: result.display_name,
-      total_streams: result.total_plays,
+      total_streams: result.total_plays_public_catalog,
       total_interactions: result.followers,
       metadata: {
         soundcloud_user_id: result.user_id,
@@ -256,10 +305,13 @@ Deno.serve(async (req) => {
         following: result.following,
         track_count: result.track_count,
         playlist_count: result.playlist_count,
-        total_plays: result.total_plays,
+        total_plays_all_tracks: result.total_plays_all_tracks,
+        total_plays_public_catalog: result.total_plays_public_catalog,
+        total_plays: result.total_plays_public_catalog,
         total_likes: result.total_likes,
         total_comments: result.total_comments,
         total_reposts: result.total_reposts,
+        track_breakdown: result.track_breakdown,
         avatar_url: result.avatar_url,
         top_tracks: result.top_tracks,
         source: 'soundcloud_oauth',

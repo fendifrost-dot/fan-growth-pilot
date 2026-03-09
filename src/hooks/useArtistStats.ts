@@ -64,6 +64,7 @@ export const useArtistStats = () => {
       const [spotifyResult] = await Promise.allSettled([
         supabase.functions.invoke("fetch-public-spotify-data"),
         supabase.functions.invoke("youtube-stats", { body: {} }),
+        supabase.functions.invoke("soundcloud-stats", { body: {} }),
       ]);
       if (spotifyResult.status === "rejected") throw spotifyResult.reason;
       const { error } = spotifyResult.value;

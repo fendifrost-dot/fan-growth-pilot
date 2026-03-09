@@ -166,6 +166,17 @@ const Index = () => {
           </div>
         </section>
 
+        {/* SoundCloud Top Tracks */}
+        {artistStats && artistStats.soundcloud.top_tracks.length > 0 && (
+          <SoundCloudTopTracks
+            tracks={artistStats.soundcloud.top_tracks}
+            totalPlays={artistStats.soundcloud.total_plays}
+            totalLikes={artistStats.soundcloud.total_likes}
+            totalComments={artistStats.soundcloud.total_comments}
+            totalReposts={artistStats.soundcloud.total_reposts}
+          />
+        )}
+
         {/* Smart Links — full width now that Connected Accounts is removed */}
         <section className="mb-12">
           <div className="flex items-center justify-between mb-6">

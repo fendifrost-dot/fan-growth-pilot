@@ -41,3 +41,9 @@ verify_jwt = false
 
 [functions.soundcloud-stats]
 verify_jwt = false
+
+[functions.soundcloud-auth]
+verify_jwt = false
+
+[functions.soundcloud-callback]
+verify_jwt = false

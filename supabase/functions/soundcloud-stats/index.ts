@@ -7,6 +7,32 @@ const corsHeaders = {
 
 const SOUNDCLOUD_API_BASE = 'https://api.soundcloud.com';
 
+async function refreshAccessToken(refreshToken: string): Promise<{ access_token: string; expires_in?: number } | null> {
+  const clientId = Deno.env.get('SOUNDCLOUD_CLIENT_ID');
+  const clientSecret = Deno.env.get('SOUNDCLOUD_CLIENT_SECRET');
+  if (!clientId || !clientSecret || !refreshToken) return null;
+
+  const res = await fetch('https://secure.soundcloud.com/oauth/token', {
+    method: 'POST',
+    headers: {
+      'Accept': 'application/json; charset=utf-8',
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: refreshToken,
+    }),
+  });
+
+  if (!res.ok) {
+    console.error('Token refresh failed:', res.status, await res.text());
+    return null;
+  }
+  return await res.json();
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -25,15 +51,7 @@ Deno.serve(async (req) => {
     const { data: { user }, error: userError } = await supabase.auth.getUser(token);
     if (userError || !user) throw new Error('Unauthorized');
 
-    let body: any = {};
-    try { body = await req.json(); } catch { /* empty body ok */ }
-
-    const SOUNDCLOUD_CLIENT_ID = Deno.env.get('Fendi_SoundCloud_API');
-    if (!SOUNDCLOUD_CLIENT_ID) {
-      throw new Error('SoundCloud API key not configured');
-    }
-
-    // Check if user has a SoundCloud platform connection with a profile URL
+    // Check if user has OAuth connection for SoundCloud
     const { data: connection } = await supabase
       .from('platform_connections')
       .select('*')
@@ -42,22 +60,44 @@ Deno.serve(async (req) => {
       .eq('is_connected', true)
       .maybeSingle();
 
-    // Resolve the SoundCloud user - use profile URL from connection, body, or default
-    const profileUrl = body.profile_url || connection?.profile_url || 'https://soundcloud.com/fendifrost';
-    
-    // Extract username from URL
-    const urlMatch = profileUrl.match(/soundcloud\.com\/([^/?#]+)/);
-    const scUsername = urlMatch?.[1] || body.username || 'fendifrost';
+    if (!connection?.access_token) {
+      throw new Error('SoundCloud not connected. Please connect via OAuth first.');
+    }
 
-    // Fetch user data via SoundCloud API
-    const userRes = await fetch(
-      `${SOUNDCLOUD_API_BASE}/resolve?url=https://soundcloud.com/${scUsername}&client_id=${SOUNDCLOUD_CLIENT_ID}`
-    );
+    let accessToken = connection.access_token;
+
+    // Check if token is expired and refresh if needed
+    const isExpired = connection.token_expires_at && new Date(connection.token_expires_at) < new Date();
+    
+    if (isExpired && connection.refresh_token) {
+      const refreshed = await refreshAccessToken(connection.refresh_token);
+      if (refreshed) {
+        accessToken = refreshed.access_token;
+        const newExpiry = refreshed.expires_in 
+          ? new Date(Date.now() + refreshed.expires_in * 1000).toISOString() 
+          : null;
+        await supabase
+          .from('platform_connections')
+          .update({ 
+            access_token: refreshed.access_token, 
+            token_expires_at: newExpiry, 
+            updated_at: new Date().toISOString() 
+          })
+          .eq('id', connection.id);
+      } else {
+        throw new Error('Failed to refresh SoundCloud token. Please reconnect.');
+      }
+    }
+
+    // Fetch user data
+    const userRes = await fetch(`${SOUNDCLOUD_API_BASE}/me`, {
+      headers: { Authorization: `OAuth ${accessToken}` },
+    });
 
     if (!userRes.ok) {
       const errText = await userRes.text();
-      console.error('SoundCloud resolve error:', userRes.status, errText);
-      throw new Error(`SoundCloud API error: ${userRes.status} - Could not resolve user "${scUsername}"`);
+      console.error('SoundCloud /me error:', userRes.status, errText);
+      throw new Error(`SoundCloud API error: ${userRes.status}`);
     }
 
     const scUser = await userRes.json();
@@ -65,9 +105,9 @@ Deno.serve(async (req) => {
     // Fetch recent tracks
     let topTracks: any[] = [];
     try {
-      const tracksRes = await fetch(
-        `${SOUNDCLOUD_API_BASE}/users/${scUser.id}/tracks?client_id=${SOUNDCLOUD_CLIENT_ID}&limit=10&linked_partitioning=1`
-      );
+      const tracksRes = await fetch(`${SOUNDCLOUD_API_BASE}/me/tracks?limit=10`, {
+        headers: { Authorization: `OAuth ${accessToken}` },
+      });
       if (tracksRes.ok) {
         const tracksData = await tracksRes.json();
         const tracks = tracksData.collection || tracksData;
@@ -105,6 +145,7 @@ Deno.serve(async (req) => {
       total_plays: totalPlays,
       top_tracks: topTracks.slice(0, 5),
       profile_url: scUser.permalink_url,
+      has_oauth: true,
       updated_at: new Date().toISOString(),
     };
 
@@ -126,7 +167,7 @@ Deno.serve(async (req) => {
         total_plays: result.total_plays,
         avatar_url: result.avatar_url,
         top_tracks: result.top_tracks,
-        source: 'soundcloud_api',
+        source: 'soundcloud_oauth',
       },
     };
 

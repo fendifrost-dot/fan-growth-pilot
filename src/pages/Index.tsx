@@ -82,7 +82,7 @@ const Index = () => {
         {/* Hero Section */}
         <div className="mb-12">
           <h2 className="text-4xl font-bold mb-3">
-            Welcome back, <span className="bg-gradient-gold bg-clip-text text-transparent">Artist</span>
+            Welcome back, <span className="bg-gradient-gold bg-clip-text text-transparent">Fendi</span>
           </h2>
           <p className="text-muted-foreground text-lg">
             Your fan data command center — track, analyze, and convert

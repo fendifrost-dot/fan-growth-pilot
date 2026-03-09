@@ -1,22 +1,24 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
-import { encodeBase64url } from 'https://deno.land/std@0.224.0/encoding/base64url.ts';
+import { encodeBase64 } from 'https://deno.land/std@0.224.0/encoding/base64.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-// Generate PKCE code verifier and challenge
-function generatePKCE(): { verifier: string; challenge: string } {
-  const verifier = encodeBase64url(crypto.getRandomValues(new Uint8Array(32)));
-  return { verifier, challenge: verifier }; // For now, using plain method
+// URL-safe base64 encoding
+function base64UrlEncode(data: Uint8Array): string {
+  return encodeBase64(data)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
 }
 
 async function generateCodeChallenge(verifier: string): Promise<string> {
   const encoder = new TextEncoder();
   const data = encoder.encode(verifier);
   const digest = await crypto.subtle.digest('SHA-256', data);
-  return encodeBase64url(new Uint8Array(digest));
+  return base64UrlEncode(new Uint8Array(digest));
 }
 
 Deno.serve(async (req) => {

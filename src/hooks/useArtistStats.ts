@@ -6,6 +6,7 @@ export interface ArtistStats {
   instagram: { followers: number };
   facebook: { followers: number };
   youtube: { subscribers: number; total_views: number };
+  soundcloud: { followers: number; total_plays: number };
   updated_at: string | null;
 }
 

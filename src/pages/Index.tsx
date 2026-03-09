@@ -72,9 +72,15 @@ const Index = () => {
         <section className="mb-12">
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-2xl font-semibold">Performance Overview</h3>
-            <Button variant="outline" size="sm" onClick={() => refreshStats()} disabled={isRefreshing}>
-              {isRefreshing ? "Refreshing…" : "↻ Refresh Stats"}
-            </Button>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={() => setPlatformDialogOpen(true)}>
+                <Plus className="w-4 h-4" />
+                Connect Platform
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => refreshStats()} disabled={isRefreshing}>
+                {isRefreshing ? "Refreshing…" : "↻ Refresh Stats"}
+              </Button>
+            </div>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
             {statsLoading || shopifyLoading ? (

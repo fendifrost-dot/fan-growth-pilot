@@ -6,6 +6,10 @@ const corsHeaders = {
 };
 
 Deno.serve(async (req) => {
+  console.log('[soundcloud-callback] ========== CALLBACK INVOKED ==========');
+  console.log('[soundcloud-callback] Method:', req.method);
+  console.log('[soundcloud-callback] Full URL:', req.url);
+  
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
@@ -16,14 +20,20 @@ Deno.serve(async (req) => {
   const error = url.searchParams.get('error');
   const errorDescription = url.searchParams.get('error_description');
 
+  console.log('[soundcloud-callback] code present:', !!code, 'length:', code?.length);
+  console.log('[soundcloud-callback] state present:', !!state, 'value:', state);
+  console.log('[soundcloud-callback] error:', error);
+  console.log('[soundcloud-callback] errorDescription:', errorDescription);
+
   const FRONTEND_URL = Deno.env.get('FRONTEND_URL') || 'https://fan-growth-pilot.lovable.app';
 
   if (error) {
-    console.error('SoundCloud OAuth error:', error, errorDescription);
+    console.error('[soundcloud-callback] SoundCloud OAuth error:', error, errorDescription);
     return Response.redirect(`${FRONTEND_URL}/?error=${encodeURIComponent(errorDescription || error)}`, 302);
   }
 
   if (!code || !state) {
+    console.error('[soundcloud-callback] Missing code or state');
     return Response.redirect(`${FRONTEND_URL}/?error=Missing+code+or+state`, 302);
   }
 

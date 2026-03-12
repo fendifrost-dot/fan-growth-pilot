@@ -53,3 +53,6 @@ verify_jwt = false
 
 [functions.fan-intelligence]
 verify_jwt = false
+
+[functions.control-center-api]
+verify_jwt = false

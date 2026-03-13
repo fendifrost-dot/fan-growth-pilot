@@ -494,6 +494,56 @@ export type Database = {
           },
         ]
       }
+      pitch_log: {
+        Row: {
+          created_at: string | null
+          curator_email: string
+          email_body: string | null
+          id: string
+          placed: boolean | null
+          playlist_id: string | null
+          reply_received: boolean | null
+          resend_message_id: string | null
+          sent_at: string | null
+          subject: string | null
+          track_name: string
+        }
+        Insert: {
+          created_at?: string | null
+          curator_email: string
+          email_body?: string | null
+          id?: string
+          placed?: boolean | null
+          playlist_id?: string | null
+          reply_received?: boolean | null
+          resend_message_id?: string | null
+          sent_at?: string | null
+          subject?: string | null
+          track_name: string
+        }
+        Update: {
+          created_at?: string | null
+          curator_email?: string
+          email_body?: string | null
+          id?: string
+          placed?: boolean | null
+          playlist_id?: string | null
+          reply_received?: boolean | null
+          resend_message_id?: string | null
+          sent_at?: string | null
+          subject?: string | null
+          track_name?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pitch_log_playlist_id_fkey"
+            columns: ["playlist_id"]
+            isOneToOne: false
+            referencedRelation: "playlist_targets"
+            referencedColumns: ["playlist_id"]
+          },
+        ]
+      }
       platform_connections: {
         Row: {
           access_token: string | null
@@ -555,6 +605,69 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      playlist_targets: {
+        Row: {
+          created_at: string | null
+          curator_email: string | null
+          curator_name: string | null
+          follower_count: number | null
+          fraud_score: number | null
+          fraud_verdict: string | null
+          id: string
+          notes: string | null
+          overlap_score: number | null
+          pitch_status: string | null
+          pitched_at: string | null
+          platform: string
+          playlist_id: string
+          playlist_name: string
+          research_context: Json | null
+          track_count: number | null
+          track_name: string
+          updated_at: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          curator_email?: string | null
+          curator_name?: string | null
+          follower_count?: number | null
+          fraud_score?: number | null
+          fraud_verdict?: string | null
+          id?: string
+          notes?: string | null
+          overlap_score?: number | null
+          pitch_status?: string | null
+          pitched_at?: string | null
+          platform: string
+          playlist_id: string
+          playlist_name: string
+          research_context?: Json | null
+          track_count?: number | null
+          track_name: string
+          updated_at?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          curator_email?: string | null
+          curator_name?: string | null
+          follower_count?: number | null
+          fraud_score?: number | null
+          fraud_verdict?: string | null
+          id?: string
+          notes?: string | null
+          overlap_score?: number | null
+          pitch_status?: string | null
+          pitched_at?: string | null
+          platform?: string
+          playlist_id?: string
+          playlist_name?: string
+          research_context?: Json | null
+          track_count?: number | null
+          track_name?: string
+          updated_at?: string | null
+        }
+        Relationships: []
       }
       profiles: {
         Row: {

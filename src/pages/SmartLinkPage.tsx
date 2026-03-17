@@ -284,6 +284,7 @@ export default function SmartLinkPage() {
           smart_link_slug: smartLink!.slug,
           destination_url: smartLink!.destination_url,
         });
+        console.log("Meta Pixel CTAClick Event Fired", { smart_link_id: smartLink!.id, slug: smartLink!.slug });
       }
       setTimeout(() => { ctaDebounceRef.current = false; }, 400);
     }

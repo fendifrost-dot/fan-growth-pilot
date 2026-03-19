@@ -166,7 +166,8 @@ Deno.serve(async (req) => {
 
     // Build research context
     const research_context = {
-      audio_features: { tempo: audioFeatures?.tempo, energy: audioFeatures?.energy, danceability: audioFeatures?.danceability, valence: audioFeatures?.valence },
+      audio_features: null,
+      artist_genres: artistGenres,
       neighborhood_artists: Object.fromEntries(neighborhoodArtists),
       related_artists: relatedArtists.map((a: any) => ({ id: a.id, name: a.name })),
     };

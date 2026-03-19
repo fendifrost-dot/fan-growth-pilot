@@ -9,9 +9,19 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const apiKey = req.headers.get("x-api-key");
-    const expectedKey = Deno.env.get("FANFUEL_HUB_KEY");
-    if (!expectedKey || !apiKey || apiKey !== expectedKey) {
+    const xApiKey = req.headers.get("x-api-key");
+    const authHeader = req.headers.get("authorization");
+    const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    const anonApiKey = req.headers.get("apikey");
+    const providedKey = (xApiKey || bearerToken || anonApiKey || "").trim();
+    const expectedKey = (Deno.env.get("FANFUEL_HUB_KEY") || "").trim();
+    if (!expectedKey || !providedKey || providedKey !== expectedKey) {
+      console.error("Auth failed", {
+        hasExpectedKey: !!expectedKey,
+        expectedKeyLen: expectedKey.length,
+        providedKeyLen: providedKey.length,
+        headerUsed: xApiKey ? "x-api-key" : bearerToken ? "bearer" : anonApiKey ? "apikey" : "none",
+      });
       return json({ error: "Unauthorized" }, 401);
     }
 

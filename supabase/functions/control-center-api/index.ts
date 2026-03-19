@@ -11,11 +11,21 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // Authenticate via shared secret
-    const apiKey = req.headers.get('x-api-key');
-    const expectedKey = Deno.env.get('FANFUEL_HUB_KEY');
+    // Authenticate via shared secret — accept x-api-key, Authorization: Bearer, or apikey header
+    const xApiKey = req.headers.get('x-api-key');
+    const authHeader = req.headers.get('authorization');
+    const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    const anonApiKey = req.headers.get('apikey');
+    const providedKey = (xApiKey || bearerToken || anonApiKey || '').trim();
+    const expectedKey = (Deno.env.get('FANFUEL_HUB_KEY') || '').trim();
 
-    if (!expectedKey || !apiKey || apiKey !== expectedKey) {
+    if (!expectedKey || !providedKey || providedKey !== expectedKey) {
+      console.error('Auth failed', {
+        hasExpectedKey: !!expectedKey,
+        expectedKeyLen: expectedKey.length,
+        providedKeyLen: providedKey.length,
+        headerUsed: xApiKey ? 'x-api-key' : bearerToken ? 'bearer' : anonApiKey ? 'apikey' : 'none',
+      });
       return new Response(
         JSON.stringify({ error: 'Unauthorized' }),
         { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }

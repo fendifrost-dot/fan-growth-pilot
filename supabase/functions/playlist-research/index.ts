@@ -40,10 +40,20 @@ Deno.serve(async (req) => {
       },
       body: "grant_type=client_credentials",
     });
+    if (!tokenResp.ok) {
+      const errText = await tokenResp.text();
+      return json({ error: `Spotify token request failed: ${tokenResp.status} - ${errText.slice(0, 200)}` }, 500);
+    }
     const { access_token } = await tokenResp.json();
 
-    const spot = (url: string) =>
-      fetch(url, { headers: { Authorization: `Bearer ${access_token}` } }).then((r) => r.json());
+    const spot = async (url: string) => {
+      const r = await fetch(url, { headers: { Authorization: `Bearer ${access_token}` } });
+      if (!r.ok) {
+        const text = await r.text();
+        throw new Error(`Spotify API ${r.status}: ${text.slice(0, 200)}`);
+      }
+      return r.json();
+    };
 
     // Search for track
     const searchData = await spot(

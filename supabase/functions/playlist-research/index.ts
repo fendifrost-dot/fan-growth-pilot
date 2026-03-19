@@ -40,6 +40,10 @@ Deno.serve(async (req) => {
       },
       body: "grant_type=client_credentials",
     });
+    if (!tokenResp.ok) {
+      const errText = await tokenResp.text();
+      return json({ error: `Spotify token request failed: ${tokenResp.status} - ${errText.slice(0, 200)}` }, 500);
+    }
     const { access_token } = await tokenResp.json();
 
     const spot = async (url: string) => {

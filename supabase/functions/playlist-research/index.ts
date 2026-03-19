@@ -71,61 +71,44 @@ Deno.serve(async (req) => {
     const trackId = track.id;
     const artistId = track.artists[0].id;
 
-    // Get audio features and related artists
-    const [features, relatedData] = await Promise.all([
-      spot(`https://api.spotify.com/v1/audio-features/${trackId}`),
+    // audio-features and recommendations endpoints are deprecated (Nov 2024)
+    const audioFeatures = null;
+
+    // Get artist details (for genres) and related artists
+    const [artistData, relatedData] = await Promise.all([
+      spot(`https://api.spotify.com/v1/artists/${artistId}`),
       spot(`https://api.spotify.com/v1/artists/${artistId}/related-artists`),
     ]);
 
-    const audioFeatures = features;
-    const relatedArtists = (relatedData?.artists || []).slice(0, 5);
-    const relatedIds = relatedArtists.map((a: any) => a.id);
+    const artistGenres: string[] = artistData?.genres || [];
+    const relatedArtists = (relatedData?.artists || []).slice(0, 10);
 
-    // Get recommendations
-    const recsUrl = new URL("https://api.spotify.com/v1/recommendations");
-    recsUrl.searchParams.set("seed_tracks", trackId);
-    if (relatedIds[0]) recsUrl.searchParams.set("seed_artists", relatedIds[0]);
-    if (audioFeatures?.tempo) {
-      recsUrl.searchParams.set("target_tempo", String(Math.round(audioFeatures.tempo)));
-      recsUrl.searchParams.set("min_tempo", String(Math.round(audioFeatures.tempo * 0.88)));
-      recsUrl.searchParams.set("max_tempo", String(Math.round(audioFeatures.tempo * 1.12)));
-    }
-    if (audioFeatures?.energy !== undefined) {
-      recsUrl.searchParams.set("target_energy", String(audioFeatures.energy));
-      recsUrl.searchParams.set("min_energy", String(Math.max(0, audioFeatures.energy - 0.2)));
-    }
-    if (audioFeatures?.danceability !== undefined) {
-      recsUrl.searchParams.set("target_danceability", String(audioFeatures.danceability));
-    }
-
-    const recsData = await spot(recsUrl.toString());
-    const recTracks = recsData?.tracks || [];
-
-    // Build neighborhood artists
+    // Build neighborhood artists from related artists
     const neighborhoodArtists = new Map<string, string>();
-    for (const t of recTracks) {
-      for (const a of t.artists) {
-        if (!neighborhoodArtists.has(a.id)) neighborhoodArtists.set(a.id, a.name);
-      }
-    }
     for (const a of relatedArtists) {
       if (!neighborhoodArtists.has(a.id)) neighborhoodArtists.set(a.id, a.name);
     }
+    // Also add genres as pseudo-entries for playlist search diversity
+    const genreSearchTerms = artistGenres.slice(0, 5);
 
-    // Search for playlists on Spotify
+    // Search for playlists using related artist names AND genre terms
     const playlistMap = new Map<string, any>();
-    const spotifyEntries = Array.from(neighborhoodArtists.entries()).slice(0, 20);
+    const artistSearchEntries = Array.from(neighborhoodArtists.entries()).slice(0, 15);
+    const allSearchTerms = [
+      ...artistSearchEntries.map(([, name]) => name),
+      ...genreSearchTerms,
+    ];
     await Promise.all(
-      spotifyEntries.map(async ([, artistName]) => {
+      allSearchTerms.map(async (searchTerm) => {
         try {
           const data = await spot(
-            `https://api.spotify.com/v1/search?q=${encodeURIComponent(artistName)}&type=playlist&limit=5`
+            `https://api.spotify.com/v1/search?q=${encodeURIComponent(searchTerm)}&type=playlist&limit=5`
           );
           for (const pl of data?.playlists?.items || []) {
             if (!pl?.id) continue;
             const key = `spotify:${pl.id}`;
             if (playlistMap.has(key)) {
-              playlistMap.get(key).matched_artists.push(artistName);
+              playlistMap.get(key).matched_artists.push(searchTerm);
             } else {
               playlistMap.set(key, {
                 playlist_id: key,
@@ -134,7 +117,7 @@ Deno.serve(async (req) => {
                 curator_name: pl.owner?.display_name || null,
                 follower_count: pl.followers?.total || 0,
                 track_count: pl.tracks?.total || 0,
-                matched_artists: [artistName],
+                matched_artists: [searchTerm],
                 external_url: pl.external_urls?.spotify || null,
               });
             }
@@ -183,7 +166,8 @@ Deno.serve(async (req) => {
 
     // Build research context
     const research_context = {
-      audio_features: { tempo: audioFeatures?.tempo, energy: audioFeatures?.energy, danceability: audioFeatures?.danceability, valence: audioFeatures?.valence },
+      audio_features: null,
+      artist_genres: artistGenres,
       neighborhood_artists: Object.fromEntries(neighborhoodArtists),
       related_artists: relatedArtists.map((a: any) => ({ id: a.id, name: a.name })),
     };

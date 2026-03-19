@@ -91,20 +91,24 @@ Deno.serve(async (req) => {
     // Also add genres as pseudo-entries for playlist search diversity
     const genreSearchTerms = artistGenres.slice(0, 5);
 
-    // Search for playlists on Spotify
+    // Search for playlists using related artist names AND genre terms
     const playlistMap = new Map<string, any>();
-    const spotifyEntries = Array.from(neighborhoodArtists.entries()).slice(0, 20);
+    const artistSearchEntries = Array.from(neighborhoodArtists.entries()).slice(0, 15);
+    const allSearchTerms = [
+      ...artistSearchEntries.map(([, name]) => name),
+      ...genreSearchTerms,
+    ];
     await Promise.all(
-      spotifyEntries.map(async ([, artistName]) => {
+      allSearchTerms.map(async (searchTerm) => {
         try {
           const data = await spot(
-            `https://api.spotify.com/v1/search?q=${encodeURIComponent(artistName)}&type=playlist&limit=5`
+            `https://api.spotify.com/v1/search?q=${encodeURIComponent(searchTerm)}&type=playlist&limit=5`
           );
           for (const pl of data?.playlists?.items || []) {
             if (!pl?.id) continue;
             const key = `spotify:${pl.id}`;
             if (playlistMap.has(key)) {
-              playlistMap.get(key).matched_artists.push(artistName);
+              playlistMap.get(key).matched_artists.push(searchTerm);
             } else {
               playlistMap.set(key, {
                 playlist_id: key,
@@ -113,7 +117,7 @@ Deno.serve(async (req) => {
                 curator_name: pl.owner?.display_name || null,
                 follower_count: pl.followers?.total || 0,
                 track_count: pl.tracks?.total || 0,
-                matched_artists: [artistName],
+                matched_artists: [searchTerm],
                 external_url: pl.external_urls?.spotify || null,
               });
             }

@@ -179,16 +179,22 @@ Deno.serve(async (req) => {
     }
 
     return json({
-      playlists: top.map(p => ({
-        playlist_id: p.playlist_id,
-        name: p.name || p.playlist_name,
-        followers: p.followers,
-        platform: p.platform,
-        matched_queries: p.matched_queries,
-      })),
+      playlists: top.map(p => {
+        const spotId = p.playlist_id.replace("spotify:", "");
+        return {
+          playlist_id: p.playlist_id,
+          name: p.name || p.playlist_name,
+          platform: p.platform,
+          followers: p.followers,
+          curator_name: p.curator_name,
+          bot_score: 0,
+          bot_verdict: "safe",
+          url: "https://open.spotify.com/playlist/" + spotId,
+        };
+      }),
       total: top.length,
-      track: { id: trackId, name: track.name, artist: artistName },
-      dna_artists: dnaArtists.map(a => a.name),
+      sources_searched: searchTerms.length,
+      track: { name: track.name, artist_context: { artist: artistName, dna_artists: dnaArtists.map(a => a.name), genres } },
     }, 200);
 
   } catch (e) {

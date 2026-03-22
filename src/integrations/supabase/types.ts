@@ -94,6 +94,27 @@ export type Database = {
           },
         ]
       }
+      artist_config: {
+        Row: {
+          id: string
+          key: string
+          updated_at: string | null
+          value: Json
+        }
+        Insert: {
+          id?: string
+          key: string
+          updated_at?: string | null
+          value: Json
+        }
+        Update: {
+          id?: string
+          key?: string
+          updated_at?: string | null
+          value?: Json
+        }
+        Relationships: []
+      }
       fan_data: {
         Row: {
           created_at: string | null
@@ -299,6 +320,41 @@ export type Database = {
           },
         ]
       }
+      follower_snapshots: {
+        Row: {
+          created_at: string | null
+          follower_count: number
+          id: string
+          playlist_id: string
+          snapshot_date: string
+          source: string
+        }
+        Insert: {
+          created_at?: string | null
+          follower_count: number
+          id?: string
+          playlist_id: string
+          snapshot_date?: string
+          source?: string
+        }
+        Update: {
+          created_at?: string | null
+          follower_count?: number
+          id?: string
+          playlist_id?: string
+          snapshot_date?: string
+          source?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "follower_snapshots_playlist_id_fkey"
+            columns: ["playlist_id"]
+            isOneToOne: false
+            referencedRelation: "playlist_targets"
+            referencedColumns: ["playlist_id"]
+          },
+        ]
+      }
       link_analytics: {
         Row: {
           city: string | null
@@ -496,41 +552,56 @@ export type Database = {
       }
       pitch_log: {
         Row: {
+          cooldown_until: string | null
           created_at: string | null
           curator_email: string
           email_body: string | null
           id: string
+          method: string | null
+          pitched_at: string | null
           placed: boolean | null
           playlist_id: string | null
           reply_received: boolean | null
           resend_message_id: string | null
+          response_notes: string | null
           sent_at: string | null
+          status: string
           subject: string | null
           track_name: string
         }
         Insert: {
+          cooldown_until?: string | null
           created_at?: string | null
           curator_email: string
           email_body?: string | null
           id?: string
+          method?: string | null
+          pitched_at?: string | null
           placed?: boolean | null
           playlist_id?: string | null
           reply_received?: boolean | null
           resend_message_id?: string | null
+          response_notes?: string | null
           sent_at?: string | null
+          status?: string
           subject?: string | null
           track_name: string
         }
         Update: {
+          cooldown_until?: string | null
           created_at?: string | null
           curator_email?: string
           email_body?: string | null
           id?: string
+          method?: string | null
+          pitched_at?: string | null
           placed?: boolean | null
           playlist_id?: string | null
           reply_received?: boolean | null
           resend_message_id?: string | null
+          response_notes?: string | null
           sent_at?: string | null
+          status?: string
           subject?: string | null
           track_name?: string
         }
@@ -615,17 +686,27 @@ export type Database = {
           fraud_score: number | null
           fraud_verdict: string | null
           id: string
+          is_active: boolean | null
+          last_pitched_at: string | null
+          legitimacy_score: number | null
           notes: string | null
           overlap_score: number | null
+          pitch_count: number
           pitch_status: string | null
           pitched_at: string | null
           platform: string
           playlist_id: string
           playlist_name: string
           research_context: Json | null
+          similar_artists: Json | null
+          submission_method: string | null
+          submission_url: string | null
+          tier: number | null
           track_count: number | null
           track_name: string
           updated_at: string | null
+          vibe_tags: Json | null
+          whitelist_status: boolean | null
         }
         Insert: {
           created_at?: string | null
@@ -635,17 +716,27 @@ export type Database = {
           fraud_score?: number | null
           fraud_verdict?: string | null
           id?: string
+          is_active?: boolean | null
+          last_pitched_at?: string | null
+          legitimacy_score?: number | null
           notes?: string | null
           overlap_score?: number | null
+          pitch_count?: number
           pitch_status?: string | null
           pitched_at?: string | null
           platform: string
           playlist_id: string
           playlist_name: string
           research_context?: Json | null
+          similar_artists?: Json | null
+          submission_method?: string | null
+          submission_url?: string | null
+          tier?: number | null
           track_count?: number | null
           track_name: string
           updated_at?: string | null
+          vibe_tags?: Json | null
+          whitelist_status?: boolean | null
         }
         Update: {
           created_at?: string | null
@@ -655,17 +746,27 @@ export type Database = {
           fraud_score?: number | null
           fraud_verdict?: string | null
           id?: string
+          is_active?: boolean | null
+          last_pitched_at?: string | null
+          legitimacy_score?: number | null
           notes?: string | null
           overlap_score?: number | null
+          pitch_count?: number
           pitch_status?: string | null
           pitched_at?: string | null
           platform?: string
           playlist_id?: string
           playlist_name?: string
           research_context?: Json | null
+          similar_artists?: Json | null
+          submission_method?: string | null
+          submission_url?: string | null
+          tier?: number | null
           track_count?: number | null
           track_name?: string
           updated_at?: string | null
+          vibe_tags?: Json | null
+          whitelist_status?: boolean | null
         }
         Relationships: []
       }

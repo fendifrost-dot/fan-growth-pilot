@@ -733,7 +733,7 @@ export type Database = {
           submission_url?: string | null
           tier?: number | null
           track_count?: number | null
-          track_name: string
+          track_name?: string
           updated_at?: string | null
           vibe_tags?: Json | null
           whitelist_status?: boolean | null

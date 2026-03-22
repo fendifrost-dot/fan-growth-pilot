@@ -1,0 +1,1 @@
+ALTER TABLE playlist_targets ALTER COLUMN track_name SET DEFAULT '';

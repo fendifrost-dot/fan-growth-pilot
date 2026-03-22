@@ -36,7 +36,17 @@ function normalizeTags(raw: unknown): string[] {
 function tokenizeVibe(vibe: string): Set<string> {
   return new Set(vibe.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((w) => w.length > 2));
 }
-function scoreRow(row: PlaylistRow, vibeTokens: Set<string>, trackTokens: Set<string>): number {
+function detectGenreSignals(vibe: string): Record<string, boolean> {
+  const v = vibe.toLowerCase();
+  return {
+    drill: /drill|fbg|g herbo|chicago drill|bando|opps/.test(v),
+    spiritual: /spiritual|holistic|healing|meditation|conscious|mindful|native|flute/.test(v),
+    westCoast: /west coast|cali|larry june|dom kennedy|la rap/.test(v),
+    trap: /trap|808|banger|turn up/.test(v),
+    underground: /underground|griselda|boldy|freddie gibbs|stove god/.test(v),
+  };
+}
+function scoreRow(row: PlaylistRow, vibeTokens: Set<string>, trackTokens: Set<string>, genreSignals?: Record<string, boolean>): number {
   const tags = new Set([...normalizeTags(row.vibe_tags), ...normalizeTags(row.similar_artists)]);
   let s = 0;
   for (const t of vibeTokens) {
@@ -47,11 +57,25 @@ function scoreRow(row: PlaylistRow, vibeTokens: Set<string>, trackTokens: Set<st
   s += Math.min(20, Math.floor((row.fraud_score ?? 0) / 5));
   if (row.whitelist_status) s += 15;
   if (row.tier === 1) s += 10; else if (row.tier === 2) s += 5;
+  if (genreSignals) {
+    const allTags = [...normalizeTags(row.vibe_tags), ...normalizeTags(row.similar_artists)].join(" ");
+    if (genreSignals.drill && /drill|herbo|fbg|chicago/.test(allTags)) s += 15;
+    if (genreSignals.spiritual && /spiritual|conscious|meditation|holistic/.test(allTags)) s += 15;
+    if (genreSignals.westCoast && /west_coast|larry_june|dom_kennedy|cali/.test(allTags)) s += 15;
+    if (genreSignals.trap && /trap|808/.test(allTags)) s += 10;
+    if (genreSignals.underground && /griselda|underground|boldy|freddie/.test(allTags)) s += 10;
+  }
   return s;
+}
+function followersLabel(row: PlaylistRow): string {
+  if (row.follower_count != null) return row.follower_count.toLocaleString();
+  if (row.submission_method === "algorithmic" || row.submission_method === "distributor_pitch") return "editorial";
+  return "N/A";
 }
 export async function findPlaylistOpportunities(supabase: SupabaseClient, trackName: string, userVibe: string): Promise<PlaylistRow[]> {
   const vibeTokens = tokenizeVibe(userVibe);
   const trackTokens = tokenizeVibe(trackName);
+  const genreSignals = detectGenreSignals(userVibe);
   const { data: cooling } = await supabase.from("pitch_log").select("playlist_id")
     .eq("track_name", trackName).gt("cooldown_until", new Date().toISOString());
   const excluded = new Set((cooling ?? []).map((r: any) => r.playlist_id));
@@ -60,7 +84,7 @@ export async function findPlaylistOpportunities(supabase: SupabaseClient, trackN
     .eq("is_active", true).in("tier", [1, 2]).eq("fraud_verdict", "safe");
   if (error) throw new Error("playlist_targets: " + error.message);
   const scored = (rows ?? []).filter((r: any) => !excluded.has(r.playlist_id)).map((r: any) => ({
-    ...r, match_score: scoreRow(r as PlaylistRow, vibeTokens, trackTokens), source: "catalog" as const,
+    ...r, match_score: scoreRow(r as PlaylistRow, vibeTokens, trackTokens, genreSignals), source: "catalog" as const,
   }));
   scored.sort((a: any, b: any) => { const ms = (b.match_score ?? 0) - (a.match_score ?? 0); return ms !== 0 ? ms : (b.follower_count ?? 0) - (a.follower_count ?? 0); });
   return scored.slice(0, MAX_RESULTS);
@@ -128,7 +152,9 @@ export async function mergeCatalogAndLive(supabase: SupabaseClient, trackName: s
     if (live.length) await upsertLive(supabase, live);
     console.log("live search: " + live.length + " playlists");
   }
-  const vibeTokens = tokenizeVibe(userVibe), trackTokens = tokenizeVibe(trackName);
+  const vibeTokens = tokenizeVibe(userVibe);
+  const trackTokens = tokenizeVibe(trackName);
+  const genreSignals = detectGenreSignals(userVibe);
   const { data: mergedRows } = await supabase.from("playlist_targets")
     .select("playlist_id,platform,playlist_name,curator_name,follower_count,track_count,overlap_score,fraud_score,fraud_verdict,pitch_status,research_context,tier,whitelist_status,vibe_tags,similar_artists,submission_method,submission_url,curator_email,is_active")
     .eq("is_active", true).in("tier", [1, 2]).eq("fraud_verdict", "safe");
@@ -137,7 +163,7 @@ export async function mergeCatalogAndLive(supabase: SupabaseClient, trackName: s
   const excluded = new Set((cooling ?? []).map((r: any) => r.playlist_id));
   const merged = (mergedRows ?? []).filter((r: any) => !excluded.has(r.playlist_id)).map((r: any) => ({
     ...r,
-    match_score: scoreRow(r as PlaylistRow, vibeTokens, trackTokens),
+    match_score: scoreRow(r as PlaylistRow, vibeTokens, trackTokens, genreSignals),
     source: ((r.research_context as any)?.source === "live_api" ? "live" : "catalog") as "catalog" | "live",
   }));
   merged.sort((a: any, b: any) => { const ms = (b.match_score ?? 0) - (a.match_score ?? 0); return ms !== 0 ? ms : (b.follower_count ?? 0) - (a.follower_count ?? 0); });
@@ -160,10 +186,17 @@ Deno.serve(async (req) => {
     return json({
       ok: true, track_name, user_vibe, count: results.length, live_api_ingested: live_count,
       playlists: results.map(r => ({
-        playlist_id: r.playlist_id, name: r.playlist_name, followers: r.follower_count,
-        platform: r.platform, bot_score: r.fraud_score, curator_email: r.curator_email,
-        submission_url: r.submission_url, submission_method: r.submission_method,
-        tier: r.tier, match_score: r.match_score,
+        playlist_id: r.playlist_id,
+        name: r.playlist_name,
+        followers: r.follower_count,
+        followers_label: followersLabel(r),
+        platform: r.platform,
+        bot_score: r.fraud_score,
+        curator_email: r.curator_email,
+        submission_url: r.submission_url,
+        submission_method: r.submission_method,
+        tier: r.tier,
+        match_score: r.match_score,
       })),
     });
   } catch (e) {

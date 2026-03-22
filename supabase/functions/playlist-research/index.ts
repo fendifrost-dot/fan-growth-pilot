@@ -1,168 +1,174 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-api-key, x-supabase-client-platform, x-supabase-client-runtime",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-api-key",
 };
-
-function json(data, status) {
-  if (status === undefined) status = 200;
-  return new Response(JSON.stringify(data), {
-    status: status,
-    headers: Object.assign({}, corsHeaders, { "Content-Type": "application/json" }),
+const MAX_RESULTS = 20;
+const LIVE_SEARCH_TERMS_MAX = 5;
+const LIVE_SEARCH_BUDGET_MS = 3000;
+function getHubKey(req: Request): string {
+  return (req.headers.get("x-api-key") || req.headers.get("apikey") ||
+    (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim());
+}
+type PlaylistRow = {
+  playlist_id: string; platform: string; playlist_name: string | null;
+  curator_name: string | null; follower_count: number | null; track_count: number | null;
+  overlap_score: number | null; fraud_score: number | null; fraud_verdict: string | null;
+  pitch_status: string | null; research_context: Record<string, unknown> | null;
+  tier: number | null; whitelist_status: boolean | null;
+  vibe_tags: unknown; similar_artists: unknown;
+  submission_method: string | null; submission_url: string | null;
+  curator_email: string | null; is_active: boolean | null;
+  match_score?: number; source?: "catalog" | "live";
+};
+function getServiceClient(): SupabaseClient {
+  const url = Deno.env.get("SUPABASE_URL");
+  const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!url || !key) throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+  return createClient(url, key);
+}
+function normalizeTags(raw: unknown): string[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw.map((t) => String(t).toLowerCase());
+  return [];
+}
+function tokenizeVibe(vibe: string): Set<string> {
+  return new Set(vibe.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((w) => w.length > 2));
+}
+function scoreRow(row: PlaylistRow, vibeTokens: Set<string>, trackTokens: Set<string>): number {
+  const tags = new Set([...normalizeTags(row.vibe_tags), ...normalizeTags(row.similar_artists)]);
+  let s = 0;
+  for (const t of vibeTokens) {
+    if (tags.has(t)) s += 3;
+    for (const tag of tags) { if (tag.includes(t) || t.includes(tag)) s += 1; }
+  }
+  for (const t of trackTokens) { if ((row.playlist_name ?? "").toLowerCase().includes(t)) s += 2; }
+  s += Math.min(20, Math.floor((row.fraud_score ?? 0) / 5));
+  if (row.whitelist_status) s += 15;
+  if (row.tier === 1) s += 10; else if (row.tier === 2) s += 5;
+  return s;
+}
+export async function findPlaylistOpportunities(supabase: SupabaseClient, trackName: string, userVibe: string): Promise<PlaylistRow[]> {
+  const vibeTokens = tokenizeVibe(userVibe);
+  const trackTokens = tokenizeVibe(trackName);
+  const { data: cooling } = await supabase.from("pitch_log").select("playlist_id")
+    .eq("track_name", trackName).gt("cooldown_until", new Date().toISOString());
+  const excluded = new Set((cooling ?? []).map((r: any) => r.playlist_id));
+  const { data: rows, error } = await supabase.from("playlist_targets")
+    .select("playlist_id,platform,playlist_name,curator_name,follower_count,track_count,overlap_score,fraud_score,fraud_verdict,pitch_status,research_context,tier,whitelist_status,vibe_tags,similar_artists,submission_method,submission_url,curator_email,is_active")
+    .eq("is_active", true).in("tier", [1, 2]).eq("fraud_verdict", "safe");
+  if (error) throw new Error("playlist_targets: " + error.message);
+  const scored = (rows ?? []).filter((r: any) => !excluded.has(r.playlist_id)).map((r: any) => ({
+    ...r, match_score: scoreRow(r as PlaylistRow, vibeTokens, trackTokens), source: "catalog" as const,
+  }));
+  scored.sort((a: any, b: any) => { const ms = (b.match_score ?? 0) - (a.match_score ?? 0); return ms !== 0 ? ms : (b.follower_count ?? 0) - (a.follower_count ?? 0); });
+  return scored.slice(0, MAX_RESULTS);
+}
+async function getSpotifyToken(): Promise<string | null> {
+  const id = Deno.env.get("SPOTIFY_CLIENT_ID"), secret = Deno.env.get("SPOTIFY_CLIENT_SECRET");
+  if (!id || !secret) return null;
+  const res = await fetch("https://accounts.spotify.com/api/token", {
+    method: "POST",
+    headers: { Authorization: "Basic " + btoa(id + ":" + secret), "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "client_credentials" }),
   });
+  if (!res.ok) return null;
+  return (await res.json()).access_token ?? null;
 }
-
-function getProvidedHubKey(req) {
-  const xApiKey = req.headers.get("x-api-key");
-  if (xApiKey) return xApiKey;
-  const apikey = req.headers.get("apikey");
-  if (apikey) return apikey;
-  const auth = req.headers.get("authorization") || "";
-  return auth.replace(/^Bearer\s+/i, "").trim();
+function buildTerms(trackName: string, userVibe: string): string[] {
+  const parts = [...tokenizeVibe(trackName), ...tokenizeVibe(userVibe)];
+  const terms: string[] = [], seen = new Set<string>();
+  for (const p of parts) { if (terms.length >= LIVE_SEARCH_TERMS_MAX) break; if (!seen.has(p)) { seen.add(p); terms.push(p); } }
+  if (!terms.length && trackName) terms.push(trackName.slice(0, 40));
+  return terms.slice(0, LIVE_SEARCH_TERMS_MAX);
 }
-
+type SpPl = { id: string; playlist_id: string; name: string; followers: number | null; owner: string | null };
+async function liveSearch(token: string, terms: string[], budgetMs: number): Promise<SpPl[]> {
+  const deadline = Date.now() + budgetMs, out: SpPl[] = [], seen = new Set<string>();
+  for (const term of terms) {
+    if (Date.now() > deadline) break;
+    const ctrl = new AbortController(), to = setTimeout(() => ctrl.abort(), Math.min(1200, deadline - Date.now()));
+    try {
+      const u = new URL("https://api.spotify.com/v1/search");
+      u.searchParams.set("q", term); u.searchParams.set("type", "playlist"); u.searchParams.set("limit", "5");
+      const res = await fetch(u.toString(), { headers: { Authorization: "Bearer " + token }, signal: ctrl.signal });
+      clearTimeout(to);
+      if (!res.ok) continue;
+      for (const pl of (await res.json()).playlists?.items ?? []) {
+        if (!pl?.id) continue;
+        const pid = "spotify:" + pl.id;
+        if (seen.has(pid)) continue;
+        seen.add(pid);
+        out.push({ id: pl.id, playlist_id: pid, name: pl.name, followers: pl.followers?.total ?? null, owner: pl.owner?.display_name ?? null });
+      }
+    } catch { clearTimeout(to); }
+  }
+  return out;
+}
+async function upsertLive(supabase: SupabaseClient, items: SpPl[]): Promise<void> {
+  for (const pl of items) {
+    const { error } = await supabase.from("playlist_targets").upsert({
+      playlist_id: pl.playlist_id, platform: "spotify", playlist_name: pl.name,
+      curator_name: pl.owner, follower_count: pl.followers ?? 0, track_count: 0,
+      overlap_score: 0, fraud_score: 50, fraud_verdict: "safe", pitch_status: "not_pitched",
+      research_context: { source: "live_api", fetched_at: new Date().toISOString() },
+      tier: 2, whitelist_status: false, vibe_tags: [], similar_artists: [],
+      submission_url: "https://open.spotify.com/playlist/" + pl.id, is_active: true,
+    }, { onConflict: "playlist_id" });
+    if (error) console.error("upsert live", pl.playlist_id, error.message);
+  }
+}
+export async function mergeCatalogAndLive(supabase: SupabaseClient, trackName: string, userVibe: string): Promise<{ results: PlaylistRow[]; live_count: number }> {
+  const token = await getSpotifyToken();
+  let live: SpPl[] = [];
+  if (token) {
+    const terms = buildTerms(trackName, userVibe);
+    live = await liveSearch(token, terms, LIVE_SEARCH_BUDGET_MS);
+    if (live.length) await upsertLive(supabase, live);
+    console.log("live search: " + live.length + " playlists");
+  }
+  const vibeTokens = tokenizeVibe(userVibe), trackTokens = tokenizeVibe(trackName);
+  const { data: mergedRows } = await supabase.from("playlist_targets")
+    .select("playlist_id,platform,playlist_name,curator_name,follower_count,track_count,overlap_score,fraud_score,fraud_verdict,pitch_status,research_context,tier,whitelist_status,vibe_tags,similar_artists,submission_method,submission_url,curator_email,is_active")
+    .eq("is_active", true).in("tier", [1, 2]).eq("fraud_verdict", "safe");
+  const { data: cooling } = await supabase.from("pitch_log").select("playlist_id")
+    .eq("track_name", trackName).gt("cooldown_until", new Date().toISOString());
+  const excluded = new Set((cooling ?? []).map((r: any) => r.playlist_id));
+  const merged = (mergedRows ?? []).filter((r: any) => !excluded.has(r.playlist_id)).map((r: any) => ({
+    ...r,
+    match_score: scoreRow(r as PlaylistRow, vibeTokens, trackTokens),
+    source: ((r.research_context as any)?.source === "live_api" ? "live" : "catalog") as "catalog" | "live",
+  }));
+  merged.sort((a: any, b: any) => { const ms = (b.match_score ?? 0) - (a.match_score ?? 0); return ms !== 0 ? ms : (b.follower_count ?? 0) - (a.follower_count ?? 0); });
+  return { results: merged.slice(0, MAX_RESULTS), live_count: live.length };
+}
+function json(data: unknown, status = 200) {
+  return new Response(JSON.stringify(data), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+}
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   try {
-    let body = {};
-    try { body = await req.json(); } catch (_) {}
-    const track_name = body.track_name;
-    if (!track_name || typeof track_name !== "string") return json({ error: "track_name required" }, 400);
-
-    const expectedKey = Deno.env.get("FANFUEL_HUB_KEY");
-    if (!expectedKey) return json({ error: "FANFUEL_HUB_KEY not configured" }, 500);
-    const providedKey = getProvidedHubKey(req);
-    if (!providedKey || providedKey.trim() !== expectedKey.trim()) return json({ error: "Unauthorized" }, 401);
-
-    const spotifyClientId = Deno.env.get("SPOTIFY_CLIENT_ID");
-    const spotifyClientSecret = Deno.env.get("SPOTIFY_CLIENT_SECRET");
-    if (!spotifyClientId || !spotifyClientSecret) return json({ error: "Spotify credentials not configured" }, 500);
-
-    // Step 1: Spotify token
-    const tokenResp = await fetch("https://accounts.spotify.com/api/token", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Authorization: "Basic " + btoa(spotifyClientId + ":" + spotifyClientSecret),
-      },
-      body: "grant_type=client_credentials",
-    });
-    if (!tokenResp.ok) {
-      const err = await tokenResp.text().catch(() => "");
-      return json({ error: "Spotify auth failed", status: tokenResp.status, detail: err.slice(0, 200) }, 502);
-    }
-    const tokenJson = await tokenResp.json().catch(() => ({}));
-    const accessToken = tokenJson.access_token;
-    if (!accessToken) return json({ error: "Spotify auth failed: missing access_token" }, 502);
-
-    const spotFetch = async function(url) {
-      const r = await fetch(url, { headers: { Authorization: "Bearer " + accessToken } });
-      return r.json().catch(() => ({}));
-    };
-
-    // Step 2: Search track
-    const searchData = await spotFetch("https://api.spotify.com/v1/search?q=" + encodeURIComponent(track_name) + "&type=track&limit=3");
-    const track = searchData && searchData.tracks && searchData.tracks.items && searchData.tracks.items[0];
-    if (!track) return json({ error: "Track not found on Spotify: " + track_name }, 404);
-
-    const trackId = track.id;
-    const artist = track.artists && track.artists[0];
-    const artistId = artist && artist.id;
-    const artistName = (artist && artist.name) || track_name;
-
-    // Step 3: Artist info + related (free endpoints only)
-    let genres = [];
-    let relatedArtists = [];
-    if (artistId) {
-      const artistData = await spotFetch("https://api.spotify.com/v1/artists/" + artistId);
-      genres = (artistData && Array.isArray(artistData.genres) ? artistData.genres : []).slice(0, 5);
-      const relatedData = await spotFetch("https://api.spotify.com/v1/artists/" + artistId + "/related-artists");
-      relatedArtists = (relatedData && Array.isArray(relatedData.artists) ? relatedData.artists : []).slice(0, 3).map(function(a) { return a && a.name; }).filter(Boolean);
-    }
-
-    // Step 4: Build search terms
-    const termSet = new Set([track_name, artistName]);
-    genres.slice(0, 3).forEach(function(g) { termSet.add(g); });
-    relatedArtists.slice(0, 2).forEach(function(a) { termSet.add(a); });
-    const queryTerms = Array.from(termSet).slice(0, 6);
-
-    // Step 5: Search playlists sequentially
-    const playlistMap = new Map();
-    for (let qi = 0; qi < queryTerms.length; qi++) {
-      const query = queryTerms[qi];
-      try {
-        const plData = await spotFetch("https://api.spotify.com/v1/search?q=" + encodeURIComponent(query) + "&type=playlist&limit=8");
-        const items = (plData && plData.playlists && plData.playlists.items) || [];
-        for (let pi = 0; pi < items.length; pi++) {
-          const pl = items[pi];
-          if (!pl || !pl.id) continue;
-          const key = "spotify:" + pl.id;
-          const followerCount = (pl.followers && typeof pl.followers.total === "number") ? pl.followers.total
-            : (pl.tracks && typeof pl.tracks.total === "number") ? pl.tracks.total : 0;
-          if (!playlistMap.has(key)) {
-            playlistMap.set(key, {
-              playlist_id: key,
-              platform: "spotify",
-              playlist_name: pl.name,
-              name: pl.name,
-              curator_name: (pl.owner && pl.owner.display_name) || null,
-              followers: followerCount,
-              track_count: (pl.tracks && pl.tracks.total) || 0,
-              matched_queries: [query],
-              track_name: track_name,
-              pitch_status: "not_pitched",
-              research_context: { audio_features: null, genres: genres, related_artists: relatedArtists, search_term: query },
-            });
-          } else {
-            playlistMap.get(key).matched_queries.push(query);
-          }
-        }
-      } catch (_) {}
-    }
-
-    // Step 6: Filter + rank
-    const results = [];
-    for (const entry of playlistMap.values()) {
-      const name = (entry.playlist_name || "").toLowerCase();
-      if (!entry.playlist_name) continue;
-      if (["submit", "promo", "placement", "pay"].some(function(k) { return name.includes(k); })) continue;
-      results.push(entry);
-    }
-    results.sort(function(a, b) { return (b.matched_queries.length - a.matched_queries.length) || (b.followers - a.followers); });
-    const top = results.slice(0, 50);
-
-    // Step 7: Upsert (never crash the response)
-    const supabaseUrl = Deno.env.get("SUPABASE_URL");
-    const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-    if (supabaseUrl && supabaseKey && top.length > 0) {
-      try {
-        const sb = createClient(supabaseUrl, supabaseKey);
-        const { error: uErr } = await sb.from("playlist_targets").upsert(
-          top.map(function(pl) {
-            return {
-              playlist_id: pl.playlist_id, platform: pl.platform,
-              playlist_name: pl.playlist_name, curator_name: pl.curator_name,
-              track_name: pl.track_name, followers: pl.followers,
-              pitch_status: pl.pitch_status, research_context: pl.research_context,
-            };
-          }),
-          { onConflict: "playlist_id" }
-        );
-        if (uErr) console.error("Upsert error:", uErr.message);
-      } catch (uEx) { console.error("Upsert exception:", uEx); }
-    }
-
+    const expected = Deno.env.get("FANFUEL_HUB_KEY");
+    if (!expected || getHubKey(req).trim() !== expected.trim()) return json({ error: "Unauthorized" }, 401);
+    const supabase = getServiceClient();
+    const body = await req.json().catch(() => ({}));
+    const track_name = String(body.track_name ?? body.trackName ?? "").trim();
+    const user_vibe = String(body.user_vibe ?? body.userVibe ?? body.vibe ?? "").trim();
+    if (!track_name) return json({ error: "track_name required" }, 400);
+    const { results, live_count } = await mergeCatalogAndLive(supabase, track_name, user_vibe);
     return json({
-      playlists: top.map(function(p) { return { playlist_id: p.playlist_id, name: p.name || p.playlist_name, followers: p.followers, platform: p.platform }; }),
-      total: top.length,
-      track: { id: trackId, name: track.name, artist: artistName },
-    }, 200);
-
-  } catch (e) {
-    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }), {
-      status: 500,
-      headers: Object.assign({}, corsHeaders, { "Content-Type": "application/json" }),
+      ok: true, track_name, user_vibe, count: results.length, live_api_ingested: live_count,
+      playlists: results.map(r => ({
+        playlist_id: r.playlist_id, name: r.playlist_name, followers: r.follower_count,
+        platform: r.platform, bot_score: r.fraud_score, curator_email: r.curator_email,
+        submission_url: r.submission_url, submission_method: r.submission_method,
+        tier: r.tier, match_score: r.match_score,
+      })),
     });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(msg);
+    return json({ error: true, message: msg }, 500);
   }
 });

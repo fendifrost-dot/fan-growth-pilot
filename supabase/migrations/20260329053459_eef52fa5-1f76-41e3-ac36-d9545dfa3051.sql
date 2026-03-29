@@ -1,0 +1,1 @@
+ALTER TABLE pitch_log ALTER COLUMN cooldown_until DROP NOT NULL;

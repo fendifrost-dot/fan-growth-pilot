@@ -12,9 +12,6 @@ verify_jwt = false
 [functions.get-og-metadata]
 verify_jwt = false
 
-[functions.ogmetadata]
-verify_jwt = false
-
 [functions.fetch-public-spotify-data]
 verify_jwt = false
 
@@ -61,4 +58,16 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.send-pitch-email]
+verify_jwt = false
+
+[functions.execute-pitch]
+verify_jwt = false
+
+[functions.pitch-status]
+verify_jwt = false
+
+[functions.playlist-batch]
+verify_jwt = false
+
+[functions.update-pitch-status]
 verify_jwt = false

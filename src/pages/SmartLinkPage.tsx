@@ -37,6 +37,7 @@ interface SmartLinkData {
   testimonial_text?: string;
   testimonial_author?: string;
   theme_preset?: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 const emailSchema = z.object({
@@ -333,6 +334,56 @@ export default function SmartLinkPage() {
   };
   const ctaLabel = resolveCtaLabel(smartLink.button_text);
 
+  // ─── Multi-DSP buttons (Phase 2): read DSP URLs from metadata jsonb ───
+  // When metadata has any of {spotify_url, apple_music_url, youtube_url, tidal_url, even_url},
+  // render a stack of direct DSP buttons that skip the rnd.fm middleman click and fire
+  // platform-tagged CTAClick events for clean per-DSP attribution.
+  const meta = (smartLink.metadata as Record<string, string> | null | undefined) || undefined;
+  const dspLinks: Array<{ name: string; url: string; bg: string; color: string }> = [];
+  if (meta) {
+    if (meta.spotify_url) dspLinks.push({ name: 'Spotify', url: meta.spotify_url, bg: '#1DB954', color: '#fff' });
+    if (meta.apple_music_url) dspLinks.push({ name: 'Apple Music', url: meta.apple_music_url, bg: '#FFFFFF', color: '#000' });
+    if (meta.youtube_url) dspLinks.push({ name: 'YouTube', url: meta.youtube_url, bg: '#FF0000', color: '#fff' });
+    if (meta.tidal_url) dspLinks.push({ name: 'Tidal', url: meta.tidal_url, bg: '#000000', color: '#fff' });
+    if (meta.even_url) dspLinks.push({ name: 'EVEN', url: meta.even_url, bg: 'linear-gradient(135deg, #D4AF37, #FFD700)', color: '#000' });
+  }
+  const hasDspLinks = dspLinks.length > 0;
+
+  const handleDspClick = (platform: string, destinationUrl: string) => {
+    if (!ctaDebounceRef.current) {
+      ctaDebounceRef.current = true;
+      void Promise.resolve(supabase.rpc('increment_cta_click', { link_id: smartLink!.id })).catch(() => {});
+      if (typeof window !== 'undefined' && (window as any).fbq) {
+        (window as any).fbq('trackCustom', 'CTAClick', {
+          smart_link_id: smartLink!.id,
+          smart_link_slug: smartLink!.slug,
+          destination_url: destinationUrl,
+          platform,
+        });
+      }
+      setTimeout(() => { ctaDebounceRef.current = false; }, 400);
+    }
+    window.location.href = destinationUrl;
+  };
+
+  const dspButtonsBlock = hasDspLinks ? (
+    <div className="w-full space-y-2" data-testid="dsp-buttons">
+      {dspLinks.map((dsp) => (
+        <Button
+          key={dsp.name}
+          size="lg"
+          data-testid={`dsp-${dsp.name.toLowerCase().replace(' ', '-')}`}
+          className="w-full h-[50px] font-bold tracking-wide text-sm sm:text-base transition-all duration-200 shadow-lg active:scale-[0.98] hover:scale-[1.02]"
+          style={{ background: dsp.bg, color: dsp.color }}
+          onClick={() => handleDspClick(dsp.name.toLowerCase().replace(' ', '_'), dsp.url)}
+        >
+          Listen on {dsp.name}
+        </Button>
+      ))}
+    </div>
+  ) : null;
+
+
   // ─── Shared: Bullet points (rendered inside accordion only) ───
   const bulletPointsBlock = hasBulletPoints ? (
     <ul className="space-y-3 pt-3 pb-1" data-testid="bullet-points">
@@ -449,15 +500,17 @@ export default function SmartLinkPage() {
                 </div>
               )}
 
-              {/* PRIMARY CTA — Always visible */}
-              <Button
-                size="lg"
-                data-testid="album-cta"
-                className="w-full h-[50px] bg-white text-black hover:bg-white hover:brightness-110 hover:scale-[1.02] hover:shadow-[0_0_20px_rgba(255,255,255,0.5)] font-extrabold tracking-wide text-base lg:text-lg uppercase transition-all duration-200 shadow-lg active:scale-[0.98]"
-                onClick={handleAlbumClick}
-              >
-                {ctaLabel}
-              </Button>
+              {/* PRIMARY CTA — multi-DSP stack if metadata has DSP URLs, else single CTA */}
+              {hasDspLinks ? dspButtonsBlock : (
+                <Button
+                  size="lg"
+                  data-testid="album-cta"
+                  className="w-full h-[50px] bg-white text-black hover:bg-white hover:brightness-110 hover:scale-[1.02] hover:shadow-[0_0_20px_rgba(255,255,255,0.5)] font-extrabold tracking-wide text-base lg:text-lg uppercase transition-all duration-200 shadow-lg active:scale-[0.98]"
+                  onClick={handleAlbumClick}
+                >
+                  {ctaLabel}
+                </Button>
+              )}
 
               {/* SECONDARY — Collapsible email + bullets */}
               {emailAccordionBlock}
@@ -528,16 +581,18 @@ export default function SmartLinkPage() {
           )}
         </div>
 
-        {/* PRIMARY CTA — above the fold */}
-        <Button
-          size="lg"
-          data-testid="album-cta"
-          className="w-full h-[50px] bg-white text-black hover:bg-white hover:brightness-110 hover:scale-[1.02] hover:shadow-[0_0_20px_rgba(255,255,255,0.5)] font-extrabold tracking-wide text-base uppercase transition-all duration-200 shadow-lg active:scale-[0.98]"
-          style={smartLink.button_color ? { backgroundColor: smartLink.button_color } : undefined}
-          onClick={handleAlbumClick}
-        >
-          {ctaLabel}
-        </Button>
+        {/* PRIMARY CTA — multi-DSP stack if metadata has DSP URLs, else single CTA */}
+        {hasDspLinks ? dspButtonsBlock : (
+          <Button
+            size="lg"
+            data-testid="album-cta"
+            className="w-full h-[50px] bg-white text-black hover:bg-white hover:brightness-110 hover:scale-[1.02] hover:shadow-[0_0_20px_rgba(255,255,255,0.5)] font-extrabold tracking-wide text-base uppercase transition-all duration-200 shadow-lg active:scale-[0.98]"
+            style={smartLink.button_color ? { backgroundColor: smartLink.button_color } : undefined}
+            onClick={handleAlbumClick}
+          >
+            {ctaLabel}
+          </Button>
+        )}
 
         {/* SECONDARY — Collapsible email + bullets */}
         {emailAccordionBlock}

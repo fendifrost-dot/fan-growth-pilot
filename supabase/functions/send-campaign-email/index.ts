@@ -26,7 +26,7 @@ const json = (body: unknown, status = 200) =>
     headers: { "Content-Type": "application/json", ...corsHeaders },
   });
 
-const APP_BASE_URL = Deno.env.get("APP_BASE_URL") ?? "https://app.bemoremodest.com";
+const APP_BASE_URL = Deno.env.get("APP_BASE_URL") ?? "https://links.fendifrost.com";
 
 interface Contact {
   id: string;

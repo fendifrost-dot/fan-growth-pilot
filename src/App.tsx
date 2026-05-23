@@ -5,8 +5,14 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Index from "./pages/Index";
+import Auth from "./pages/Auth";
 import NotFound from "./pages/NotFound";
 import SmartLinkPage from "./pages/SmartLinkPage";
+import Unsubscribe from "./pages/Unsubscribe";
+import AdminGuard from "./pages/admin/AdminGuard";
+import AdminCampaigns from "./pages/admin/AdminCampaigns";
+import AdminCampaignDetail from "./pages/admin/AdminCampaignDetail";
+import AdminContacts from "./pages/admin/AdminContacts";
 
 const queryClient = new QueryClient();
 
@@ -25,7 +31,19 @@ const App = () => (
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<RootRoute />} />
-          {/* Public smart link pages */}
+          <Route path="/auth" element={<Auth />} />
+          {/* Public unsubscribe endpoint — receives links from emails */}
+          <Route path="/unsubscribe" element={<Unsubscribe />} />
+
+          {/* Admin (auth-gated) */}
+          <Route path="/admin" element={<AdminGuard />}>
+            <Route index element={<AdminCampaigns />} />
+            <Route path="campaigns" element={<AdminCampaigns />} />
+            <Route path="campaigns/:slug" element={<AdminCampaignDetail />} />
+            <Route path="contacts" element={<AdminContacts />} />
+          </Route>
+
+          {/* Public smart link pages (CATCH-ALL — must stay last among meaningful routes) */}
           <Route path="/:slug" element={<SmartLinkPage />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />

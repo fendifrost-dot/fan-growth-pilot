@@ -71,3 +71,9 @@ verify_jwt = false
 
 [functions.update-pitch-status]
 verify_jwt = false
+
+[functions.unsubscribe]
+verify_jwt = false
+
+[functions.send-campaign-email]
+verify_jwt = false

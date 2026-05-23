@@ -115,6 +115,234 @@ export type Database = {
         }
         Relationships: []
       }
+      email_campaigns: {
+        Row: {
+          audience_filter: Json | null
+          completed_at: string | null
+          created_at: string
+          from_email: string
+          from_name: string
+          id: string
+          name: string
+          reply_to: string | null
+          slug: string
+          started_at: string | null
+          status: string
+          template_id: string | null
+          total_failed: number
+          total_sent: number
+          updated_at: string
+        }
+        Insert: {
+          audience_filter?: Json | null
+          completed_at?: string | null
+          created_at?: string
+          from_email?: string
+          from_name?: string
+          id?: string
+          name: string
+          reply_to?: string | null
+          slug: string
+          started_at?: string | null
+          status?: string
+          template_id?: string | null
+          total_failed?: number
+          total_sent?: number
+          updated_at?: string
+        }
+        Update: {
+          audience_filter?: Json | null
+          completed_at?: string | null
+          created_at?: string
+          from_email?: string
+          from_name?: string
+          id?: string
+          name?: string
+          reply_to?: string | null
+          slug?: string
+          started_at?: string | null
+          status?: string
+          template_id?: string | null
+          total_failed?: number
+          total_sent?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "email_campaigns_template_id_fkey"
+            columns: ["template_id"]
+            isOneToOne: false
+            referencedRelation: "email_templates"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      email_contacts: {
+        Row: {
+          created_at: string
+          email: string
+          engagement_score: number | null
+          first_name: string | null
+          id: string
+          last_clicked_at: string | null
+          last_name: string | null
+          last_opened_at: string | null
+          last_sent_at: string | null
+          metadata: Json | null
+          phone: string | null
+          source: string | null
+          subscribed: boolean
+          tags: string[] | null
+          unsubscribe_token: string
+          unsubscribed_at: string | null
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          email: string
+          engagement_score?: number | null
+          first_name?: string | null
+          id?: string
+          last_clicked_at?: string | null
+          last_name?: string | null
+          last_opened_at?: string | null
+          last_sent_at?: string | null
+          metadata?: Json | null
+          phone?: string | null
+          source?: string | null
+          subscribed?: boolean
+          tags?: string[] | null
+          unsubscribe_token?: string
+          unsubscribed_at?: string | null
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          email?: string
+          engagement_score?: number | null
+          first_name?: string | null
+          id?: string
+          last_clicked_at?: string | null
+          last_name?: string | null
+          last_opened_at?: string | null
+          last_sent_at?: string | null
+          metadata?: Json | null
+          phone?: string | null
+          source?: string | null
+          subscribed?: boolean
+          tags?: string[] | null
+          unsubscribe_token?: string
+          unsubscribed_at?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      email_sends: {
+        Row: {
+          batch_label: string | null
+          campaign_id: string | null
+          contact_id: string | null
+          error_message: string | null
+          id: string
+          metadata: Json | null
+          recipient_email: string
+          resend_message_id: string | null
+          sent_at: string
+          status: string
+          test_send: boolean
+        }
+        Insert: {
+          batch_label?: string | null
+          campaign_id?: string | null
+          contact_id?: string | null
+          error_message?: string | null
+          id?: string
+          metadata?: Json | null
+          recipient_email: string
+          resend_message_id?: string | null
+          sent_at?: string
+          status: string
+          test_send?: boolean
+        }
+        Update: {
+          batch_label?: string | null
+          campaign_id?: string | null
+          contact_id?: string | null
+          error_message?: string | null
+          id?: string
+          metadata?: Json | null
+          recipient_email?: string
+          resend_message_id?: string | null
+          sent_at?: string
+          status?: string
+          test_send?: boolean
+        }
+        Relationships: [
+          {
+            foreignKeyName: "email_sends_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "email_campaign_stats"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "email_sends_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "email_campaigns"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "email_sends_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: false
+            referencedRelation: "email_contacts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      email_templates: {
+        Row: {
+          created_at: string
+          html_body: string
+          id: string
+          metadata: Json | null
+          name: string
+          preheader: string | null
+          slug: string
+          subject: string
+          text_body: string
+          updated_at: string
+          variables: string[] | null
+        }
+        Insert: {
+          created_at?: string
+          html_body: string
+          id?: string
+          metadata?: Json | null
+          name: string
+          preheader?: string | null
+          slug: string
+          subject: string
+          text_body: string
+          updated_at?: string
+          variables?: string[] | null
+        }
+        Update: {
+          created_at?: string
+          html_body?: string
+          id?: string
+          metadata?: Json | null
+          name?: string
+          preheader?: string | null
+          slug?: string
+          subject?: string
+          text_body?: string
+          updated_at?: string
+          variables?: string[] | null
+        }
+        Relationships: []
+      }
       fan_data: {
         Row: {
           created_at: string | null
@@ -1021,9 +1249,36 @@ export type Database = {
       }
     }
     Views: {
-      [_ in never]: never
+      email_campaign_stats: {
+        Row: {
+          completed_at: string | null
+          created_at: string | null
+          from_email: string | null
+          id: string | null
+          last_send_at: string | null
+          name: string | null
+          real_failed: number | null
+          real_sent: number | null
+          slug: string | null
+          started_at: string | null
+          status: string | null
+          test_sends: number | null
+          total_failed: number | null
+          total_sent: number | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
+      bridge_upsert_email_contact: {
+        Args: {
+          p_email: string
+          p_extra_tags: string[]
+          p_first_name: string
+          p_source: string
+        }
+        Returns: string
+      }
       decrypt_token: { Args: { encrypted_token: string }; Returns: string }
       encrypt_token: { Args: { token: string }; Returns: string }
       generate_short_code: { Args: never; Returns: string }
@@ -1035,6 +1290,22 @@ export type Database = {
       increment_email_submit: { Args: { link_id: string }; Returns: undefined }
       increment_link_clicks: { Args: { link_id: string }; Returns: undefined }
       increment_video_play: { Args: { link_id: string }; Returns: undefined }
+      unsubscribe_by_token: {
+        Args: { p_token: string }
+        Returns: {
+          already_unsubscribed: boolean
+          email: string
+        }[]
+      }
+      upsert_email_contacts: {
+        Args: { p_rows: Json }
+        Returns: {
+          inserted_count: number
+          skipped_count: number
+          total: number
+          updated_count: number
+        }[]
+      }
     }
     Enums: {
       [_ in never]: never

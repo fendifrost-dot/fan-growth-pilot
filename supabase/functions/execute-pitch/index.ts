@@ -24,18 +24,34 @@ Deno.serve(async (req) => {
     const methodOverride = typeof body.method_override === "string" ? body.method_override.trim() : "";
     const tierConfirmed = Boolean(body.tier_confirmed);
     const bulk = Boolean(body.bulk);
+    const draftId = String(body.draft_id ?? "").trim();
     if (!playlistId || !trackName) return jsonPitch({ ok:false, method_used:"none", action_taken:"error", cooldown_until:null, message_to_user:"Missing playlist_id or track_name." });
     const url = Deno.env.get("SUPABASE_URL")!;
     const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const sb = createClient(url, key);
+    let draftOverrides: { email?: string; subject?: string; bodyHtml?: string } | undefined;
+    let draftChannel: string | null = null;
+    if (draftId) {
+      const { data: draft } = await sb.from("outreach_drafts").select("*").eq("id", draftId).maybeSingle();
+      if (!draft || draft.status !== "approved") {
+        return jsonPitch({ ok:false, method_used:"none", action_taken:"error", cooldown_until:null, message_to_user:"Draft not found or not approved: " + draftId });
+      }
+      draftChannel = String(draft.channel ?? "").toLowerCase();
+      const plain = String(draft.body ?? "").replace(/\n/g, "<br>");
+      draftOverrides = {
+        email: (draft.recipient as string | null)?.trim() || undefined,
+        subject: (draft.subject as string | null)?.trim() || undefined,
+        bodyHtml: "<p>" + plain + "</p>",
+      };
+    }
     const { data: row, error: rowErr } = await sb.from("playlist_targets").select("*").eq("playlist_id", playlistId).maybeSingle();
     if (rowErr || !row) return jsonPitch({ ok:false, method_used:"none", action_taken:"error", cooldown_until:null, message_to_user:"Playlist not found: " + playlistId });
-    const method = (methodOverride || row.submission_method || "other").toLowerCase().trim();
+    const method = (draftChannel === "email" ? "email" : (methodOverride || row.submission_method || "other")).toLowerCase().trim();
     if (bulk && NON_BULK_METHODS.has(method)) return jsonPitch({ ok:true, method_used:method, action_taken:"skipped", cooldown_until:null, message_to_user:"⏭️ Skipped *" + (row.playlist_name ?? playlistId) + "* — method *" + method + "* needs a manual pass." });
     const tierRaw = row.tier;
     const tier = typeof tierRaw === "number" ? tierRaw : tierRaw != null && tierRaw !== "" ? Number(tierRaw) : null;
     if (tier === 3 && !tierConfirmed) return jsonPitch({ ok:false, method_used:method, action_taken:"tier_gate", cooldown_until:null, message_to_user:"⚠️ *Tier 3 playlist* — *" + (row.playlist_name ?? playlistId) + "*\n\nFlagged for verify-first pitching. Reply *confirm* to send." });
-    if (method === "email") return await handleEmailPitch(sb, row, trackName, bulk);
+    if (method === "email") return await handleEmailPitch(sb, row, trackName, bulk, draftOverrides);
     return jsonPitch(buildNonEmailMessage(row, method, trackName));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -64,9 +80,15 @@ async function getArtistConfig(sb: SupabaseClient): Promise<{ artistId: string; 
   }
   return { artistId, trackUrls };
 }
-async function handleEmailPitch(sb: SupabaseClient, row: Record<string, unknown>, trackName: string, _bulk: boolean): Promise<Response> {
+async function handleEmailPitch(
+  sb: SupabaseClient,
+  row: Record<string, unknown>,
+  trackName: string,
+  _bulk: boolean,
+  draft?: { email?: string; subject?: string; bodyHtml?: string },
+): Promise<Response> {
   const playlistId = String(row.playlist_id);
-  const email = (row.curator_email as string|null)?.trim();
+  const email = (draft?.email || (row.curator_email as string|null))?.trim();
   const playlistName = (row.playlist_name as string|null) ?? playlistId;
   const method = "email";
   if (!email) return jsonPitch({ ok:false, method_used:method, action_taken:"error", cooldown_until:null, message_to_user:"No curator email on file for *" + playlistName + "*." });
@@ -83,12 +105,13 @@ async function handleEmailPitch(sb: SupabaseClient, row: Record<string, unknown>
   const trackUrl = trackUrls[trackName] || trackUrls[trackName.toLowerCase()] || "https://open.spotify.com/artist/" + (artistId || "0000000000000000000000");
   const cooldownDays = await getCooldownDays(sb);
   const cooldownIso = new Date(Date.now() + cooldownDays * 86400000).toISOString();
-  const bodyHtml = ["<p>Hi,</p>","<p>I'm reaching out to submit <strong>" + escapeHtml(trackName) + "</strong> by <strong>Fendi Frost</strong> for playlist consideration.</p>","<p>Listen: <a href=\"" + escapeHtml(trackUrl) + "\">" + escapeHtml(trackUrl) + "</a></p>",artistId ? "<p>Artist on Spotify: <a href=\"https://open.spotify.com/artist/" + escapeHtml(artistId) + "\">profile</a></p>" : "","<p>Thank you for your time.</p>","<p>— Fendi Frost team</p>"].filter(Boolean).join("\n");
+  const bodyHtml = draft?.bodyHtml ?? ["<p>Hi,</p>","<p>I'm reaching out to submit <strong>" + escapeHtml(trackName) + "</strong> by <strong>Fendi Frost</strong> for playlist consideration.</p>","<p>Listen: <a href=\"" + escapeHtml(trackUrl) + "\">" + escapeHtml(trackUrl) + "</a></p>",artistId ? "<p>Artist on Spotify: <a href=\"https://open.spotify.com/artist/" + escapeHtml(artistId) + "\">profile</a></p>" : "","<p>Thank you for your time.</p>","<p>— Fendi Frost team</p>"].filter(Boolean).join("\n");
+  const subject = draft?.subject ?? ("Submission: " + trackName + " — Fendi Frost");
   if (!resendKey) {
     await sb.from("pitch_log").insert({ playlist_id:playlistId, track_name:trackName, pitched_at:new Date().toISOString(), method, status:"error", response_notes:"RESEND_API_KEY not configured", cooldown_until:null });
     return jsonPitch({ ok:false, method_used:method, action_taken:"error", cooldown_until:null, message_to_user:"❌ Email not sent (Hub missing RESEND_API_KEY)." });
   }
-  const res = await fetch("https://api.resend.com/emails", { method:"POST", headers: { Authorization:"Bearer " + resendKey, "Content-Type":"application/json" }, body: JSON.stringify({ from:fromEmail, to:[email], subject:"Submission: " + trackName + " — Fendi Frost", html:bodyHtml }) });
+  const res = await fetch("https://api.resend.com/emails", { method:"POST", headers: { Authorization:"Bearer " + resendKey, "Content-Type":"application/json" }, body: JSON.stringify({ from:fromEmail, to:[email], subject, html:bodyHtml }) });
   const raw = await res.text();
   if (!res.ok) {
     await sb.from("pitch_log").insert({ playlist_id:playlistId, track_name:trackName, pitched_at:new Date().toISOString(), method, status:"error", response_notes:"Resend " + res.status + ": " + raw.slice(0,500), cooldown_until:null });

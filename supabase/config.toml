@@ -99,3 +99,18 @@ verify_jwt = false
 
 [functions.telegram-send-campaign]
 verify_jwt = false
+
+[functions.enrich-curator-contacts]
+verify_jwt = false
+
+[functions.draft-pitch]
+verify_jwt = false
+
+[functions.approve-draft]
+verify_jwt = false
+
+[functions.schedule-follow-up]
+verify_jwt = false
+
+[functions.playlist-admin-api]
+verify_jwt = false

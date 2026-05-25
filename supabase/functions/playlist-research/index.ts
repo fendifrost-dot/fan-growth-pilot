@@ -8,6 +8,12 @@
  */
 
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import {
+  buildWhyItFits,
+  laneRegexBoost,
+  loadLanesConfig,
+  scoreLaneBoost,
+} from "../_shared/playlist-lanes.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -105,6 +111,7 @@ function scoreRow(
   vibeTokens: Set<string>,
   trackTokens: Set<string>,
   genreSignals?: Record<string, boolean>,
+  extraLaneScore = 0,
 ): number {
   const tags = new Set([...normalizeTags(row.vibe_tags), ...normalizeTags(row.similar_artists)]);
   let s = 0;
@@ -135,7 +142,7 @@ function scoreRow(
     }
     if (genreSignals.altRnb && /rnb|r&b|soul|groove|alt/.test(allTags)) s += 12;
   }
-  return s;
+  return s + extraLaneScore;
 }
 
 /** Core catalog query + ranking (matches your approved logic). */
@@ -336,8 +343,14 @@ export async function mergeCatalogAndLive(
   supabase: SupabaseClient,
   trackName: string,
   userVibe: string,
+  opts?: { lane?: string; references?: string[] },
 ): Promise<{ results: PlaylistRow[]; live_count: number }> {
   await findPlaylistOpportunities(supabase, trackName, userVibe);
+  const lane = (opts?.lane ?? "").trim();
+  const references = opts?.references ?? [];
+  const lanesConfig = await loadLanesConfig(supabase);
+  const laneRe = lane ? laneRegexBoost(lanesConfig, lane) : null;
+  const pitchAngle = lane ? (lanesConfig[lane]?.pitch_angle ?? "") : "";
   const token = await getSpotifyAccessToken();
   let live: SpotifyApiPlaylist[] = [];
 
@@ -377,10 +390,15 @@ export async function mergeCatalogAndLive(
     .map((r: any) => {
       const rc = r.research_context as Record<string, unknown> | null;
       const source = rc?.source === "live_api" ? "live" : "catalog";
+      const laneScore = scoreLaneBoost(r, laneRe, references);
+      const why_it_fits = buildWhyItFits(r, lane, references, laneRe);
       return {
         ...r,
-        match_score: scoreRow(r as PlaylistRow, vibeTokens, trackTokens, genreSignals),
+        match_score: scoreRow(r as PlaylistRow, vibeTokens, trackTokens, genreSignals, laneScore),
         source: source as "catalog" | "live",
+        lane: lane || r.lane || null,
+        why_it_fits,
+        recommended_pitch_angle: pitchAngle || r.recommended_pitch_angle || null,
       };
     });
 
@@ -390,8 +408,19 @@ export async function mergeCatalogAndLive(
     return (b.follower_count ?? 0) - (a.follower_count ?? 0);
   });
 
+  const results = merged.slice(0, MAX_RESULTS);
+  for (const r of results) {
+    const patch: Record<string, unknown> = {};
+    if (lane) patch.lane = lane;
+    if (r.why_it_fits) patch.why_it_fits = r.why_it_fits;
+    if (r.recommended_pitch_angle) patch.recommended_pitch_angle = r.recommended_pitch_angle;
+    if (Object.keys(patch).length === 0) continue;
+    const { error } = await supabase.from("playlist_targets").update(patch).eq("playlist_id", r.playlist_id);
+    if (error) console.error("lane patch", r.playlist_id, error.message);
+  }
+
   return {
-    results: merged.slice(0, MAX_RESULTS),
+    results,
     live_count: live.length,
   };
 }
@@ -418,12 +447,17 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const track_name = String(body.track_name ?? body.trackName ?? "").trim();
     const user_vibe = String(body.user_vibe ?? body.userVibe ?? body.vibe ?? "").trim();
+    const references = Array.isArray(body.references) ? body.references.map(String) : [];
+    const lane = String(body.lane ?? "").trim();
 
     if (!track_name) {
       return json({ error: "track_name required" }, 400);
     }
 
-    const { results, live_count } = await mergeCatalogAndLive(supabase, track_name, user_vibe);
+    const { results, live_count } = await mergeCatalogAndLive(supabase, track_name, user_vibe, {
+      lane,
+      references,
+    });
 
     const playlists = results.map((r) => ({
       ...r,
@@ -440,6 +474,8 @@ Deno.serve(async (req) => {
       ok: true,
       track_name,
       user_vibe: user_vibe,
+      lane: lane || null,
+      references,
       count: results.length,
       live_api_ingested: live_count,
       playlists,

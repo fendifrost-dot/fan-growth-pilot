@@ -43,6 +43,8 @@ const AdminGuard: React.FC = () => {
             <nav className="flex items-center gap-6 text-sm">
               <Link to="/admin/campaigns" className="hover:underline">Campaigns</Link>
               <Link to="/admin/contacts" className="hover:underline">Contacts</Link>
+              <Link to="/admin/playlists" className="hover:underline">Playlists</Link>
+              <Link to="/admin/outreach" className="hover:underline">Outreach</Link>
             </nav>
           </div>
           <button

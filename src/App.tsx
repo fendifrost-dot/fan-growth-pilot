@@ -13,6 +13,8 @@ import AdminGuard from "./pages/admin/AdminGuard";
 import AdminCampaigns from "./pages/admin/AdminCampaigns";
 import AdminCampaignDetail from "./pages/admin/AdminCampaignDetail";
 import AdminContacts from "./pages/admin/AdminContacts";
+import AdminPlaylistTargets from "./pages/admin/AdminPlaylistTargets";
+import AdminOutreachDrafts from "./pages/admin/AdminOutreachDrafts";
 
 const queryClient = new QueryClient();
 
@@ -41,6 +43,8 @@ const App = () => (
             <Route path="campaigns" element={<AdminCampaigns />} />
             <Route path="campaigns/:slug" element={<AdminCampaignDetail />} />
             <Route path="contacts" element={<AdminContacts />} />
+            <Route path="playlists" element={<AdminPlaylistTargets />} />
+            <Route path="outreach" element={<AdminOutreachDrafts />} />
           </Route>
 
           {/* Public smart link pages (CATCH-ALL — must stay last among meaningful routes) */}

@@ -1,9 +1,19 @@
+# Artist Growth Hub — Supabase Edge Functions
+# Project ref (production): vsemrziqxrrfcquxfnwd
+# Synced from Lovable handoff (supabase-handoff.md). Deploy source of truth: Lovable dashboard.
+#
+# FanFuel / Control Center use FANFUEL_HUB_KEY (not JWT) — entries below MUST stay verify_jwt = false
+# or invokers will get 401 despite a valid hub key.
+
 project_id = "vsemrziqxrrfcquxfnwd"
 
 [functions.spotify-auth]
 verify_jwt = false
 
 [functions.spotify-callback]
+verify_jwt = false
+
+[functions.spotify-stats]
 verify_jwt = false
 
 [functions.shopify-order-webhook]
@@ -49,6 +59,9 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.fan-intelligence]
+verify_jwt = false
+
+[functions.refresh-platform-stats]
 verify_jwt = false
 
 [functions.control-center-api]

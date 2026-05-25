@@ -204,23 +204,37 @@ Deno.serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Determine user_id: from auth header if present, otherwise find the first profile
+    // Internal: cron secret, hub key, anon, or missing auth → artist profile.
+    // Logged-in user JWT → that user's profile.
     let userId: string;
+    const cronSecret = (Deno.env.get('STATS_CRON_SECRET') || '').trim();
+    const providedCron = (req.headers.get('x-stats-cron-secret') || '').trim();
     const authHeader = req.headers.get('Authorization');
-    if (authHeader && authHeader !== `Bearer ${Deno.env.get('SUPABASE_ANON_KEY')}`) {
-      const token = authHeader.replace('Bearer ', '');
+    const bearer = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
+    const isCron =
+      (cronSecret && providedCron === cronSecret) ||
+      !authHeader ||
+      authHeader === `Bearer ${Deno.env.get('SUPABASE_ANON_KEY')}` ||
+      (!!supabaseServiceKey && bearer === supabaseServiceKey);
+
+    if (isCron) {
+      const envId = (Deno.env.get('ARTIST_USER_ID') || '').trim();
+      if (envId) {
+        userId = envId;
+      } else {
+        const { data: profiles, error: profileError } = await supabase
+          .from('profiles')
+          .select('id')
+          .limit(1)
+          .single();
+        if (profileError || !profiles) throw new Error('No profile found for cron context');
+        userId = profiles.id;
+      }
+    } else {
+      const token = authHeader!.replace('Bearer ', '');
       const { data: { user }, error: userError } = await supabase.auth.getUser(token);
       if (userError || !user) throw new Error('Unauthorized');
       userId = user.id;
-    } else {
-      // Cron job context: find the artist's profile
-      const { data: profiles, error: profileError } = await supabase
-        .from('profiles')
-        .select('id')
-        .limit(1)
-        .single();
-      if (profileError || !profiles) throw new Error('No profile found for cron context');
-      userId = profiles.id;
     }
 
     console.log('[scrape-chartmetric] Scraping Chartmetric for user:', userId);
@@ -361,14 +375,22 @@ Deno.serve(async (req) => {
         .maybeSingle();
 
       if (existing) {
-        await supabase
+        const { error: updateErr } = await supabase
           .from('fan_data')
           .update({ ...entry, last_interaction_at: now, updated_at: now })
           .eq('id', existing.id);
+        if (updateErr) {
+          console.error(`[scrape-chartmetric] fan_data update failed (${entry.fan_identifier}):`, updateErr);
+          throw updateErr;
+        }
       } else {
-        await supabase
+        const { error: insertErr } = await supabase
           .from('fan_data')
           .insert({ ...entry, user_id: userId, last_interaction_at: now });
+        if (insertErr) {
+          console.error(`[scrape-chartmetric] fan_data insert failed (${entry.fan_identifier}):`, insertErr);
+          throw insertErr;
+        }
       }
     }
 
@@ -390,3 +412,4 @@ Deno.serve(async (req) => {
     );
   }
 });
+

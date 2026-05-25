@@ -1,3 +1,6 @@
+/**
+ * INTERNAL: Manual push of Spotify/IG/FB into fan_data. Prefer scrape-chartmetric for scheduled refresh.
+ */
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 
 const corsHeaders = {
@@ -30,10 +33,24 @@ Deno.serve(async (req) => {
     let body: any = {};
     try { body = await req.json(); } catch { /* empty body ok, use defaults */ }
 
-    const spotifyFollowers = body.spotify_followers ?? 27700;
-    const monthlyListeners = body.monthly_listeners ?? 6700;
-    const igFollowers = body.ig_followers ?? 24800;
-    const fbFollowers = body.fb_followers ?? 9800;
+    const spotifyFollowers = body.spotify_followers;
+    const monthlyListeners = body.monthly_listeners;
+    const igFollowers = body.ig_followers;
+    const fbFollowers = body.fb_followers;
+
+    if (
+      spotifyFollowers == null ||
+      monthlyListeners == null ||
+      igFollowers == null ||
+      fbFollowers == null
+    ) {
+      return new Response(
+        JSON.stringify({
+          error: 'Missing stats in request body. Pass spotify_followers, monthly_listeners, ig_followers, fb_followers (or use scrape-chartmetric).',
+        }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
 
     const now = new Date().toISOString();
 
@@ -102,3 +119,4 @@ Deno.serve(async (req) => {
     );
   }
 });
+

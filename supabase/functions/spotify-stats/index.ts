@@ -1,3 +1,7 @@
+/**
+ * INTERNAL NOTE: Returns the connected Spotify *user* (/me) — does not write fan_data.
+ * Artist dashboard metrics come from scrape-chartmetric → fan_data, not this function.
+ */
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 
 const corsHeaders = {
@@ -173,3 +177,4 @@ Deno.serve(async (req) => {
     );
   }
 });
+

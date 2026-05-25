@@ -31,7 +31,12 @@ serve(async (req) => {
     );
 
     return new Response(
-      JSON.stringify({ project_name: "Fan Growth Pilot", tables: counts }),
+      JSON.stringify({
+        project_name: 'Fan Growth Pilot',
+        purpose: 'internal_healthcheck_table_counts',
+        note: 'Does not refresh Spotify/Chartmetric metrics. Use refresh-platform-stats or scrape-chartmetric.',
+        tables: counts,
+      }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
   } catch (error) {
@@ -42,3 +47,4 @@ serve(async (req) => {
     );
   }
 });
+

@@ -66,17 +66,31 @@ Deno.serve(async (req) => {
   let userId: string | null = null;
 
   try {
-    // Determine user_id
+    const cronSecret = (Deno.env.get('STATS_CRON_SECRET') || '').trim();
+    const providedCron = (req.headers.get('x-stats-cron-secret') || '').trim();
     const authHeader = req.headers.get('Authorization');
-    if (authHeader && authHeader !== `Bearer ${Deno.env.get('SUPABASE_ANON_KEY')}`) {
-      const token = authHeader.replace('Bearer ', '');
+    const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
+    const bearer = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
+    const isCron =
+      (cronSecret && providedCron === cronSecret) ||
+      !authHeader ||
+      authHeader === `Bearer ${Deno.env.get('SUPABASE_ANON_KEY')}` ||
+      (!!serviceKey && bearer === serviceKey);
+
+    if (isCron) {
+      const envId = (Deno.env.get('ARTIST_USER_ID') || '').trim();
+      if (envId) {
+        userId = envId;
+      } else {
+        const { data: profile, error } = await supabase.from('profiles').select('id').limit(1).single();
+        if (error || !profile) throw new Error('No profile found');
+        userId = profile.id;
+      }
+    } else {
+      const token = authHeader!.replace('Bearer ', '');
       const { data: { user }, error } = await supabase.auth.getUser(token);
       if (error || !user) throw new Error('Unauthorized');
       userId = user.id;
-    } else {
-      const { data: profile, error } = await supabase.from('profiles').select('id').limit(1).single();
-      if (error || !profile) throw new Error('No profile found');
-      userId = profile.id;
     }
 
     console.log('[fan-intelligence] Running for user:', userId);
@@ -257,7 +271,8 @@ Deno.serve(async (req) => {
       .in('fan_identifier', [
         'spotify_artist_stats', 'instagram_stats', 'facebook_stats',
         'x_stats', 'shazam_stats', 'chartmetric_overview',
-        'youtube_channel_stats', 'soundcloud_user_stats',
+        'youtube_channel_stats', 'youtube_chartmetric_stats',
+        'soundcloud_user_stats',
         'tiktok_stats', 'pandora_stats',
       ]);
 
@@ -273,7 +288,9 @@ Deno.serve(async (req) => {
     const xMeta = meta(platformStats || [], 'x_stats');
     const shazamMeta = meta(platformStats || [], 'shazam_stats');
     const cmMeta = meta(platformStats || [], 'chartmetric_overview');
-    const ytRow = platformStats?.find(r => r.fan_identifier === 'youtube_channel_stats');
+    const ytRow =
+      platformStats?.find(r => r.fan_identifier === 'youtube_channel_stats') ||
+      platformStats?.find(r => r.fan_identifier === 'youtube_chartmetric_stats');
     const scRow = platformStats?.find(r => r.fan_identifier === 'soundcloud_user_stats');
     const ttMeta = meta(platformStats || [], 'tiktok_stats');
     const pandoraMeta = meta(platformStats || [], 'pandora_stats');
@@ -554,3 +571,4 @@ Deno.serve(async (req) => {
     );
   }
 });
+

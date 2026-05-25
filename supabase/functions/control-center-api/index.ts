@@ -5,6 +5,29 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-api-key',
 };
 
+const PLATFORM_STAT_IDENTIFIERS = [
+  'spotify_artist_stats',
+  'instagram_stats',
+  'facebook_stats',
+  'x_stats',
+  'shazam_stats',
+  'chartmetric_overview',
+  'youtube_channel_stats',
+  'youtube_chartmetric_stats',
+  'soundcloud_user_stats',
+  'tiktok_stats',
+  'pandora_stats',
+];
+
+async function resolveArtistUserId(supabase: ReturnType<typeof createClient>): Promise<string> {
+  const envId = (Deno.env.get('ARTIST_USER_ID') || '').trim();
+  if (envId) return envId;
+
+  const { data: profile, error } = await supabase.from('profiles').select('id').limit(1).single();
+  if (error || !profile) throw new Error('No profile found');
+  return profile.id;
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -77,26 +100,33 @@ function jsonResponse(data: unknown, headers: Record<string, string>) {
   });
 }
 
-async function getFanStats(supabase: any) {
-  // Lead counts
+async function getFanStats(supabase: ReturnType<typeof createClient>) {
+  const userId = await resolveArtistUserId(supabase);
+
+  // Lead counts (scoped via owning smart_link — lead.user_id is often null)
+  const leadScope = 'id, smart_links!inner(user_id)';
   const { count: totalLeads } = await supabase
     .from('smart_link_leads')
-    .select('*', { count: 'exact', head: true });
+    .select(leadScope, { count: 'exact', head: true })
+    .eq('smart_links.user_id', userId);
 
   const { count: albumBuyers } = await supabase
     .from('smart_link_leads')
-    .select('*', { count: 'exact', head: true })
+    .select(leadScope, { count: 'exact', head: true })
+    .eq('smart_links.user_id', userId)
     .eq('album_purchased', true);
 
   const { count: merchConverted } = await supabase
     .from('smart_link_leads')
-    .select('*', { count: 'exact', head: true })
+    .select(leadScope, { count: 'exact', head: true })
+    .eq('smart_links.user_id', userId)
     .eq('converted', true);
 
   // Fan profile tiers
   const { data: fanProfiles } = await supabase
     .from('fan_profiles')
-    .select('fan_tier');
+    .select('fan_tier')
+    .eq('user_id', userId);
 
   const tiers = { casual: 0, engaged: 0, superfan: 0 };
   (fanProfiles || []).forEach((f: any) => {
@@ -108,8 +138,9 @@ async function getFanStats(supabase: any) {
   // Platform follower totals from fan_data
   const { data: platformData } = await supabase
     .from('fan_data')
-    .select('platform, total_interactions, total_streams')
-    .in('fan_identifier', ['spotify_artist_stats', 'instagram_stats', 'facebook_stats', 'youtube_channel_stats']);
+    .select('platform, total_interactions, total_streams, fan_identifier')
+    .eq('user_id', userId)
+    .in('fan_identifier', PLATFORM_STAT_IDENTIFIERS);
 
   const platforms: Record<string, any> = {};
   (platformData || []).forEach((p: any) => {
@@ -128,10 +159,12 @@ async function getFanStats(supabase: any) {
   };
 }
 
-async function getLeads(supabase: any) {
+async function getLeads(supabase: ReturnType<typeof createClient>) {
+  const userId = await resolveArtistUserId(supabase);
   const { data, error } = await supabase
     .from('smart_link_leads')
-    .select(`*, smart_links (title, slug)`)
+    .select(`*, smart_links!inner (title, slug, user_id)`)
+    .eq('smart_links.user_id', userId)
     .order('created_at', { ascending: false })
     .limit(200);
 
@@ -149,10 +182,12 @@ async function getLeads(supabase: any) {
   return { leads, segments };
 }
 
-async function getMomentumAlerts(supabase: any) {
+async function getMomentumAlerts(supabase: ReturnType<typeof createClient>) {
+  const userId = await resolveArtistUserId(supabase);
   const { data, error } = await supabase
     .from('momentum_events')
     .select('*')
+    .eq('user_id', userId)
     .in('status', ['new', 'active'])
     .order('detected_at', { ascending: false })
     .limit(50);
@@ -161,10 +196,12 @@ async function getMomentumAlerts(supabase: any) {
   return { alerts: data || [] };
 }
 
-async function getMarketingActions(supabase: any) {
+async function getMarketingActions(supabase: ReturnType<typeof createClient>) {
+  const userId = await resolveArtistUserId(supabase);
   const { data, error } = await supabase
     .from('marketing_actions')
     .select('*')
+    .eq('user_id', userId)
     .eq('status', 'pending')
     .order('created_at', { ascending: false })
     .limit(30);
@@ -173,37 +210,54 @@ async function getMarketingActions(supabase: any) {
   return { actions: data || [] };
 }
 
-async function getPlatformMetrics(supabase: any) {
+async function getPlatformMetrics(supabase: ReturnType<typeof createClient>) {
+  const userId = await resolveArtistUserId(supabase);
   const { data, error } = await supabase
     .from('fan_data')
     .select('*')
-    .in('fan_identifier', [
-      'spotify_artist_stats',
-      'instagram_stats',
-      'facebook_stats',
-      'youtube_channel_stats',
-    ]);
+    .eq('user_id', userId)
+    .in('fan_identifier', PLATFORM_STAT_IDENTIFIERS);
 
   if (error) throw error;
 
-  const metrics: Record<string, any> = {};
-  (data || []).forEach((row: any) => {
-    metrics[row.platform] = {
+  const metrics: Record<string, {
+    followers: number;
+    streams: number;
+    name: string | null;
+    metadata: unknown;
+    updated_at: string | null;
+    fan_identifier: string | null;
+  }> = {};
+
+  for (const row of data || []) {
+    const platform = row.platform as string;
+    const existing = metrics[platform];
+    const preferRow =
+      !existing ||
+      row.fan_identifier === 'youtube_channel_stats' ||
+      (existing.fan_identifier === 'youtube_chartmetric_stats' && row.fan_identifier !== 'youtube_chartmetric_stats');
+
+    if (!preferRow) continue;
+
+    metrics[platform] = {
       followers: row.total_interactions ?? 0,
       streams: row.total_streams ?? 0,
       name: row.fan_name,
       metadata: row.metadata,
       updated_at: row.updated_at,
+      fan_identifier: row.fan_identifier,
     };
-  });
+  }
 
   // Also grab latest analytics snapshot
   const { data: snapshot } = await supabase
     .from('analytics_snapshots')
     .select('*')
+    .eq('user_id', userId)
     .order('snapshot_at', { ascending: false })
     .limit(1)
     .maybeSingle();
 
   return { platforms: metrics, latest_snapshot: snapshot };
 }
+

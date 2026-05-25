@@ -77,3 +77,12 @@ verify_jwt = false
 
 [functions.send-campaign-email]
 verify_jwt = false
+
+[functions.telegram-webhook]
+verify_jwt = false
+
+[functions.telegram-signup-redirect]
+verify_jwt = false
+
+[functions.telegram-send-campaign]
+verify_jwt = false

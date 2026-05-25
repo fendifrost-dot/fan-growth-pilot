@@ -13,6 +13,8 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { InnerCircleSubscribeButton } from "@/components/InnerCircleSubscribeButton";
+import { shouldShowInnerCircleCta } from "@/lib/innerCircle";
 
 interface SmartLinkData {
   id: string;
@@ -348,6 +350,7 @@ export default function SmartLinkPage() {
     if (meta.even_url) dspLinks.push({ name: 'EVEN', url: meta.even_url, bg: 'linear-gradient(135deg, #D4AF37, #FFD700)', color: '#000' });
   }
   const hasDspLinks = dspLinks.length > 0;
+  const showInnerCircle = shouldShowInnerCircleCta(slug, meta);
 
   const handleDspClick = (platform: string, destinationUrl: string) => {
     if (!ctaDebounceRef.current) {
@@ -449,6 +452,13 @@ export default function SmartLinkPage() {
     </Collapsible>
   ) : null;
 
+  const innerCircleBlock = showInnerCircle ? (
+    <InnerCircleSubscribeButton
+      slug={smartLink.slug}
+      email={hasSubmittedEmail ? email : undefined}
+    />
+  ) : null;
+
   // ─── Runway Theme: Split Video + Content ───
   if (isRunwayTheme && smartLink.video_url) {
     return (
@@ -511,6 +521,8 @@ export default function SmartLinkPage() {
                   {ctaLabel}
                 </Button>
               )}
+
+              {innerCircleBlock}
 
               {/* SECONDARY — Collapsible email + bullets */}
               {emailAccordionBlock}
@@ -593,6 +605,8 @@ export default function SmartLinkPage() {
             {ctaLabel}
           </Button>
         )}
+
+        {innerCircleBlock}
 
         {/* SECONDARY — Collapsible email + bullets */}
         {emailAccordionBlock}

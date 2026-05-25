@@ -1247,6 +1247,215 @@ export type Database = {
           },
         ]
       }
+      telegram_sends: {
+        Row: {
+          batch_label: string | null
+          campaign_id: string | null
+          error_code: string | null
+          error_message: string | null
+          id: string
+          metadata: Json | null
+          recipient_chat_id: string
+          sent_at: string
+          status: string
+          subscriber_id: string | null
+          telegram_message_id: string | null
+          test_send: boolean
+        }
+        Insert: {
+          batch_label?: string | null
+          campaign_id?: string | null
+          error_code?: string | null
+          error_message?: string | null
+          id?: string
+          metadata?: Json | null
+          recipient_chat_id: string
+          sent_at?: string
+          status: string
+          subscriber_id?: string | null
+          telegram_message_id?: string | null
+          test_send?: boolean
+        }
+        Update: {
+          batch_label?: string | null
+          campaign_id?: string | null
+          error_code?: string | null
+          error_message?: string | null
+          id?: string
+          metadata?: Json | null
+          recipient_chat_id?: string
+          sent_at?: string
+          status?: string
+          subscriber_id?: string | null
+          telegram_message_id?: string | null
+          test_send?: boolean
+        }
+        Relationships: [
+          {
+            foreignKeyName: "telegram_sends_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "email_campaign_stats"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "telegram_sends_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "email_campaigns"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "telegram_sends_subscriber_id_fkey"
+            columns: ["subscriber_id"]
+            isOneToOne: false
+            referencedRelation: "telegram_subscribers"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      telegram_signup_tokens: {
+        Row: {
+          consumed_at: string | null
+          consumed_chat_id: string | null
+          consumed_subscriber_id: string | null
+          created_at: string
+          email: string | null
+          expires_at: string
+          fbclid: string | null
+          ip_hash: string | null
+          meta_fbc: string | null
+          meta_fbp: string | null
+          metadata: Json | null
+          smart_link_slug: string | null
+          token: string
+          user_agent: string | null
+          utm_campaign: string | null
+          utm_medium: string | null
+          utm_source: string | null
+        }
+        Insert: {
+          consumed_at?: string | null
+          consumed_chat_id?: string | null
+          consumed_subscriber_id?: string | null
+          created_at?: string
+          email?: string | null
+          expires_at?: string
+          fbclid?: string | null
+          ip_hash?: string | null
+          meta_fbc?: string | null
+          meta_fbp?: string | null
+          metadata?: Json | null
+          smart_link_slug?: string | null
+          token: string
+          user_agent?: string | null
+          utm_campaign?: string | null
+          utm_medium?: string | null
+          utm_source?: string | null
+        }
+        Update: {
+          consumed_at?: string | null
+          consumed_chat_id?: string | null
+          consumed_subscriber_id?: string | null
+          created_at?: string
+          email?: string | null
+          expires_at?: string
+          fbclid?: string | null
+          ip_hash?: string | null
+          meta_fbc?: string | null
+          meta_fbp?: string | null
+          metadata?: Json | null
+          smart_link_slug?: string | null
+          token?: string
+          user_agent?: string | null
+          utm_campaign?: string | null
+          utm_medium?: string | null
+          utm_source?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "telegram_signup_tokens_consumed_subscriber_id_fkey"
+            columns: ["consumed_subscriber_id"]
+            isOneToOne: false
+            referencedRelation: "telegram_subscribers"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      telegram_subscribers: {
+        Row: {
+          block_count: number
+          contact_id: string | null
+          created_at: string
+          first_name: string | null
+          id: string
+          language_code: string | null
+          metadata: Json | null
+          source_smart_link: string | null
+          subscribed: boolean
+          subscribed_at: string
+          telegram_chat_id: string
+          telegram_username: string | null
+          unsubscribed_at: string | null
+          updated_at: string
+        }
+        Insert: {
+          block_count?: number
+          contact_id?: string | null
+          created_at?: string
+          first_name?: string | null
+          id?: string
+          language_code?: string | null
+          metadata?: Json | null
+          source_smart_link?: string | null
+          subscribed?: boolean
+          subscribed_at?: string
+          telegram_chat_id: string
+          telegram_username?: string | null
+          unsubscribed_at?: string | null
+          updated_at?: string
+        }
+        Update: {
+          block_count?: number
+          contact_id?: string | null
+          created_at?: string
+          first_name?: string | null
+          id?: string
+          language_code?: string | null
+          metadata?: Json | null
+          source_smart_link?: string | null
+          subscribed?: boolean
+          subscribed_at?: string
+          telegram_chat_id?: string
+          telegram_username?: string | null
+          unsubscribed_at?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "telegram_subscribers_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: false
+            referencedRelation: "email_contacts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      telegram_webhook_processed_updates: {
+        Row: {
+          received_at: string
+          update_id: number
+        }
+        Insert: {
+          received_at?: string
+          update_id: number
+        }
+        Update: {
+          received_at?: string
+          update_id?: number
+        }
+        Relationships: []
+      }
     }
     Views: {
       email_campaign_stats: {
@@ -1265,6 +1474,52 @@ export type Database = {
           test_sends: number | null
           total_failed: number | null
           total_sent: number | null
+        }
+        Relationships: []
+      }
+      telegram_campaign_send_summary: {
+        Row: {
+          blocked_count: number | null
+          campaign_id: string | null
+          failed_count: number | null
+          first_attempt_at: string | null
+          last_attempt_at: string | null
+          sent_count: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "telegram_sends_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "email_campaign_stats"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "telegram_sends_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "email_campaigns"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      telegram_inner_circle_stats: {
+        Row: {
+          blocks_30d: number | null
+          sends_failed_30d: number | null
+          sends_succeeded_30d: number | null
+          subscribers_active: number | null
+          subscribers_added_30d: number | null
+          subscribers_added_7d: number | null
+        }
+        Relationships: []
+      }
+      telegram_subscribers_by_source: {
+        Row: {
+          active_subscribers: number | null
+          source_smart_link: string | null
+          total: number | null
+          unsubscribed: number | null
         }
         Relationships: []
       }

@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { isPlaylistAgentAction, runPlaylistAgentAction } from '../_shared/playlist-agent-run.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -60,7 +61,16 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     );
 
-    const { action } = await req.json();
+    const body = await req.json().catch(() => ({}));
+    const { action } = body;
+
+    if (isPlaylistAgentAction(String(action ?? ''))) {
+      const result = await runPlaylistAgentAction(String(action), body, supabase, expectedKey);
+      return new Response(JSON.stringify(result.data), {
+        status: result.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
 
     switch (action) {
       case 'get_fan_stats':

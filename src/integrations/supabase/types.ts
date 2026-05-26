@@ -778,6 +778,81 @@ export type Database = {
           },
         ]
       }
+      outreach_drafts: {
+        Row: {
+          approved_at: string | null
+          approved_by: string | null
+          body: string
+          channel: string
+          created_at: string
+          generated_at: string
+          generated_by: string
+          id: string
+          metadata: Json | null
+          pitch_log_id: string | null
+          playlist_id: string
+          recipient: string | null
+          sent_at: string | null
+          status: string
+          subject: string | null
+          track_name: string
+          updated_at: string
+        }
+        Insert: {
+          approved_at?: string | null
+          approved_by?: string | null
+          body: string
+          channel: string
+          created_at?: string
+          generated_at?: string
+          generated_by?: string
+          id?: string
+          metadata?: Json | null
+          pitch_log_id?: string | null
+          playlist_id: string
+          recipient?: string | null
+          sent_at?: string | null
+          status?: string
+          subject?: string | null
+          track_name: string
+          updated_at?: string
+        }
+        Update: {
+          approved_at?: string | null
+          approved_by?: string | null
+          body?: string
+          channel?: string
+          created_at?: string
+          generated_at?: string
+          generated_by?: string
+          id?: string
+          metadata?: Json | null
+          pitch_log_id?: string | null
+          playlist_id?: string
+          recipient?: string | null
+          sent_at?: string | null
+          status?: string
+          subject?: string | null
+          track_name?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "outreach_drafts_pitch_log_id_fkey"
+            columns: ["pitch_log_id"]
+            isOneToOne: false
+            referencedRelation: "pitch_log"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "outreach_drafts_playlist_id_fkey"
+            columns: ["playlist_id"]
+            isOneToOne: false
+            referencedRelation: "playlist_targets"
+            referencedColumns: ["playlist_id"]
+          },
+        ]
+      }
       pitch_log: {
         Row: {
           approval_required: boolean | null
@@ -920,74 +995,6 @@ export type Database = {
           },
         ]
       }
-      outreach_drafts: {
-        Row: {
-          id: string
-          playlist_id: string
-          track_name: string
-          channel: string
-          recipient: string | null
-          subject: string | null
-          body: string
-          generated_by: string
-          generated_at: string
-          approved_at: string | null
-          approved_by: string | null
-          sent_at: string | null
-          pitch_log_id: string | null
-          status: string
-          metadata: Json | null
-          created_at: string
-          updated_at: string
-        }
-        Insert: {
-          id?: string
-          playlist_id: string
-          track_name: string
-          channel: string
-          recipient?: string | null
-          subject?: string | null
-          body: string
-          generated_by?: string
-          generated_at?: string
-          approved_at?: string | null
-          approved_by?: string | null
-          sent_at?: string | null
-          pitch_log_id?: string | null
-          status?: string
-          metadata?: Json | null
-          created_at?: string
-          updated_at?: string
-        }
-        Update: {
-          id?: string
-          playlist_id?: string
-          track_name?: string
-          channel?: string
-          recipient?: string | null
-          subject?: string | null
-          body?: string
-          generated_by?: string
-          generated_at?: string
-          approved_at?: string | null
-          approved_by?: string | null
-          sent_at?: string | null
-          pitch_log_id?: string | null
-          status?: string
-          metadata?: Json | null
-          created_at?: string
-          updated_at?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "outreach_drafts_playlist_id_fkey"
-            columns: ["playlist_id"]
-            isOneToOne: false
-            referencedRelation: "playlist_targets"
-            referencedColumns: ["playlist_id"]
-          },
-        ]
-      }
       playlist_targets: {
         Row: {
           authenticity_notes: string | null
@@ -1002,13 +1009,11 @@ export type Database = {
           curator_twitter: string | null
           curator_website: string | null
           follower_count: number | null
-          lane: string | null
-          recommended_pitch_angle: string | null
-          why_it_fits: string | null
           fraud_score: number | null
           fraud_verdict: string | null
           id: string
           is_active: boolean | null
+          lane: string | null
           last_pitched_at: string | null
           legitimacy_score: number | null
           notes: string | null
@@ -1019,6 +1024,7 @@ export type Database = {
           platform: string
           playlist_id: string
           playlist_name: string
+          recommended_pitch_angle: string | null
           research_context: Json | null
           similar_artists: Json | null
           submission_method: string | null
@@ -1029,6 +1035,7 @@ export type Database = {
           updated_at: string | null
           vibe_tags: Json | null
           whitelist_status: boolean | null
+          why_it_fits: string | null
         }
         Insert: {
           authenticity_notes?: string | null
@@ -1068,8 +1075,8 @@ export type Database = {
           track_name?: string
           updated_at?: string | null
           vibe_tags?: Json | null
-          why_it_fits?: string | null
           whitelist_status?: boolean | null
+          why_it_fits?: string | null
         }
         Update: {
           authenticity_notes?: string | null
@@ -1088,6 +1095,7 @@ export type Database = {
           fraud_verdict?: string | null
           id?: string
           is_active?: boolean | null
+          lane?: string | null
           last_pitched_at?: string | null
           legitimacy_score?: number | null
           notes?: string | null
@@ -1098,6 +1106,7 @@ export type Database = {
           platform?: string
           playlist_id?: string
           playlist_name?: string
+          recommended_pitch_angle?: string | null
           research_context?: Json | null
           similar_artists?: Json | null
           submission_method?: string | null
@@ -1107,8 +1116,8 @@ export type Database = {
           track_name?: string
           updated_at?: string | null
           vibe_tags?: Json | null
-          why_it_fits?: string | null
           whitelist_status?: boolean | null
+          why_it_fits?: string | null
         }
         Relationships: []
       }
@@ -1317,6 +1326,62 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "profiles"
             referencedColumns: ["id"]
+          },
+        ]
+      }
+      social_engagement_queue: {
+        Row: {
+          action: string
+          approved_at: string | null
+          approved_by: string | null
+          created_at: string
+          draft_text: string | null
+          id: string
+          performed_at: string | null
+          performed_by: string | null
+          platform: string
+          playlist_id: string | null
+          result: Json | null
+          status: string
+          target_url: string
+        }
+        Insert: {
+          action: string
+          approved_at?: string | null
+          approved_by?: string | null
+          created_at?: string
+          draft_text?: string | null
+          id?: string
+          performed_at?: string | null
+          performed_by?: string | null
+          platform: string
+          playlist_id?: string | null
+          result?: Json | null
+          status?: string
+          target_url: string
+        }
+        Update: {
+          action?: string
+          approved_at?: string | null
+          approved_by?: string | null
+          created_at?: string
+          draft_text?: string | null
+          id?: string
+          performed_at?: string | null
+          performed_by?: string | null
+          platform?: string
+          playlist_id?: string | null
+          result?: Json | null
+          status?: string
+          target_url?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "social_engagement_queue_playlist_id_fkey"
+            columns: ["playlist_id"]
+            isOneToOne: false
+            referencedRelation: "playlist_targets"
+            referencedColumns: ["playlist_id"]
           },
         ]
       }

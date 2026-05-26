@@ -87,7 +87,7 @@ const AdminContacts: React.FC = () => {
       const chunkSize = 250;
       for (let i = 0; i < previewRows.length; i += chunkSize) {
         const chunk = previewRows.slice(i, i + chunkSize);
-        const { data, error } = await supabase.rpc("upsert_email_contacts", { p_rows: chunk });
+        const { data, error } = await supabase.rpc("upsert_email_contacts", { p_rows: chunk as unknown as never });
         if (error) { toast.error(error.message); break; }
         const row = (Array.isArray(data) ? data[0] : data) as any;
         inserted += row?.inserted_count ?? 0;

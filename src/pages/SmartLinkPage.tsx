@@ -39,7 +39,7 @@ interface SmartLinkData {
   testimonial_text?: string;
   testimonial_author?: string;
   theme_preset?: string;
-  metadata?: Record<string, unknown> | null;
+  metadata?: unknown;
 }
 
 const emailSchema = z.object({

@@ -1,36 +1,31 @@
-const HUB_KEY = import.meta.env.VITE_FANFUEL_HUB_KEY as string | undefined;
+import { supabase } from "@/integrations/supabase/client";
+
 const BASE = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 
-/** Standalone edge fn name → control-center-api action (works when new fn names 404 on Lovable). */
-const CC_ACTION: Record<string, string> = {
-  "draft-pitch": "draft_pitch",
-  "approve-draft": "approve_draft",
-  "enrich-curator-contacts": "enrich_curator_contacts",
-  "schedule-follow-up": "schedule_follow_up",
-  "playlist-admin-api": "__passthrough__",
-};
-
-export function hubFnUrl(name: string): string {
+function ccaUrl(): string {
   if (!BASE) throw new Error("VITE_SUPABASE_URL missing");
-  return `${BASE.replace(/\/$/, "")}/functions/v1/${name}`;
+  return `${BASE.replace(/\/$/, "")}/functions/v1/control-center-api`;
 }
 
+/**
+ * Call a control-center-api action with the current Supabase session JWT.
+ * Throws if the user isn't logged in (AdminGuard should prevent that).
+ */
 export async function callHubFn<T = unknown>(
-  name: string,
-  body: Record<string, unknown>,
+  action: string,
+  body: Record<string, unknown> = {},
 ): Promise<T> {
-  if (!HUB_KEY) throw new Error("VITE_FANFUEL_HUB_KEY missing — set in Lovable env / .env");
-  const ccAction = CC_ACTION[name];
-  const url = ccAction ? hubFnUrl("control-center-api") : hubFnUrl(name);
-  const payload = ccAction
-    ? ccAction === "__passthrough__"
-      ? body
-      : { action: ccAction, ...body }
-    : body;
-  const r = await fetch(url, {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.access_token) {
+    throw new Error("Not signed in — refresh the page and log in again.");
+  }
+  const r = await fetch(ccaUrl(), {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-api-key": HUB_KEY },
-    body: JSON.stringify(payload),
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${session.access_token}`,
+    },
+    body: JSON.stringify({ action, ...body }),
   });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error((data as { error?: string }).error || `HTTP ${r.status}`);

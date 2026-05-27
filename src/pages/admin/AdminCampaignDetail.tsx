@@ -6,6 +6,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
+import { callHubFn } from "@/lib/hubApi";
 
 interface Campaign {
   id: string;
@@ -29,23 +30,6 @@ interface SendLog {
   test_send: boolean;
   batch_label: string | null;
   sent_at: string;
-}
-
-// The edge function URL is built from the Supabase URL + /functions/v1/...
-const SEND_FN_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-campaign-email`;
-// The shared FANFUEL_HUB_KEY (set in Vite env) authorizes admin calls to the function.
-const FANFUEL_HUB_KEY = import.meta.env.VITE_FANFUEL_HUB_KEY as string | undefined;
-
-async function callSendFn(body: Record<string, unknown>) {
-  if (!FANFUEL_HUB_KEY) throw new Error("VITE_FANFUEL_HUB_KEY missing — set it in the Lovable env / .env");
-  const r = await fetch(SEND_FN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-api-key": FANFUEL_HUB_KEY },
-    body: JSON.stringify(body),
-  });
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error((data as any)?.error || `HTTP ${r.status}`);
-  return data;
 }
 
 const AdminCampaignDetail: React.FC = () => {
@@ -102,7 +86,11 @@ const AdminCampaignDetail: React.FC = () => {
     if (!campaign) return;
     try {
       setBusy("preview");
-      const data = await callSendFn({ mode: "preview", campaign_id: campaign.id, to_first_name: testFirstName || "Friend" });
+      const data = await callHubFn("send_campaign", {
+        mode: "preview",
+        campaign_id: campaign.id,
+        to_first_name: testFirstName || "Friend",
+      });
       setPreviewHtml(data.html);
       setPreviewText(data.text);
       setPreviewSubject(data.subject);
@@ -115,9 +103,11 @@ const AdminCampaignDetail: React.FC = () => {
     if (!testEmail.includes("@")) { toast.error("Enter a valid email"); return; }
     try {
       setBusy("test");
-      const data = await callSendFn({
-        mode: "test", campaign_id: campaign.id,
-        to_email: testEmail, to_first_name: testFirstName || undefined,
+      const data = await callHubFn("send_campaign", {
+        mode: "test",
+        campaign_id: campaign.id,
+        to_email: testEmail,
+        to_first_name: testFirstName || undefined,
       });
       if (data?.result?.ok) toast.success(`Test sent to ${testEmail}`);
       else toast.error(`Test failed: ${data?.result?.error || "unknown"}`);
@@ -130,9 +120,12 @@ const AdminCampaignDetail: React.FC = () => {
     const label = `batch-${batchSize}-${new Date().toISOString().slice(0, 16).replace(":", "")}`;
     try {
       setBusy(dryRun ? "dry" : "batch");
-      const data = await callSendFn({
-        mode: "batch", campaign_id: campaign.id,
-        batch_size: batchSize, batch_label: label, dry_run: dryRun,
+      const data = await callHubFn("send_campaign", {
+        mode: "batch",
+        campaign_id: campaign.id,
+        batch_size: batchSize,
+        batch_label: label,
+        dry_run: dryRun,
       });
       if (dryRun) {
         toast.info(`Dry run: would send to ${data.would_send} contacts`);

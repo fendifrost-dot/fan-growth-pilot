@@ -30,8 +30,7 @@ const AdminOutreachDrafts: React.FC = () => {
   const fetchDrafts = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await callHubFn<{ rows: DraftRow[] }>("playlist-admin-api", {
-        action: "list_drafts",
+      const data = await callHubFn<{ rows: DraftRow[] }>("list_drafts", {
         statuses: ["pending", "approved"],
       });
       setDrafts(data.rows ?? []);
@@ -57,8 +56,7 @@ const AdminOutreachDrafts: React.FC = () => {
     if (!selected) return;
     setSaving(true);
     try {
-      await callHubFn("playlist-admin-api", {
-        action: "update_draft",
+      await callHubFn("update_draft", {
         draft_id: selected.id,
         subject: editSubject,
         body: editBody,
@@ -79,8 +77,7 @@ const AdminOutreachDrafts: React.FC = () => {
     setSaving(true);
     try {
       if (editBody !== selected.body || editSubject !== (selected.subject ?? "")) {
-        await callHubFn("playlist-admin-api", {
-          action: "update_draft",
+        await callHubFn("update_draft", {
           draft_id: selected.id,
           subject: editSubject,
           body: editBody,
@@ -88,7 +85,7 @@ const AdminOutreachDrafts: React.FC = () => {
         });
       }
       const res = await callHubFn<{ status: string; sent?: boolean; needs_manual_dm?: boolean }>(
-        "approve-draft",
+        "approve_draft",
         {
           draft_id: selected.id,
           approved_by: "admin:ui",
@@ -115,7 +112,7 @@ const AdminOutreachDrafts: React.FC = () => {
     if (!selected) return;
     setSaving(true);
     try {
-      await callHubFn("approve-draft", {
+      await callHubFn("approve_draft", {
         draft_id: selected.id,
         approved_by: "admin:ui",
         reject: true,

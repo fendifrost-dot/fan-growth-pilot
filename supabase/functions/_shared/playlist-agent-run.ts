@@ -309,9 +309,40 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
   return { status: 400, data: { error: `Unknown playlist admin action: ${action}` } };
 }
 
+async function proxyToEdgeFunction(
+  fnName: string,
+  body: Record<string, unknown>,
+  hubKey: string,
+): Promise<RunResult> {
+  const base = Deno.env.get("SUPABASE_URL")!.replace(/\/$/, "");
+  const { action: _action, ...rest } = body;
+  const res = await fetch(`${base}/functions/v1/${fnName}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-api-key": hubKey },
+    body: JSON.stringify(rest),
+  });
+  const data = await res.json().catch(() => ({}));
+  return { status: res.status, data };
+}
+
+export async function runPlaylistResearchProxy(
+  body: Record<string, unknown>,
+  hubKey: string,
+): Promise<RunResult> {
+  return proxyToEdgeFunction("playlist-research", body, hubKey);
+}
+
+export async function runSendCampaignProxy(
+  body: Record<string, unknown>,
+  hubKey: string,
+): Promise<RunResult> {
+  return proxyToEdgeFunction("send-campaign-email", body, hubKey);
+}
+
 const PLAYLIST_AGENT_ACTIONS = new Set([
   "draft_pitch", "approve_draft", "enrich_curator_contacts", "schedule_follow_up",
   "list_targets", "list_drafts", "update_draft", "deactivate_target",
+  "run_playlist_research", "send_campaign",
 ]);
 
 export function isPlaylistAgentAction(action: string): boolean {
@@ -334,6 +365,10 @@ export async function runPlaylistAgentAction(
     case "update_draft":
     case "deactivate_target":
       return runPlaylistAdmin({ ...body, action }, sb);
+    case "run_playlist_research":
+      return runPlaylistResearchProxy(body, hubKey);
+    case "send_campaign":
+      return runSendCampaignProxy(body, hubKey);
     default:
       return { status: 400, data: { error: `Unknown playlist agent action: ${action}` } };
   }

@@ -6,6 +6,43 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-api-key',
 };
 
+type AuthResult =
+  | { ok: true; via: 'hub_key' }
+  | { ok: true; via: 'jwt'; user_id: string }
+  | { ok: false; reason: string };
+
+async function authenticate(req: Request): Promise<AuthResult> {
+  const hubKey = (Deno.env.get('FANFUEL_HUB_KEY') || '').trim();
+  const xApiKey = (req.headers.get('x-api-key') || '').trim();
+  if (hubKey && xApiKey && xApiKey === hubKey) {
+    return { ok: true, via: 'hub_key' };
+  }
+
+  const auth = req.headers.get('authorization') || '';
+  const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  if (bearer) {
+    const supaUrl = Deno.env.get('SUPABASE_URL')!;
+    const anonKey = Deno.env.get('SUPABASE_ANON_KEY') || Deno.env.get('SUPABASE_PUBLISHABLE_KEY') || '';
+    if (!anonKey) return { ok: false, reason: 'SUPABASE_ANON_KEY not configured' };
+
+    const sb = createClient(supaUrl, anonKey, {
+      global: { headers: { Authorization: `Bearer ${bearer}` } },
+    });
+    const { data: { user }, error } = await sb.auth.getUser();
+    if (error || !user) return { ok: false, reason: 'JWT invalid' };
+
+    const adminIds = (Deno.env.get('ADMIN_USER_IDS') || Deno.env.get('ARTIST_USER_ID') || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (adminIds.length === 0) return { ok: false, reason: 'ADMIN_USER_IDS not configured' };
+    if (!adminIds.includes(user.id)) return { ok: false, reason: 'Not an admin' };
+    return { ok: true, via: 'jwt', user_id: user.id };
+  }
+
+  return { ok: false, reason: 'No credentials' };
+}
+
 const PLATFORM_STAT_IDENTIFIERS = [
   'spotify_artist_stats',
   'instagram_stats',
@@ -35,26 +72,15 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // Authenticate via shared secret — accept x-api-key, Authorization: Bearer, or apikey header
-    const xApiKey = req.headers.get('x-api-key');
-    const authHeader = req.headers.get('authorization');
-    const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
-    const anonApiKey = req.headers.get('apikey');
-    const providedKey = (xApiKey || bearerToken || anonApiKey || '').trim();
-    const expectedKey = (Deno.env.get('FANFUEL_HUB_KEY') || '').trim();
-
-    if (!expectedKey || !providedKey || providedKey !== expectedKey) {
-      console.error('Auth failed', {
-        hasExpectedKey: !!expectedKey,
-        expectedKeyLen: expectedKey.length,
-        providedKeyLen: providedKey.length,
-        headerUsed: xApiKey ? 'x-api-key' : bearerToken ? 'bearer' : anonApiKey ? 'apikey' : 'none',
-      });
+    const authResult = await authenticate(req);
+    if (!authResult.ok) {
       return new Response(
-        JSON.stringify({ error: 'Unauthorized' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        JSON.stringify({ error: 'Unauthorized', reason: authResult.reason }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
+
+    const expectedKey = (Deno.env.get('FANFUEL_HUB_KEY') || '').trim();
 
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,

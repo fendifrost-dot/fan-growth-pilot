@@ -2,6 +2,8 @@ import React, { useEffect, useState } from "react";
 import { useNavigate, Link, Outlet, useLocation } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 
+const ARTIST_USER_ID = (import.meta.env.VITE_ARTIST_USER_ID as string | undefined)?.trim();
+
 const AdminGuard: React.FC = () => {
   const [checking, setChecking] = useState(true);
   const [authed, setAuthed] = useState(false);
@@ -14,13 +16,23 @@ const AdminGuard: React.FC = () => {
       if (!mounted) return;
       if (!session) {
         navigate("/auth", { replace: true, state: { from: location.pathname } });
-      } else {
-        setAuthed(true);
+        return;
       }
+      if (ARTIST_USER_ID && session.user.id !== ARTIST_USER_ID) {
+        navigate("/auth", { replace: true, state: { from: location.pathname } });
+        return;
+      }
+      setAuthed(true);
       setChecking(false);
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) => {
-      if (!session) navigate("/auth", { replace: true });
+      if (!session) {
+        navigate("/auth", { replace: true });
+        return;
+      }
+      if (ARTIST_USER_ID && session.user.id !== ARTIST_USER_ID) {
+        navigate("/auth", { replace: true });
+      }
     });
     return () => { mounted = false; subscription.unsubscribe(); };
   }, [navigate, location.pathname]);

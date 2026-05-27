@@ -36,8 +36,7 @@ const AdminPlaylistTargets: React.FC = () => {
   const fetchRows = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await callHubFn<{ rows: PlaylistRow[] }>("playlist-admin-api", {
-        action: "list_targets",
+      const data = await callHubFn<{ rows: PlaylistRow[] }>("list_targets", {
         ...(filterLane ? { lane: filterLane } : {}),
         ...(filterTier ? { tier: Number(filterTier) } : {}),
         ...(hasEmailOnly ? { has_email: true } : {}),
@@ -58,7 +57,7 @@ const AdminPlaylistTargets: React.FC = () => {
 
   const runResearch = async () => {
     try {
-      await callHubFn("playlist-research", {
+      await callHubFn("run_playlist_research", {
         track_name: trackName,
         lane,
         references: ["Drake — Passionfruit", "Channel Tres — Joyful Noise"],
@@ -74,7 +73,7 @@ const AdminPlaylistTargets: React.FC = () => {
 
   const enrichBatch = async () => {
     try {
-      const res = await callHubFn<{ enriched: number }>("enrich-curator-contacts", {
+      const res = await callHubFn<{ enriched: number }>("enrich_curator_contacts", {
         track_name: trackName,
         lane,
         limit: 20,
@@ -89,7 +88,7 @@ const AdminPlaylistTargets: React.FC = () => {
   const draftPitch = async (playlistId: string) => {
     setBusyId(playlistId);
     try {
-      const res = await callHubFn<{ draft_id: string }>("draft-pitch", {
+      const res = await callHubFn<{ draft_id: string }>("draft_pitch", {
         playlist_id: playlistId,
         track_name: trackName,
         generated_by: "admin:ui",
@@ -105,7 +104,7 @@ const AdminPlaylistTargets: React.FC = () => {
   const markAvoid = async (playlistId: string) => {
     setBusyId(playlistId);
     try {
-      await callHubFn("playlist-admin-api", { action: "deactivate_target", playlist_id: playlistId });
+      await callHubFn("deactivate_target", { playlist_id: playlistId });
       toast.success("Marked inactive");
       await fetchRows();
     } catch (e) {

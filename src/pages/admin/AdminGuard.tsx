@@ -1,51 +1,7 @@
-import React, { useEffect, useState } from "react";
-import { useNavigate, Link, Outlet, useLocation } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
-
-const ARTIST_USER_ID = (import.meta.env.VITE_ARTIST_USER_ID as string | undefined)?.trim();
+import React from "react";
+import { Link, Outlet } from "react-router-dom";
 
 const AdminGuard: React.FC = () => {
-  const [checking, setChecking] = useState(true);
-  const [authed, setAuthed] = useState(false);
-  const navigate = useNavigate();
-  const location = useLocation();
-
-  useEffect(() => {
-    let mounted = true;
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!mounted) return;
-      if (!session) {
-        navigate("/auth", { replace: true, state: { from: location.pathname } });
-        return;
-      }
-      if (ARTIST_USER_ID && session.user.id !== ARTIST_USER_ID) {
-        navigate("/auth", { replace: true, state: { from: location.pathname } });
-        return;
-      }
-      setAuthed(true);
-      setChecking(false);
-    });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) => {
-      if (!session) {
-        navigate("/auth", { replace: true });
-        return;
-      }
-      if (ARTIST_USER_ID && session.user.id !== ARTIST_USER_ID) {
-        navigate("/auth", { replace: true });
-      }
-    });
-    return () => { mounted = false; subscription.unsubscribe(); };
-  }, [navigate, location.pathname]);
-
-  if (checking) {
-    return (
-      <div className="min-h-screen flex items-center justify-center text-sm text-muted-foreground">
-        Checking session…
-      </div>
-    );
-  }
-  if (!authed) return null;
-
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b">
@@ -59,13 +15,6 @@ const AdminGuard: React.FC = () => {
               <Link to="/admin/outreach" className="hover:underline">Outreach</Link>
             </nav>
           </div>
-          <button
-            type="button"
-            className="text-xs text-muted-foreground hover:text-foreground"
-            onClick={async () => { await supabase.auth.signOut(); navigate("/auth"); }}
-          >
-            Sign out
-          </button>
         </div>
       </header>
       <main className="max-w-6xl mx-auto px-6 py-8">

@@ -1,5 +1,3 @@
-import { supabase } from "@/integrations/supabase/client";
-
 const BASE = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 
 function ccaUrl(): string {
@@ -8,23 +6,17 @@ function ccaUrl(): string {
 }
 
 /**
- * Call a control-center-api action with the current Supabase session JWT.
- * Throws if the user isn't logged in (AdminGuard should prevent that).
+ * Call a control-center-api action.
+ * No auth header — Fan Fuel Hub is a single-operator internal tool.
+ * Trust model: URL secrecy. Telegram CC + crons authenticate server-side via x-api-key.
  */
 export async function callHubFn<T = unknown>(
   action: string,
   body: Record<string, unknown> = {},
 ): Promise<T> {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.access_token) {
-    throw new Error("Not signed in — refresh the page and log in again.");
-  }
   const r = await fetch(ccaUrl(), {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${session.access_token}`,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action, ...body }),
   });
   const data = await r.json().catch(() => ({}));

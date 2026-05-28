@@ -4,7 +4,8 @@
  * Upserts catalog rows WITHOUT track_name (global catalog model).
  *
  * Env: FANFUEL_HUB_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
- *      SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET (optional live search)
+ *      ARTIST_USER_ID (Spotify user token via platform_connections),
+ *      SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET (refresh + optional client_creds fallback)
  */
 
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
@@ -160,25 +161,123 @@ export async function findPlaylistOpportunities(
   return scored.slice(0, MAX_RESULTS);
 }
 
-async function getSpotifyAccessToken(): Promise<string | null> {
+/** User OAuth token — required for playlist search (client_credentials cannot search playlists). */
+async function getSpotifyUserAccessToken(sb: SupabaseClient): Promise<string | null> {
+  const artistUserId = (Deno.env.get("ARTIST_USER_ID") || "").trim();
+  if (!artistUserId) {
+    console.error("[playlist-research] ARTIST_USER_ID not set");
+    return null;
+  }
+
+  const { data: connection, error } = await sb
+    .from("platform_connections")
+    .select("id, access_token, refresh_token, token_expires_at")
+    .eq("user_id", artistUserId)
+    .eq("platform", "Spotify")
+    .maybeSingle();
+
+  if (error || !connection) {
+    console.error(
+      "[playlist-research] No Spotify platform_connection for user",
+      artistUserId,
+      error?.message ?? "missing row",
+    );
+    return null;
+  }
+
+  const { data: decryptedAccess } = await sb.rpc("decrypt_token", {
+    encrypted_token: connection.access_token,
+  });
+  const { data: decryptedRefresh } = await sb.rpc("decrypt_token", {
+    encrypted_token: connection.refresh_token,
+  });
+
+  let accessToken: string = decryptedAccess || connection.access_token;
+  const refreshToken: string = decryptedRefresh || connection.refresh_token;
+  const tokenExpiresAt = new Date(connection.token_expires_at ?? 0);
+  const now = new Date();
+
+  if (now >= tokenExpiresAt) {
+    const clientId = Deno.env.get("SPOTIFY_CLIENT_ID");
+    const clientSecret = Deno.env.get("SPOTIFY_CLIENT_SECRET");
+    if (!clientId || !clientSecret) {
+      console.error("[playlist-research] SPOTIFY_CLIENT_ID/SECRET missing for refresh");
+      return null;
+    }
+
+    const refreshRes = await fetch("https://accounts.spotify.com/api/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
+      },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+      }),
+    });
+
+    if (!refreshRes.ok) {
+      console.error(
+        "[playlist-research] Spotify refresh failed:",
+        refreshRes.status,
+        await refreshRes.text().catch(() => ""),
+      );
+      return null;
+    }
+
+    const tokenData = await refreshRes.json();
+    accessToken = tokenData.access_token;
+    const expiresAt = new Date(Date.now() + (tokenData.expires_in ?? 3600) * 1000);
+
+    const { data: encryptedNewAccess } = await sb.rpc("encrypt_token", {
+      token: accessToken,
+    });
+
+    const { error: upErr } = await sb
+      .from("platform_connections")
+      .update({
+        access_token: encryptedNewAccess || accessToken,
+        token_expires_at: expiresAt.toISOString(),
+      })
+      .eq("id", connection.id);
+
+    if (upErr) console.error("[playlist-research] token persist failed:", upErr.message);
+    else console.log("[playlist-research] Spotify user token refreshed");
+  }
+
+  return accessToken;
+}
+
+async function getSpotifyClientCredsToken(): Promise<string | null> {
   const id = Deno.env.get("SPOTIFY_CLIENT_ID");
   const secret = Deno.env.get("SPOTIFY_CLIENT_SECRET");
   if (!id || !secret) return null;
-  const body = new URLSearchParams({ grant_type: "client_credentials" });
   const res = await fetch("https://accounts.spotify.com/api/token", {
     method: "POST",
     headers: {
       Authorization: "Basic " + btoa(`${id}:${secret}`),
       "Content-Type": "application/x-www-form-urlencoded",
     },
-    body,
+    body: new URLSearchParams({ grant_type: "client_credentials" }),
   });
   if (!res.ok) {
-    console.error("[playlist-research] Spotify token failed:", res.status, await res.text().catch(() => ""));
+    console.error(
+      "[playlist-research] Spotify client_credentials failed:",
+      res.status,
+      await res.text().catch(() => ""),
+    );
     return null;
   }
   const j = await res.json();
   return j.access_token ?? null;
+}
+
+async function getSpotifyAccessToken(sb: SupabaseClient): Promise<string | null> {
+  const userToken = await getSpotifyUserAccessToken(sb);
+  if (userToken) return userToken;
+  console.warn("[playlist-research] falling back to client_credentials (playlist search may return 0)");
+  return await getSpotifyClientCredsToken();
 }
 
 function extractQuotedPhrases(s: string): string[] {
@@ -349,7 +448,7 @@ export async function mergeCatalogAndLive(
   const lanesConfig = await loadLanesConfig(supabase);
   const laneRe = lane ? laneRegexBoost(lanesConfig, lane) : null;
   const pitchAngle = lane ? (lanesConfig[lane]?.pitch_angle ?? "") : "";
-  const token = await getSpotifyAccessToken();
+  const token = await getSpotifyAccessToken(supabase);
   let live: SpotifyApiPlaylist[] = [];
 
   if (token) {

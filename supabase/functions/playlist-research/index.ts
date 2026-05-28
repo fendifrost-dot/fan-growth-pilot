@@ -23,7 +23,7 @@ const corsHeaders = {
 
 const MAX_RESULTS = 20;
 const LIVE_SEARCH_TERMS_MAX = 8;
-const LIVE_SEARCH_BUDGET_MS = 3000;
+const LIVE_SEARCH_BUDGET_MS = 8000;
 
 /** Dropped from Spotify search token lists so prose like "No think more like…" does not eat the term budget. */
 const LIVE_SEARCH_STOPWORDS = new Set([
@@ -90,27 +90,10 @@ function tokenizeVibe(vibe: string): Set<string> {
   );
 }
 
-function detectGenreSignals(vibe: string): Record<string, boolean> {
-  const v = vibe.toLowerCase();
-  return {
-    drill: /drill|fbg|g herbo|chicago drill|bando|opps/.test(v),
-    spiritual: /spiritual|holistic|healing|meditation|conscious|mindful|native|flute/.test(v),
-    westCoast: /west coast|cali|larry june|dom kennedy|la rap/.test(v),
-    trap: /trap|808|banger|turn up/.test(v),
-    underground: /underground|griselda|boldy|freddie gibbs|stove god/.test(v),
-    houseGroove:
-      /house|kaytranada|channel\s*tres|uk\s*garage|garage\b|deep\s*house|club\s*rap|dance\s*rap|nu\s*disco|groove|funk|slutty\s*bass|amine|duckwrth|sg\s*lewis|edm|four\s*on\s*the\s*floor|indie\s*dance|electronic/.test(
-        v,
-      ),
-    altRnb: /alt(?:ernative)?\s*rnb|r&b|late\s*night\s*drive|vibe\s*rnb|groove\s*rnb|alternative\s*rnb/.test(v),
-  };
-}
-
 function scoreRow(
   row: PlaylistRow,
   vibeTokens: Set<string>,
   trackTokens: Set<string>,
-  genreSignals?: Record<string, boolean>,
   extraLaneScore = 0,
 ): number {
   const tags = new Set([...normalizeTags(row.vibe_tags), ...normalizeTags(row.similar_artists)]);
@@ -128,20 +111,6 @@ function scoreRow(
   if (row.whitelist_status) s += 15;
   if (row.tier === 1) s += 10;
   else if (row.tier === 2) s += 5;
-  if (genreSignals) {
-    const tagArr = normalizeTags(row.vibe_tags);
-    const artistArr = normalizeTags(row.similar_artists);
-    const allTags = [...tagArr, ...artistArr].join(" ");
-    if (genreSignals.drill && /drill|herbo|fbg|chicago/.test(allTags)) s += 15;
-    if (genreSignals.spiritual && /spiritual|conscious|meditation|holistic/.test(allTags)) s += 15;
-    if (genreSignals.westCoast && /west_coast|larry_june|dom_kennedy|cali/.test(allTags)) s += 15;
-    if (genreSignals.trap && /trap|808/.test(allTags)) s += 10;
-    if (genreSignals.underground && /griselda|underground|boldy|freddie/.test(allTags)) s += 10;
-    if (genreSignals.houseGroove && /house|dance|club|groove|disco|garage|funk|electronic|ukg|rap/.test(allTags)) {
-      s += 15;
-    }
-    if (genreSignals.altRnb && /rnb|r&b|soul|groove|alt/.test(allTags)) s += 12;
-  }
   return s + extraLaneScore;
 }
 
@@ -153,7 +122,6 @@ export async function findPlaylistOpportunities(
 ): Promise<PlaylistRow[]> {
   const vibeTokens = tokenizeVibe(userVibe);
   const trackTokens = tokenizeVibe(trackName);
-  const genreSignals = detectGenreSignals(userVibe);
 
   const { data: cooling, error: coolErr } = await supabase
     .from("pitch_log")
@@ -179,7 +147,7 @@ export async function findPlaylistOpportunities(
 
   const scored: PlaylistRow[] = filtered.map((r: any) => ({
     ...r,
-    match_score: scoreRow(r as PlaylistRow, vibeTokens, trackTokens, genreSignals),
+    match_score: scoreRow(r as PlaylistRow, vibeTokens, trackTokens),
     source: "catalog",
   }));
 
@@ -205,7 +173,10 @@ async function getSpotifyAccessToken(): Promise<string | null> {
     },
     body,
   });
-  if (!res.ok) return null;
+  if (!res.ok) {
+    console.error("[playlist-research] Spotify token failed:", res.status, await res.text().catch(() => ""));
+    return null;
+  }
   const j = await res.json();
   return j.access_token ?? null;
 }
@@ -221,7 +192,12 @@ function extractQuotedPhrases(s: string): string[] {
   return out;
 }
 
-function buildLiveSearchTerms(trackName: string, userVibe: string): string[] {
+function buildLiveSearchTerms(
+  trackName: string,
+  userVibe: string,
+  references: string[] = [],
+  lane: string = "",
+): string[] {
   const terms: string[] = [];
   const seen = new Set<string>();
   const push = (raw: string) => {
@@ -233,14 +209,24 @@ function buildLiveSearchTerms(trackName: string, userVibe: string): string[] {
     terms.push(t);
   };
 
+  for (const ref of references) {
+    const artist = ref.split(/[—–-]/)[0].trim();
+    if (artist) push(artist);
+    if (terms.length >= LIVE_SEARCH_TERMS_MAX) return terms;
+  }
+
   for (const phrase of extractQuotedPhrases(userVibe)) {
     push(phrase);
     if (terms.length >= LIVE_SEARCH_TERMS_MAX) return terms;
   }
 
+  if (lane) {
+    push(lane.replace(/_/g, " "));
+    if (terms.length >= LIVE_SEARCH_TERMS_MAX) return terms;
+  }
+
   const vibeWords = [...tokenizeVibe(userVibe)].filter((w) => !LIVE_SEARCH_STOPWORDS.has(w));
   const trackWords = [...tokenizeVibe(trackName)].filter((w) => !LIVE_SEARCH_STOPWORDS.has(w));
-  // When the user wrote a real vibe, search Spotify with vibe-first terms (title-only tokens like "balenciaga" are weak for playlist discovery).
   const ordered = userVibe.trim().length > 0 ? [...vibeWords, ...trackWords] : [...trackWords, ...vibeWords];
   for (const w of ordered) {
     push(w);
@@ -259,30 +245,39 @@ async function liveSpotifySearch(
   const deadline = Date.now() + budgetMs;
   const out: SpotifyApiPlaylist[] = [];
   const seen = new Set<string>();
+  const log: { term: string; ok: boolean; count: number; status?: number; error?: string }[] = [];
 
   for (const term of terms) {
-    if (Date.now() > deadline) break;
+    if (Date.now() > deadline) {
+      log.push({ term, ok: false, count: 0, error: "budget exceeded" });
+      break;
+    }
     const left = Math.max(0, deadline - Date.now());
     const ctrl = new AbortController();
-    const to = setTimeout(() => ctrl.abort(), Math.min(1200, left));
+    const to = setTimeout(() => ctrl.abort(), Math.min(2000, left));
     try {
       const u = new URL("https://api.spotify.com/v1/search");
       u.searchParams.set("q", term);
       u.searchParams.set("type", "playlist");
-      u.searchParams.set("limit", "5");
+      u.searchParams.set("limit", "10");
       const res = await fetch(u.toString(), {
         headers: { Authorization: `Bearer ${token}` },
         signal: ctrl.signal,
       });
       clearTimeout(to);
-      if (!res.ok) continue;
+      if (!res.ok) {
+        log.push({ term, ok: false, count: 0, status: res.status });
+        continue;
+      }
       const j = await res.json();
       const items = j.playlists?.items ?? [];
+      let added = 0;
       for (const pl of items) {
         if (!pl?.id) continue;
         const pid = `spotify:${pl.id}`;
         if (seen.has(pid)) continue;
         seen.add(pid);
+        added++;
         out.push({
           id: pl.id,
           playlist_id: pid,
@@ -291,10 +286,13 @@ async function liveSpotifySearch(
           owner: pl.owner?.display_name ?? null,
         });
       }
-    } catch {
+      log.push({ term, ok: true, count: added });
+    } catch (e) {
       clearTimeout(to);
+      log.push({ term, ok: false, count: 0, error: e instanceof Error ? e.message : String(e) });
     }
   }
+  console.log("[playlist-research] live search log:", JSON.stringify(log));
   return out;
 }
 
@@ -355,7 +353,7 @@ export async function mergeCatalogAndLive(
   let live: SpotifyApiPlaylist[] = [];
 
   if (token) {
-    const terms = buildLiveSearchTerms(trackName, userVibe);
+    const terms = buildLiveSearchTerms(trackName, userVibe, references, lane);
     const start = Date.now();
     live = await liveSpotifySearch(token, terms, LIVE_SEARCH_BUDGET_MS);
     const elapsed = Date.now() - start;
@@ -367,7 +365,6 @@ export async function mergeCatalogAndLive(
 
   const vibeTokens = tokenizeVibe(userVibe);
   const trackTokens = tokenizeVibe(trackName);
-  const genreSignals = detectGenreSignals(userVibe);
 
   const { data: mergedRows } = await supabase
     .from("playlist_targets")
@@ -394,7 +391,7 @@ export async function mergeCatalogAndLive(
       const why_it_fits = buildWhyItFits(r, lane, references, laneRe);
       return {
         ...r,
-        match_score: scoreRow(r as PlaylistRow, vibeTokens, trackTokens, genreSignals, laneScore),
+        match_score: scoreRow(r as PlaylistRow, vibeTokens, trackTokens, laneScore),
         source: source as "catalog" | "live",
         lane: lane || r.lane || null,
         why_it_fits,

@@ -35,12 +35,12 @@ export function scoreLaneBoost(
     (row.playlist_name ?? "").toLowerCase(),
   ].join(" ");
   let s = 0;
-  if (laneRe && laneRe.test(tags)) s += 12;
+  if (laneRe && laneRe.test(tags)) s += 30;
   for (const ref of references) {
     const t = ref.toLowerCase().replace(/[^a-z0-9\s]/g, " ").trim();
-    if (t.length > 2 && tags.includes(t)) s += 8;
+    if (t.length > 2 && tags.includes(t)) s += 15;
     for (const part of t.split(/\s+/).filter((w) => w.length > 3)) {
-      if (tags.includes(part)) s += 3;
+      if (tags.includes(part)) s += 6;
     }
   }
   return s;

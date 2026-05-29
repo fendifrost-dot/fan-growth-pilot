@@ -1,11 +1,8 @@
 /**
  * playlist-research — FanFuel Hub
- * DB-first playlist opportunities + capped live Spotify supplement.
- * Upserts catalog rows WITHOUT track_name (global catalog model).
+ * DB-first playlist opportunities + Spotify web discovery via Firecrawl.
  *
- * Env: FANFUEL_HUB_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
- *      ARTIST_USER_ID (Spotify user token via platform_connections),
- *      SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET (refresh + optional client_creds fallback)
+ * Env: FANFUEL_HUB_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, FIRECRAWL_API_KEY
  */
 
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
@@ -15,6 +12,11 @@ import {
   loadLanesConfig,
   scoreLaneBoost,
 } from "../_shared/playlist-lanes.ts";
+import {
+  scrapeSpotifyPlaylistDetail,
+  scrapeSpotifySearchPlaylists,
+  sleep,
+} from "../_shared/spotify-scrape.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -23,18 +25,10 @@ const corsHeaders = {
 };
 
 const MAX_RESULTS = 20;
-const LIVE_SEARCH_TERMS_MAX = 8;
-const LIVE_SEARCH_BUDGET_MS = 8000;
-
-/** Dropped from Spotify search token lists so prose like "No think more like…" does not eat the term budget. */
-const LIVE_SEARCH_STOPWORDS = new Set([
-  "the", "and", "for", "you", "are", "but", "not", "all", "can", "her", "was", "one", "our", "out", "get", "use",
-  "man", "new", "now", "way", "may", "say", "she", "too", "any", "does", "have", "like", "just", "more", "look",
-  "than", "them", "well", "also", "back", "after", "think", "with", "from", "they", "know", "want", "been", "good",
-  "much", "some", "time", "very", "when", "come", "here", "how", "why", "into", "your", "this", "that", "then",
-  "what", "make", "reply", "send", "type", "cancel", "abort", "yes", "own", "message", "same", "these", "those",
-  "really", "dont", "don", "wont", "cant", "should", "could", "would", "please", "need", "want", "tell", "give",
-]);
+const DISCOVER_DEADLINE_MS = 55_000;
+const SEARCH_REF_CAP = 5;
+const STUBS_PER_REF = 10;
+const DETAIL_CAP = 20;
 
 function getHubKey(req: Request): string {
   return (
@@ -66,6 +60,16 @@ type PlaylistRow = {
   is_active: boolean | null;
   match_score?: number;
   source?: "catalog" | "live";
+};
+
+type DiscoveredPlaylist = {
+  id: string;
+  playlist_id: string;
+  name: string;
+  followers: number | null;
+  owner: string | null;
+  owner_id?: string;
+  _track_artists?: string[];
 };
 
 function getServiceClient(): SupabaseClient {
@@ -115,6 +119,25 @@ function scoreRow(
   return s + extraLaneScore;
 }
 
+function inferVibeTags(trackArtists: string[], references: string[]): string[] {
+  const tags = new Set<string>();
+  const lowerRefs = references.map((r) => r.toLowerCase().split(/[—–-]/)[0].trim());
+  for (const artist of trackArtists) {
+    const lower = artist.toLowerCase();
+    for (const ref of lowerRefs) {
+      const refNorm = ref.replace(/[^a-z0-9\s]/g, " ").trim();
+      if (!refNorm) continue;
+      if (lower.includes(refNorm) || refNorm.includes(lower)) {
+        tags.add(refNorm.replace(/\s+/g, "_"));
+      }
+      for (const part of refNorm.split(/\s+/).filter((w) => w.length > 3)) {
+        if (lower.includes(part)) tags.add(part);
+      }
+    }
+  }
+  return [...tags];
+}
+
 /** Core catalog query + ranking (matches your approved logic). */
 export async function findPlaylistOpportunities(
   supabase: SupabaseClient,
@@ -132,7 +155,7 @@ export async function findPlaylistOpportunities(
 
   if (coolErr) console.error("pitch_log cooldown query:", coolErr.message);
 
-  const excluded = new Set((cooling ?? []).map((r: any) => r.playlist_id));
+  const excluded = new Set((cooling ?? []).map((r: { playlist_id: string }) => r.playlist_id));
 
   const { data: rows, error } = await supabase
     .from("playlist_targets")
@@ -144,11 +167,11 @@ export async function findPlaylistOpportunities(
     .eq("fraud_verdict", "safe");
 
   if (error) throw new Error(`playlist_targets: ${error.message}`);
-  const filtered = (rows ?? []).filter((r: any) => !excluded.has(r.playlist_id));
+  const filtered = (rows ?? []).filter((r: { playlist_id: string }) => !excluded.has(r.playlist_id));
 
-  const scored: PlaylistRow[] = filtered.map((r: any) => ({
+  const scored: PlaylistRow[] = filtered.map((r: PlaylistRow) => ({
     ...r,
-    match_score: scoreRow(r as PlaylistRow, vibeTokens, trackTokens),
+    match_score: scoreRow(r, vibeTokens, trackTokens),
     source: "catalog",
   }));
 
@@ -161,254 +184,88 @@ export async function findPlaylistOpportunities(
   return scored.slice(0, MAX_RESULTS);
 }
 
-/** User OAuth token — required for playlist search (client_credentials cannot search playlists). */
-async function getSpotifyUserAccessToken(sb: SupabaseClient): Promise<string | null> {
-  const artistUserId = (Deno.env.get("ARTIST_USER_ID") || "").trim();
-  if (!artistUserId) {
-    console.error("[playlist-research] ARTIST_USER_ID not set");
-    return null;
+async function discoverViaSpotifyWeb(
+  references: string[],
+  lane: string,
+): Promise<DiscoveredPlaylist[]> {
+  const deadline = Date.now() + DISCOVER_DEADLINE_MS;
+  const queries = references.length
+    ? references.slice(0, SEARCH_REF_CAP).map((r) => r.split(/[—–-]/)[0].trim()).filter(Boolean)
+    : lane ? [lane.replace(/_/g, " ")] : [];
+
+  if (!queries.length) {
+    console.warn("[playlist-research] no references or lane for web discovery");
+    return [];
   }
 
-  const { data: connection, error } = await sb
-    .from("platform_connections")
-    .select("id, access_token, refresh_token, token_expires_at")
-    .eq("user_id", artistUserId)
-    .eq("platform", "Spotify")
-    .maybeSingle();
-
-  if (error || !connection) {
-    console.error(
-      "[playlist-research] No Spotify platform_connection for user",
-      artistUserId,
-      error?.message ?? "missing row",
-    );
-    return null;
+  if (!Deno.env.get("FIRECRAWL_API_KEY")) {
+    console.error("[playlist-research] FIRECRAWL_API_KEY not set — skipping web discovery");
+    return [];
   }
 
-  const { data: decryptedAccess } = await sb.rpc("decrypt_token", {
-    encrypted_token: connection.access_token,
-  });
-  const { data: decryptedRefresh } = await sb.rpc("decrypt_token", {
-    encrypted_token: connection.refresh_token,
-  });
-
-  let accessToken: string = decryptedAccess || connection.access_token;
-  const refreshToken: string = decryptedRefresh || connection.refresh_token;
-  const tokenExpiresAt = new Date(connection.token_expires_at ?? 0);
-  const now = new Date();
-
-  if (now >= tokenExpiresAt) {
-    const clientId = Deno.env.get("SPOTIFY_CLIENT_ID");
-    const clientSecret = Deno.env.get("SPOTIFY_CLIENT_SECRET");
-    if (!clientId || !clientSecret) {
-      console.error("[playlist-research] SPOTIFY_CLIENT_ID/SECRET missing for refresh");
-      return null;
-    }
-
-    const refreshRes = await fetch("https://accounts.spotify.com/api/token", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Authorization: `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
-      },
-      body: new URLSearchParams({
-        grant_type: "refresh_token",
-        refresh_token: refreshToken,
-      }),
-    });
-
-    if (!refreshRes.ok) {
-      console.error(
-        "[playlist-research] Spotify refresh failed:",
-        refreshRes.status,
-        await refreshRes.text().catch(() => ""),
-      );
-      return null;
-    }
-
-    const tokenData = await refreshRes.json();
-    accessToken = tokenData.access_token;
-    const expiresAt = new Date(Date.now() + (tokenData.expires_in ?? 3600) * 1000);
-
-    const { data: encryptedNewAccess } = await sb.rpc("encrypt_token", {
-      token: accessToken,
-    });
-
-    const { error: upErr } = await sb
-      .from("platform_connections")
-      .update({
-        access_token: encryptedNewAccess || accessToken,
-        token_expires_at: expiresAt.toISOString(),
-      })
-      .eq("id", connection.id);
-
-    if (upErr) console.error("[playlist-research] token persist failed:", upErr.message);
-    else console.log("[playlist-research] Spotify user token refreshed");
-  }
-
-  return accessToken;
-}
-
-async function getSpotifyClientCredsToken(): Promise<string | null> {
-  const id = Deno.env.get("SPOTIFY_CLIENT_ID");
-  const secret = Deno.env.get("SPOTIFY_CLIENT_SECRET");
-  if (!id || !secret) return null;
-  const res = await fetch("https://accounts.spotify.com/api/token", {
-    method: "POST",
-    headers: {
-      Authorization: "Basic " + btoa(`${id}:${secret}`),
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({ grant_type: "client_credentials" }),
-  });
-  if (!res.ok) {
-    console.error(
-      "[playlist-research] Spotify client_credentials failed:",
-      res.status,
-      await res.text().catch(() => ""),
-    );
-    return null;
-  }
-  const j = await res.json();
-  return j.access_token ?? null;
-}
-
-async function getSpotifyAccessToken(sb: SupabaseClient): Promise<string | null> {
-  const userToken = await getSpotifyUserAccessToken(sb);
-  if (userToken) return userToken;
-  console.warn("[playlist-research] falling back to client_credentials (playlist search may return 0)");
-  return await getSpotifyClientCredsToken();
-}
-
-function extractQuotedPhrases(s: string): string[] {
-  const out: string[] = [];
-  const re = /"([^"]{2,80})"/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(s)) !== null) {
-    const t = m[1].trim();
-    if (t.length >= 2) out.push(t);
-  }
-  return out;
-}
-
-function buildLiveSearchTerms(
-  trackName: string,
-  userVibe: string,
-  references: string[] = [],
-  lane: string = "",
-): string[] {
-  const terms: string[] = [];
   const seen = new Set<string>();
-  const push = (raw: string) => {
-    const t = raw.trim().slice(0, 80);
-    if (t.length < 2) return;
-    const key = t.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    terms.push(t);
-  };
+  const out: DiscoveredPlaylist[] = [];
+  const log: { query: string; count: number; ok: boolean }[] = [];
 
-  for (const ref of references) {
-    const artist = ref.split(/[—–-]/)[0].trim();
-    if (artist) push(artist);
-    if (terms.length >= LIVE_SEARCH_TERMS_MAX) return terms;
-  }
-
-  for (const phrase of extractQuotedPhrases(userVibe)) {
-    push(phrase);
-    if (terms.length >= LIVE_SEARCH_TERMS_MAX) return terms;
-  }
-
-  if (lane) {
-    push(lane.replace(/_/g, " "));
-    if (terms.length >= LIVE_SEARCH_TERMS_MAX) return terms;
-  }
-
-  const vibeWords = [...tokenizeVibe(userVibe)].filter((w) => !LIVE_SEARCH_STOPWORDS.has(w));
-  const trackWords = [...tokenizeVibe(trackName)].filter((w) => !LIVE_SEARCH_STOPWORDS.has(w));
-  const ordered = userVibe.trim().length > 0 ? [...vibeWords, ...trackWords] : [...trackWords, ...vibeWords];
-  for (const w of ordered) {
-    push(w);
-    if (terms.length >= LIVE_SEARCH_TERMS_MAX) break;
-  }
-
-  if (terms.length === 0 && trackName.trim()) push(trackName.slice(0, 40));
-  return terms.slice(0, LIVE_SEARCH_TERMS_MAX);
-}
-
-async function liveSpotifySearch(
-  token: string,
-  terms: string[],
-  budgetMs: number,
-): Promise<SpotifyApiPlaylist[]> {
-  const deadline = Date.now() + budgetMs;
-  const out: SpotifyApiPlaylist[] = [];
-  const seen = new Set<string>();
-  const log: { term: string; ok: boolean; count: number; status?: number; error?: string }[] = [];
-
-  for (const term of terms) {
-    if (Date.now() > deadline) {
-      log.push({ term, ok: false, count: 0, error: "budget exceeded" });
-      break;
-    }
-    const left = Math.max(0, deadline - Date.now());
-    const ctrl = new AbortController();
-    const to = setTimeout(() => ctrl.abort(), Math.min(2000, left));
+  for (const query of queries) {
+    if (Date.now() > deadline) break;
     try {
-      const u = new URL("https://api.spotify.com/v1/search");
-      u.searchParams.set("q", term);
-      u.searchParams.set("type", "playlist");
-      u.searchParams.set("limit", "10");
-      const res = await fetch(u.toString(), {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: ctrl.signal,
-      });
-      clearTimeout(to);
-      if (!res.ok) {
-        log.push({ term, ok: false, count: 0, status: res.status });
-        continue;
-      }
-      const j = await res.json();
-      const items = j.playlists?.items ?? [];
+      const stubs = await scrapeSpotifySearchPlaylists(query);
       let added = 0;
-      for (const pl of items) {
-        if (!pl?.id) continue;
-        const pid = `spotify:${pl.id}`;
+      for (const s of stubs.slice(0, STUBS_PER_REF)) {
+        if (!s.playlist_id) continue;
+        const pid = `spotify:${s.playlist_id}`;
         if (seen.has(pid)) continue;
         seen.add(pid);
         added++;
         out.push({
-          id: pl.id,
+          id: s.playlist_id,
           playlist_id: pid,
-          name: pl.name,
-          followers: pl.followers?.total ?? null,
-          owner: pl.owner?.display_name ?? null,
+          name: s.name,
+          followers: null,
+          owner: s.owner_name ?? null,
+          owner_id: s.owner_id,
         });
       }
-      log.push({ term, ok: true, count: added });
+      log.push({ query, count: added, ok: true });
+      await sleep(1200);
     } catch (e) {
-      clearTimeout(to);
-      log.push({ term, ok: false, count: 0, error: e instanceof Error ? e.message : String(e) });
+      log.push({ query, count: 0, ok: false });
+      console.error(`[discover] search "${query}" failed:`, e instanceof Error ? e.message : String(e));
     }
   }
-  console.log("[playlist-research] live search log:", JSON.stringify(log));
+
+  const toDetail = out.slice(0, DETAIL_CAP);
+  for (const pl of toDetail) {
+    if (Date.now() > deadline) break;
+    try {
+      const detail = await scrapeSpotifyPlaylistDetail(pl.id);
+      if (detail) {
+        if (detail.name) pl.name = detail.name;
+        pl.followers = detail.follower_count ?? pl.followers;
+        pl.owner = detail.owner_name ?? pl.owner;
+        pl.owner_id = detail.owner_id ?? pl.owner_id;
+        pl._track_artists = detail.track_artists ?? [];
+      }
+      await sleep(1000);
+    } catch (e) {
+      console.error(`[discover] detail ${pl.id} failed:`, e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  out.sort((a, b) => (b.followers ?? 0) - (a.followers ?? 0));
+  console.log("[playlist-research] web discover log:", JSON.stringify(log), "total:", out.length);
   return out;
 }
 
-type SpotifyApiPlaylist = {
-  id: string;
-  playlist_id: string;
-  name: string;
-  followers: number | null;
-  owner: string | null;
-};
-
-/** Upsert live rows — no track_name; matches existing spotify:{id} keys */
 async function upsertLiveResults(
   supabase: SupabaseClient,
-  items: SpotifyApiPlaylist[],
+  items: DiscoveredPlaylist[],
+  lane: string,
+  references: string[],
 ): Promise<void> {
   for (const pl of items) {
+    const vibe_tags = inferVibeTags(pl._track_artists ?? [], references);
     const row = {
       playlist_id: pl.playlist_id,
       platform: "spotify",
@@ -420,20 +277,31 @@ async function upsertLiveResults(
       fraud_score: 50,
       fraud_verdict: "safe",
       pitch_status: "not_pitched",
-      research_context: { source: "live_api", fetched_at: new Date().toISOString() },
+      research_context: {
+        source: "spotify_web",
+        fetched_at: new Date().toISOString(),
+        spotify_owner_id: pl.owner_id ?? null,
+        discovery_lane: lane || null,
+      },
       tier: 2,
       whitelist_status: false,
-      vibe_tags: [],
-      similar_artists: [],
-      submission_method: null,
+      vibe_tags,
+      similar_artists: references.slice(0, 8),
+      submission_method: "email",
       submission_url: `https://open.spotify.com/playlist/${pl.id}`,
       is_active: true,
+      ...(lane ? { lane } : {}),
     };
     const { error } = await supabase.from("playlist_targets").upsert(row, {
       onConflict: "playlist_id",
     });
     if (error) console.error("upsert live", pl.playlist_id, error.message);
   }
+}
+
+function isWebDiscovered(rc: Record<string, unknown> | null): boolean {
+  const src = rc?.source;
+  return src === "spotify_web" || src === "live_api";
 }
 
 export async function mergeCatalogAndLive(
@@ -448,19 +316,13 @@ export async function mergeCatalogAndLive(
   const lanesConfig = await loadLanesConfig(supabase);
   const laneRe = lane ? laneRegexBoost(lanesConfig, lane) : null;
   const pitchAngle = lane ? (lanesConfig[lane]?.pitch_angle ?? "") : "";
-  const token = await getSpotifyAccessToken(supabase);
-  let live: SpotifyApiPlaylist[] = [];
 
-  if (token) {
-    const terms = buildLiveSearchTerms(trackName, userVibe, references, lane);
-    const start = Date.now();
-    live = await liveSpotifySearch(token, terms, LIVE_SEARCH_BUDGET_MS);
-    const elapsed = Date.now() - start;
-    if (live.length) {
-      await upsertLiveResults(supabase, live);
-    }
-    console.log(`live search: ${live.length} playlists in ${elapsed}ms`);
+  const start = Date.now();
+  const live = await discoverViaSpotifyWeb(references, lane);
+  if (live.length) {
+    await upsertLiveResults(supabase, live, lane, references);
   }
+  console.log(`[playlist-research] web discovery: ${live.length} playlists in ${Date.now() - start}ms`);
 
   const vibeTokens = tokenizeVibe(userVibe);
   const trackTokens = tokenizeVibe(trackName);
@@ -480,25 +342,25 @@ export async function mergeCatalogAndLive(
     .eq("track_name", trackName)
     .gt("cooldown_until", new Date().toISOString());
 
-  const excluded = new Set((cooling ?? []).map((r: any) => r.playlist_id));
+  const excluded = new Set((cooling ?? []).map((r: { playlist_id: string }) => r.playlist_id));
   const merged = (mergedRows ?? [])
-    .filter((r: any) => !excluded.has(r.playlist_id))
-    .map((r: any) => {
+    .filter((r: { playlist_id: string }) => !excluded.has(r.playlist_id))
+    .map((r: PlaylistRow & { research_context?: Record<string, unknown> | null }) => {
       const rc = r.research_context as Record<string, unknown> | null;
-      const source = rc?.source === "live_api" ? "live" : "catalog";
+      const source = isWebDiscovered(rc) ? "live" : "catalog";
       const laneScore = scoreLaneBoost(r, laneRe, references);
       const why_it_fits = buildWhyItFits(r, lane, references, laneRe);
       return {
         ...r,
-        match_score: scoreRow(r as PlaylistRow, vibeTokens, trackTokens, laneScore),
+        match_score: scoreRow(r, vibeTokens, trackTokens, laneScore),
         source: source as "catalog" | "live",
-        lane: lane || r.lane || null,
+        lane: lane || (r as { lane?: string }).lane || null,
         why_it_fits,
-        recommended_pitch_angle: pitchAngle || r.recommended_pitch_angle || null,
+        recommended_pitch_angle: pitchAngle || (r as { recommended_pitch_angle?: string }).recommended_pitch_angle || null,
       };
     });
 
-  merged.sort((a: any, b: any) => {
+  merged.sort((a: { match_score?: number; follower_count?: number | null }, b: { match_score?: number; follower_count?: number | null }) => {
     const ms = (b.match_score ?? 0) - (a.match_score ?? 0);
     if (ms !== 0) return ms;
     return (b.follower_count ?? 0) - (a.follower_count ?? 0);
@@ -508,8 +370,10 @@ export async function mergeCatalogAndLive(
   for (const r of results) {
     const patch: Record<string, unknown> = {};
     if (lane) patch.lane = lane;
-    if (r.why_it_fits) patch.why_it_fits = r.why_it_fits;
-    if (r.recommended_pitch_angle) patch.recommended_pitch_angle = r.recommended_pitch_angle;
+    if ((r as { why_it_fits?: string }).why_it_fits) patch.why_it_fits = (r as { why_it_fits?: string }).why_it_fits;
+    if ((r as { recommended_pitch_angle?: string | null }).recommended_pitch_angle) {
+      patch.recommended_pitch_angle = (r as { recommended_pitch_angle?: string }).recommended_pitch_angle;
+    }
     if (Object.keys(patch).length === 0) continue;
     const { error } = await supabase.from("playlist_targets").update(patch).eq("playlist_id", r.playlist_id);
     if (error) console.error("lane patch", r.playlist_id, error.message);

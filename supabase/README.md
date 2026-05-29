@@ -35,7 +35,8 @@ The live Supabase project is managed **in Lovable**.
 
 - `FANFUEL_HUB_KEY` — shared secret; Control Center sends it as `x-api-key` / `Authorization` / `apikey`.
 - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` — standard service role (functions use these).
-- `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET` — optional; enables live playlist search in `playlist-research`.
+- `FIRECRAWL_API_KEY` — required for Spotify web discovery in `playlist-research` and curator enrichment.
+- `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET` — OAuth refresh for `spotify-stats` (not used for playlist discovery).
 - `FRONTEND_URL` — required for `soundcloud-callback` post-OAuth redirect (see inventory).
 - `META_CONVERSIONS_API_TOKEN` — CAPI only (`meta-conversions`); not Marketing API.
 

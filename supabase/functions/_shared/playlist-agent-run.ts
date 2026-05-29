@@ -3,7 +3,9 @@
  * Workaround: Lovable Publish redeploys existing functions only; new function names 404 until registered.
  */
 import { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import { firecrawlMarkdown } from "./firecrawl.ts";
 import { loadLanesConfig } from "./playlist-lanes.ts";
+import { scrapeSpotifyPlaylistDetail, scrapeSpotifyUserProfile } from "./spotify-scrape.ts";
 
 export type RunResult = { status: number; data: unknown };
 
@@ -159,17 +161,6 @@ function contactConfidence(found: Extracted, hadEmail: boolean): number {
   return 1;
 }
 
-async function firecrawlMarkdown(url: string, key: string): Promise<string> {
-  const res = await fetch("https://api.firecrawl.dev/v1/scrape", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ url, formats: ["markdown"], onlyMainContent: true }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((data as { error?: string }).error ?? `Firecrawl ${res.status}`);
-  return (data as { data?: { markdown?: string }; markdown?: string }).data?.markdown ?? (data as { markdown?: string }).markdown ?? "";
-}
-
 function mergePatch(existing: Record<string, unknown>, found: Extracted): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(found)) {
@@ -185,47 +176,143 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+const EMAIL_RE = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
+const IG_RE = /(?:instagram\.com\/|@)([A-Za-z0-9._]+)/i;
+const LINKTREE_RE = /(linktr\.ee|linktree\.com|beacons\.ai)\/([A-Za-z0-9._-]+)/i;
+const ENRICH_BATCH_SIZE = 5;
+const ENRICH_DEADLINE_MS = 50_000;
+
 export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb: SupabaseClient): Promise<RunResult> {
-  const fcKey = Deno.env.get("FIRECRAWL_API_KEY");
-  if (!fcKey) return { status: 500, data: { error: "FIRECRAWL_API_KEY not configured" } };
+  if (!Deno.env.get("FIRECRAWL_API_KEY")) {
+    return { status: 500, data: { error: "FIRECRAWL_API_KEY not configured" } };
+  }
 
   const playlistIds = Array.isArray(body.playlist_ids) ? body.playlist_ids.map(String).filter(Boolean) : [];
   const trackName = String(body.track_name ?? "").trim();
-  const limit = Math.min(20, Math.max(1, Number(body.limit) || 10));
+  const offset = Math.max(0, Number(body.offset) || 0);
+  const requestedLimit = Math.min(30, Math.max(1, Number(body.limit) || 10));
+  const batchSize = Math.min(ENRICH_BATCH_SIZE, requestedLimit);
 
-  let query = sb.from("playlist_targets").select("*").eq("is_active", true);
-  if (playlistIds.length) query = query.in("playlist_id", playlistIds.slice(0, 20));
-  else if (trackName) {
+  let query = sb
+    .from("playlist_targets")
+    .select("playlist_id, curator_email, curator_instagram, curator_website, curator_linktree, platform, research_context")
+    .eq("is_active", true)
+    .or("curator_email.is.null,curator_instagram.is.null");
+
+  if (playlistIds.length) {
+    query = query.in("playlist_id", playlistIds.slice(0, 30));
+  } else if (trackName) {
     query = query.order("follower_count", { ascending: false, nullsFirst: false });
     if (body.lane) query = query.eq("lane", String(body.lane));
-  } else return { status: 400, data: { error: "playlist_ids or track_name required" } };
+  } else {
+    return { status: 400, data: { error: "playlist_ids or track_name required" } };
+  }
 
-  const { data: rows, error } = await query.limit(limit);
+  const { data: rows, error } = await query.range(offset, offset + batchSize - 1);
   if (error) return { status: 500, data: { error: error.message } };
-  if (!rows?.length) return { status: 200, data: { ok: true, enriched: 0, fields_added: {} } };
+  if (!rows?.length) {
+    return { status: 200, data: { ok: true, enriched: 0, fields_added: {}, done: true, next_offset: offset } };
+  }
 
-  const fieldsAdded: Record<string, number> = {};
+  const deadline = Date.now() + ENRICH_DEADLINE_MS;
+  const fieldsAdded: Record<string, number> = {
+    curator_email: 0,
+    curator_instagram: 0,
+    curator_website: 0,
+    curator_linktree: 0,
+  };
   let enriched = 0;
+
   for (const row of rows) {
-    const texts: string[] = [row.playlist_name ?? "", row.curator_name ?? "", row.notes ?? ""];
+    if (Date.now() > deadline) break;
+    if (!String(row.playlist_id ?? "").startsWith("spotify:")) continue;
+
     const spotifyId = String(row.playlist_id).replace(/^spotify:/, "");
-    if (row.platform === "spotify" && spotifyId) {
-      try { texts.push(await firecrawlMarkdown(`https://open.spotify.com/playlist/${spotifyId}`, fcKey)); await sleep(RATE_MS); } catch (e) { console.error("spotify scrape", row.playlist_id, e); }
-    }
-    const subUrl = (row.submission_url as string | null)?.trim();
-    if (subUrl && !subUrl.includes("open.spotify.com/playlist")) {
-      try { texts.push(await firecrawlMarkdown(subUrl, fcKey)); await sleep(RATE_MS); } catch (e) { console.error("submission scrape", row.playlist_id, e); }
-    }
-    const found = extractContacts(texts.join("\n"));
-    const patch = mergePatch(row, found);
     const hadEmail = Boolean((row.curator_email as string | null)?.trim());
-    if (Object.keys(patch).length) {
-      patch.contact_confidence = contactConfidence({ ...found, ...patch } as Extracted, hadEmail);
-      const { error: upErr } = await sb.from("playlist_targets").update(patch).eq("playlist_id", row.playlist_id);
-      if (!upErr) { enriched++; for (const k of Object.keys(patch)) fieldsAdded[k] = (fieldsAdded[k] ?? 0) + 1; }
+
+    try {
+      const detail = await scrapeSpotifyPlaylistDetail(spotifyId);
+      if (!detail) continue;
+
+      const ownerId = detail.owner_id ??
+        (row.research_context as { spotify_owner_id?: string } | null)?.spotify_owner_id;
+      if (!ownerId) continue;
+
+      const profile = await scrapeSpotifyUserProfile(ownerId);
+      await sleep(1500);
+
+      const patch: Record<string, unknown> = {};
+      const bio = profile?.bio ?? "";
+      const bioEmails = bio.match(EMAIL_RE);
+      if (bioEmails?.length && !row.curator_email) {
+        patch.curator_email = bioEmails[0].toLowerCase();
+        fieldsAdded.curator_email++;
+      }
+
+      const links = profile?.social_links ?? [];
+      for (const link of links) {
+        const ig = link.match(IG_RE);
+        if (ig && !row.curator_instagram && !patch.curator_instagram) {
+          patch.curator_instagram = ig[1];
+          fieldsAdded.curator_instagram++;
+        }
+        const lt = link.match(LINKTREE_RE);
+        if (lt && !patch.curator_linktree) {
+          patch.curator_linktree = `https://${lt[1]}/${lt[2]}`;
+          fieldsAdded.curator_linktree++;
+        }
+        if (/^https?:\/\//.test(link) && !ig && !lt && !patch.curator_website && !row.curator_website) {
+          patch.curator_website = link;
+          fieldsAdded.curator_website++;
+        }
+      }
+
+      if (!patch.curator_email && detail.description) {
+        const descEmails = detail.description.match(EMAIL_RE);
+        if (descEmails?.length) {
+          patch.curator_email = descEmails[0].toLowerCase();
+          fieldsAdded.curator_email++;
+        }
+      }
+
+      const igHandle = (patch.curator_instagram ?? row.curator_instagram) as string | undefined;
+      if (igHandle && !patch.curator_email && !row.curator_email) {
+        try {
+          const md = await firecrawlMarkdown(`https://www.instagram.com/${igHandle}/`, 2000);
+          const igEmails = md.match(EMAIL_RE);
+          if (igEmails?.length) {
+            patch.curator_email = igEmails[0].toLowerCase();
+            fieldsAdded.curator_email++;
+          }
+          await sleep(1500);
+        } catch {
+          /* IG may rate-limit */
+        }
+      }
+
+      if (Object.keys(patch).length) {
+        patch.contact_confidence = patch.curator_email ? 8 : (patch.curator_instagram ? 5 : 2);
+        const { error: upErr } = await sb.from("playlist_targets").update(patch).eq("playlist_id", row.playlist_id);
+        if (!upErr) enriched++;
+      }
+    } catch (e) {
+      console.error(`[enrich] ${row.playlist_id} failed:`, e instanceof Error ? e.message : String(e));
     }
   }
-  return { status: 200, data: { ok: true, enriched, fields_added: fieldsAdded } };
+
+  const next_offset = offset + rows.length;
+  const done = rows.length < batchSize;
+
+  return {
+    status: 200,
+    data: {
+      ok: true,
+      enriched,
+      fields_added: fieldsAdded,
+      done,
+      next_offset: done ? null : next_offset,
+    },
+  };
 }
 
 export async function runScheduleFollowUp(body: Record<string, unknown>, sb: SupabaseClient, _hubKey: string): Promise<RunResult> {

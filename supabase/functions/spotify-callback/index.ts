@@ -28,10 +28,12 @@ serve(async (req) => {
           <body>
             <script>
               if (window.opener) {
-                window.opener.location.href = window.opener.location.href + '?error=' + encodeURIComponent('Spotify authorization failed');
+                try {
+                  window.opener.postMessage({ type: 'spotify_error', error: 'Spotify authorization failed' }, '*');
+                } catch (e) {}
                 window.close();
               } else {
-                window.location.href = '/?error=' + encodeURIComponent('Spotify authorization failed');
+                window.location.href = '/admin/playlists?error=' + encodeURIComponent('Spotify authorization failed');
               }
             </script>
             <p>Authorization failed. Closing window...</p>
@@ -94,7 +96,8 @@ serve(async (req) => {
 
     const clientId = Deno.env.get('SPOTIFY_CLIENT_ID');
     const clientSecret = Deno.env.get('SPOTIFY_CLIENT_SECRET');
-    const redirectUri = 'https://vsemrziqxrrfcquxfnwd.supabase.co/functions/v1/spotify-callback';
+    const supabaseUrl = (Deno.env.get('SUPABASE_URL') ?? '').replace(/\/$/, '');
+    const redirectUri = `${supabaseUrl}/functions/v1/spotify-callback`;
 
     // Exchange code for access token
     const tokenResponse = await fetch('https://accounts.spotify.com/api/token', {
@@ -245,7 +248,7 @@ serve(async (req) => {
                 }
                 window.close();
               } else {
-                window.location.href = '/?spotify_connected=true';
+                window.location.href = '/admin/playlists?spotify_connected=true';
               }
             }
             
@@ -274,10 +277,12 @@ serve(async (req) => {
         <body>
           <script>
             if (window.opener) {
-              window.opener.location.href = window.opener.location.href + '?error=' + encodeURIComponent('Unable to complete authentication');
+              try {
+                window.opener.postMessage({ type: 'spotify_error', error: 'Unable to complete authentication' }, '*');
+              } catch (e) {}
               window.close();
             } else {
-              window.location.href = '/?error=' + encodeURIComponent('Unable to complete authentication');
+              window.location.href = '/admin/playlists?error=' + encodeURIComponent('Unable to complete authentication');
             }
           </script>
           <p>Connection failed. Closing window...</p>

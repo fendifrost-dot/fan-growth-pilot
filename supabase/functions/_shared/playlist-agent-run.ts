@@ -339,10 +339,86 @@ export async function runSendCampaignProxy(
   return proxyToEdgeFunction("send-campaign-email", body, hubKey);
 }
 
+export async function runConnectSpotifyInit(_body: Record<string, unknown>): Promise<RunResult> {
+  const artistUserId = (Deno.env.get("ARTIST_USER_ID") || "").trim();
+  const clientId = Deno.env.get("SPOTIFY_CLIENT_ID");
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+
+  if (!artistUserId) return { status: 500, data: { error: "ARTIST_USER_ID not set" } };
+  if (!clientId) return { status: 500, data: { error: "SPOTIFY_CLIENT_ID not set" } };
+  if (!supabaseUrl) return { status: 500, data: { error: "SUPABASE_URL not set" } };
+  if (!serviceKey) return { status: 500, data: { error: "SUPABASE_SERVICE_ROLE_KEY not set" } };
+
+  const redirectUri = `${supabaseUrl.replace(/\/$/, "")}/functions/v1/spotify-callback`;
+  const scopes = [
+    "user-read-email",
+    "user-read-private",
+    "user-top-read",
+    "user-read-recently-played",
+    "user-follow-read",
+    "playlist-read-private",
+    "user-library-read",
+  ].join(" ");
+
+  const timestamp = Date.now();
+  const statePayload = `${artistUserId}:${timestamp}`;
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(serviceKey),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(statePayload));
+  const signatureHex = Array.from(new Uint8Array(signature))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  const signedState = `${statePayload}:${signatureHex}`;
+
+  const url = new URL("https://accounts.spotify.com/authorize");
+  url.searchParams.set("client_id", clientId);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("redirect_uri", redirectUri);
+  url.searchParams.set("scope", scopes);
+  url.searchParams.set("state", signedState);
+
+  return { status: 200, data: { ok: true, auth_url: url.toString() } };
+}
+
+export async function runConnectSpotifyStatus(
+  _body: Record<string, unknown>,
+  sb: SupabaseClient,
+): Promise<RunResult> {
+  const artistUserId = (Deno.env.get("ARTIST_USER_ID") || "").trim();
+  if (!artistUserId) {
+    return { status: 200, data: { connected: false, reason: "ARTIST_USER_ID not set" } };
+  }
+  const { data, error } = await sb
+    .from("platform_connections")
+    .select("token_expires_at, updated_at, is_connected")
+    .eq("user_id", artistUserId)
+    .eq("platform", "Spotify")
+    .maybeSingle();
+  if (error || !data) {
+    return { status: 200, data: { connected: false, reason: error?.message ?? "no connection row" } };
+  }
+  return {
+    status: 200,
+    data: {
+      connected: !!data.is_connected,
+      token_expires_at: data.token_expires_at,
+      updated_at: data.updated_at,
+    },
+  };
+}
+
 const PLAYLIST_AGENT_ACTIONS = new Set([
   "draft_pitch", "approve_draft", "enrich_curator_contacts", "schedule_follow_up",
   "list_targets", "list_drafts", "update_draft", "deactivate_target",
   "run_playlist_research", "send_campaign",
+  "connect_spotify_init", "connect_spotify_status",
 ]);
 
 export function isPlaylistAgentAction(action: string): boolean {
@@ -369,6 +445,10 @@ export async function runPlaylistAgentAction(
       return runPlaylistResearchProxy(body, hubKey);
     case "send_campaign":
       return runSendCampaignProxy(body, hubKey);
+    case "connect_spotify_init":
+      return runConnectSpotifyInit(body);
+    case "connect_spotify_status":
+      return runConnectSpotifyStatus(body, sb);
     default:
       return { status: 400, data: { error: `Unknown playlist agent action: ${action}` } };
   }

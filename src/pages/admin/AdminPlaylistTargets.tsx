@@ -32,6 +32,59 @@ const AdminPlaylistTargets: React.FC = () => {
   const [filterTier, setFilterTier] = useState("");
   const [hasEmailOnly, setHasEmailOnly] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [spotifyStatus, setSpotifyStatus] = useState<{ connected: boolean; reason?: string } | null>(null);
+  const [connecting, setConnecting] = useState(false);
+
+  const refreshSpotifyStatus = useCallback(async () => {
+    try {
+      const s = await callHubFn<{ connected: boolean; reason?: string }>("connect_spotify_status", {});
+      setSpotifyStatus(s);
+    } catch {
+      setSpotifyStatus({ connected: false, reason: "status check failed" });
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshSpotifyStatus();
+  }, [refreshSpotifyStatus]);
+
+  const connectSpotify = async () => {
+    setConnecting(true);
+    try {
+      const res = await callHubFn<{ auth_url: string }>("connect_spotify_init", {});
+      if (!res.auth_url) throw new Error("No auth_url returned");
+      const popup = window.open(res.auth_url, "spotify_oauth", "width=600,height=800");
+      if (!popup) {
+        toast.error("Popup blocked — allow popups for this site and try again.");
+        setConnecting(false);
+        return;
+      }
+      const start = Date.now();
+      const poll = window.setInterval(async () => {
+        if (Date.now() - start > 120_000) {
+          window.clearInterval(poll);
+          setConnecting(false);
+          toast.error("Spotify connect timed out — try again.");
+          return;
+        }
+        try {
+          const s = await callHubFn<{ connected: boolean }>("connect_spotify_status", {});
+          if (s.connected) {
+            window.clearInterval(poll);
+            setSpotifyStatus(s);
+            setConnecting(false);
+            popup.close();
+            toast.success("Spotify connected. Live discovery is on.");
+          }
+        } catch {
+          /* keep polling */
+        }
+      }, 2000);
+    } catch (e) {
+      setConnecting(false);
+      toast.error(e instanceof Error ? e.message : "Failed to start Spotify connect");
+    }
+  };
 
   const fetchRows = useCallback(async () => {
     setLoading(true);
@@ -122,6 +175,23 @@ const AdminPlaylistTargets: React.FC = () => {
           Lane-aware discovery, contact enrichment, and pitch drafts (approval required before send).
         </p>
       </div>
+
+      {spotifyStatus && !spotifyStatus.connected && (
+        <Card className="p-4 border-yellow-600/50 bg-yellow-950/20">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <div className="font-medium">Spotify not connected</div>
+              <p className="text-sm text-muted-foreground mt-1">
+                Live playlist discovery is off until Spotify is connected. Catalog-only results still work.
+                {spotifyStatus.reason ? ` (${spotifyStatus.reason})` : ""}
+              </p>
+            </div>
+            <Button type="button" onClick={connectSpotify} disabled={connecting}>
+              {connecting ? "Waiting for authorization…" : "Connect Spotify"}
+            </Button>
+          </div>
+        </Card>
+      )}
 
       <Card className="p-5 space-y-3">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">

@@ -8,6 +8,18 @@ import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { callHubFn } from "@/lib/hubApi";
 
+interface CampaignSendResponse {
+  html?: string;
+  text?: string;
+  subject?: string;
+  from?: string;
+  result?: { ok: boolean; error?: string };
+  would_send?: number;
+  sent?: number;
+  failed?: number;
+  remaining_subscribed?: number;
+}
+
 interface Campaign {
   id: string;
   name: string;

@@ -66,7 +66,6 @@ export function buildWhyItFits(
       (row.playlist_name ?? "").toLowerCase().includes(t.slice(0, 12));
   }).slice(0, 3);
   const parts: string[] = [];
-  if (lane) parts.push(`Lane: ${lane.replace(/_/g, " ")}`);
   if (matchedTags.length) parts.push(`Tags: ${matchedTags.join(", ")}`);
   if (matchedRefs.length) parts.push(`Refs: ${matchedRefs.join("; ")}`);
   if (!parts.length && row.playlist_name) {

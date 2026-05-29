@@ -98,6 +98,22 @@ function tokenizeVibe(vibe: string): Set<string> {
   );
 }
 
+function isWebDiscovered(rc: Record<string, unknown> | null): boolean {
+  const src = rc?.source;
+  return src === "spotify_web" || src === "live_api";
+}
+
+/** Penalize micro-playlists and placeholder names so pitchable curators rank higher. */
+function curatorQualityPenalty(row: PlaylistRow): number {
+  let p = 0;
+  const saves = row.follower_count ?? 0;
+  const name = row.playlist_name ?? "";
+  if (saves > 0 && saves < 50) p += 25;
+  if (/^Playlist [a-zA-Z0-9]{4,8}/i.test(name)) p += 15;
+  if (saves === 0 && isWebDiscovered(row.research_context as Record<string, unknown> | null)) p += 8;
+  return p;
+}
+
 function scoreRow(
   row: PlaylistRow,
   vibeTokens: Set<string>,
@@ -119,7 +135,7 @@ function scoreRow(
   if (row.whitelist_status) s += 15;
   if (row.tier === 1) s += 10;
   else if (row.tier === 2) s += 5;
-  return s + extraLaneScore;
+  return s + extraLaneScore - curatorQualityPenalty(row);
 }
 
 function inferVibeTags(trackArtists: string[], references: string[]): string[] {
@@ -305,11 +321,6 @@ async function upsertLiveResults(
     });
     if (error) console.error("upsert live", pl.playlist_id, error.message);
   }
-}
-
-function isWebDiscovered(rc: Record<string, unknown> | null): boolean {
-  const src = rc?.source;
-  return src === "spotify_web" || src === "live_api";
 }
 
 export async function mergeCatalogAndLive(

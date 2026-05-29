@@ -5,6 +5,7 @@ SELECT playlist_id, curator_name, playlist_name, curator_instagram
   FROM public.playlist_targets
  WHERE lower(curator_instagram) = 'spotify'
     OR lower(curator_instagram) LIKE 'spotify%'
+    OR curator_instagram LIKE '%.%'
     OR lower(curator_instagram) IN ('instagram', 'meta', 'facebook', 'anchor', 'soundtrap');
 
 -- 2) Clear bad handles and allow re-enrichment
@@ -22,4 +23,5 @@ UPDATE public.playlist_targets
        last_enriched_at = NULL
  WHERE lower(curator_instagram) = 'spotify'
     OR lower(curator_instagram) LIKE 'spotify%'
+    OR curator_instagram LIKE '%.%'
     OR lower(curator_instagram) IN ('instagram', 'meta', 'facebook', 'anchor', 'soundtrap');

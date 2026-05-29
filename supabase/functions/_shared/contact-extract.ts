@@ -70,6 +70,7 @@ export function extractIgHandle(url: string): string | null {
   const m = url.match(IG_URL_RE);
   if (!m) return null;
   const handle = m[1].toLowerCase();
+  if (handle.includes(".")) return null;
   if (IG_HANDLE_DENYLIST.has(handle)) return null;
   if (/^spotify/i.test(handle)) return null;
   if (/^(share|tags|reels|explore|stories|p)$/.test(handle)) return null;

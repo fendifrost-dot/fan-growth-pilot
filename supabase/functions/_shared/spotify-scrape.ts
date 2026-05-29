@@ -54,7 +54,10 @@ const PLAYLIST_SCHEMA = {
   properties: {
     name: { type: "string" },
     description: { type: "string" },
-    follower_count: { type: "number" },
+    follower_count: {
+      type: "number",
+      description: "Playlist save count or follower count shown on the page (e.g. 1033 saves)",
+    },
     owner_name: { type: "string" },
     owner_id: { type: "string" },
     track_artists: {
@@ -99,6 +102,14 @@ function normalizePlaylistId(raw: string): string {
 function parsePlaylistsFromMarkdown(md: string): SpotifyPlaylistStub[] {
   const seen = new Set<string>();
   const out: SpotifyPlaylistStub[] = [];
+  const titled = /\[([^\]]{3,120})\]\(https?:\/\/open\.spotify\.com\/playlist\/([a-zA-Z0-9]{22})/gi;
+  let tm: RegExpExecArray | null;
+  while ((tm = titled.exec(md)) !== null) {
+    const id = tm[2];
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push({ playlist_id: id, name: tm[1].trim() });
+  }
   const re = /open\.spotify\.com\/playlist\/([a-zA-Z0-9]{22})/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(md)) !== null) {
@@ -115,8 +126,8 @@ function parseUserIdFromMarkdown(md: string): string | null {
   return m ? m[1] : null;
 }
 
-function parseFollowers(md: string): number | undefined {
-  const m = md.match(/([\d,.]+)\s*([KkMm])?\s*followers/i);
+function parseMetricCount(md: string): number | undefined {
+  const m = md.match(/([\d,.]+)\s*([KkMm])?\s*(?:saves|followers|likes)/i);
   if (!m) return undefined;
   let n = parseFloat(m[1].replace(/,/g, ""));
   const suf = (m[2] ?? "").toUpperCase();
@@ -155,11 +166,11 @@ export async function scrapeSpotifyPlaylistDetail(playlistId: string): Promise<S
     if (extract && typeof extract === "object" && extract.name) {
       const d = extract as SpotifyPlaylistDetail;
       if (!d.owner_id && markdown) d.owner_id = parseUserIdFromMarkdown(markdown) ?? undefined;
-      if (d.follower_count == null && markdown) d.follower_count = parseFollowers(markdown);
+      if (d.follower_count == null && markdown) d.follower_count = parseMetricCount(markdown);
       return d;
     }
     const owner_id = parseUserIdFromMarkdown(markdown);
-    const follower_count = parseFollowers(markdown);
+    const follower_count = parseMetricCount(markdown);
     if (!markdown && !owner_id) return null;
     return {
       name: `Playlist ${id.slice(0, 8)}`,

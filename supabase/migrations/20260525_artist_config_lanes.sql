@@ -24,6 +24,6 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
 
 INSERT INTO public.artist_config (key, value) VALUES
   ('spotify_track_urls', '{
-    "Designed For Me (Control)": "https://open.spotify.com/track/7sJxadBp6nw4KaMLiPsiwD"
+    "Designed For Me (Control)": "https://rnd.fm/runway-music-hlpad6"
   }'::jsonb)
 ON CONFLICT (key) DO UPDATE SET value = public.artist_config.value || EXCLUDED.value, updated_at = now();

@@ -35,17 +35,40 @@ function pickChannel(row: Record<string, unknown>, channelOverride?: string): st
   return null;
 }
 
-function buildPitchBody(row: Record<string, unknown>, trackName: string, pitchAngle: string): string {
+const DEFAULT_STREAM_LINKS: Record<string, string> = {
+  "Designed For Me (Control)": "https://rnd.fm/runway-music-hlpad6",
+};
+
+async function resolveStreamLink(sb: SupabaseClient, trackName: string): Promise<string> {
+  const { data } = await sb.from("artist_config").select("value").eq("key", "spotify_track_urls").maybeSingle();
+  const urls = (data?.value && typeof data.value === "object" && !Array.isArray(data.value))
+    ? data.value as Record<string, string>
+    : {};
+  return urls[trackName]?.trim() || DEFAULT_STREAM_LINKS[trackName] || "";
+}
+
+function buildPitchBody(row: Record<string, unknown>, trackName: string, pitchAngle: string, streamLink: string): string {
   const curator = (row.curator_name as string | null)?.trim() || "there";
   const playlist = (row.playlist_name as string | null)?.trim() || "your playlist";
-  const why = (row.why_it_fits as string | null)?.trim();
   const angle = pitchAngle || (row.recommended_pitch_angle as string | null)?.trim() ||
     "Melodic rap with a deep-house groove — late-night luxury energy.";
-  return [
-    `Hi ${curator},`, "", `I'd love to submit **${trackName}** by **Fendi Frost** for *${playlist}*.`,
-    "", angle, why ? `\n${why}` : "",
-    "", "Happy to share the Spotify link or any extra context. Thank you for your time.", "", "— Fendi Frost",
-  ].filter(Boolean).join("\n");
+  const lines = [
+    `Hi ${curator},`,
+    "",
+    `I'd love to submit **${trackName}** by **Fendi Frost** for *${playlist}*.`,
+    "",
+    angle,
+  ];
+  if (streamLink) {
+    lines.push("", `Stream: ${streamLink}`);
+  }
+  lines.push(
+    "Happy to share extra context, stems, or a different mix if useful.",
+    "Thank you for your time.",
+    "",
+    "— Fendi Frost",
+  );
+  return lines.join("\n");
 }
 
 export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseClient): Promise<RunResult> {
@@ -73,14 +96,20 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
   const subject = typeof body.override_subject === "string" && body.override_subject.trim()
     ? body.override_subject.trim()
     : `Submission for ${row.playlist_name}: Fendi Frost — ${trackName}`;
+  const streamLink = await resolveStreamLink(sb, trackName);
   const pitchBody = typeof body.override_body === "string" && body.override_body.trim()
     ? body.override_body.trim()
-    : buildPitchBody(row, trackName, pitchAngle);
+    : buildPitchBody(row, trackName, pitchAngle, streamLink);
 
   const { data: draft, error: insErr } = await sb.from("outreach_drafts").insert({
     playlist_id: playlistId, track_name: trackName, channel, recipient,
     subject: channel === "email" ? subject : null, body: pitchBody,
-    generated_by: generatedBy, status: "pending", metadata: { lane: lane || null },
+    generated_by: generatedBy, status: "pending",
+    metadata: {
+      lane: lane || null,
+      why_it_fits: (row.why_it_fits as string | null) ?? null,
+      stream_link: streamLink || null,
+    },
   }).select("id, channel, subject, body, recipient").single();
 
   if (insErr) return { status: 500, data: { error: insErr.message } };
@@ -249,7 +278,8 @@ export async function runQueueInstagramPitch(
   const lanes = await loadLanesConfig(sb);
   const lane = String(row.lane ?? "").trim();
   const pitchAngle = lane ? (lanes[lane]?.pitch_angle ?? "") : "";
-  const draftText = buildPitchBody(row, trackName, pitchAngle);
+  const streamLink = await resolveStreamLink(sb, trackName);
+  const draftText = buildPitchBody(row, trackName, pitchAngle, streamLink);
 
   const queued = await queueInstagramPitch(sb, playlistId, handle, lane || null, draftText);
   if (!queued) return { status: 500, data: { error: "Failed to queue DM" } };

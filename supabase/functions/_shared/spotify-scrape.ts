@@ -96,7 +96,11 @@ const USER_SCHEMA = {
   },
 };
 
-/** Links safe for IG/website extraction — never page-chrome markdown fallbacks. */
+/**
+ * Curator-authored bio links only.
+ * If `bio_links` is present (including `[]`), do NOT fall back to `social_links` — empty means no bio links.
+ * Legacy extracts with only `social_links` are read when `bio_links` was omitted entirely.
+ */
 export function profileCuratorBioLinks(profile: SpotifyUserProfile | null): string[] {
   if (!profile) return [];
   if (profile.bio_links !== undefined) return profile.bio_links;
@@ -200,14 +204,13 @@ export async function scrapeSpotifyUserProfile(userId: string): Promise<SpotifyU
     const { markdown, extract } = await firecrawlScrape(url, { schema: USER_SCHEMA, waitFor: 2000 });
     if (extract && typeof extract === "object") {
       const profile = extract as SpotifyUserProfile;
-      if (profile.bio_links === undefined && profile.social_links !== undefined) {
-        profile.bio_links = profile.social_links;
-      }
+      // Do not copy social_links → bio_links (chrome links must not masquerade as bio_links).
       if (profile.follower_count == null && markdown) {
         profile.follower_count = parseMetricCount(markdown);
       }
       return profile;
     }
+    // No markdown IG fallback — page chrome would match instagram.com/spotify first.
     console.warn("[spotify-scrape] user profile extract empty:", userId);
     return null;
   } catch (e) {

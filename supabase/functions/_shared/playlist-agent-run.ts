@@ -12,6 +12,7 @@ import {
   extractSubmissionLinkFromMarkdown,
   extractSubmissionNote,
   isValidCuratorIgHandle,
+  sanitizeCuratorIgHandle,
   scoreHunterEmail,
 } from "./contact-extract.ts";
 import { firecrawl, firecrawlSearch } from "./firecrawl.ts";
@@ -29,8 +30,12 @@ const RATE_MS = 2000;
 function pickChannel(row: Record<string, unknown>, channelOverride?: string): string | null {
   const ch = (channelOverride ?? "").trim().toLowerCase();
   if (ch) return ch;
+  const method = (row.submission_method as string | null)?.trim();
+  if (method === "email" && (row.curator_email as string | null)?.trim()) return "email";
+  if (method === "web_form" && (row.submission_url as string | null)?.trim()) return "web_form";
+  if (method === "instagram_dm" && isValidCuratorIgHandle(row.curator_instagram as string)) return "instagram_dm";
   if ((row.curator_email as string | null)?.trim()) return "email";
-  if ((row.curator_instagram as string | null)?.trim()) return "instagram_dm";
+  if (isValidCuratorIgHandle(row.curator_instagram as string)) return "instagram_dm";
   if ((row.submission_url as string | null)?.trim()) return "web_form";
   return null;
 }
@@ -191,7 +196,10 @@ function extractContacts(text: string): Extracted {
   const lt = text.match(/(?:https?:\/\/)?(?:linktr\.ee|beacons\.ai)\/([a-zA-Z0-9._-]+)/i);
   if (lt) out.curator_linktree = lt[0];
   const handle = text.match(/@([a-zA-Z0-9._]{2,30})/);
-  if (handle && !out.curator_instagram) out.curator_instagram = handle[1];
+  if (handle && !out.curator_instagram) {
+    const h = sanitizeCuratorIgHandle(handle[1]);
+    if (h) out.curator_instagram = h;
+  }
   const email = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
   if (email) out.curator_email = email[0].toLowerCase();
   const web = text.match(/https?:\/\/(?!open\.spotify|instagram|tiktok|twitter|x\.com|linktr|beacons)[^\s)]+/i);
@@ -430,8 +438,9 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
 
         for (const link of bioLinks) {
           const ig = extractIgHandle(link);
-          if (ig && !patch.curator_instagram && isValidCuratorIgHandle(ig)) {
-            patch.curator_instagram = ig;
+          const igHandle = sanitizeCuratorIgHandle(ig);
+          if (igHandle && !patch.curator_instagram) {
+            patch.curator_instagram = igHandle;
             fieldsAdded.curator_instagram++;
             break;
           }
@@ -671,7 +680,11 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
       }
     }
     if (body.curator_instagram !== undefined) {
-      patch.curator_instagram = String(body.curator_instagram ?? "").trim() || null;
+      const raw = String(body.curator_instagram ?? "").trim();
+      patch.curator_instagram = raw ? sanitizeCuratorIgHandle(raw) : null;
+      if (raw && !patch.curator_instagram) {
+        return { status: 400, data: { error: "Invalid Instagram handle (corporate/chrome or domain-shaped handles rejected)" } };
+      }
     }
     if (body.lane !== undefined) patch.lane = String(body.lane ?? "").trim() || null;
     if (body.submission_url !== undefined) {

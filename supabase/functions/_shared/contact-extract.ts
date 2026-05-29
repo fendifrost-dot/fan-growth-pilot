@@ -82,10 +82,24 @@ export function parseInstagramHandle(link: string): string | null {
   return extractIgHandle(link);
 }
 
+/** Validate a stored or candidate IG handle (not a full URL). */
 export function isValidCuratorIgHandle(handle: string | null | undefined): boolean {
   if (!handle?.trim()) return false;
   const clean = handle.replace(/^@/, "").trim();
+  const lower = clean.toLowerCase();
+  if (IG_HANDLE_DENYLIST.has(lower)) return false;
+  if (/^spotify/i.test(lower)) return false;
+  if (lower.includes(".")) return false;
+  if (!/^[A-Za-z0-9._]{2,30}$/.test(clean)) return false;
   return extractIgHandle(`https://www.instagram.com/${clean}/`) !== null;
+}
+
+/** Normalize handle for DB storage; returns null if invalid. */
+export function sanitizeCuratorIgHandle(handle: string | null | undefined): string | null {
+  if (!handle?.trim()) return null;
+  const fromUrl = extractIgHandle(handle.trim());
+  const raw = (fromUrl ?? handle.replace(/^@/, "").trim());
+  return isValidCuratorIgHandle(raw) ? raw : null;
 }
 
 export function extractSubmissionDM(text: string): string | null {

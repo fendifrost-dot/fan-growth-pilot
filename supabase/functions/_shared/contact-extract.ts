@@ -13,17 +13,33 @@ const EMAIL_DENYLIST = new Set([
   "noreply@instagram.com",
 ]);
 
-const IG_DENY_HANDLES = new Set([
+export const IG_HANDLE_DENYLIST = new Set([
   "spotify",
+  "spotifyusa",
+  "spotify_uk",
+  "spotifycanada",
+  "spotify_latam",
+  "spotifyfrance",
+  "spotifydeutschland",
+  "spotifyjp",
+  "spotifykorea",
+  "spotifybrasil",
   "instagram",
+  "meta",
+  "facebook",
+  "anchor",
+  "soundtrap",
   "about",
   "explore",
   "reels",
   "stories",
   "p",
   "accounts",
-  "meta",
+  "share",
+  "tags",
 ]);
+
+const IG_URL_RE = /(?:^|\/\/|\.)instagram\.com\/([A-Za-z0-9._]{2,30})(?:\/|\?|$)/i;
 
 export type EmailHit = { value: string; source: "mailto" | "text" | "emoji" };
 
@@ -49,12 +65,26 @@ export function extractLinktreeUrls(text: string): string[] {
   return [...new Set(matches.map((u) => (u.startsWith("http") ? u : `https://${u}`)))];
 }
 
-export function parseInstagramHandle(link: string): string | null {
-  const m = link.match(/(?:^|\.)instagram\.com\/([A-Za-z0-9._]{2,30})(?:\/|$|\?)/i);
+/** Extract curator IG handle from a URL; rejects Spotify/page-chrome handles. */
+export function extractIgHandle(url: string): string | null {
+  const m = url.match(IG_URL_RE);
   if (!m) return null;
-  const h = m[1].toLowerCase();
-  if (IG_DENY_HANDLES.has(h)) return null;
+  const handle = m[1].toLowerCase();
+  if (IG_HANDLE_DENYLIST.has(handle)) return null;
+  if (/^spotify/i.test(handle)) return null;
+  if (/^(share|tags|reels|explore|stories|p)$/.test(handle)) return null;
   return m[1];
+}
+
+/** @deprecated Use extractIgHandle */
+export function parseInstagramHandle(link: string): string | null {
+  return extractIgHandle(link);
+}
+
+export function isValidCuratorIgHandle(handle: string | null | undefined): boolean {
+  if (!handle?.trim()) return false;
+  const clean = handle.replace(/^@/, "").trim();
+  return extractIgHandle(`https://www.instagram.com/${clean}/`) !== null;
 }
 
 export function extractSubmissionDM(text: string): string | null {
@@ -62,7 +92,8 @@ export function extractSubmissionDM(text: string): string | null {
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     const h = m[1].toLowerCase();
-    if (!IG_DENY_HANDLES.has(h)) return `@${m[1]}`;
+    if (IG_HANDLE_DENYLIST.has(h) || /^spotify/i.test(h)) continue;
+    if (extractIgHandle(`https://www.instagram.com/${m[1]}/`)) return `@${m[1]}`;
   }
   return null;
 }

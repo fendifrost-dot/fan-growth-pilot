@@ -38,6 +38,7 @@ export CCA="https://vsemrziqxrrfcquxfnwd.supabase.co/functions/v1/control-center
 
 | Commit | What it did |
 |--------|-------------|
+| (latest) | IG denylist + `bio_links`-only scrape — fixes `curator_instagram = spotify` |
 | `b5fbd35` | Fixed rap regex; reference-first search terms (API path) |
 | `05cfe33` | User OAuth for playlist-research (API still 403 for search) |
 | `217eba2` | `connect_spotify` admin flow |

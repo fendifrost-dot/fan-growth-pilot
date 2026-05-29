@@ -8,14 +8,19 @@ import {
   extractEmails,
   extractLinktreeUrls,
   extractSubmissionDM,
+  extractIgHandle,
   extractSubmissionLinkFromMarkdown,
   extractSubmissionNote,
-  parseInstagramHandle,
+  isValidCuratorIgHandle,
   scoreHunterEmail,
 } from "./contact-extract.ts";
 import { firecrawl } from "./firecrawl.ts";
 import { loadLanesConfig } from "./playlist-lanes.ts";
-import { scrapeSpotifyPlaylistDetail, scrapeSpotifyUserProfile } from "./spotify-scrape.ts";
+import {
+  profileCuratorBioLinks,
+  scrapeSpotifyPlaylistDetail,
+  scrapeSpotifyUserProfile,
+} from "./spotify-scrape.ts";
 
 export type RunResult = { status: number; data: unknown };
 
@@ -146,7 +151,10 @@ type Extracted = { curator_instagram?: string; curator_tiktok?: string; curator_
 function extractContacts(text: string): Extracted {
   const out: Extracted = {};
   const ig = text.match(/(?:https?:\/\/)?(?:www\.)?instagram\.com\/([a-zA-Z0-9._]+)/i);
-  if (ig) out.curator_instagram = ig[1].replace(/\/$/, "");
+  if (ig) {
+    const handle = extractIgHandle(`https://www.instagram.com/${ig[1]}/`);
+    if (handle) out.curator_instagram = handle;
+  }
   const tt = text.match(/(?:https?:\/\/)?(?:www\.)?tiktok\.com\/@([a-zA-Z0-9._]+)/i);
   if (tt) out.curator_tiktok = tt[1];
   const tw = text.match(/(?:https?:\/\/)?(?:www\.)?(?:twitter|x)\.com\/([a-zA-Z0-9_]+)/i);
@@ -201,7 +209,7 @@ async function queueInstagramPitch(
   draftText?: string,
 ): Promise<boolean> {
   const clean = handle.replace(/^@/, "").trim();
-  if (!clean || clean.toLowerCase() === "spotify") return false;
+  if (!isValidCuratorIgHandle(clean)) return false;
   const { error } = await sb.from("social_engagement_queue").insert({
     platform: "instagram",
     action: "pitch_dm",
@@ -231,11 +239,12 @@ export async function runQueueInstagramPitch(
   const { data: row, error } = await sb.from("playlist_targets").select("*").eq("playlist_id", playlistId).maybeSingle();
   if (error || !row) return { status: 404, data: { error: "Playlist not found" } };
 
-  const handle = (row.curator_submission_dm as string | null)?.trim() ||
+  const rawHandle = (row.curator_submission_dm as string | null)?.trim() ||
     (row.curator_instagram as string | null)?.trim();
-  if (!handle) {
-    return { status: 400, data: { error: "No Instagram handle on this row" } };
+  if (!rawHandle || !isValidCuratorIgHandle(rawHandle)) {
+    return { status: 400, data: { error: "No valid Instagram handle on this row" } };
   }
+  const handle = rawHandle;
 
   const lanes = await loadLanesConfig(sb);
   const lane = String(row.lane ?? "").trim();
@@ -316,9 +325,16 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
       const profile = await scrapeSpotifyUserProfile(detail.owner_id);
       await sleep(ENRICH_POLLITE_MS);
 
-      const bioText = [profile?.bio ?? "", profile?.social_links?.join("\n") ?? ""].join("\n");
+      if (!profile) continue;
 
-      if (!row.curator_email && profile?.bio) {
+      if (row.curator_instagram && !isValidCuratorIgHandle(String(row.curator_instagram))) {
+        patch.curator_instagram = null;
+      }
+
+      const bioLinks = profileCuratorBioLinks(profile);
+      const bioText = [profile.bio ?? "", bioLinks.join("\n")].join("\n");
+
+      if (!row.curator_email && profile.bio) {
         const found = extractEmails(profile.bio);
         if (found.length) {
           patch.curator_email = found[0].value;
@@ -332,14 +348,15 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
         ...(row.curator_linktree ? [String(row.curator_linktree)] : []),
       ];
 
-      for (const link of profile?.social_links ?? []) {
+      for (const link of bioLinks) {
         if (linktreeUrls.some((lt) => link.includes(lt.replace(/^https?:\/\//, "")))) continue;
-        const ig = parseInstagramHandle(link);
-        if (ig && !row.curator_instagram && !patch.curator_instagram) {
+        const ig = extractIgHandle(link);
+        if (ig && !patch.curator_instagram && isValidCuratorIgHandle(ig)) {
           patch.curator_instagram = ig;
           fieldsAdded.curator_instagram++;
+          break;
         }
-        if (/^https?:\/\//i.test(link) && !parseInstagramHandle(link) && !patch.curator_website && !row.curator_website) {
+        if (/^https?:\/\//i.test(link) && !extractIgHandle(link) && !patch.curator_website && !row.curator_website) {
           if (!/tiktok|twitter|x\.com|open\.spotify/i.test(link)) {
             patch.curator_website = link;
             fieldsAdded.curator_website++;
@@ -369,8 +386,8 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
             patch.curator_submission_url = subLink;
             fieldsAdded.curator_submission_url++;
           }
-          const ltIg = parseInstagramHandle(md + html);
-          if (ltIg && !patch.curator_instagram && !row.curator_instagram) {
+          const ltIg = extractIgHandle(md) || extractIgHandle(html);
+          if (ltIg && !patch.curator_instagram && !row.curator_instagram && isValidCuratorIgHandle(ltIg)) {
             patch.curator_instagram = ltIg;
             fieldsAdded.curator_instagram++;
           }
@@ -380,8 +397,9 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
         }
       }
 
-      const igHandle = ((patch.curator_instagram as string) || row.curator_instagram || "").replace(/^@/, "");
-      if (igHandle && igHandle.toLowerCase() !== "spotify" && !patch.curator_email && !row.curator_email) {
+      const igRaw = (patch.curator_instagram as string) || row.curator_instagram || "";
+      const igHandle = isValidCuratorIgHandle(igRaw) ? igRaw.replace(/^@/, "") : "";
+      if (igHandle && !patch.curator_email && !row.curator_email) {
         try {
           const ig = await firecrawl(`https://www.instagram.com/${igHandle}/`, {
             formats: ["markdown", "html"],
@@ -432,7 +450,9 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
       }
 
       const finalEmail = (patch.curator_email as string) ?? row.curator_email ?? null;
-      const finalIg = (patch.curator_instagram as string) ?? row.curator_instagram ?? null;
+      const finalIgRaw = (patch.curator_instagram as string) ?? row.curator_instagram ?? null;
+      const finalIg = finalIgRaw && isValidCuratorIgHandle(finalIgRaw) ? finalIgRaw : null;
+      if (finalIgRaw && !finalIg) patch.curator_instagram = null;
       const finalSubUrl = (patch.curator_submission_url as string) ?? row.curator_submission_url ?? null;
       const finalSubDm = (patch.curator_submission_dm as string) ?? row.curator_submission_dm ?? null;
 

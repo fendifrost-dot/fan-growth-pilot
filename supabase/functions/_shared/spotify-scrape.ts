@@ -20,6 +20,9 @@ export type SpotifyPlaylistDetail = {
 export type SpotifyUserProfile = {
   display_name?: string;
   bio?: string;
+  /** Curator-authored bio links only (preferred). */
+  bio_links?: string[];
+  /** Legacy extract field — do not use for IG when bio_links is present (even if empty). */
   social_links?: string[];
 };
 
@@ -66,10 +69,27 @@ const USER_SCHEMA = {
   type: "object",
   properties: {
     display_name: { type: "string" },
-    bio: { type: "string" },
-    social_links: { type: "array", items: { type: "string" } },
+    bio: {
+      type: "string",
+      description:
+        "The user's own profile description / bio text. Do NOT include footer or page-chrome text. If the profile has no bio, return an empty string.",
+    },
+    bio_links: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "ONLY links in the user's own bio / about section. Do NOT include footer links, Verified Artist promotions, Spotify corporate accounts, or links not authored by the profile owner. If the bio has no links, return an empty array.",
+    },
   },
 };
+
+/** Links safe for IG/website extraction — never page-chrome markdown fallbacks. */
+export function profileCuratorBioLinks(profile: SpotifyUserProfile | null): string[] {
+  if (!profile) return [];
+  if (profile.bio_links !== undefined) return profile.bio_links;
+  if (profile.social_links !== undefined) return profile.social_links;
+  return [];
+}
 
 function normalizePlaylistId(raw: string): string {
   const m = raw.match(/([a-zA-Z0-9]{22})/);
@@ -159,26 +179,17 @@ export async function scrapeSpotifyUserProfile(userId: string): Promise<SpotifyU
     const { markdown, extract } = await firecrawlScrape(url, { schema: USER_SCHEMA, waitFor: 2000 });
     if (extract && typeof extract === "object") {
       const profile = extract as SpotifyUserProfile;
-      if (!profile.social_links?.length && markdown) {
-        profile.social_links = extractUrlsFromMarkdown(markdown);
+      if (profile.bio_links === undefined && profile.social_links !== undefined) {
+        profile.bio_links = profile.social_links;
       }
       return profile;
     }
-    if (!markdown) return null;
-    return {
-      display_name: undefined,
-      bio: markdown.slice(0, 2000),
-      social_links: extractUrlsFromMarkdown(markdown),
-    };
+    console.warn("[spotify-scrape] user profile extract empty:", userId);
+    return null;
   } catch (e) {
     console.error("[spotify-scrape] user profile failed:", userId, e instanceof Error ? e.message : e);
     return null;
   }
-}
-
-function extractUrlsFromMarkdown(md: string): string[] {
-  const urls = md.match(/https?:\/\/[^\s)\]"']+/g) ?? [];
-  return [...new Set(urls)].slice(0, 20);
 }
 
 export function sleep(ms: number): Promise<void> {

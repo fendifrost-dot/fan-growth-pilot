@@ -15,6 +15,7 @@ import {
 import {
   scrapeSpotifyPlaylistDetail,
   scrapeSpotifySearchPlaylists,
+  scrapeSpotifyUserProfile,
   sleep,
 } from "../_shared/spotify-scrape.ts";
 
@@ -32,6 +33,48 @@ const DETAIL_CAP_FULL = 20;
 const SEARCH_REF_CAP_QUICK = 2;
 const STUBS_PER_REF_QUICK = 6;
 const DETAIL_CAP_QUICK = 8;
+const MIN_LANE_BOOST_FOR_TAG = 8;
+
+const DISCLAIM_PATTERNS = [
+  /do(?:es)? not curate/i,
+  /won[''\u2019]?t be able to listen/i,
+  /not accepting submissions/i,
+  /please use the contact form/i,
+  /not a playlist submission/i,
+];
+
+type DiscoverySkips = {
+  disclaim_brand: number;
+  casual_user: number;
+  micro_playlist: number;
+};
+
+function isDisclaimBrand(text: string): boolean {
+  return DISCLAIM_PATTERNS.some((re) => re.test(text));
+}
+
+function rowMatchesLane(
+  r: PlaylistRow,
+  lane: string,
+  laneRe: RegExp | null,
+  references: string[],
+): boolean {
+  if (!lane) return false;
+  const laneScore = scoreLaneBoost(r, laneRe, references);
+  const nameHay = `${r.playlist_name ?? ""} ${r.curator_name ?? ""}`;
+  const refLower = references.map((s) => s.toLowerCase());
+  const vibeTags = normalizeTags(r.vibe_tags);
+  return (
+    laneScore >= MIN_LANE_BOOST_FOR_TAG ||
+    (laneRe?.test(nameHay) ?? false) ||
+    vibeTags.some((t) => refLower.includes(t) || refLower.some((ref) => t.includes(ref) || ref.includes(t)))
+  );
+}
+
+function sanitizeWhyItFits(raw: string | null): string | null {
+  if (!raw || raw.length <= 15 || /^lane\s*:/i.test(raw)) return null;
+  return raw;
+}
 
 function getHubKey(req: Request): string {
   return (
@@ -69,6 +112,7 @@ type DiscoveredPlaylist = {
   id: string;
   playlist_id: string;
   name: string;
+  description?: string;
   followers: number | null;
   owner: string | null;
   owner_id?: string;
@@ -266,6 +310,7 @@ async function discoverViaSpotifyWeb(
       const detail = await scrapeSpotifyPlaylistDetail(pl.id);
       if (detail) {
         if (detail.name) pl.name = detail.name;
+        pl.description = detail.description;
         pl.followers = detail.follower_count ?? pl.followers;
         pl.owner = detail.owner_name ?? pl.owner;
         pl.owner_id = detail.owner_id ?? pl.owner_id;
@@ -282,14 +327,78 @@ async function discoverViaSpotifyWeb(
   return out;
 }
 
+async function filterDiscoveryCandidates(
+  items: DiscoveredPlaylist[],
+  quick: boolean,
+): Promise<{ items: DiscoveredPlaylist[]; skips: DiscoverySkips }> {
+  const skips: DiscoverySkips = { disclaim_brand: 0, casual_user: 0, micro_playlist: 0 };
+  const kept: DiscoveredPlaylist[] = [];
+
+  for (const pl of items) {
+    const haystack = [pl.name, pl.owner, pl.description ?? ""].join(" ");
+    if (isDisclaimBrand(haystack)) {
+      console.log("[discover] disclaim-brand skip:", pl.playlist_id, pl.name);
+      skips.disclaim_brand++;
+      continue;
+    }
+    if (pl.followers != null && pl.followers < 50) {
+      console.log("[discover] micro-playlist skip:", pl.playlist_id, pl.name, "saves:", pl.followers);
+      skips.micro_playlist++;
+      continue;
+    }
+    if (!quick && pl.owner_id) {
+      try {
+        const profile = await scrapeSpotifyUserProfile(pl.owner_id);
+        const fc = profile?.follower_count;
+        const fg = profile?.following_count;
+        if (fc != null && fg != null && fc < 1000 && fc < fg) {
+          console.log("[discover] casual-user skip:", pl.playlist_id, pl.owner, fc, "<", fg);
+          skips.casual_user++;
+          await sleep(800);
+          continue;
+        }
+      } catch (e) {
+        console.error("[discover] profile scrape failed:", pl.owner_id, e instanceof Error ? e.message : e);
+      }
+      await sleep(800);
+    }
+    kept.push(pl);
+  }
+
+  return { items: kept, skips };
+}
+
 async function upsertLiveResults(
   supabase: SupabaseClient,
   items: DiscoveredPlaylist[],
   lane: string,
   references: string[],
+  laneRe: RegExp | null,
 ): Promise<void> {
   for (const pl of items) {
     const vibe_tags = inferVibeTags(pl._track_artists ?? [], references);
+    const stub: PlaylistRow = {
+      playlist_id: pl.playlist_id,
+      platform: "spotify",
+      playlist_name: pl.name,
+      curator_name: pl.owner,
+      follower_count: pl.followers,
+      track_count: null,
+      overlap_score: null,
+      fraud_score: null,
+      fraud_verdict: null,
+      pitch_status: null,
+      research_context: null,
+      tier: null,
+      whitelist_status: null,
+      vibe_tags,
+      similar_artists: references.slice(0, 8),
+      submission_method: null,
+      submission_url: null,
+      curator_email: null,
+      is_active: null,
+    };
+    const tagLane = rowMatchesLane(stub, lane, laneRe, references);
     const row = {
       playlist_id: pl.playlist_id,
       platform: "spotify",
@@ -314,7 +423,7 @@ async function upsertLiveResults(
       submission_method: "email",
       submission_url: `https://open.spotify.com/playlist/${pl.id}`,
       is_active: true,
-      ...(lane ? { lane } : {}),
+      ...(tagLane && lane ? { lane } : {}),
     };
     const { error } = await supabase.from("playlist_targets").upsert(row, {
       onConflict: "playlist_id",
@@ -328,7 +437,7 @@ export async function mergeCatalogAndLive(
   trackName: string,
   userVibe: string,
   opts?: { lane?: string; references?: string[]; quick?: boolean },
-): Promise<{ results: PlaylistRow[]; live_count: number }> {
+): Promise<{ results: PlaylistRow[]; live_count: number; discovery_skips: DiscoverySkips }> {
   await findPlaylistOpportunities(supabase, trackName, userVibe);
   const lane = (opts?.lane ?? "").trim();
   const references = opts?.references ?? [];
@@ -338,11 +447,24 @@ export async function mergeCatalogAndLive(
 
   const start = Date.now();
   const quick = Boolean(opts?.quick);
-  const live = await discoverViaSpotifyWeb(references, lane, quick);
-  if (live.length) {
-    await upsertLiveResults(supabase, live, lane, references);
+  const discovered = await discoverViaSpotifyWeb(references, lane, quick);
+  const discovery_skips: DiscoverySkips = { disclaim_brand: 0, casual_user: 0, micro_playlist: 0 };
+  let live: DiscoveredPlaylist[] = [];
+  if (discovered.length) {
+    const filtered = await filterDiscoveryCandidates(discovered, quick);
+    discovery_skips.disclaim_brand = filtered.skips.disclaim_brand;
+    discovery_skips.casual_user = filtered.skips.casual_user;
+    discovery_skips.micro_playlist = filtered.skips.micro_playlist;
+    live = filtered.items;
+    if (live.length) {
+      await upsertLiveResults(supabase, live, lane, references, laneRe);
+    }
   }
-  console.log(`[playlist-research] web discovery: ${live.length} playlists in ${Date.now() - start}ms`);
+  console.log(
+    `[playlist-research] web discovery: ${discovered.length} found, ${live.length} ingested, skips:`,
+    JSON.stringify(discovery_skips),
+    `${Date.now() - start}ms`,
+  );
 
   const vibeTokens = tokenizeVibe(userVibe);
   const trackTokens = tokenizeVibe(trackName);
@@ -369,14 +491,19 @@ export async function mergeCatalogAndLive(
       const rc = r.research_context as Record<string, unknown> | null;
       const source = isWebDiscovered(rc) ? "live" : "catalog";
       const laneScore = scoreLaneBoost(r, laneRe, references);
-      const why_it_fits = buildWhyItFits(r, lane, references, laneRe);
+      const matchesLane = rowMatchesLane(r, lane, laneRe, references);
+      const why_it_fits = matchesLane
+        ? sanitizeWhyItFits(buildWhyItFits(r, lane, references, laneRe))
+        : null;
       return {
         ...r,
         match_score: scoreRow(r, vibeTokens, trackTokens, laneScore),
         source: source as "catalog" | "live",
-        lane: lane || (r as { lane?: string }).lane || null,
+        lane: matchesLane ? lane : ((r as { lane?: string }).lane ?? null),
         why_it_fits,
-        recommended_pitch_angle: pitchAngle || (r as { recommended_pitch_angle?: string }).recommended_pitch_angle || null,
+        recommended_pitch_angle: matchesLane
+          ? (pitchAngle || (r as { recommended_pitch_angle?: string }).recommended_pitch_angle || null)
+          : ((r as { recommended_pitch_angle?: string }).recommended_pitch_angle ?? null),
       };
     });
 
@@ -389,10 +516,13 @@ export async function mergeCatalogAndLive(
   const results = merged.slice(0, MAX_RESULTS);
   for (const r of results) {
     const patch: Record<string, unknown> = {};
-    if (lane) patch.lane = lane;
-    if ((r as { why_it_fits?: string }).why_it_fits) patch.why_it_fits = (r as { why_it_fits?: string }).why_it_fits;
-    if ((r as { recommended_pitch_angle?: string | null }).recommended_pitch_angle) {
-      patch.recommended_pitch_angle = (r as { recommended_pitch_angle?: string }).recommended_pitch_angle;
+    const matchesLane = rowMatchesLane(r, lane, laneRe, references);
+    if (matchesLane) {
+      patch.lane = lane;
+      const why = (r as { why_it_fits?: string | null }).why_it_fits;
+      if (why) patch.why_it_fits = why;
+      const angle = (r as { recommended_pitch_angle?: string | null }).recommended_pitch_angle;
+      if (angle) patch.recommended_pitch_angle = angle;
     }
     if (Object.keys(patch).length === 0) continue;
     const { error } = await supabase.from("playlist_targets").update(patch).eq("playlist_id", r.playlist_id);
@@ -402,6 +532,7 @@ export async function mergeCatalogAndLive(
   return {
     results,
     live_count: live.length,
+    discovery_skips,
   };
 }
 
@@ -435,7 +566,7 @@ Deno.serve(async (req) => {
     }
 
     const quick = Boolean(body.quick);
-    const { results, live_count } = await mergeCatalogAndLive(supabase, track_name, user_vibe, {
+    const { results, live_count, discovery_skips } = await mergeCatalogAndLive(supabase, track_name, user_vibe, {
       lane,
       references,
       quick,
@@ -460,6 +591,7 @@ Deno.serve(async (req) => {
       references,
       count: results.length,
       live_api_ingested: live_count,
+      discovery_skips,
       quick,
       playlists,
     });

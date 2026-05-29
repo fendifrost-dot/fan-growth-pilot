@@ -20,6 +20,8 @@ export type SpotifyPlaylistDetail = {
 export type SpotifyUserProfile = {
   display_name?: string;
   bio?: string;
+  follower_count?: number;
+  following_count?: number;
   /** Curator-authored bio links only (preferred). */
   bio_links?: string[];
   /** Legacy extract field — do not use for IG when bio_links is present (even if empty). */
@@ -82,6 +84,14 @@ const USER_SCHEMA = {
       items: { type: "string" },
       description:
         "ONLY links in the user's own bio / about section. Do NOT include footer links, Verified Artist promotions, Spotify corporate accounts, or links not authored by the profile owner. If the bio has no links, return an empty array.",
+    },
+    follower_count: {
+      type: "number",
+      description: "Profile follower count shown on the user page (not playlist saves)",
+    },
+    following_count: {
+      type: "number",
+      description: "Number of accounts this user follows",
     },
   },
 };
@@ -192,6 +202,9 @@ export async function scrapeSpotifyUserProfile(userId: string): Promise<SpotifyU
       const profile = extract as SpotifyUserProfile;
       if (profile.bio_links === undefined && profile.social_links !== undefined) {
         profile.bio_links = profile.social_links;
+      }
+      if (profile.follower_count == null && markdown) {
+        profile.follower_count = parseMetricCount(markdown);
       }
       return profile;
     }

@@ -53,11 +53,11 @@ function normalizeTags(raw: unknown): string[] {
 }
 
 export function buildWhyItFits(
-  row: { playlist_name?: string | null; vibe_tags?: unknown; similar_artists?: unknown },
+  row: { playlist_name?: string | null; curator_name?: string | null; vibe_tags?: unknown; similar_artists?: unknown },
   lane: string,
   references: string[],
   laneRe: RegExp | null,
-): string {
+): string | null {
   const tags = [...normalizeTags(row.vibe_tags), ...normalizeTags(row.similar_artists)];
   const matchedTags = tags.filter((t) => laneRe?.test(t) ?? false).slice(0, 4);
   const matchedRefs = references.filter((r) => {
@@ -68,8 +68,9 @@ export function buildWhyItFits(
   const parts: string[] = [];
   if (matchedTags.length) parts.push(`Tags: ${matchedTags.join(", ")}`);
   if (matchedRefs.length) parts.push(`Refs: ${matchedRefs.join("; ")}`);
-  if (!parts.length && row.playlist_name) {
-    parts.push(`Playlist "${row.playlist_name}" aligns with requested vibe.`);
+  const nameHay = `${row.playlist_name ?? ""} ${row.curator_name ?? ""}`;
+  if (!parts.length && laneRe?.test(nameHay)) {
+    parts.push(`Title/curator matches ${lane.replace(/_/g, " ")} lane signals.`);
   }
-  return parts.join(" · ") || "Strong catalog match for this track lane.";
+  return parts.length ? parts.join(" · ") : null;
 }

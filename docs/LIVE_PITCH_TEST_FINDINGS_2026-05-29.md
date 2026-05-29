@@ -30,6 +30,8 @@ Redeploy edge functions control-center-api and playlist-research. Do not modify 
 | IG handles with `.` rejected | `contact-extract.ts` |
 | Saves/followers regex; playlist titles from markdown links | `spotify-scrape.ts` |
 | Rank penalty: micro-playlists, placeholder names | `playlist-research/index.ts` |
+| Lane-fit gate (`MIN_LANE_BOOST_FOR_TAG=8`); discovery skips | `playlist-research/index.ts` |
+| Clear mistagged rap lanes | `migrations/20260530_clear_mistagged_lanes.sql` |
 
 ## Pending operator decision
 

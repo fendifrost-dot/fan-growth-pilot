@@ -3,7 +3,17 @@
  * Workaround: Lovable Publish redeploys existing functions only; new function names 404 until registered.
  */
 import { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
-import { firecrawlMarkdown } from "./firecrawl.ts";
+import {
+  confidenceForEmailSource,
+  extractEmails,
+  extractLinktreeUrls,
+  extractSubmissionDM,
+  extractSubmissionLinkFromMarkdown,
+  extractSubmissionNote,
+  parseInstagramHandle,
+  scoreHunterEmail,
+} from "./contact-extract.ts";
+import { firecrawl } from "./firecrawl.ts";
 import { loadLanesConfig } from "./playlist-lanes.ts";
 import { scrapeSpotifyPlaylistDetail, scrapeSpotifyUserProfile } from "./spotify-scrape.ts";
 
@@ -176,11 +186,70 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-const EMAIL_RE = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
-const IG_RE = /(?:instagram\.com\/|@)([A-Za-z0-9._]+)/i;
-const LINKTREE_RE = /(linktr\.ee|linktree\.com|beacons\.ai)\/([A-Za-z0-9._-]+)/i;
-const ENRICH_BATCH_SIZE = 5;
-const ENRICH_DEADLINE_MS = 50_000;
+const ENRICH_POLLITE_MS = 1500;
+const ENRICH_PER_CALL_LIMIT = 8;
+
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+async function queueInstagramPitch(
+  sb: SupabaseClient,
+  playlistId: string,
+  handle: string,
+  lane: string | null,
+  draftText?: string,
+): Promise<boolean> {
+  const clean = handle.replace(/^@/, "").trim();
+  if (!clean || clean.toLowerCase() === "spotify") return false;
+  const { error } = await sb.from("social_engagement_queue").insert({
+    platform: "instagram",
+    action: "pitch_dm",
+    target_url: `https://www.instagram.com/${clean}/`,
+    draft_text: draftText ?? null,
+    playlist_id: playlistId,
+    status: "pending",
+    result: { lane, source: "enrich_v2" },
+  });
+  if (error) {
+    console.error("[enrich] queue insert failed:", playlistId, error.message);
+    return false;
+  }
+  return true;
+}
+
+export async function runQueueInstagramPitch(
+  body: Record<string, unknown>,
+  sb: SupabaseClient,
+): Promise<RunResult> {
+  const playlistId = String(body.playlist_id ?? "").trim();
+  const trackName = String(body.track_name ?? "").trim();
+  if (!playlistId || !trackName) {
+    return { status: 400, data: { error: "playlist_id and track_name required" } };
+  }
+
+  const { data: row, error } = await sb.from("playlist_targets").select("*").eq("playlist_id", playlistId).maybeSingle();
+  if (error || !row) return { status: 404, data: { error: "Playlist not found" } };
+
+  const handle = (row.curator_submission_dm as string | null)?.trim() ||
+    (row.curator_instagram as string | null)?.trim();
+  if (!handle) {
+    return { status: 400, data: { error: "No Instagram handle on this row" } };
+  }
+
+  const lanes = await loadLanesConfig(sb);
+  const lane = String(row.lane ?? "").trim();
+  const pitchAngle = lane ? (lanes[lane]?.pitch_angle ?? "") : "";
+  const draftText = buildPitchBody(row, trackName, pitchAngle);
+
+  const queued = await queueInstagramPitch(sb, playlistId, handle, lane || null, draftText);
+  if (!queued) return { status: 500, data: { error: "Failed to queue DM" } };
+
+  return {
+    status: 200,
+    data: { ok: true, queued: true, target_url: `https://www.instagram.com/${handle.replace(/^@/, "")}/`, draft_text: draftText },
+  };
+}
 
 export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb: SupabaseClient): Promise<RunResult> {
   if (!Deno.env.get("FIRECRAWL_API_KEY")) {
@@ -189,128 +258,222 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
 
   const playlistIds = Array.isArray(body.playlist_ids) ? body.playlist_ids.map(String).filter(Boolean) : [];
   const trackName = String(body.track_name ?? "").trim();
+  const lane = typeof body.lane === "string" ? body.lane.trim() : "";
   const offset = Math.max(0, Number(body.offset) || 0);
-  const requestedLimit = Math.min(30, Math.max(1, Number(body.limit) || 10));
-  const batchSize = Math.min(ENRICH_BATCH_SIZE, requestedLimit);
+  const limit = Math.min(12, Math.max(1, Number(body.limit) || ENRICH_PER_CALL_LIMIT));
+  const staleBefore = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
 
   let query = sb
     .from("playlist_targets")
-    .select("playlist_id, curator_email, curator_instagram, curator_website, curator_linktree, platform, research_context")
+    .select(
+      "playlist_id, curator_email, curator_instagram, curator_linktree, curator_website, curator_submission_url, curator_submission_dm, research_context, lane, submission_method",
+    )
     .eq("is_active", true)
-    .or("curator_email.is.null,curator_instagram.is.null");
+    .or("curator_email.is.null,submission_method.is.null")
+    .or(`last_enriched_at.is.null,last_enriched_at.lt.${staleBefore}`)
+    .order("follower_count", { ascending: false, nullsFirst: false });
 
   if (playlistIds.length) {
     query = query.in("playlist_id", playlistIds.slice(0, 30));
+  } else if (lane) {
+    query = query.eq("lane", lane);
   } else if (trackName) {
-    query = query.order("follower_count", { ascending: false, nullsFirst: false });
     if (body.lane) query = query.eq("lane", String(body.lane));
   } else {
-    return { status: 400, data: { error: "playlist_ids or track_name required" } };
+    return { status: 400, data: { error: "lane, track_name, or playlist_ids required" } };
   }
 
-  const { data: rows, error } = await query.range(offset, offset + batchSize - 1);
-  if (error) return { status: 500, data: { error: error.message } };
+  const { data: rows, error } = await query.range(offset, offset + limit - 1);
+  if (error) return { status: 500, data: { ok: false, error: error.message } };
   if (!rows?.length) {
-    return { status: 200, data: { ok: true, enriched: 0, fields_added: {}, done: true, next_offset: offset } };
+    return { status: 200, data: { ok: true, enriched: 0, done: true, fields_added: {}, next_offset: null } };
   }
 
-  const deadline = Date.now() + ENRICH_DEADLINE_MS;
   const fieldsAdded: Record<string, number> = {
     curator_email: 0,
     curator_instagram: 0,
     curator_website: 0,
     curator_linktree: 0,
+    curator_submission_url: 0,
+    curator_submission_dm: 0,
+    routed_instagram_dm: 0,
   };
   let enriched = 0;
 
   for (const row of rows) {
-    if (Date.now() > deadline) break;
-    if (!String(row.playlist_id ?? "").startsWith("spotify:")) continue;
+    if (!row.playlist_id?.startsWith("spotify:")) continue;
 
-    const spotifyId = String(row.playlist_id).replace(/^spotify:/, "");
-    const hadEmail = Boolean((row.curator_email as string | null)?.trim());
+    const spotifyId = row.playlist_id.replace(/^spotify:/, "");
+    const patch: Record<string, unknown> = {};
+    let bestConfidence = Number((row as { contact_confidence?: number }).contact_confidence ?? 0) || 0;
+    const recordConfidence = (c: number) => {
+      if (c > bestConfidence) bestConfidence = c;
+    };
 
     try {
       const detail = await scrapeSpotifyPlaylistDetail(spotifyId);
-      if (!detail) continue;
+      if (!detail?.owner_id) continue;
+      const profile = await scrapeSpotifyUserProfile(detail.owner_id);
+      await sleep(ENRICH_POLLITE_MS);
 
-      const ownerId = detail.owner_id ??
-        (row.research_context as { spotify_owner_id?: string } | null)?.spotify_owner_id;
-      if (!ownerId) continue;
+      const bioText = [profile?.bio ?? "", profile?.social_links?.join("\n") ?? ""].join("\n");
 
-      const profile = await scrapeSpotifyUserProfile(ownerId);
-      await sleep(1500);
-
-      const patch: Record<string, unknown> = {};
-      const bio = profile?.bio ?? "";
-      const bioEmails = bio.match(EMAIL_RE);
-      if (bioEmails?.length && !row.curator_email) {
-        patch.curator_email = bioEmails[0].toLowerCase();
-        fieldsAdded.curator_email++;
+      if (!row.curator_email && profile?.bio) {
+        const found = extractEmails(profile.bio);
+        if (found.length) {
+          patch.curator_email = found[0].value;
+          fieldsAdded.curator_email++;
+          recordConfidence(9);
+        }
       }
 
-      const links = profile?.social_links ?? [];
-      for (const link of links) {
-        const ig = link.match(IG_RE);
+      const linktreeUrls = [
+        ...extractLinktreeUrls(bioText),
+        ...(row.curator_linktree ? [String(row.curator_linktree)] : []),
+      ];
+
+      for (const link of profile?.social_links ?? []) {
+        if (linktreeUrls.some((lt) => link.includes(lt.replace(/^https?:\/\//, "")))) continue;
+        const ig = parseInstagramHandle(link);
         if (ig && !row.curator_instagram && !patch.curator_instagram) {
-          patch.curator_instagram = ig[1];
+          patch.curator_instagram = ig;
           fieldsAdded.curator_instagram++;
         }
-        const lt = link.match(LINKTREE_RE);
-        if (lt && !patch.curator_linktree) {
-          patch.curator_linktree = `https://${lt[1]}/${lt[2]}`;
-          fieldsAdded.curator_linktree++;
-        }
-        if (/^https?:\/\//.test(link) && !ig && !lt && !patch.curator_website && !row.curator_website) {
-          patch.curator_website = link;
-          fieldsAdded.curator_website++;
-        }
-      }
-
-      if (!patch.curator_email && detail.description) {
-        const descEmails = detail.description.match(EMAIL_RE);
-        if (descEmails?.length) {
-          patch.curator_email = descEmails[0].toLowerCase();
-          fieldsAdded.curator_email++;
-        }
-      }
-
-      const igHandle = (patch.curator_instagram ?? row.curator_instagram) as string | undefined;
-      if (igHandle && !patch.curator_email && !row.curator_email) {
-        try {
-          const md = await firecrawlMarkdown(`https://www.instagram.com/${igHandle}/`, 2000);
-          const igEmails = md.match(EMAIL_RE);
-          if (igEmails?.length) {
-            patch.curator_email = igEmails[0].toLowerCase();
-            fieldsAdded.curator_email++;
+        if (/^https?:\/\//i.test(link) && !parseInstagramHandle(link) && !patch.curator_website && !row.curator_website) {
+          if (!/tiktok|twitter|x\.com|open\.spotify/i.test(link)) {
+            patch.curator_website = link;
+            fieldsAdded.curator_website++;
           }
-          await sleep(1500);
-        } catch {
-          /* IG may rate-limit */
         }
       }
 
-      if (Object.keys(patch).length) {
-        patch.contact_confidence = patch.curator_email ? 8 : (patch.curator_instagram ? 5 : 2);
-        const { error: upErr } = await sb.from("playlist_targets").update(patch).eq("playlist_id", row.playlist_id);
-        if (!upErr) enriched++;
+      if (linktreeUrls[0] && !patch.curator_linktree && !row.curator_linktree) {
+        patch.curator_linktree = linktreeUrls[0];
+        fieldsAdded.curator_linktree++;
       }
+
+      const linktreeUrl = (patch.curator_linktree as string) || row.curator_linktree;
+      if (linktreeUrl && !patch.curator_email && !row.curator_email) {
+        try {
+          const lt = await firecrawl(linktreeUrl, { formats: ["markdown", "html"], waitFor: 2000 });
+          const md = lt.data.markdown;
+          const html = lt.data.html;
+          const found = extractEmails(md, html);
+          if (found.length) {
+            patch.curator_email = found[0].value;
+            fieldsAdded.curator_email++;
+            recordConfidence(confidenceForEmailSource(found[0].source));
+          }
+          const subLink = extractSubmissionLinkFromMarkdown(md);
+          if (subLink && !patch.curator_submission_url) {
+            patch.curator_submission_url = subLink;
+            fieldsAdded.curator_submission_url++;
+          }
+          const ltIg = parseInstagramHandle(md + html);
+          if (ltIg && !patch.curator_instagram && !row.curator_instagram) {
+            patch.curator_instagram = ltIg;
+            fieldsAdded.curator_instagram++;
+          }
+          await sleep(ENRICH_POLLITE_MS);
+        } catch (e) {
+          console.error(`[enrich] linktree ${linktreeUrl} failed:`, errMsg(e));
+        }
+      }
+
+      const igHandle = ((patch.curator_instagram as string) || row.curator_instagram || "").replace(/^@/, "");
+      if (igHandle && igHandle.toLowerCase() !== "spotify" && !patch.curator_email && !row.curator_email) {
+        try {
+          const ig = await firecrawl(`https://www.instagram.com/${igHandle}/`, {
+            formats: ["markdown", "html"],
+            waitFor: 2000,
+          });
+          const md = ig.data.markdown;
+          const html = ig.data.html;
+          const found = extractEmails(md, html);
+          if (found.length) {
+            patch.curator_email = found[0].value;
+            fieldsAdded.curator_email++;
+            recordConfidence(confidenceForEmailSource(found[0].source));
+          }
+          const dm = extractSubmissionDM(md);
+          if (dm && !patch.curator_submission_dm) {
+            patch.curator_submission_dm = dm;
+            fieldsAdded.curator_submission_dm++;
+          }
+          const note = extractSubmissionNote(md);
+          if (note) patch.curator_submission_note = note;
+          await sleep(ENRICH_POLLITE_MS);
+        } catch (e) {
+          console.error(`[enrich] IG ${igHandle} failed:`, errMsg(e));
+        }
+      }
+
+      const hunterKey = Deno.env.get("HUNTER_API_KEY");
+      const website = (patch.curator_website as string) || row.curator_website;
+      if (!patch.curator_email && !row.curator_email && hunterKey && website) {
+        try {
+          const domain = new URL(website.startsWith("http") ? website : `https://${website}`).hostname.replace(/^www\./, "");
+          const r = await fetch(
+            `https://api.hunter.io/v2/domain-search?domain=${encodeURIComponent(domain)}&limit=5&api_key=${hunterKey}`,
+          );
+          const j = await r.json();
+          const emails = (j?.data?.emails ?? []) as Array<{ value: string; confidence?: number; type?: string; first_name?: string }>;
+          const ranked = emails
+            .map((e) => ({ ...e, score: scoreHunterEmail(e) }))
+            .sort((a, b) => (b.score - a.score) || ((b.confidence ?? 0) - (a.confidence ?? 0)));
+          if (ranked[0] && (ranked[0].confidence ?? 0) >= 50) {
+            patch.curator_email = ranked[0].value.toLowerCase();
+            fieldsAdded.curator_email++;
+            recordConfidence(3);
+          }
+        } catch (e) {
+          console.error(`[enrich] hunter for ${website} failed:`, errMsg(e));
+        }
+      }
+
+      const finalEmail = (patch.curator_email as string) ?? row.curator_email ?? null;
+      const finalIg = (patch.curator_instagram as string) ?? row.curator_instagram ?? null;
+      const finalSubUrl = (patch.curator_submission_url as string) ?? row.curator_submission_url ?? null;
+      const finalSubDm = (patch.curator_submission_dm as string) ?? row.curator_submission_dm ?? null;
+
+      if (finalEmail) {
+        patch.submission_method = "email";
+      } else if (finalSubUrl) {
+        patch.submission_method = "web_form";
+        patch.curator_submission_url = finalSubUrl;
+        patch.submission_url = finalSubUrl;
+      } else if (finalSubDm || finalIg) {
+        patch.submission_method = "instagram_dm";
+        const handle = finalSubDm || `@${String(finalIg).replace(/^@/, "")}`;
+        if (await queueInstagramPitch(sb, row.playlist_id, handle, row.lane, undefined)) {
+          fieldsAdded.routed_instagram_dm++;
+          recordConfidence(Math.max(bestConfidence, 4));
+        }
+      } else {
+        patch.submission_method = "none";
+      }
+
+      patch.contact_confidence = bestConfidence;
+      patch.last_enriched_at = new Date().toISOString();
+
+      const { error: upErr } = await sb.from("playlist_targets").update(patch).eq("playlist_id", row.playlist_id);
+      if (!upErr) enriched++;
     } catch (e) {
-      console.error(`[enrich] ${row.playlist_id} failed:`, e instanceof Error ? e.message : String(e));
+      console.error(`[enrich] ${row.playlist_id} failed:`, errMsg(e));
     }
   }
 
-  const next_offset = offset + rows.length;
-  const done = rows.length < batchSize;
+  const nextOffset = offset + rows.length;
+  const done = rows.length < limit;
 
   return {
     status: 200,
     data: {
       ok: true,
       enriched,
-      fields_added: fieldsAdded,
       done,
-      next_offset: done ? null : next_offset,
+      next_offset: done ? null : nextOffset,
+      fields_added: fieldsAdded,
     },
   };
 }
@@ -357,7 +520,7 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
   const action = String(body.action ?? "").trim();
   if (action === "list_targets") {
     let q = sb.from("playlist_targets").select(
-      "playlist_id, playlist_name, curator_name, curator_email, curator_instagram, lane, tier, authenticity_score, fraud_verdict, contact_confidence, pitch_status, follower_count, is_active, why_it_fits, recommended_pitch_angle, submission_url",
+      "playlist_id, playlist_name, curator_name, curator_email, curator_instagram, curator_linktree, curator_submission_url, curator_submission_dm, curator_submission_note, lane, tier, authenticity_score, fraud_verdict, contact_confidence, pitch_status, follower_count, is_active, why_it_fits, recommended_pitch_angle, submission_url, submission_method, last_enriched_at",
     ).eq("is_active", true).order("follower_count", { ascending: false, nullsFirst: false }).limit(200);
     if (body.lane) q = q.eq("lane", String(body.lane));
     if (body.tier != null && body.tier !== "") q = q.eq("tier", Number(body.tier));
@@ -382,7 +545,10 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
     if (body.curator_email !== undefined) {
       const em = String(body.curator_email ?? "").trim();
       patch.curator_email = em || null;
-      if (em) patch.contact_confidence = 9;
+      if (em) {
+        patch.contact_confidence = 9;
+        patch.submission_method = "email";
+      }
     }
     if (body.curator_instagram !== undefined) {
       patch.curator_instagram = String(body.curator_instagram ?? "").trim() || null;
@@ -527,6 +693,7 @@ const PLAYLIST_AGENT_ACTIONS = new Set([
   "list_targets", "list_drafts", "update_draft", "deactivate_target", "patch_target",
   "run_playlist_research", "send_campaign",
   "connect_spotify_init", "connect_spotify_status",
+  "queue_instagram_pitch",
 ]);
 
 export function isPlaylistAgentAction(action: string): boolean {
@@ -558,6 +725,8 @@ export async function runPlaylistAgentAction(
       return runConnectSpotifyInit(body);
     case "connect_spotify_status":
       return runConnectSpotifyStatus(body, sb);
+    case "queue_instagram_pitch":
+      return runQueueInstagramPitch(body, sb);
     default:
       return { status: 400, data: { error: `Unknown playlist agent action: ${action}` } };
   }

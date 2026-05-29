@@ -11,15 +11,76 @@ type PlaylistRow = {
   curator_name: string | null;
   curator_email: string | null;
   curator_instagram: string | null;
+  curator_submission_url: string | null;
+  curator_submission_dm: string | null;
   lane: string | null;
   tier: number | null;
   authenticity_score: number | null;
   fraud_verdict: string | null;
   contact_confidence: number | null;
+  submission_method: string | null;
+  last_enriched_at: string | null;
   pitch_status: string | null;
   follower_count: number | null;
   why_it_fits: string | null;
 };
+
+function ContactCell({ row }: { row: PlaylistRow }) {
+  const conf = row.contact_confidence;
+  const tip = row.last_enriched_at
+    ? `Enriched: ${new Date(row.last_enriched_at).toLocaleString()}`
+    : "Not enriched yet";
+  const badge =
+    conf != null ? (
+      <span className="ml-1 text-[10px] px-1 rounded bg-muted text-muted-foreground" title={tip}>
+        {conf}
+      </span>
+    ) : null;
+
+  const method = row.submission_method ?? (row.curator_email ? "email" : null);
+
+  if (method === "email" && row.curator_email) {
+    return (
+      <span title={tip}>
+        ✉️ {row.curator_email}
+        {badge}
+      </span>
+    );
+  }
+  if (method === "web_form" && row.curator_submission_url) {
+    return (
+      <a href={row.curator_submission_url} target="_blank" rel="noreferrer" className="underline" title={tip}>
+        🔗 Submission form
+        {badge}
+      </a>
+    );
+  }
+  if (method === "instagram_dm") {
+    const handle = (row.curator_submission_dm || row.curator_instagram || "").replace(/^@/, "");
+    if (!handle) return <span className="text-muted-foreground">—</span>;
+    return (
+      <a
+        href={`https://www.instagram.com/${handle}/`}
+        target="_blank"
+        rel="noreferrer"
+        title={tip}
+      >
+        📩 @{handle}
+        {badge}
+      </a>
+    );
+  }
+  if (row.curator_instagram) {
+    const h = row.curator_instagram.replace(/^@/, "");
+    return (
+      <a href={`https://www.instagram.com/${h}/`} target="_blank" rel="noreferrer" title={tip}>
+        IG @{h}
+        {badge}
+      </a>
+    );
+  }
+  return <span className="text-muted-foreground" title={tip}>—</span>;
+}
 
 const TRACK_DEFAULT = "Designed For Me (Control)";
 
@@ -145,14 +206,13 @@ const AdminPlaylistTargets: React.FC = () => {
           done?: boolean;
           next_offset?: number | null;
         }>("enrich_curator_contacts", {
-          track_name: trackName,
           lane,
-          limit: 20,
+          limit: 8,
           offset,
         });
         total += res.enriched ?? 0;
         done = res.done ?? true;
-        offset = res.next_offset ?? offset + 5;
+        offset = res.next_offset ?? offset + 8;
         if (done) break;
         toast.message(`Enriched ${total} so far… continuing`);
       }
@@ -172,6 +232,21 @@ const AdminPlaylistTargets: React.FC = () => {
       await fetchRows();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const queueDm = async (playlistId: string) => {
+    setBusyId(playlistId);
+    try {
+      await callHubFn("queue_instagram_pitch", {
+        playlist_id: playlistId,
+        track_name: trackName,
+      });
+      toast.success("DM queued — copy from social queue / IG app");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyId(null);
     }
   };
 
@@ -309,18 +384,32 @@ const AdminPlaylistTargets: React.FC = () => {
                   <td className="p-2">{r.lane ?? "—"}</td>
                   <td className="p-2">{r.tier ?? "—"}</td>
                   <td className="p-2">{r.authenticity_score ?? "—"}</td>
-                  <td className="p-2 text-xs">
-                    {r.curator_email ? "✉ " : ""}
-                    {r.curator_instagram ? "IG @" + r.curator_instagram : ""}
-                    {!r.curator_email && !r.curator_instagram ? "—" : ""}
+                  <td className="p-2 text-xs max-w-[180px]">
+                    <ContactCell row={r} />
                   </td>
                   <td className="p-2 space-x-1 flex flex-wrap gap-1">
                     <Button size="sm" variant="secondary" onClick={() => setCuratorEmail(r.playlist_id)}>
                       Set email
                     </Button>
-                    <Button size="sm" variant="outline" disabled={busyId === r.playlist_id} onClick={() => draftPitch(r.playlist_id)}>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busyId === r.playlist_id || r.submission_method !== "email"}
+                      title={r.submission_method !== "email" ? "Email channel only" : undefined}
+                      onClick={() => draftPitch(r.playlist_id)}
+                    >
                       Draft
                     </Button>
+                    {r.submission_method === "instagram_dm" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={busyId === r.playlist_id}
+                        onClick={() => queueDm(r.playlist_id)}
+                      >
+                        Queue DM
+                      </Button>
+                    )}
                     <Button size="sm" variant="ghost" disabled={busyId === r.playlist_id} onClick={() => markAvoid(r.playlist_id)}>
                       Avoid
                     </Button>

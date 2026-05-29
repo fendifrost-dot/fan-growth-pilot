@@ -10,7 +10,7 @@ Use this doc before opening a new handoff. **Do not re-debug Spotify OAuth for p
 | Draft pitch copy | `draft_pitch` → `outreach_drafts` | Working |
 | Approve + send email | `approve_draft` + `send-pitch-email` (Resend) | Working when `curator_email` is set |
 | Web discovery | Firecrawl → `open.spotify.com/search/.../playlists` | Experimental — slow (30–60s), needs `FIRECRAWL_API_KEY` |
-| Contact enrich | Firecrawl playlist + user + optional IG | Low hit rate; 5 rows per API call |
+| Contact enrich v2 | Linktree + IG HTML/mailto + Hunter (opt-in) | 8 rows/call; see `20260530_enrich_v2_columns.sql` |
 | Spotify OAuth | `connect_spotify_*` | **Optional** — for `spotify-stats` only, not playlist discovery |
 
 ## Fastest path to a real pitch (same day)

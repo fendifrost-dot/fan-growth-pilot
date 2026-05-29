@@ -1,0 +1,98 @@
+const EMAIL_RE = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
+const EMOJI_EMAIL_RE = /(?:📩|✉️|📧|📨|📮|📬|📭|📤)\s*([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/g;
+const MAILTO_RE = /href=["']mailto:([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/gi;
+const LINKTREE_URL_RE =
+  /\b(?:https?:\/\/)?(?:linktr\.ee|linktree\.com|beacons\.ai|lnk\.bio|allmylinks\.com|carrd\.co|bio\.link)\/[A-Za-z0-9._\-\/]+/gi;
+
+const EMAIL_DENYLIST = new Set([
+  "support@spotify.com",
+  "press@spotify.com",
+  "privacy@spotify.com",
+  "help@instagram.com",
+  "press@instagram.com",
+  "noreply@instagram.com",
+]);
+
+const IG_DENY_HANDLES = new Set([
+  "spotify",
+  "instagram",
+  "about",
+  "explore",
+  "reels",
+  "stories",
+  "p",
+  "accounts",
+  "meta",
+]);
+
+export type EmailHit = { value: string; source: "mailto" | "text" | "emoji" };
+
+export function extractEmails(text: string, html?: string): EmailHit[] {
+  const out: EmailHit[] = [];
+  const seen = new Set<string>();
+  const add = (v: string, source: EmailHit["source"]) => {
+    const lower = v.toLowerCase();
+    if (EMAIL_DENYLIST.has(lower) || seen.has(lower)) return;
+    seen.add(lower);
+    out.push({ value: lower, source });
+  };
+  if (html) {
+    for (const m of html.matchAll(MAILTO_RE)) add(m[1], "mailto");
+  }
+  for (const m of text.matchAll(EMOJI_EMAIL_RE)) add(m[1], "emoji");
+  for (const m of text.matchAll(EMAIL_RE)) add(m[0], "text");
+  return out;
+}
+
+export function extractLinktreeUrls(text: string): string[] {
+  const matches = text.match(LINKTREE_URL_RE) ?? [];
+  return [...new Set(matches.map((u) => (u.startsWith("http") ? u : `https://${u}`)))];
+}
+
+export function parseInstagramHandle(link: string): string | null {
+  const m = link.match(/(?:^|\.)instagram\.com\/([A-Za-z0-9._]{2,30})(?:\/|$|\?)/i);
+  if (!m) return null;
+  const h = m[1].toLowerCase();
+  if (IG_DENY_HANDLES.has(h)) return null;
+  return m[1];
+}
+
+export function extractSubmissionDM(text: string): string | null {
+  const re = /(?:for\s+submissions?|send\s+demos?|pitch(?:es)?|submit(?:\s+via)?)[^@]{0,80}@([A-Za-z0-9._]{2,30})/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const h = m[1].toLowerCase();
+    if (!IG_DENY_HANDLES.has(h)) return `@${m[1]}`;
+  }
+  return null;
+}
+
+export function extractSubmissionNote(text: string): string | null {
+  for (const line of text.split(/\r?\n/)) {
+    const t = line.trim();
+    if (t.length > 0 && t.length < 200 && /\b(submit|submission|pitch|demos?)\b/i.test(t)) {
+      return t;
+    }
+  }
+  return null;
+}
+
+export function extractSubmissionLinkFromMarkdown(md: string): string | null {
+  const m = md.match(/\[([^\]]*?(?:submit|submission|pitch|demos?)[^\]]*?)\]\(([^)]+)\)/i);
+  return m?.[2] ?? null;
+}
+
+export function confidenceForEmailSource(source: EmailHit["source"]): number {
+  if (source === "mailto") return 7;
+  if (source === "emoji") return 6;
+  return 6;
+}
+
+export function scoreHunterEmail(e: { value: string; type?: string; first_name?: string }): number {
+  let s = 0;
+  const local = e.value.split("@")[0].toLowerCase();
+  if (/^(submissions?|demos?|music|pitch|hello|info|contact|management|press)$/.test(local)) s += 50;
+  if (e.type === "generic") s += 10;
+  if (e.first_name) s -= 5;
+  return s;
+}

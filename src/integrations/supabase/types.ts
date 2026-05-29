@@ -1004,7 +1004,11 @@ export type Database = {
           curator_email: string | null
           curator_instagram: string | null
           curator_linktree: string | null
+          curator_submission_dm: string | null
+          curator_submission_note: string | null
+          curator_submission_url: string | null
           curator_name: string | null
+          last_enriched_at: string | null
           curator_tiktok: string | null
           curator_twitter: string | null
           curator_website: string | null

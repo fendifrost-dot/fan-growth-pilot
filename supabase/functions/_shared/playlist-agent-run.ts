@@ -14,7 +14,7 @@ import {
   isValidCuratorIgHandle,
   scoreHunterEmail,
 } from "./contact-extract.ts";
-import { firecrawl } from "./firecrawl.ts";
+import { firecrawl, firecrawlSearch } from "./firecrawl.ts";
 import { loadLanesConfig } from "./playlist-lanes.ts";
 import {
   profileCuratorBioLinks,
@@ -230,6 +230,31 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+async function enrichFromWebSearch(
+  curatorName: string | null,
+  playlistName: string | null,
+): Promise<{ linktreeUrls: string[]; ig: string | null }> {
+  const curator = curatorName?.trim();
+  const playlist = playlistName?.trim();
+  if (!curator && !playlist) return { linktreeUrls: [], ig: null };
+  const query = [curator, playlist, "playlist curator", "linktree instagram contact"].filter(Boolean).join(" ");
+  const hits = await firecrawlSearch(query, 5);
+  const blob = hits.map((h) => `${h.title ?? ""}\n${h.description ?? ""}\n${h.url}`).join("\n\n");
+  let ig: string | null = null;
+  for (const h of hits) {
+    const fromUrl = extractIgHandle(h.url);
+    if (fromUrl && isValidCuratorIgHandle(fromUrl)) {
+      ig = fromUrl;
+      break;
+    }
+  }
+  if (!ig) {
+    const fromBlob = extractIgHandle(blob);
+    if (fromBlob && isValidCuratorIgHandle(fromBlob)) ig = fromBlob;
+  }
+  return { linktreeUrls: extractLinktreeUrls(blob), ig };
+}
+
 async function queueInstagramPitch(
   sb: SupabaseClient,
   playlistId: string,
@@ -305,7 +330,7 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
   let query = sb
     .from("playlist_targets")
     .select(
-      "playlist_id, curator_email, curator_instagram, curator_linktree, curator_website, curator_submission_url, curator_submission_dm, research_context, lane, submission_method",
+      "playlist_id, playlist_name, curator_name, curator_email, curator_instagram, curator_linktree, curator_website, curator_submission_url, curator_submission_dm, research_context, lane, submission_method, contact_confidence",
     )
     .eq("is_active", true)
     .or("curator_email.is.null,submission_method.is.null")
@@ -351,49 +376,94 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
 
     try {
       const detail = await scrapeSpotifyPlaylistDetail(spotifyId);
-      if (!detail?.owner_id) continue;
-      const profile = await scrapeSpotifyUserProfile(detail.owner_id);
-      await sleep(ENRICH_POLLITE_MS);
-
-      if (!profile) continue;
+      if (!detail) continue;
 
       if (row.curator_instagram && !isValidCuratorIgHandle(String(row.curator_instagram))) {
         patch.curator_instagram = null;
       }
 
-      const bioLinks = profileCuratorBioLinks(profile);
-      const bioText = [profile.bio ?? "", bioLinks.join("\n")].join("\n");
+      const playlistHaystack = [detail.description ?? "", detail.name ?? ""].join("\n");
+      const linktreeSeen = new Set<string>(
+        row.curator_linktree ? [String(row.curator_linktree)] : [],
+      );
+      const addLinktrees = (urls: string[]) => {
+        for (const u of urls) {
+          if (!linktreeSeen.has(u)) linktreeSeen.add(u);
+        }
+      };
+      addLinktrees(extractLinktreeUrls(playlistHaystack));
 
-      if (!row.curator_email && profile.bio) {
-        const found = extractEmails(profile.bio);
-        if (found.length) {
-          patch.curator_email = found[0].value;
+      if (!row.curator_email && !patch.curator_email) {
+        const fromPl = extractEmails(playlistHaystack);
+        if (fromPl.length) {
+          patch.curator_email = fromPl[0].value;
           fieldsAdded.curator_email++;
-          recordConfidence(9);
+          recordConfidence(confidenceForEmailSource(fromPl[0].source));
         }
       }
 
-      const linktreeUrls = [
-        ...extractLinktreeUrls(bioText),
-        ...(row.curator_linktree ? [String(row.curator_linktree)] : []),
-      ];
+      const plIg = extractIgHandle(playlistHaystack);
+      if (plIg && !patch.curator_instagram && isValidCuratorIgHandle(plIg)) {
+        patch.curator_instagram = plIg;
+        fieldsAdded.curator_instagram++;
+      }
 
-      for (const link of bioLinks) {
-        if (linktreeUrls.some((lt) => link.includes(lt.replace(/^https?:\/\//, "")))) continue;
-        const ig = extractIgHandle(link);
-        if (ig && !patch.curator_instagram && isValidCuratorIgHandle(ig)) {
-          patch.curator_instagram = ig;
-          fieldsAdded.curator_instagram++;
-          break;
+      let profile: Awaited<ReturnType<typeof scrapeSpotifyUserProfile>> = null;
+      if (detail.owner_id) {
+        profile = await scrapeSpotifyUserProfile(detail.owner_id);
+        await sleep(ENRICH_POLLITE_MS);
+      }
+
+      if (profile) {
+        const bioLinks = profileCuratorBioLinks(profile);
+        const bioText = [profile.bio ?? "", bioLinks.join("\n")].join("\n");
+        addLinktrees(extractLinktreeUrls(bioText));
+
+        if (!row.curator_email && !patch.curator_email && profile.bio) {
+          const found = extractEmails(profile.bio);
+          if (found.length) {
+            patch.curator_email = found[0].value;
+            fieldsAdded.curator_email++;
+            recordConfidence(9);
+          }
         }
-        if (/^https?:\/\//i.test(link) && !extractIgHandle(link) && !patch.curator_website && !row.curator_website) {
-          if (!/tiktok|twitter|x\.com|open\.spotify/i.test(link)) {
-            patch.curator_website = link;
-            fieldsAdded.curator_website++;
+
+        for (const link of bioLinks) {
+          const ig = extractIgHandle(link);
+          if (ig && !patch.curator_instagram && isValidCuratorIgHandle(ig)) {
+            patch.curator_instagram = ig;
+            fieldsAdded.curator_instagram++;
+            break;
+          }
+          if (/^https?:\/\//i.test(link) && !extractIgHandle(link) && !patch.curator_website && !row.curator_website) {
+            if (!/tiktok|twitter|x\.com|open\.spotify|linktr\.ee|beacons\.ai|lnk\.bio/i.test(link)) {
+              patch.curator_website = link;
+              fieldsAdded.curator_website++;
+            }
           }
         }
       }
 
+      const needsWebSearch = !patch.curator_email && !row.curator_email &&
+        linktreeSeen.size === 0 && !patch.curator_instagram && !row.curator_instagram;
+      if (needsWebSearch) {
+        try {
+          const ws = await enrichFromWebSearch(
+            detail.owner_name ?? (row as { curator_name?: string }).curator_name ?? null,
+            detail.name ?? (row as { playlist_name?: string }).playlist_name ?? null,
+          );
+          addLinktrees(ws.linktreeUrls);
+          if (ws.ig && !patch.curator_instagram && isValidCuratorIgHandle(ws.ig)) {
+            patch.curator_instagram = ws.ig;
+            fieldsAdded.curator_instagram++;
+          }
+          await sleep(ENRICH_POLLITE_MS);
+        } catch (e) {
+          console.error(`[enrich] web search failed for ${row.playlist_id}:`, errMsg(e));
+        }
+      }
+
+      const linktreeUrls = [...linktreeSeen];
       if (linktreeUrls[0] && !patch.curator_linktree && !row.curator_linktree) {
         patch.curator_linktree = linktreeUrls[0];
         fieldsAdded.curator_linktree++;

@@ -205,6 +205,7 @@ const AdminPlaylistTargets: React.FC = () => {
           enriched: number;
           done?: boolean;
           next_offset?: number | null;
+          fields_added?: Record<string, number>;
         }>("enrich_curator_contacts", {
           lane,
           limit: 8,
@@ -213,10 +214,16 @@ const AdminPlaylistTargets: React.FC = () => {
         total += res.enriched ?? 0;
         done = res.done ?? true;
         offset = res.next_offset ?? offset + 8;
+        const fa = res.fields_added;
+        if (fa && (fa.curator_email || fa.routed_instagram_dm)) {
+          toast.message(
+            `+${fa.curator_email ?? 0} emails, +${fa.routed_instagram_dm ?? 0} IG queue`,
+          );
+        }
         if (done) break;
         toast.message(`Enriched ${total} so far… continuing`);
       }
-      toast.success(`Enriched ${total} playlist(s). Use Set email for any still missing.`);
+      toast.success(`Enriched ${total} playlist(s). Filter by lane and check Contact column.`);
       await fetchRows();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));

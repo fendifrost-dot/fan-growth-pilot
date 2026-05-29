@@ -60,7 +60,7 @@ function buildPitchBody(row: Record<string, unknown>, trackName: string, pitchAn
   const lines = [
     `Hi ${curator},`,
     "",
-    `I'd love to submit **${trackName}** by **Fendi Frost** for *${playlist}*.`,
+    `I'd love to submit **${trackName}** for *${playlist}*.`,
     "",
     angle,
   ];

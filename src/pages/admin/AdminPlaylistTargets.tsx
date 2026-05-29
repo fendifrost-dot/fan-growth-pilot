@@ -34,6 +34,7 @@ const AdminPlaylistTargets: React.FC = () => {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [spotifyStatus, setSpotifyStatus] = useState<{ connected: boolean; reason?: string } | null>(null);
   const [connecting, setConnecting] = useState(false);
+  const [researching, setResearching] = useState(false);
 
   const refreshSpotifyStatus = useCallback(async () => {
     try {
@@ -108,30 +109,66 @@ const AdminPlaylistTargets: React.FC = () => {
 
   const filtered = useMemo(() => rows, [rows]);
 
-  const runResearch = async () => {
+  const runResearch = async (quick: boolean) => {
+    setResearching(true);
     try {
-      await callHubFn("run_playlist_research", {
+      const res = await callHubFn<{ live_api_ingested?: number }>("run_playlist_research", {
         track_name: trackName,
         lane,
-        references: ["Drake — Passionfruit", "Channel Tres — Joyful Noise"],
+        quick,
+        references: ["Kaytranada", "Channel Tres", "SG Lewis"],
         user_vibe:
           "Chicago deep-house influenced melodic rap, late-night luxury, Kaytranada / Channel Tres adjacent.",
       });
-      toast.success("Research complete — refresh list");
+      const n = res.live_api_ingested ?? 0;
+      toast.success(
+        quick
+          ? `Quick research done (${n} discovered via web). Paste emails with Set email where missing.`
+          : `Research done (${n} discovered). Run Enrich or Set email, then Draft.`,
+      );
+      await fetchRows();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setResearching(false);
+    }
+  };
+
+  const enrichBatch = async () => {
+    try {
+      let offset = 0;
+      let total = 0;
+      let done = false;
+      while (!done) {
+        const res = await callHubFn<{
+          enriched: number;
+          done?: boolean;
+          next_offset?: number | null;
+        }>("enrich_curator_contacts", {
+          track_name: trackName,
+          lane,
+          limit: 20,
+          offset,
+        });
+        total += res.enriched ?? 0;
+        done = res.done ?? true;
+        offset = res.next_offset ?? offset + 5;
+        if (done) break;
+        toast.message(`Enriched ${total} so far… continuing`);
+      }
+      toast.success(`Enriched ${total} playlist(s). Use Set email for any still missing.`);
       await fetchRows();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     }
   };
 
-  const enrichBatch = async () => {
+  const setCuratorEmail = async (playlistId: string) => {
+    const email = window.prompt("Curator email for pitching:");
+    if (!email?.trim()) return;
     try {
-      const res = await callHubFn<{ enriched: number }>("enrich_curator_contacts", {
-        track_name: trackName,
-        lane,
-        limit: 20,
-      });
-      toast.success(`Enriched ${res.enriched ?? 0} playlists`);
+      await callHubFn("patch_target", { playlist_id: playlistId, curator_email: email.trim() });
+      toast.success("Email saved");
       await fetchRows();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
@@ -172,22 +209,30 @@ const AdminPlaylistTargets: React.FC = () => {
       <div>
         <h1 className="text-2xl font-medium tracking-tight">Playlist targets</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Lane-aware discovery, contact enrichment, and pitch drafts (approval required before send).
+          Discovery uses Firecrawl (web). Pitch path: Set email → Draft → Approve on Outreach. See{" "}
+          <code className="text-xs">docs/PLAYLIST_PITCH_FAST_PATH.md</code>.
         </p>
       </div>
 
+      <Card className="p-4 border-border/80 bg-muted/20">
+        <p className="text-sm">
+          <span className="font-medium">Fastest first pitch:</span> pick any row → <strong>Set email</strong> →{" "}
+          <strong>Draft</strong> → <strong>/admin/outreach</strong> → Approve &amp; send. Spotify Connect below is
+          optional (stats only).
+        </p>
+      </Card>
+
       {spotifyStatus && !spotifyStatus.connected && (
-        <Card className="p-4 border-yellow-600/50 bg-yellow-950/20">
+        <Card className="p-4 border-muted">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>
-              <div className="font-medium">Spotify not connected</div>
-              <p className="text-sm text-muted-foreground mt-1">
-                Live playlist discovery is off until Spotify is connected. Catalog-only results still work.
-                {spotifyStatus.reason ? ` (${spotifyStatus.reason})` : ""}
+              <div className="font-medium text-sm">Spotify account (optional)</div>
+              <p className="text-xs text-muted-foreground mt-1">
+                For platform stats — not required for playlist discovery.
               </p>
             </div>
-            <Button type="button" onClick={connectSpotify} disabled={connecting}>
-              {connecting ? "Waiting for authorization…" : "Connect Spotify"}
+            <Button type="button" variant="outline" size="sm" onClick={connectSpotify} disabled={connecting}>
+              {connecting ? "Waiting…" : "Connect Spotify"}
             </Button>
           </div>
         </Card>
@@ -203,9 +248,16 @@ const AdminPlaylistTargets: React.FC = () => {
             <label className="text-xs text-muted-foreground">Lane (research)</label>
             <Input value={lane} onChange={(e) => setLane(e.target.value)} placeholder="deep_house_groove" />
           </div>
-          <div className="flex items-end gap-2">
-            <Button type="button" onClick={runResearch}>Run research</Button>
-            <Button type="button" variant="outline" onClick={enrichBatch}>Enrich contacts</Button>
+          <div className="flex flex-wrap items-end gap-2">
+            <Button type="button" disabled={researching} onClick={() => runResearch(true)}>
+              {researching ? "Researching…" : "Quick research"}
+            </Button>
+            <Button type="button" variant="secondary" disabled={researching} onClick={() => runResearch(false)}>
+              Full research
+            </Button>
+            <Button type="button" variant="outline" onClick={enrichBatch}>
+              Enrich contacts
+            </Button>
           </div>
         </div>
       </Card>
@@ -262,7 +314,10 @@ const AdminPlaylistTargets: React.FC = () => {
                     {r.curator_instagram ? "IG @" + r.curator_instagram : ""}
                     {!r.curator_email && !r.curator_instagram ? "—" : ""}
                   </td>
-                  <td className="p-2 space-x-1">
+                  <td className="p-2 space-x-1 flex flex-wrap gap-1">
+                    <Button size="sm" variant="secondary" onClick={() => setCuratorEmail(r.playlist_id)}>
+                      Set email
+                    </Button>
                     <Button size="sm" variant="outline" disabled={busyId === r.playlist_id} onClick={() => draftPitch(r.playlist_id)}>
                       Draft
                     </Button>

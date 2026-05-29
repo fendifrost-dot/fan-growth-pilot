@@ -26,9 +26,12 @@ const corsHeaders = {
 
 const MAX_RESULTS = 20;
 const DISCOVER_DEADLINE_MS = 55_000;
-const SEARCH_REF_CAP = 5;
-const STUBS_PER_REF = 10;
-const DETAIL_CAP = 20;
+const SEARCH_REF_CAP_FULL = 5;
+const STUBS_PER_REF_FULL = 10;
+const DETAIL_CAP_FULL = 20;
+const SEARCH_REF_CAP_QUICK = 2;
+const STUBS_PER_REF_QUICK = 6;
+const DETAIL_CAP_QUICK = 8;
 
 function getHubKey(req: Request): string {
   return (
@@ -187,10 +190,15 @@ export async function findPlaylistOpportunities(
 async function discoverViaSpotifyWeb(
   references: string[],
   lane: string,
+  quick = false,
 ): Promise<DiscoveredPlaylist[]> {
+  const refCap = quick ? SEARCH_REF_CAP_QUICK : SEARCH_REF_CAP_FULL;
+  const stubsPerRef = quick ? STUBS_PER_REF_QUICK : STUBS_PER_REF_FULL;
+  const detailCap = quick ? DETAIL_CAP_QUICK : DETAIL_CAP_FULL;
+
   const deadline = Date.now() + DISCOVER_DEADLINE_MS;
   const queries = references.length
-    ? references.slice(0, SEARCH_REF_CAP).map((r) => r.split(/[—–-]/)[0].trim()).filter(Boolean)
+    ? references.slice(0, refCap).map((r) => r.split(/[—–-]/)[0].trim()).filter(Boolean)
     : lane ? [lane.replace(/_/g, " ")] : [];
 
   if (!queries.length) {
@@ -212,7 +220,7 @@ async function discoverViaSpotifyWeb(
     try {
       const stubs = await scrapeSpotifySearchPlaylists(query);
       let added = 0;
-      for (const s of stubs.slice(0, STUBS_PER_REF)) {
+      for (const s of stubs.slice(0, stubsPerRef)) {
         if (!s.playlist_id) continue;
         const pid = `spotify:${s.playlist_id}`;
         if (seen.has(pid)) continue;
@@ -235,7 +243,7 @@ async function discoverViaSpotifyWeb(
     }
   }
 
-  const toDetail = out.slice(0, DETAIL_CAP);
+  const toDetail = out.slice(0, detailCap);
   for (const pl of toDetail) {
     if (Date.now() > deadline) break;
     try {
@@ -308,7 +316,7 @@ export async function mergeCatalogAndLive(
   supabase: SupabaseClient,
   trackName: string,
   userVibe: string,
-  opts?: { lane?: string; references?: string[] },
+  opts?: { lane?: string; references?: string[]; quick?: boolean },
 ): Promise<{ results: PlaylistRow[]; live_count: number }> {
   await findPlaylistOpportunities(supabase, trackName, userVibe);
   const lane = (opts?.lane ?? "").trim();
@@ -318,7 +326,8 @@ export async function mergeCatalogAndLive(
   const pitchAngle = lane ? (lanesConfig[lane]?.pitch_angle ?? "") : "";
 
   const start = Date.now();
-  const live = await discoverViaSpotifyWeb(references, lane);
+  const quick = Boolean(opts?.quick);
+  const live = await discoverViaSpotifyWeb(references, lane, quick);
   if (live.length) {
     await upsertLiveResults(supabase, live, lane, references);
   }
@@ -414,9 +423,11 @@ Deno.serve(async (req) => {
       return json({ error: "track_name required" }, 400);
     }
 
+    const quick = Boolean(body.quick);
     const { results, live_count } = await mergeCatalogAndLive(supabase, track_name, user_vibe, {
       lane,
       references,
+      quick,
     });
 
     const playlists = results.map((r) => ({
@@ -438,6 +449,7 @@ Deno.serve(async (req) => {
       references,
       count: results.length,
       live_api_ingested: live_count,
+      quick,
       playlists,
     });
   } catch (e) {

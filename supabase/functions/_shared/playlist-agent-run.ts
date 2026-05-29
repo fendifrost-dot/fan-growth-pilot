@@ -375,6 +375,27 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
     if (error) return { status: 500, data: { error: error.message } };
     return { status: 200, data: { ok: true } };
   }
+  if (action === "patch_target") {
+    const playlistId = String(body.playlist_id ?? "").trim();
+    if (!playlistId) return { status: 400, data: { error: "playlist_id required" } };
+    const patch: Record<string, unknown> = {};
+    if (body.curator_email !== undefined) {
+      const em = String(body.curator_email ?? "").trim();
+      patch.curator_email = em || null;
+      if (em) patch.contact_confidence = 9;
+    }
+    if (body.curator_instagram !== undefined) {
+      patch.curator_instagram = String(body.curator_instagram ?? "").trim() || null;
+    }
+    if (body.lane !== undefined) patch.lane = String(body.lane ?? "").trim() || null;
+    if (body.submission_url !== undefined) {
+      patch.submission_url = String(body.submission_url ?? "").trim() || null;
+    }
+    if (!Object.keys(patch).length) return { status: 400, data: { error: "Nothing to patch (curator_email, curator_instagram, lane, submission_url)" } };
+    const { error } = await sb.from("playlist_targets").update(patch).eq("playlist_id", playlistId);
+    if (error) return { status: 500, data: { error: error.message } };
+    return { status: 200, data: { ok: true, playlist_id: playlistId, patched: Object.keys(patch) } };
+  }
   if (action === "list_drafts") {
     const statuses = body.statuses ?? ["pending", "approved"];
     const { data, error } = await sb.from("outreach_drafts").select("*").in("status", statuses as string[])
@@ -503,7 +524,7 @@ export async function runConnectSpotifyStatus(
 
 const PLAYLIST_AGENT_ACTIONS = new Set([
   "draft_pitch", "approve_draft", "enrich_curator_contacts", "schedule_follow_up",
-  "list_targets", "list_drafts", "update_draft", "deactivate_target",
+  "list_targets", "list_drafts", "update_draft", "deactivate_target", "patch_target",
   "run_playlist_research", "send_campaign",
   "connect_spotify_init", "connect_spotify_status",
 ]);
@@ -527,6 +548,7 @@ export async function runPlaylistAgentAction(
     case "list_drafts":
     case "update_draft":
     case "deactivate_target":
+    case "patch_target":
       return runPlaylistAdmin({ ...body, action }, sb);
     case "run_playlist_research":
       return runPlaylistResearchProxy(body, hubKey);

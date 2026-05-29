@@ -95,6 +95,8 @@ supabase functions deploy draft-pitch approve-draft enrich-curator-contacts sche
 
 Admin UI (`src/lib/hubApi.ts`) routes through `control-center-api` automatically. After pushing this change: **Lovable → Publish** once — only `control-center-api` must redeploy.
 
+**Playlist pitch fast path:** see [`docs/PLAYLIST_PITCH_FAST_PATH.md`](../docs/PLAYLIST_PITCH_FAST_PATH.md) and [`docs/PLAYLIST_DISCOVERY_STATUS.md`](../docs/PLAYLIST_DISCOVERY_STATUS.md). Smoke: `./scripts/smoke-playlist-pipeline.sh`.
+
 Smoke test (no new function names required):
 
 ```bash

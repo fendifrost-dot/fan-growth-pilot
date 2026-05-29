@@ -562,6 +562,25 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
     if (error) return { status: 500, data: { error: error.message } };
     return { status: 200, data: { ok: true, playlist_id: playlistId, patched: Object.keys(patch) } };
   }
+  if (action === "get_pitch_log") {
+    const limit = Math.min(50, Math.max(1, Number(body.limit) || 10));
+    const trackName = String(body.track_name ?? "").trim();
+    let q = sb.from("pitch_log").select("*").order("created_at", { ascending: false }).limit(limit);
+    if (trackName) q = q.ilike("track_name", `%${trackName}%`);
+    const { data, error } = await q;
+    if (error) return { status: 500, data: { error: error.message } };
+    const since24h = new Date(Date.now() - 86400000).toISOString();
+    const { count: email24 } = await sb.from("pitch_log").select("*", { count: "exact", head: true })
+      .gte("sent_at", since24h);
+    return {
+      status: 200,
+      data: {
+        ok: true,
+        rows: data ?? [],
+        summary: { email_pitches_last_24h: email24 ?? 0 },
+      },
+    };
+  }
   if (action === "list_drafts") {
     const statuses = body.statuses ?? ["pending", "approved"];
     const { data, error } = await sb.from("outreach_drafts").select("*").in("status", statuses as string[])
@@ -690,7 +709,7 @@ export async function runConnectSpotifyStatus(
 
 const PLAYLIST_AGENT_ACTIONS = new Set([
   "draft_pitch", "approve_draft", "enrich_curator_contacts", "schedule_follow_up",
-  "list_targets", "list_drafts", "update_draft", "deactivate_target", "patch_target",
+  "list_targets", "list_drafts", "update_draft", "deactivate_target", "patch_target", "get_pitch_log",
   "run_playlist_research", "send_campaign",
   "connect_spotify_init", "connect_spotify_status",
   "queue_instagram_pitch",
@@ -716,6 +735,7 @@ export async function runPlaylistAgentAction(
     case "update_draft":
     case "deactivate_target":
     case "patch_target":
+    case "get_pitch_log":
       return runPlaylistAdmin({ ...body, action }, sb);
     case "run_playlist_research":
       return runPlaylistResearchProxy(body, hubKey);

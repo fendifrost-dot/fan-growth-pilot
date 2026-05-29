@@ -1,5 +1,7 @@
 # Fast path — first curator email pitch (≈30 minutes)
 
+For the **Designed For Me (Control) / deep_house_groove** walkthrough with named curator candidates, see **[MANUAL_PITCH_PLAYBOOK_DEEP_HOUSE.md](./MANUAL_PITCH_PLAYBOOK_DEEP_HOUSE.md)**.
+
 Goal: **one real email sent** without waiting on full auto-discovery.
 
 ## Prerequisites

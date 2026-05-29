@@ -21,4 +21,6 @@ post "connect_spotify_status" '{"action":"connect_spotify_status"}'
 post "quick research" '{"action":"run_playlist_research","track_name":"Designed For Me (Control)","lane":"deep_house_groove","references":["Kaytranada"],"user_vibe":"deep house","quick":true}'
 post "enrich batch" '{"action":"enrich_curator_contacts","track_name":"Designed For Me (Control)","lane":"deep_house_groove","limit":5,"offset":0}'
 
-echo "Done. For draft/send: patch_target → draft_pitch → approve_draft (see docs/PLAYLIST_PITCH_FAST_PATH.md)"
+post "get_pitch_log" '{"action":"get_pitch_log","limit":3}'
+
+echo "Done. Manual E2E: docs/MANUAL_PITCH_PLAYBOOK_DEEP_HOUSE.md"

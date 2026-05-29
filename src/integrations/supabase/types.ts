@@ -1005,6 +1005,9 @@ export type Database = {
           curator_instagram: string | null
           curator_linktree: string | null
           curator_name: string | null
+          curator_submission_dm: string | null
+          curator_submission_note: string | null
+          curator_submission_url: string | null
           curator_tiktok: string | null
           curator_twitter: string | null
           curator_website: string | null
@@ -1014,6 +1017,7 @@ export type Database = {
           id: string
           is_active: boolean | null
           lane: string | null
+          last_enriched_at: string | null
           last_pitched_at: string | null
           legitimacy_score: number | null
           notes: string | null
@@ -1046,6 +1050,9 @@ export type Database = {
           curator_instagram?: string | null
           curator_linktree?: string | null
           curator_name?: string | null
+          curator_submission_dm?: string | null
+          curator_submission_note?: string | null
+          curator_submission_url?: string | null
           curator_tiktok?: string | null
           curator_twitter?: string | null
           curator_website?: string | null
@@ -1055,6 +1062,7 @@ export type Database = {
           id?: string
           is_active?: boolean | null
           lane?: string | null
+          last_enriched_at?: string | null
           last_pitched_at?: string | null
           legitimacy_score?: number | null
           notes?: string | null
@@ -1087,6 +1095,9 @@ export type Database = {
           curator_instagram?: string | null
           curator_linktree?: string | null
           curator_name?: string | null
+          curator_submission_dm?: string | null
+          curator_submission_note?: string | null
+          curator_submission_url?: string | null
           curator_tiktok?: string | null
           curator_twitter?: string | null
           curator_website?: string | null
@@ -1096,6 +1107,7 @@ export type Database = {
           id?: string
           is_active?: boolean | null
           lane?: string | null
+          last_enriched_at?: string | null
           last_pitched_at?: string | null
           legitimacy_score?: number | null
           notes?: string | null

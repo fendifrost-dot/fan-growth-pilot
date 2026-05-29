@@ -8,6 +8,18 @@ import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { callHubFn } from "@/lib/hubApi";
 
+interface CampaignSendResponse {
+  html?: string;
+  text?: string;
+  subject?: string;
+  from?: string;
+  result?: { ok: boolean; error?: string };
+  would_send?: number;
+  sent?: number;
+  failed?: number;
+  remaining_subscribed?: number;
+}
+
 interface Campaign {
   id: string;
   name: string;
@@ -86,15 +98,15 @@ const AdminCampaignDetail: React.FC = () => {
     if (!campaign) return;
     try {
       setBusy("preview");
-      const data = await callHubFn("send_campaign", {
+      const data = await callHubFn<CampaignSendResponse>("send_campaign", {
         mode: "preview",
         campaign_id: campaign.id,
         to_first_name: testFirstName || "Friend",
       });
-      setPreviewHtml(data.html);
-      setPreviewText(data.text);
-      setPreviewSubject(data.subject);
-      setPreviewFrom(data.from);
+      setPreviewHtml(data.html ?? "");
+      setPreviewText(data.text ?? "");
+      setPreviewSubject(data.subject ?? "");
+      setPreviewFrom(data.from ?? "");
     } catch (e) { toast.error((e as Error).message); } finally { setBusy(null); }
   };
 
@@ -103,14 +115,14 @@ const AdminCampaignDetail: React.FC = () => {
     if (!testEmail.includes("@")) { toast.error("Enter a valid email"); return; }
     try {
       setBusy("test");
-      const data = await callHubFn("send_campaign", {
+      const data = await callHubFn<CampaignSendResponse>("send_campaign", {
         mode: "test",
         campaign_id: campaign.id,
         to_email: testEmail,
         to_first_name: testFirstName || undefined,
       });
-      if (data?.result?.ok) toast.success(`Test sent to ${testEmail}`);
-      else toast.error(`Test failed: ${data?.result?.error || "unknown"}`);
+      if (data.result?.ok) toast.success(`Test sent to ${testEmail}`);
+      else toast.error(`Test failed: ${data.result?.error || "unknown"}`);
       reload();
     } catch (e) { toast.error((e as Error).message); } finally { setBusy(null); }
   };
@@ -120,7 +132,7 @@ const AdminCampaignDetail: React.FC = () => {
     const label = `batch-${batchSize}-${new Date().toISOString().slice(0, 16).replace(":", "")}`;
     try {
       setBusy(dryRun ? "dry" : "batch");
-      const data = await callHubFn("send_campaign", {
+      const data = await callHubFn<CampaignSendResponse>("send_campaign", {
         mode: "batch",
         campaign_id: campaign.id,
         batch_size: batchSize,
@@ -128,9 +140,9 @@ const AdminCampaignDetail: React.FC = () => {
         dry_run: dryRun,
       });
       if (dryRun) {
-        toast.info(`Dry run: would send to ${data.would_send} contacts`);
+        toast.info(`Dry run: would send to ${data.would_send ?? 0} contacts`);
       } else {
-        toast.success(`Batch ${label}: ${data.sent} sent, ${data.failed} failed. ${data.remaining_subscribed} left.`);
+        toast.success(`Batch ${label}: ${data.sent ?? 0} sent, ${data.failed ?? 0} failed. ${data.remaining_subscribed ?? 0} left.`);
       }
       reload();
     } catch (e) { toast.error((e as Error).message); } finally { setBusy(null); }

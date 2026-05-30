@@ -31,12 +31,25 @@ export const IG_HANDLE_DENYLIST = new Set([
   "soundtrap",
   "about",
   "explore",
+  "reel",
   "reels",
   "stories",
   "p",
   "accounts",
   "share",
   "tags",
+  "direct",
+  "tv",
+  "developer",
+  "press",
+  "help",
+  "policy",
+  "legal",
+  "terms",
+  "privacy",
+  "safety",
+  "settings",
+  "popular",
 ]);
 
 const IG_URL_RE = /(?:^|\/\/|\.)instagram\.com\/([A-Za-z0-9._]{2,30})(?:\/|\?|$)/i;
@@ -73,7 +86,6 @@ export function extractIgHandle(url: string): string | null {
   if (handle.includes(".")) return null;
   if (IG_HANDLE_DENYLIST.has(handle)) return null;
   if (/^spotify/i.test(handle)) return null;
-  if (/^(share|tags|reels|explore|stories|p)$/.test(handle)) return null;
   return m[1];
 }
 

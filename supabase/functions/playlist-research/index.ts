@@ -7,6 +7,10 @@
 
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import {
+  isArtistAsCurator,
+  isSpotifyOwnedCurator,
+} from "../_shared/curator-filters.ts";
+import {
   buildWhyItFits,
   laneRegexBoost,
   loadLanesConfig,
@@ -47,6 +51,8 @@ type DiscoverySkips = {
   disclaim_brand: number;
   casual_user: number;
   micro_playlist: number;
+  artist_as_curator: number;
+  spotify_owned: number;
 };
 
 function isDisclaimBrand(text: string): boolean {
@@ -329,12 +335,29 @@ async function discoverViaSpotifyWeb(
 
 async function filterDiscoveryCandidates(
   items: DiscoveredPlaylist[],
+  references: string[],
   quick: boolean,
 ): Promise<{ items: DiscoveredPlaylist[]; skips: DiscoverySkips }> {
-  const skips: DiscoverySkips = { disclaim_brand: 0, casual_user: 0, micro_playlist: 0 };
+  const skips: DiscoverySkips = {
+    disclaim_brand: 0,
+    casual_user: 0,
+    micro_playlist: 0,
+    artist_as_curator: 0,
+    spotify_owned: 0,
+  };
   const kept: DiscoveredPlaylist[] = [];
 
   for (const pl of items) {
+    if (isSpotifyOwnedCurator(pl.owner, pl.name)) {
+      console.log("[discover] spotify-owned skip:", pl.playlist_id, pl.name, pl.owner);
+      skips.spotify_owned++;
+      continue;
+    }
+    if (isArtistAsCurator(pl.owner, references)) {
+      console.log("[discover] artist-as-curator skip:", pl.playlist_id, pl.owner);
+      skips.artist_as_curator++;
+      continue;
+    }
     const haystack = [pl.name, pl.owner, pl.description ?? ""].join(" ");
     if (isDisclaimBrand(haystack)) {
       console.log("[discover] disclaim-brand skip:", pl.playlist_id, pl.name);
@@ -448,13 +471,21 @@ export async function mergeCatalogAndLive(
   const start = Date.now();
   const quick = Boolean(opts?.quick);
   const discovered = await discoverViaSpotifyWeb(references, lane, quick);
-  const discovery_skips: DiscoverySkips = { disclaim_brand: 0, casual_user: 0, micro_playlist: 0 };
+  const discovery_skips: DiscoverySkips = {
+    disclaim_brand: 0,
+    casual_user: 0,
+    micro_playlist: 0,
+    artist_as_curator: 0,
+    spotify_owned: 0,
+  };
   let live: DiscoveredPlaylist[] = [];
   if (discovered.length) {
-    const filtered = await filterDiscoveryCandidates(discovered, quick);
+    const filtered = await filterDiscoveryCandidates(discovered, references, quick);
     discovery_skips.disclaim_brand = filtered.skips.disclaim_brand;
     discovery_skips.casual_user = filtered.skips.casual_user;
     discovery_skips.micro_playlist = filtered.skips.micro_playlist;
+    discovery_skips.artist_as_curator = filtered.skips.artist_as_curator;
+    discovery_skips.spotify_owned = filtered.skips.spotify_owned;
     live = filtered.items;
     if (live.length) {
       await upsertLiveResults(supabase, live, lane, references, laneRe);

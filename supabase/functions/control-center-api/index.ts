@@ -84,6 +84,14 @@ Deno.serve(async (req) => {
       case 'get_platform_metrics':
         return jsonResponse(await getPlatformMetrics(supabase), corsHeaders);
 
+      // --- Apple Music radio/DJ growth ---
+      case 'ingest_apple_spins':
+        if (authResult.via !== 'hub_key') return forbidden(corsHeaders);
+        return jsonResponse(await ingestAppleSpins(supabase, body), corsHeaders);
+
+      case 'get_radio_targets':
+        return jsonResponse(await getRadioTargets(supabase), corsHeaders);
+
       default:
         return new Response(
           JSON.stringify({ error: `Unknown action: ${action}` }),
@@ -104,6 +112,125 @@ function jsonResponse(data: unknown, headers: Record<string, string>) {
     status: 200,
     headers: { ...headers, 'Content-Type': 'application/json' },
   });
+}
+
+function forbidden(headers: Record<string, string>) {
+  return new Response(JSON.stringify({ error: 'hub key required' }), {
+    status: 403,
+    headers: { ...headers, 'Content-Type': 'application/json' },
+  });
+}
+
+// Monday (UTC) of the week containing d — the snapshot bucket key.
+function mondayOf(d: Date): string {
+  const dt = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const day = dt.getUTCDay(); // 0=Sun..6=Sat
+  dt.setUTCDate(dt.getUTCDate() + (day === 0 ? -6 : 1 - day));
+  return dt.toISOString().slice(0, 10);
+}
+
+/**
+ * Ingest a weekly Apple Music for Artists radio-spins capture.
+ * Body: {
+ *   artist_id, captured_at?, snapshot_week?, period_start?, period_end?,
+ *   plays: [{ song_id, song_name, station_id, call_sign, band, frequency,
+ *             timezone, city, area, country, latitude, longitude, geo_id, spins }]
+ * }
+ * Upserts one row per (song_id, station_id, snapshot_week) into apple_station_plays,
+ * then rolls station totals into radio_targets (warmth = already_playing) without
+ * clobbering manual fields (contact_email, pitch_status, notes are not in the payload).
+ */
+async function ingestAppleSpins(
+  supabase: ReturnType<typeof createClient>,
+  body: any,
+) {
+  const artistId = String(body.artist_id || '').trim();
+  const plays = Array.isArray(body.plays) ? body.plays : [];
+  if (!artistId || plays.length === 0) {
+    return { error: 'artist_id and non-empty plays[] required' };
+  }
+
+  const week = body.snapshot_week || mondayOf(new Date(body.captured_at || Date.now()));
+  const periodStart = body.period_start ?? null;
+  const periodEnd = body.period_end ?? null;
+
+  const playRows = plays.map((p: any) => ({
+    artist_id: artistId,
+    song_id: String(p.song_id),
+    song_name: p.song_name ?? null,
+    station_id: String(p.station_id),
+    station_call_sign: p.call_sign ?? null,
+    band: p.band ?? null,
+    frequency: p.frequency ?? null,
+    timezone: p.timezone ?? null,
+    city: p.city ?? null,
+    area_name: p.area ?? null,
+    country_code: p.country ?? null,
+    latitude: p.latitude ?? null,
+    longitude: p.longitude ?? null,
+    geo_id: p.geo_id != null ? String(p.geo_id) : null,
+    spins_total: Number(p.spins) || 0,
+    period_start: periodStart,
+    period_end: periodEnd,
+    snapshot_week: week,
+  }));
+
+  const { error: upErr } = await supabase
+    .from('apple_station_plays')
+    .upsert(playRows, { onConflict: 'song_id,station_id,snapshot_week' });
+  if (upErr) throw upErr;
+
+  // Roll up into radio_targets (one row per station for this capture).
+  const byStation = new Map<string, any>();
+  for (const p of plays) {
+    const sid = String(p.station_id);
+    let t = byStation.get(sid);
+    if (!t) {
+      t = {
+        station_id: sid,
+        station_call_sign: p.call_sign ?? sid,
+        station_type: 'radio',
+        city: p.city ?? null,
+        area_name: p.area ?? null,
+        country_code: p.country ?? null,
+        timezone: p.timezone ?? null,
+        total_spins: 0,
+        songs_played: [] as any[],
+        warmth: 'already_playing',
+        updated_at: new Date().toISOString(),
+      };
+      byStation.set(sid, t);
+    }
+    t.total_spins += Number(p.spins) || 0;
+    t.songs_played.push({
+      song_id: String(p.song_id),
+      song_name: p.song_name ?? null,
+      spins: Number(p.spins) || 0,
+    });
+  }
+  const targetRows = [...byStation.values()];
+
+  const { error: tErr } = await supabase
+    .from('radio_targets')
+    .upsert(targetRows, { onConflict: 'station_id' });
+  if (tErr) throw tErr;
+
+  return {
+    ok: true,
+    snapshot_week: week,
+    plays_ingested: playRows.length,
+    stations_upserted: targetRows.length,
+  };
+}
+
+async function getRadioTargets(supabase: ReturnType<typeof createClient>) {
+  const { data, error } = await supabase
+    .from('radio_targets')
+    .select('*')
+    .order('total_spins', { ascending: false })
+    .limit(500);
+  if (error) throw error;
+  return { targets: data || [] };
 }
 
 async function getFanStats(supabase: ReturnType<typeof createClient>) {

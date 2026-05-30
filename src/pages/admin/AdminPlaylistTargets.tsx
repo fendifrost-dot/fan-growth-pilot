@@ -92,6 +92,8 @@ const AdminPlaylistTargets: React.FC = () => {
   const [filterLane, setFilterLane] = useState("");
   const [filterTier, setFilterTier] = useState("");
   const [hasEmailOnly, setHasEmailOnly] = useState(false);
+  const [pitchableOnly, setPitchableOnly] = useState(false);
+  const [reconciling, setReconciling] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [spotifyStatus, setSpotifyStatus] = useState<{ connected: boolean; reason?: string } | null>(null);
   const [connecting, setConnecting] = useState(false);
@@ -136,7 +138,7 @@ const AdminPlaylistTargets: React.FC = () => {
             setSpotifyStatus(s);
             setConnecting(false);
             popup.close();
-            toast.success("Spotify connected. Live discovery is on.");
+            toast.success("Spotify connected (stats only — playlist discovery uses Firecrawl web search).");
           }
         } catch {
           /* keep polling */
@@ -155,6 +157,7 @@ const AdminPlaylistTargets: React.FC = () => {
         ...(filterLane ? { lane: filterLane } : {}),
         ...(filterTier ? { tier: Number(filterTier) } : {}),
         ...(hasEmailOnly ? { has_email: true } : {}),
+        ...(pitchableOnly ? { pitchable_only: true } : {}),
       });
       setRows(data.rows ?? []);
     } catch (e) {
@@ -162,18 +165,25 @@ const AdminPlaylistTargets: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [filterLane, filterTier, hasEmailOnly]);
+  }, [filterLane, filterTier, hasEmailOnly, pitchableOnly]);
 
   useEffect(() => {
     fetchRows();
   }, [fetchRows]);
 
-  const filtered = useMemo(() => rows, [rows]);
+  const filtered = useMemo(() => {
+    return [...rows].sort(
+      (a, b) => (b.contact_confidence ?? 0) - (a.contact_confidence ?? 0),
+    );
+  }, [rows]);
 
   const runResearch = async (quick: boolean) => {
     setResearching(true);
     try {
-      const res = await callHubFn<{ live_api_ingested?: number }>("run_playlist_research", {
+      const res = await callHubFn<{
+        live_api_ingested?: number;
+        discovery_skips?: Record<string, number>;
+      }>("run_playlist_research", {
         track_name: trackName,
         lane,
         quick,
@@ -182,10 +192,17 @@ const AdminPlaylistTargets: React.FC = () => {
           "Chicago deep-house influenced melodic rap, late-night luxury, Kaytranada / Channel Tres adjacent.",
       });
       const n = res.live_api_ingested ?? 0;
+      const sk = res.discovery_skips;
+      const skipParts = sk
+        ? Object.entries(sk)
+            .filter(([, v]) => (v ?? 0) > 0)
+            .map(([k, v]) => `${k.replace(/_/g, " ")} ${v}`)
+            .join(" · ")
+        : "";
       toast.success(
         quick
-          ? `Quick research done (${n} discovered via web). Paste emails with Set email where missing.`
-          : `Research done (${n} discovered). Run Enrich or Set email, then Draft.`,
+          ? `Quick research: ${n} ingested${skipParts ? ` · skipped: ${skipParts}` : ""}`
+          : `Research: ${n} ingested${skipParts ? ` · skipped: ${skipParts}` : ""}. Enrich or Set email, then Draft.`,
       );
       await fetchRows();
     } catch (e) {
@@ -270,6 +287,27 @@ const AdminPlaylistTargets: React.FC = () => {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
       setBusyId(null);
+    }
+  };
+
+  const reconcileLane = async () => {
+    const laneKey = filterLane || lane;
+    if (!laneKey) {
+      toast.error("Set filter lane or research lane first");
+      return;
+    }
+    setReconciling(true);
+    try {
+      const res = await callHubFn<{
+        deactivated_count?: number;
+        dry_run?: boolean;
+      }>("reconcile_lane_targets", { lane: laneKey, dry_run: false });
+      toast.success(`Reconciled lane: ${res.deactivated_count ?? 0} row(s) deactivated`);
+      await fetchRows();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setReconciling(false);
     }
   };
 
@@ -358,7 +396,14 @@ const AdminPlaylistTargets: React.FC = () => {
             <input type="checkbox" checked={hasEmailOnly} onChange={(e) => setHasEmailOnly(e.target.checked)} />
             Has email
           </label>
+          <label className="flex items-center gap-2 text-sm pb-2">
+            <input type="checkbox" checked={pitchableOnly} onChange={(e) => setPitchableOnly(e.target.checked)} />
+            Pitchable only
+          </label>
           <Button type="button" variant="outline" onClick={fetchRows}>Refresh</Button>
+          <Button type="button" variant="secondary" disabled={reconciling} onClick={reconcileLane}>
+            {reconciling ? "Reconciling…" : "Reconcile lane"}
+          </Button>
         </div>
       </Card>
 

@@ -16,7 +16,17 @@ import {
   scoreHunterEmail,
 } from "./contact-extract.ts";
 import { firecrawl, firecrawlSearch } from "./firecrawl.ts";
-import { loadLanesConfig } from "./playlist-lanes.ts";
+import {
+  isArtistAsCurator,
+  isDisclaimBrand,
+  isSpotifyOwnedCurator,
+} from "./curator-filters.ts";
+import {
+  isLaneGenreMismatch,
+  laneRegexBoost,
+  loadLanesConfig,
+  rowMatchesLane,
+} from "./playlist-lanes.ts";
 import {
   profileCuratorBioLinks,
   scrapeSpotifyPlaylistDetail,
@@ -272,6 +282,15 @@ async function queueInstagramPitch(
 ): Promise<boolean> {
   const clean = handle.replace(/^@/, "").trim();
   if (!isValidCuratorIgHandle(clean)) return false;
+  const { data: existing } = await sb.from("social_engagement_queue")
+    .select("id")
+    .eq("playlist_id", playlistId)
+    .eq("platform", "instagram")
+    .eq("status", "pending")
+    .limit(1)
+    .maybeSingle();
+  if (existing?.id) return true;
+
   const { error } = await sb.from("social_engagement_queue").insert({
     platform: "instagram",
     action: "pitch_dm",
@@ -484,6 +503,14 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
           const lt = await firecrawl(linktreeUrl, { formats: ["markdown", "html"], waitFor: 2000 });
           const md = lt.data.markdown;
           const html = lt.data.html;
+          if (isDisclaimBrand(`${md}\n${html}`)) {
+            patch.pitch_status = "disclaim_brand";
+            patch.submission_method = "none";
+            patch.last_enriched_at = new Date().toISOString();
+            await sb.from("playlist_targets").update(patch).eq("playlist_id", row.playlist_id);
+            enriched++;
+            continue;
+          }
           const found = extractEmails(md, html);
           if (found.length) {
             patch.curator_email = found[0].value;
@@ -607,6 +634,71 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
   };
 }
 
+export async function runReconcileLaneTargets(
+  body: Record<string, unknown>,
+  sb: SupabaseClient,
+): Promise<RunResult> {
+  const laneFilter = typeof body.lane === "string" ? body.lane.trim() : "";
+  const dryRun = Boolean(body.dry_run);
+  const lanesConfig = await loadLanesConfig(sb);
+
+  let q = sb.from("playlist_targets")
+    .select("playlist_id, playlist_name, curator_name, lane, vibe_tags, similar_artists, platform")
+    .eq("is_active", true);
+  if (laneFilter) q = q.eq("lane", laneFilter);
+
+  const { data: rows, error } = await q.limit(500);
+  if (error) return { status: 500, data: { ok: false, error: error.message } };
+
+  const deactivated: { playlist_id: string; reason: string }[] = [];
+
+  for (const row of rows ?? []) {
+    const lane = String(row.lane ?? "").trim();
+    if (!lane) continue;
+
+    const refs = lanesConfig[lane]?.references ?? [];
+    const laneRe = laneRegexBoost(lanesConfig, lane);
+    let reason: string | null = null;
+
+    if (isLaneGenreMismatch(lane, row.playlist_name, row.curator_name)) {
+      reason = "genre_mismatch";
+    } else if (!rowMatchesLane(row, lane, laneRe, refs)) {
+      reason = "lane_mismatch";
+    } else if (isSpotifyOwnedCurator(row.curator_name, row.playlist_name, row.playlist_id)) {
+      reason = "spotify_owned";
+    } else if (isArtistAsCurator(row.curator_name, refs)) {
+      reason = "artist_as_curator";
+    } else if ((row.platform as string) === "youtube" && lane === "deep_house_groove") {
+      reason = "platform_lane_mismatch";
+    }
+
+    if (!reason) continue;
+    deactivated.push({ playlist_id: row.playlist_id, reason });
+
+    if (!dryRun) {
+      await sb.from("playlist_targets").update({
+        is_active: false,
+        pitch_status: `reconcile_${reason}`,
+        lane: null,
+        why_it_fits: null,
+        recommended_pitch_angle: null,
+        submission_method: "none",
+      }).eq("playlist_id", row.playlist_id);
+    }
+  }
+
+  return {
+    status: 200,
+    data: {
+      ok: true,
+      dry_run: dryRun,
+      scanned: rows?.length ?? 0,
+      deactivated_count: deactivated.length,
+      deactivated: deactivated.slice(0, 50),
+    },
+  };
+}
+
 export async function runScheduleFollowUp(body: Record<string, unknown>, sb: SupabaseClient, _hubKey: string): Promise<RunResult> {
   if (body.run === "cron") {
     const now = new Date().toISOString();
@@ -655,6 +747,7 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
     if (body.tier != null && body.tier !== "") q = q.eq("tier", Number(body.tier));
     if (body.fraud_verdict) q = q.eq("fraud_verdict", String(body.fraud_verdict));
     if (body.has_email) q = q.not("curator_email", "is", null);
+    if (body.pitchable_only) q = q.in("submission_method", ["email", "instagram_dm"]);
     if (body.has_social) q = q.or("curator_instagram.not.is.null,curator_tiktok.not.is.null,curator_twitter.not.is.null");
     const { data, error } = await q;
     if (error) return { status: 500, data: { error: error.message } };
@@ -846,6 +939,7 @@ const PLAYLIST_AGENT_ACTIONS = new Set([
   "run_playlist_research", "send_campaign",
   "connect_spotify_init", "connect_spotify_status",
   "queue_instagram_pitch",
+  "reconcile_lane_targets",
 ]);
 
 export function isPlaylistAgentAction(action: string): boolean {
@@ -880,6 +974,8 @@ export async function runPlaylistAgentAction(
       return runConnectSpotifyStatus(body, sb);
     case "queue_instagram_pitch":
       return runQueueInstagramPitch(body, sb);
+    case "reconcile_lane_targets":
+      return runReconcileLaneTargets(body, sb);
     default:
       return { status: 400, data: { error: `Unknown playlist agent action: ${action}` } };
   }

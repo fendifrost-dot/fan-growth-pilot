@@ -46,10 +46,51 @@ export function scoreLaneBoost(
   return s;
 }
 
+export const MIN_LANE_BOOST_FOR_TAG = 8;
+
 function normalizeTags(raw: unknown): string[] {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw.map((t) => String(t).toLowerCase());
   return [];
+}
+
+/** True when a row genuinely fits the lane (used for tagging + catalog reconcile). */
+export function rowMatchesLane(
+  row: {
+    playlist_name?: string | null;
+    curator_name?: string | null;
+    vibe_tags?: unknown;
+    similar_artists?: unknown;
+  },
+  lane: string,
+  laneRe: RegExp | null,
+  references: string[],
+): boolean {
+  if (!lane) return false;
+  const laneScore = scoreLaneBoost(row, laneRe, references);
+  const nameHay = `${row.playlist_name ?? ""} ${row.curator_name ?? ""}`;
+  const refLower = references.map((s) => s.toLowerCase());
+  const vibeTags = normalizeTags(row.vibe_tags);
+  return (
+    laneScore >= MIN_LANE_BOOST_FOR_TAG ||
+    (laneRe?.test(nameHay) ?? false) ||
+    vibeTags.some((t) => refLower.includes(t) || refLower.some((ref) => t.includes(ref) || ref.includes(t)))
+  );
+}
+
+const LANE_GENRE_BLOCK: Record<string, RegExp> = {
+  deep_house_groove: /\b(rap|hip ?hop|hiphop|trap|drill)\b/i,
+};
+
+/** Playlist/curator name signals wrong genre for the stamped lane. */
+export function isLaneGenreMismatch(
+  lane: string,
+  playlistName?: string | null,
+  curatorName?: string | null,
+): boolean {
+  const re = LANE_GENRE_BLOCK[lane];
+  if (!re) return false;
+  return re.test(`${playlistName ?? ""} ${curatorName ?? ""}`);
 }
 
 export function buildWhyItFits(

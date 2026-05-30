@@ -8,12 +8,14 @@
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import {
   isArtistAsCurator,
+  isDisclaimBrand,
   isSpotifyOwnedCurator,
 } from "../_shared/curator-filters.ts";
 import {
   buildWhyItFits,
   laneRegexBoost,
   loadLanesConfig,
+  rowMatchesLane,
   scoreLaneBoost,
 } from "../_shared/playlist-lanes.ts";
 import {
@@ -37,16 +39,6 @@ const DETAIL_CAP_FULL = 20;
 const SEARCH_REF_CAP_QUICK = 2;
 const STUBS_PER_REF_QUICK = 6;
 const DETAIL_CAP_QUICK = 8;
-const MIN_LANE_BOOST_FOR_TAG = 8;
-
-const DISCLAIM_PATTERNS = [
-  /do(?:es)? not curate/i,
-  /won[''\u2019]?t be able to listen/i,
-  /not accepting submissions/i,
-  /please use the contact form/i,
-  /not a playlist submission/i,
-];
-
 type DiscoverySkips = {
   disclaim_brand: number;
   casual_user: number;
@@ -54,28 +46,6 @@ type DiscoverySkips = {
   artist_as_curator: number;
   spotify_owned: number;
 };
-
-function isDisclaimBrand(text: string): boolean {
-  return DISCLAIM_PATTERNS.some((re) => re.test(text));
-}
-
-function rowMatchesLane(
-  r: PlaylistRow,
-  lane: string,
-  laneRe: RegExp | null,
-  references: string[],
-): boolean {
-  if (!lane) return false;
-  const laneScore = scoreLaneBoost(r, laneRe, references);
-  const nameHay = `${r.playlist_name ?? ""} ${r.curator_name ?? ""}`;
-  const refLower = references.map((s) => s.toLowerCase());
-  const vibeTags = normalizeTags(r.vibe_tags);
-  return (
-    laneScore >= MIN_LANE_BOOST_FOR_TAG ||
-    (laneRe?.test(nameHay) ?? false) ||
-    vibeTags.some((t) => refLower.includes(t) || refLower.some((ref) => t.includes(ref) || ref.includes(t)))
-  );
-}
 
 function sanitizeWhyItFits(raw: string | null): string | null {
   if (!raw || raw.length <= 15 || /^lane\s*:/i.test(raw)) return null;
@@ -263,9 +233,15 @@ async function discoverViaSpotifyWeb(
   const detailCap = quick ? DETAIL_CAP_QUICK : DETAIL_CAP_FULL;
 
   const deadline = Date.now() + DISCOVER_DEADLINE_MS;
-  const queries = references.length
-    ? references.slice(0, refCap).map((r) => r.split(/[—–-]/)[0].trim()).filter(Boolean)
-    : lane ? [lane.replace(/_/g, " ")] : [];
+  const laneLabel = lane ? lane.replace(/_/g, " ") : "";
+  const refQueries = references
+    .slice(0, Math.max(1, refCap - (laneLabel ? 2 : 0)))
+    .map((r) => r.split(/[—–-]/)[0].trim())
+    .filter(Boolean);
+  const laneQueries = laneLabel
+    ? [`${laneLabel} playlist`, `${laneLabel} curator`]
+    : [];
+  const queries = [...new Set([...laneQueries, ...refQueries])].slice(0, refCap);
 
   if (!queries.length) {
     console.warn("[playlist-research] no references or lane for web discovery");
@@ -348,7 +324,7 @@ async function filterDiscoveryCandidates(
   const kept: DiscoveredPlaylist[] = [];
 
   for (const pl of items) {
-    if (isSpotifyOwnedCurator(pl.owner, pl.name)) {
+    if (isSpotifyOwnedCurator(pl.owner, pl.name, pl.playlist_id)) {
       console.log("[discover] spotify-owned skip:", pl.playlist_id, pl.name, pl.owner);
       skips.spotify_owned++;
       continue;

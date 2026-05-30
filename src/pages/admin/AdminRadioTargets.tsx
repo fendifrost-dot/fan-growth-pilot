@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -161,7 +162,8 @@ const AdminRadioTargets: React.FC = () => {
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Radio / DJ outreach</h1>
+          <Link to="/admin" className="text-xs text-muted-foreground hover:underline">← Command center</Link>
+          <h1 className="text-2xl font-semibold tracking-tight mt-1">Radio / DJ outreach</h1>
           <p className="text-sm text-muted-foreground mt-1">
             {targets.length} warm stations (already spinning you) · {withEmail} with email
           </p>

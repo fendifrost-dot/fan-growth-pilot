@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -323,19 +324,26 @@ const AdminPlaylistTargets: React.FC = () => {
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-2xl font-medium tracking-tight">Playlist targets</h1>
+        <Link to="/admin" className="text-xs text-muted-foreground hover:underline">← Command center</Link>
+        <h1 className="text-2xl font-semibold tracking-tight mt-1">Find playlists & pitch curators</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Discovery uses Firecrawl (web). Pitch path: Set email → Draft → Approve on Outreach. See{" "}
-          <code className="text-xs">docs/PLAYLIST_PITCH_FAST_PATH.md</code>.
+          Step 1–2 happen here. Step 3–4 on{" "}
+          <Link to="/admin/outreach" className="underline font-medium">Send pitches</Link>.
+          Fan list blasts are separate:{" "}
+          <Link to="/admin/campaigns" className="underline">Fan blasts</Link>.
         </p>
       </div>
 
-      <Card className="p-4 border-border/80 bg-muted/20">
-        <p className="text-sm">
-          <span className="font-medium">Fastest first pitch:</span> pick any row → <strong>Set email</strong> →{" "}
-          <strong>Draft</strong> → <strong>/admin/outreach</strong> → Approve &amp; send. Spotify Connect below is
-          optional (stats only).
-        </p>
+      <Card className="p-4 border-primary/20 bg-primary/5">
+        <ol className="text-sm space-y-2 list-decimal list-inside">
+          <li><strong>Find playlists</strong> — Quick or Full research (Firecrawl web search)</li>
+          <li><strong>Enrich contacts</strong> — pull emails / route IG DMs to queue</li>
+          <li><strong>Set email</strong> on a row → <strong>Draft</strong> (or Queue DM for Instagram)</li>
+          <li>
+            <Link to="/admin/outreach" className="underline font-medium">Approve &amp; send</Link> — one curator email
+            at a time (90-day cooldown per playlist)
+          </li>
+        </ol>
       </Card>
 
       {spotifyStatus && !spotifyStatus.connected && (
@@ -354,10 +362,11 @@ const AdminPlaylistTargets: React.FC = () => {
         </Card>
       )}
 
-      <Card className="p-5 space-y-3">
+      <Card className="p-5 space-y-4">
+        <h2 className="text-sm font-medium">Step 1–2: Discovery &amp; enrich</h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <div>
-            <label className="text-xs text-muted-foreground">Track</label>
+            <label className="text-xs text-muted-foreground">Track to pitch</label>
             <Input value={trackName} onChange={(e) => setTrackName(e.target.value)} />
           </div>
           <div>
@@ -365,20 +374,29 @@ const AdminPlaylistTargets: React.FC = () => {
             <Input value={lane} onChange={(e) => setLane(e.target.value)} placeholder="deep_house_groove" />
           </div>
           <div className="flex flex-wrap items-end gap-2">
-            <Button type="button" disabled={researching} onClick={() => runResearch(true)}>
-              {researching ? "Researching…" : "Quick research"}
+            <Button type="button" disabled={researching} onClick={() => runResearch(true)} title="Faster Firecrawl pass">
+              {researching ? "Searching…" : "Find playlists (quick)"}
             </Button>
-            <Button type="button" variant="secondary" disabled={researching} onClick={() => runResearch(false)}>
-              Full research
+            <Button type="button" variant="secondary" disabled={researching} onClick={() => runResearch(false)} title="Deeper discovery">
+              {researching ? "Searching…" : "Find playlists (full)"}
             </Button>
             <Button type="button" variant="outline" onClick={enrichBatch}>
               Enrich contacts
             </Button>
           </div>
         </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" size="sm" asChild>
+            <Link to="/admin/outreach">Review drafts &amp; send →</Link>
+          </Button>
+          <Button variant="outline" size="sm" asChild>
+            <Link to="/admin/pitch-log">Pitch log</Link>
+          </Button>
+        </div>
       </Card>
 
       <Card className="p-5 space-y-3">
+        <h2 className="text-sm font-medium">Step 3: Targets table</h2>
         <div className="flex flex-wrap gap-3 items-end">
           <div>
             <label className="text-xs text-muted-foreground">Filter lane</label>

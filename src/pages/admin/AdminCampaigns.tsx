@@ -34,8 +34,13 @@ const AdminCampaigns: React.FC = () => {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-medium tracking-tight">Campaigns</h1>
-        <p className="text-sm text-muted-foreground mt-1">Send emails through Resend with full attribution.</p>
+        <h1 className="text-2xl font-semibold tracking-tight">Fan email blasts</h1>
+        <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
+          Batch sends to your <strong>subscribed fan list</strong> (email_contacts). Open a campaign → Preview → Test
+          send → Batch send (dry-run first). This is <em>not</em> Spotify curator pitching — use{" "}
+          <Link to="/admin/playlists" className="underline">Find playlists</Link> +{" "}
+          <Link to="/admin/outreach" className="underline">Send pitches</Link> for curators.
+        </p>
       </div>
 
       <Card className="p-5">

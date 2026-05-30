@@ -9,7 +9,9 @@ import NotFound from "./pages/NotFound";
 import SmartLinkPage from "./pages/SmartLinkPage";
 import Unsubscribe from "./pages/Unsubscribe";
 import AdminGuard from "./pages/admin/AdminGuard";
+import AdminHub from "./pages/admin/AdminHub";
 import AdminCampaigns from "./pages/admin/AdminCampaigns";
+import AdminPitchLog from "./pages/admin/AdminPitchLog";
 import AdminCampaignDetail from "./pages/admin/AdminCampaignDetail";
 import AdminContacts from "./pages/admin/AdminContacts";
 import AdminPlaylistTargets from "./pages/admin/AdminPlaylistTargets";
@@ -39,7 +41,7 @@ const App = () => (
 
           {/* Admin (single-operator internal) */}
           <Route path="/admin" element={<AdminGuard />}>
-            <Route index element={<AdminCampaigns />} />
+            <Route index element={<AdminHub />} />
             <Route path="campaigns" element={<AdminCampaigns />} />
             <Route path="campaigns/:slug" element={<AdminCampaignDetail />} />
             <Route path="contacts" element={<AdminContacts />} />
@@ -47,6 +49,7 @@ const App = () => (
             <Route path="outreach" element={<AdminOutreachDrafts />} />
             <Route path="ig-queue" element={<AdminSocialQueue />} />
             <Route path="radio" element={<AdminRadioTargets />} />
+            <Route path="pitch-log" element={<AdminPitchLog />} />
           </Route>
 
           {/* Public smart link pages (CATCH-ALL — must stay last among meaningful routes) */}

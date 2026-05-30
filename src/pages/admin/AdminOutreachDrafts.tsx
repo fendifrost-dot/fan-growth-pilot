@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -130,9 +131,11 @@ const AdminOutreachDrafts: React.FC = () => {
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-2xl font-medium tracking-tight">Outreach drafts</h1>
+        <Link to="/admin/playlists" className="text-xs text-muted-foreground hover:underline">← Find playlists</Link>
+        <h1 className="text-2xl font-semibold tracking-tight mt-1">Send curator pitches</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Review and approve pitches before anything is sent.
+          Step 4: review drafts from playlist targets, then <strong>Approve &amp; send</strong> (one email per curator,
+          logged to <Link to="/admin/pitch-log" className="underline">pitch log</Link>).
         </p>
       </div>
 

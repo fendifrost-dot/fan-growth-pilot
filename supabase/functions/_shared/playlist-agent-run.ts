@@ -18,6 +18,7 @@ import {
 import { firecrawl, firecrawlSearch } from "./firecrawl.ts";
 import {
   isArtistAsCurator,
+  isArtistIgHandle,
   isDisclaimBrand,
   isSpotifyOwnedCurator,
 } from "./curator-filters.ts";
@@ -25,6 +26,7 @@ import {
   isLaneGenreMismatch,
   laneRegexBoost,
   loadLanesConfig,
+  type LaneConfig,
   rowMatchesLane,
 } from "./playlist-lanes.ts";
 import {
@@ -36,6 +38,39 @@ import {
 export type RunResult = { status: number; data: unknown };
 
 const RATE_MS = 2000;
+
+function rowDiscoveryReferences(
+  row: { research_context?: unknown; similar_artists?: unknown; lane?: string | null },
+  lanesConfig: Record<string, LaneConfig>,
+  bodyReferences: string[] = [],
+): string[] {
+  const rc = row.research_context as Record<string, unknown> | null;
+  if (Array.isArray(rc?.references) && rc.references.length) {
+    return rc.references.map(String).filter(Boolean);
+  }
+  if (bodyReferences.length) return bodyReferences;
+  if (Array.isArray(row.similar_artists) && row.similar_artists.length) {
+    return row.similar_artists.map(String);
+  }
+  const lane = String(row.lane ?? "").trim();
+  return lane && lanesConfig[lane]?.references ? [...lanesConfig[lane].references!] : [];
+}
+
+function tryAssignCuratorInstagram(
+  patch: Record<string, unknown>,
+  row: { curator_instagram?: string | null },
+  handle: string | null | undefined,
+  references: string[],
+  fieldsAdded?: Record<string, number>,
+): boolean {
+  if (!handle || patch.curator_instagram || row.curator_instagram) return false;
+  const clean = handle.replace(/^@/, "").trim();
+  if (!isValidCuratorIgHandle(clean)) return false;
+  if (isArtistIgHandle(clean, references)) return false;
+  patch.curator_instagram = clean;
+  if (fieldsAdded) fieldsAdded.curator_instagram = (fieldsAdded.curator_instagram ?? 0) + 1;
+  return true;
+}
 
 function pickChannel(row: Record<string, unknown>, channelOverride?: string): string | null {
   const ch = (channelOverride ?? "").trim().toLowerCase();
@@ -355,9 +390,13 @@ export async function runQueueInstagramPitch(
   if (!rawHandle || !isValidCuratorIgHandle(rawHandle)) {
     return { status: 400, data: { error: "No valid Instagram handle on this row" } };
   }
-  const handle = rawHandle;
+  const handle = rawHandle.replace(/^@/, "").trim();
 
   const lanes = await loadLanesConfig(sb);
+  const refs = rowDiscoveryReferences(row, lanes, []);
+  if (isArtistIgHandle(handle, refs)) {
+    return { status: 400, data: { error: "Curator IG matches a lane reference artist; reject mis-targeted DM" } };
+  }
   const lane = String(row.lane ?? "").trim();
   const pitchAngle = lane ? (lanes[lane]?.pitch_angle ?? "") : "";
   const streamLink = await resolveStreamLink(sb, trackName);
@@ -380,6 +419,8 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
   const playlistIds = Array.isArray(body.playlist_ids) ? body.playlist_ids.map(String).filter(Boolean) : [];
   const trackName = String(body.track_name ?? "").trim();
   const lane = typeof body.lane === "string" ? body.lane.trim() : "";
+  const bodyReferences = Array.isArray(body.references) ? body.references.map(String).filter(Boolean) : [];
+  const lanesConfig = await loadLanesConfig(sb);
   const offset = Math.max(0, Number(body.offset) || 0);
   const limit = Math.min(12, Math.max(1, Number(body.limit) || ENRICH_PER_CALL_LIMIT));
   const staleBefore = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
@@ -438,8 +479,13 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
       const detail = await scrapeSpotifyPlaylistDetail(spotifyId);
       if (!detail) continue;
 
-      if (row.curator_instagram && !isValidCuratorIgHandle(String(row.curator_instagram))) {
-        patch.curator_instagram = null;
+      const rowRefs = rowDiscoveryReferences(row, lanesConfig, bodyReferences);
+
+      if (row.curator_instagram) {
+        const stored = String(row.curator_instagram).replace(/^@/, "");
+        if (!isValidCuratorIgHandle(stored) || isArtistIgHandle(stored, rowRefs)) {
+          patch.curator_instagram = null;
+        }
       }
 
       const playlistHaystack = [detail.description ?? "", detail.name ?? ""].join("\n");
@@ -462,11 +508,7 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
         }
       }
 
-      const plIg = extractIgHandle(playlistHaystack);
-      if (plIg && !patch.curator_instagram && isValidCuratorIgHandle(plIg)) {
-        patch.curator_instagram = plIg;
-        fieldsAdded.curator_instagram++;
-      }
+      tryAssignCuratorInstagram(patch, row, extractIgHandle(playlistHaystack), rowRefs, fieldsAdded);
 
       let profile: Awaited<ReturnType<typeof scrapeSpotifyUserProfile>> = null;
       if (detail.owner_id) {
@@ -489,13 +531,7 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
         }
 
         for (const link of bioLinks) {
-          const ig = extractIgHandle(link);
-          const igHandle = sanitizeCuratorIgHandle(ig);
-          if (igHandle && !patch.curator_instagram) {
-            patch.curator_instagram = igHandle;
-            fieldsAdded.curator_instagram++;
-            break;
-          }
+          if (tryAssignCuratorInstagram(patch, row, extractIgHandle(link), rowRefs, fieldsAdded)) break;
           if (/^https?:\/\//i.test(link) && !extractIgHandle(link) && !patch.curator_website && !row.curator_website) {
             if (!/tiktok|twitter|x\.com|open\.spotify|linktr\.ee|beacons\.ai|lnk\.bio/i.test(link)) {
               patch.curator_website = link;
@@ -514,10 +550,7 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
             detail.name ?? (row as { playlist_name?: string }).playlist_name ?? null,
           );
           addLinktrees(ws.linktreeUrls);
-          if (ws.ig && !patch.curator_instagram && isValidCuratorIgHandle(ws.ig)) {
-            patch.curator_instagram = ws.ig;
-            fieldsAdded.curator_instagram++;
-          }
+          tryAssignCuratorInstagram(patch, row, ws.ig, rowRefs, fieldsAdded);
           await sleep(ENRICH_POLLITE_MS);
         } catch (e) {
           console.error(`[enrich] web search failed for ${row.playlist_id}:`, errMsg(e));
@@ -555,11 +588,7 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
             patch.curator_submission_url = subLink;
             fieldsAdded.curator_submission_url++;
           }
-          const ltIg = extractIgHandle(md) || extractIgHandle(html);
-          if (ltIg && !patch.curator_instagram && !row.curator_instagram && isValidCuratorIgHandle(ltIg)) {
-            patch.curator_instagram = ltIg;
-            fieldsAdded.curator_instagram++;
-          }
+          tryAssignCuratorInstagram(patch, row, extractIgHandle(md) || extractIgHandle(html), rowRefs, fieldsAdded);
           await sleep(ENRICH_POLLITE_MS);
         } catch (e) {
           console.error(`[enrich] linktree ${linktreeUrl} failed:`, errMsg(e));
@@ -641,7 +670,8 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
 
       const finalEmail = (patch.curator_email as string) ?? row.curator_email ?? null;
       const finalIgRaw = (patch.curator_instagram as string) ?? row.curator_instagram ?? null;
-      const finalIg = finalIgRaw && isValidCuratorIgHandle(finalIgRaw) ? finalIgRaw : null;
+      let finalIg = finalIgRaw && isValidCuratorIgHandle(finalIgRaw) ? finalIgRaw.replace(/^@/, "") : null;
+      if (finalIg && isArtistIgHandle(finalIg, rowRefs)) finalIg = null;
       if (finalIgRaw && !finalIg) patch.curator_instagram = null;
       const finalSubUrl = (patch.curator_submission_url as string) ?? row.curator_submission_url ?? null;
       const finalSubDm = (patch.curator_submission_dm as string) ?? row.curator_submission_dm ?? null;
@@ -697,7 +727,7 @@ export async function runReconcileLaneTargets(
   const lanesConfig = await loadLanesConfig(sb);
 
   let q = sb.from("playlist_targets")
-    .select("playlist_id, playlist_name, curator_name, lane, vibe_tags, similar_artists, platform")
+    .select("playlist_id, playlist_name, curator_name, curator_instagram, lane, vibe_tags, similar_artists, platform, research_context")
     .eq("is_active", true);
   if (laneFilter) q = q.eq("lane", laneFilter);
 
@@ -710,7 +740,7 @@ export async function runReconcileLaneTargets(
     const lane = String(row.lane ?? "").trim();
     if (!lane) continue;
 
-    const refs = lanesConfig[lane]?.references ?? [];
+    const refs = rowDiscoveryReferences(row, lanesConfig, []);
     const laneRe = laneRegexBoost(lanesConfig, lane);
     let reason: string | null = null;
 
@@ -722,6 +752,8 @@ export async function runReconcileLaneTargets(
       reason = "spotify_owned";
     } else if (isArtistAsCurator(row.curator_name, refs)) {
       reason = "artist_as_curator";
+    } else if (row.curator_instagram && isArtistIgHandle(String(row.curator_instagram), refs)) {
+      reason = "artist_ig_handle";
     } else if ((row.platform as string) === "youtube" && lane === "deep_house_groove") {
       reason = "platform_lane_mismatch";
     }
@@ -817,6 +849,12 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
   if (action === "patch_target") {
     const playlistId = String(body.playlist_id ?? "").trim();
     if (!playlistId) return { status: 400, data: { error: "playlist_id required" } };
+    const { data: existingRow } = await sb.from("playlist_targets")
+      .select("lane, research_context, similar_artists, curator_instagram")
+      .eq("playlist_id", playlistId)
+      .maybeSingle();
+    const lanesForPatch = await loadLanesConfig(sb);
+    const patchRefs = existingRow ? rowDiscoveryReferences(existingRow, lanesForPatch, []) : [];
     const patch: Record<string, unknown> = {};
     if (body.curator_email !== undefined) {
       const em = String(body.curator_email ?? "").trim();
@@ -828,10 +866,14 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
     }
     if (body.curator_instagram !== undefined) {
       const raw = String(body.curator_instagram ?? "").trim();
-      patch.curator_instagram = raw ? sanitizeCuratorIgHandle(raw) : null;
-      if (raw && !patch.curator_instagram) {
+      const sanitized = raw ? sanitizeCuratorIgHandle(raw) : null;
+      if (raw && !sanitized) {
         return { status: 400, data: { error: "Invalid Instagram handle (corporate/chrome or domain-shaped handles rejected)" } };
       }
+      if (sanitized && isArtistIgHandle(sanitized, patchRefs)) {
+        return { status: 400, data: { error: "Curator IG matches a lane reference artist; reject mis-targeted DM" } };
+      }
+      patch.curator_instagram = sanitized;
     }
     if (body.lane !== undefined) patch.lane = String(body.lane ?? "").trim() || null;
     if (body.submission_url !== undefined) {

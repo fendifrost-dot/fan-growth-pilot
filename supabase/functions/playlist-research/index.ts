@@ -414,6 +414,7 @@ async function upsertLiveResults(
         fetched_at: new Date().toISOString(),
         spotify_owner_id: pl.owner_id ?? null,
         discovery_lane: lane || null,
+        references: references.slice(0, 8),
       },
       tier: 2,
       whitelist_status: false,

@@ -88,3 +88,13 @@ export function isArtistAsCurator(
   }
   return false;
 }
+
+/** IG handle is a lane reference artist (track-listing leak), not the curator's inbox. */
+export function isArtistIgHandle(
+  igHandle: string | null | undefined,
+  references: string[],
+): boolean {
+  const clean = (igHandle ?? "").replace(/^@/, "").trim();
+  if (!clean) return false;
+  return isArtistAsCurator(clean, references);
+}

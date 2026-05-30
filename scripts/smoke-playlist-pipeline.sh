@@ -67,6 +67,11 @@ editorial_ids = [r for r in rows if (r.get("playlist_id") or "").lower().startsw
 if editorial_ids:
     errors.append(f"list_targets: {len(editorial_ids)} active 37i9dQZF editorial playlist(s) — run deactivate SQL")
 
+artist_ig = {"kaytranada", "channeltres", "sglewis", "disclosure", "honeydijon"}
+bad_artist_ig = [r for r in rows if (r.get("curator_instagram") or "").lower().replace("@", "") in artist_ig]
+if bad_artist_ig:
+    errors.append(f"list_targets: {len(bad_artist_ig)} row(s) with artist-name IG handle — run clear_artist_ig_handles SQL")
+
 if errors:
     print("FAIL:")
     for e in errors:

@@ -94,6 +94,126 @@ export type Database = {
           },
         ]
       }
+      apple_city_spins: {
+        Row: {
+          area_name: string | null
+          artist_id: string
+          captured_at: string
+          city: string | null
+          country_code: string | null
+          geo_id: string | null
+          has_spins_data: boolean | null
+          id: string
+          latitude: number | null
+          longitude: number | null
+          metadata: Json | null
+          snapshot_week: string
+          spins_total: number | null
+        }
+        Insert: {
+          area_name?: string | null
+          artist_id: string
+          captured_at?: string
+          city?: string | null
+          country_code?: string | null
+          geo_id?: string | null
+          has_spins_data?: boolean | null
+          id?: string
+          latitude?: number | null
+          longitude?: number | null
+          metadata?: Json | null
+          snapshot_week: string
+          spins_total?: number | null
+        }
+        Update: {
+          area_name?: string | null
+          artist_id?: string
+          captured_at?: string
+          city?: string | null
+          country_code?: string | null
+          geo_id?: string | null
+          has_spins_data?: boolean | null
+          id?: string
+          latitude?: number | null
+          longitude?: number | null
+          metadata?: Json | null
+          snapshot_week?: string
+          spins_total?: number | null
+        }
+        Relationships: []
+      }
+      apple_station_plays: {
+        Row: {
+          area_name: string | null
+          artist_id: string
+          band: string | null
+          captured_at: string
+          city: string | null
+          country_code: string | null
+          frequency: string | null
+          geo_id: string | null
+          id: string
+          latitude: number | null
+          longitude: number | null
+          metadata: Json | null
+          period_end: string | null
+          period_start: string | null
+          snapshot_week: string
+          song_id: string
+          song_name: string | null
+          spins_total: number
+          station_call_sign: string | null
+          station_id: string
+          timezone: string | null
+        }
+        Insert: {
+          area_name?: string | null
+          artist_id: string
+          band?: string | null
+          captured_at?: string
+          city?: string | null
+          country_code?: string | null
+          frequency?: string | null
+          geo_id?: string | null
+          id?: string
+          latitude?: number | null
+          longitude?: number | null
+          metadata?: Json | null
+          period_end?: string | null
+          period_start?: string | null
+          snapshot_week: string
+          song_id: string
+          song_name?: string | null
+          spins_total?: number
+          station_call_sign?: string | null
+          station_id: string
+          timezone?: string | null
+        }
+        Update: {
+          area_name?: string | null
+          artist_id?: string
+          band?: string | null
+          captured_at?: string
+          city?: string | null
+          country_code?: string | null
+          frequency?: string | null
+          geo_id?: string | null
+          id?: string
+          latitude?: number | null
+          longitude?: number | null
+          metadata?: Json | null
+          period_end?: string | null
+          period_start?: string | null
+          snapshot_week?: string
+          song_id?: string
+          song_name?: string | null
+          spins_total?: number
+          station_call_sign?: string | null
+          station_id?: string
+          timezone?: string | null
+        }
+        Relationships: []
+      }
       artist_config: {
         Row: {
           id: string
@@ -1160,6 +1280,140 @@ export type Database = {
           full_name?: string | null
           id?: string
           updated_at?: string | null
+        }
+        Relationships: []
+      }
+      radio_pitch_log: {
+        Row: {
+          body: string | null
+          channel: string
+          created_at: string | null
+          id: string
+          recipient: string | null
+          reply_received: boolean | null
+          resend_message_id: string | null
+          sent_at: string | null
+          song_id: string | null
+          song_name: string | null
+          station_call_sign: string | null
+          station_id: string | null
+          status: string
+          subject: string | null
+        }
+        Insert: {
+          body?: string | null
+          channel?: string
+          created_at?: string | null
+          id?: string
+          recipient?: string | null
+          reply_received?: boolean | null
+          resend_message_id?: string | null
+          sent_at?: string | null
+          song_id?: string | null
+          song_name?: string | null
+          station_call_sign?: string | null
+          station_id?: string | null
+          status?: string
+          subject?: string | null
+        }
+        Update: {
+          body?: string | null
+          channel?: string
+          created_at?: string | null
+          id?: string
+          recipient?: string | null
+          reply_received?: boolean | null
+          resend_message_id?: string | null
+          sent_at?: string | null
+          song_id?: string | null
+          song_name?: string | null
+          station_call_sign?: string | null
+          station_id?: string | null
+          status?: string
+          subject?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "radio_pitch_log_station_id_fkey"
+            columns: ["station_id"]
+            isOneToOne: false
+            referencedRelation: "radio_targets"
+            referencedColumns: ["station_id"]
+          },
+        ]
+      }
+      radio_targets: {
+        Row: {
+          area_name: string | null
+          city: string | null
+          contact_email: string | null
+          contact_name: string | null
+          contact_url: string | null
+          country_code: string | null
+          created_at: string | null
+          id: string
+          last_contact_at: string | null
+          metadata: Json | null
+          notes: string | null
+          pitch_status: string
+          pitched_at: string | null
+          songs_played: Json | null
+          station_call_sign: string
+          station_id: string
+          station_type: string
+          submission_method: string | null
+          timezone: string | null
+          total_spins: number | null
+          updated_at: string | null
+          warmth: string
+        }
+        Insert: {
+          area_name?: string | null
+          city?: string | null
+          contact_email?: string | null
+          contact_name?: string | null
+          contact_url?: string | null
+          country_code?: string | null
+          created_at?: string | null
+          id?: string
+          last_contact_at?: string | null
+          metadata?: Json | null
+          notes?: string | null
+          pitch_status?: string
+          pitched_at?: string | null
+          songs_played?: Json | null
+          station_call_sign: string
+          station_id: string
+          station_type?: string
+          submission_method?: string | null
+          timezone?: string | null
+          total_spins?: number | null
+          updated_at?: string | null
+          warmth?: string
+        }
+        Update: {
+          area_name?: string | null
+          city?: string | null
+          contact_email?: string | null
+          contact_name?: string | null
+          contact_url?: string | null
+          country_code?: string | null
+          created_at?: string | null
+          id?: string
+          last_contact_at?: string | null
+          metadata?: Json | null
+          notes?: string | null
+          pitch_status?: string
+          pitched_at?: string | null
+          songs_played?: Json | null
+          station_call_sign?: string
+          station_id?: string
+          station_type?: string
+          submission_method?: string | null
+          timezone?: string | null
+          total_spins?: number | null
+          updated_at?: string | null
+          warmth?: string
         }
         Relationships: []
       }

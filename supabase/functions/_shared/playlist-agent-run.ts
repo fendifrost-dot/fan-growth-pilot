@@ -218,22 +218,34 @@ export async function runApproveDraft(body: Record<string, unknown>, sb: Supabas
     action_taken?: string;
     message_to_user?: string;
     cooldown_until?: string | null;
+    pitch_log_id?: string | null;
   };
+  const execMsg = execData.message_to_user ?? (execData as { error?: string }).error ?? "";
   if (!execRes.ok || !execData.ok || execData.action_taken !== "email_sent") {
+    const auditBroken = typeof execMsg === "string" && execMsg.includes("logging failed");
+    if (auditBroken) {
+      await sb.from("outreach_drafts").update({
+        status: "sent_audit_broken",
+        sent_at: new Date().toISOString(),
+      }).eq("id", draftId);
+    }
     return {
       status: execRes.ok ? 422 : execRes.status,
       data: {
         ok: false,
-        status: "approved",
+        status: auditBroken ? "sent_audit_broken" : "approved",
         sent: false,
-        error: execData.message_to_user ?? (execData as { error?: string }).error ?? `Send failed ${execRes.status}`,
+        error: execMsg || `Send failed ${execRes.status}`,
         execute_pitch: execData,
       },
     };
   }
 
-  const { data: logRow } = await sb.from("pitch_log").select("id").eq("playlist_id", draft.playlist_id)
-    .eq("track_name", draft.track_name).eq("status", "sent").order("pitched_at", { ascending: false }).limit(1).maybeSingle();
+  const pitchLogId = execData.pitch_log_id ?? null;
+  const { data: logRow } = pitchLogId
+    ? { data: { id: pitchLogId } }
+    : await sb.from("pitch_log").select("id").eq("playlist_id", draft.playlist_id)
+      .eq("track_name", draft.track_name).eq("status", "sent").order("pitched_at", { ascending: false }).limit(1).maybeSingle();
   await sb.from("outreach_drafts").update({
     status: "sent",
     sent_at: new Date().toISOString(),

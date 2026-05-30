@@ -72,6 +72,12 @@ bad_artist_ig = [r for r in rows if (r.get("curator_instagram") or "").lower().r
 if bad_artist_ig:
     errors.append(f"list_targets: {len(bad_artist_ig)} row(s) with artist-name IG handle — run clear_artist_ig_handles SQL")
 
+# pitch_log rows must include curator_email when present (catches NOT NULL audit gap)
+rows_gpl = gpl.get("rows") or []
+missing_email = [r for r in rows_gpl if r.get("status") == "sent" and not (r.get("curator_email") or "").strip()]
+if missing_email:
+    errors.append(f"get_pitch_log: {len(missing_email)} sent row(s) missing curator_email")
+
 if errors:
     print("FAIL:")
     for e in errors:
@@ -80,6 +86,51 @@ if errors:
 
 print("PASS: get_pitch_log ok, no corrupted IG, no active Spotify curator rows in sample")
 PY
+
+# Optional E2E: patch → draft → approve+send → verify pitch_log row (requires hub key + test playlist)
+if [[ "${SMOKE_E2E_SEND:-}" == "1" && -n "${FANFUEL_HUB_KEY:-}" ]]; then
+  PID="${SMOKE_TEST_PLAYLIST_ID:?Set SMOKE_TEST_PLAYLIST_ID for SMOKE_E2E_SEND=1}"
+  TRACK="${SMOKE_TEST_TRACK_NAME:-Designed For Me (Control)}"
+  TEST_EMAIL="${SMOKE_TEST_EMAIL:-fendifrost@gmail.com}"
+  echo "=== E2E send smoke (patch → draft → approve) ==="
+  post "e2e_patch_email" "{\"action\":\"patch_target\",\"playlist_id\":\"$PID\",\"curator_email\":\"$TEST_EMAIL\"}"
+  DRAFT_OUT="$TMP/e2e_draft.json"
+  curl -sS -X POST "$CCA" "${HDR[@]}" -d "{\"action\":\"draft_pitch\",\"playlist_id\":\"$PID\",\"track_name\":\"$TRACK\"}" -o "$DRAFT_OUT"
+  DRAFT_ID=$(python3 -c "import json; print(json.load(open('$DRAFT_OUT')).get('draft_id',''))")
+  if [[ -z "$DRAFT_ID" ]]; then
+    echo "FAIL: draft_pitch did not return draft_id"
+    exit 1
+  fi
+  SEND_OUT="$TMP/e2e_send.json"
+  curl -sS -X POST "$CCA" "${HDR[@]}" -d "{\"action\":\"approve_draft\",\"draft_id\":\"$DRAFT_ID\",\"send_immediately\":true}" -o "$SEND_OUT"
+  python3 <<PY
+import json, sys, time
+send = json.load(open("$SEND_OUT"))
+if not send.get("sent") or not send.get("pitch_log_id"):
+    print("FAIL: approve_draft:", json.dumps(send)[:800])
+    sys.exit(1)
+if send.get("error"):
+    print("FAIL: approve_draft error:", send["error"])
+    sys.exit(1)
+print("OK: sent=true pitch_log_id=", send.get("pitch_log_id"))
+PY
+  sleep 2
+  post "e2e_get_pitch_log" "{\"action\":\"get_pitch_log\",\"track_name\":\"$TRACK\",\"limit\":5}"
+  python3 <<PY
+import json, glob, os
+tmp = os.environ["TMP"]
+gpl = {}
+for f in glob.glob(os.path.join(tmp, "*get_pitch_log*.json")):
+    gpl = json.load(open(f))
+rows = [r for r in (gpl.get("rows") or []) if r.get("status") == "sent" and (r.get("curator_email") or "").strip()]
+if not rows:
+    print("FAIL: no sent pitch_log row with curator_email after E2E send")
+    sys.exit(1)
+print("OK: pitch_log sent row curator_email=", rows[0].get("curator_email"))
+PY
+  post "e2e_revert_email" "{\"action\":\"patch_target\",\"playlist_id\":\"$PID\",\"curator_email\":\"\"}"
+  echo "E2E send smoke passed"
+fi
 
 echo "Optional (slow, uses Firecrawl):"
 echo "  post quick research + enrich — see docs/LIVE_PITCH_TEST_FINDINGS_2026-05-29.md"

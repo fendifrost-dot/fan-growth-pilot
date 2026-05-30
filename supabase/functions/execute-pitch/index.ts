@@ -12,7 +12,44 @@ type PitchResponse = {
   ok: boolean; method_used: string;
   action_taken: "email_sent"|"instructions_only"|"link_delivered"|"skipped"|"tier_gate"|"error";
   cooldown_until: string|null; message_to_user: string;
+  pitch_log_id?: string | null;
 };
+
+async function resolveCuratorEmail(
+  sb: SupabaseClient,
+  row: Record<string, unknown>,
+  draft?: { email?: string },
+): Promise<string | null> {
+  let email = (draft?.email || (row.curator_email as string | null))?.trim() ?? "";
+  if (!email) {
+    const { data: target } = await sb.from("playlist_targets")
+      .select("curator_email")
+      .eq("playlist_id", String(row.playlist_id))
+      .maybeSingle();
+    email = (target?.curator_email as string | null)?.trim() ?? "";
+  }
+  return email || null;
+}
+
+function pitchLogRow(
+  playlistId: string,
+  trackName: string,
+  curatorEmail: string,
+  method: string,
+  status: string,
+  extra: { cooldown_until?: string | null; response_notes?: string; pitched_at?: string } = {},
+) {
+  return {
+    playlist_id: playlistId,
+    track_name: trackName,
+    curator_email: curatorEmail,
+    method,
+    status,
+    pitched_at: extra.pitched_at ?? new Date().toISOString(),
+    cooldown_until: extra.cooldown_until ?? null,
+    response_notes: extra.response_notes ?? null,
+  };
+}
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   try {
@@ -88,10 +125,15 @@ async function handleEmailPitch(
   draft?: { email?: string; subject?: string; bodyHtml?: string },
 ): Promise<Response> {
   const playlistId = String(row.playlist_id);
-  const email = (draft?.email || (row.curator_email as string|null))?.trim();
+  const email = await resolveCuratorEmail(sb, row, draft);
   const playlistName = (row.playlist_name as string|null) ?? playlistId;
   const method = "email";
-  if (!email) return jsonPitch({ ok:false, method_used:method, action_taken:"error", cooldown_until:null, message_to_user:"No curator email on file for *" + playlistName + "*." });
+  if (!email) {
+    return jsonPitch({
+      ok: false, method_used: method, action_taken: "error", cooldown_until: null,
+      message_to_user: "No curator email on file for *" + playlistName + "*. Patch playlist_targets before sending.",
+    });
+  }
   const { data: existing } = await sb.from("pitch_log").select("id, cooldown_until").eq("playlist_id", playlistId).eq("track_name", trackName).eq("status", "sent").gt("cooldown_until", new Date().toISOString()).maybeSingle();
   if (existing?.id) {
     const until = existing.cooldown_until ? new Date(existing.cooldown_until as string).toLocaleDateString() : "?";
@@ -108,18 +150,35 @@ async function handleEmailPitch(
   const bodyHtml = draft?.bodyHtml ?? ["<p>Hi,</p>","<p>I'm reaching out to submit <strong>" + escapeHtml(trackName) + "</strong> by <strong>Fendi Frost</strong> for playlist consideration.</p>","<p>Listen: <a href=\"" + escapeHtml(trackUrl) + "\">" + escapeHtml(trackUrl) + "</a></p>",artistId ? "<p>Artist on Spotify: <a href=\"https://open.spotify.com/artist/" + escapeHtml(artistId) + "\">profile</a></p>" : "","<p>Thank you for your time.</p>","<p>— Fendi Frost team</p>"].filter(Boolean).join("\n");
   const subject = draft?.subject ?? ("Submission: " + trackName + " — Fendi Frost");
   if (!resendKey) {
-    await sb.from("pitch_log").insert({ playlist_id:playlistId, track_name:trackName, pitched_at:new Date().toISOString(), method, status:"error", response_notes:"RESEND_API_KEY not configured", cooldown_until:null });
+    await sb.from("pitch_log").insert(pitchLogRow(playlistId, trackName, email, method, "error", {
+      response_notes: "RESEND_API_KEY not configured",
+    }));
     return jsonPitch({ ok:false, method_used:method, action_taken:"error", cooldown_until:null, message_to_user:"❌ Email not sent (Hub missing RESEND_API_KEY)." });
   }
   const res = await fetch("https://api.resend.com/emails", { method:"POST", headers: { Authorization:"Bearer " + resendKey, "Content-Type":"application/json" }, body: JSON.stringify({ from:fromEmail, to:[email], subject, html:bodyHtml }) });
   const raw = await res.text();
   if (!res.ok) {
-    await sb.from("pitch_log").insert({ playlist_id:playlistId, track_name:trackName, pitched_at:new Date().toISOString(), method, status:"error", response_notes:"Resend " + res.status + ": " + raw.slice(0,500), cooldown_until:null });
+    await sb.from("pitch_log").insert(pitchLogRow(playlistId, trackName, email, method, "error", {
+      response_notes: "Resend " + res.status + ": " + raw.slice(0, 500),
+    }));
     return jsonPitch({ ok:false, method_used:method, action_taken:"error", cooldown_until:null, message_to_user:"❌ Email failed (" + res.status + "). No cooldown applied — retry after fixing." });
   }
-  const { error: insOk } = await sb.from("pitch_log").insert({ playlist_id:playlistId, track_name:trackName, pitched_at:new Date().toISOString(), method, status:"sent", cooldown_until:cooldownIso });
-  if (insOk) return jsonPitch({ ok:false, method_used:method, action_taken:"error", cooldown_until:null, message_to_user:"❌ Email sent but logging failed: " + insOk.message });
-  return jsonPitch({ ok:true, method_used:method, action_taken:"email_sent", cooldown_until:cooldownIso, message_to_user:"📧 Pitch email sent to *" + email + "* for *" + playlistName + "* (" + trackName + "). Cooldown until " + new Date(cooldownIso).toLocaleDateString() + "." });
+  const { data: logRow, error: insOk } = await sb.from("pitch_log")
+    .insert(pitchLogRow(playlistId, trackName, email, method, "sent", { cooldown_until: cooldownIso }))
+    .select("id")
+    .single();
+  if (insOk) {
+    console.error("pitch_log insert after send:", insOk.message, { playlistId, trackName, email });
+    return jsonPitch({
+      ok: false, method_used: method, action_taken: "error", cooldown_until: null,
+      message_to_user: "❌ Email sent but logging failed: " + insOk.message,
+    });
+  }
+  return jsonPitch({
+    ok: true, method_used: method, action_taken: "email_sent", cooldown_until: cooldownIso,
+    pitch_log_id: logRow?.id ?? null,
+    message_to_user: "📧 Pitch email sent to *" + email + "* for *" + playlistName + "* (" + trackName + "). Cooldown until " + new Date(cooldownIso).toLocaleDateString() + ".",
+  });
 }
 function escapeHtml(s: string): string {
   return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");

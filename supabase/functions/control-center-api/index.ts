@@ -192,6 +192,37 @@ async function ingestAppleSpins(
     .upsert(playRows, { onConflict: 'song_id,station_id,snapshot_week' });
   if (upErr) throw upErr;
 
+  let citiesIngested = 0;
+  const cities = Array.isArray(body.cities) ? body.cities : [];
+  if (cities.length) {
+    const cityRows = cities.map((c: Record<string, unknown>) => {
+      const geoId = c.geo_id != null && String(c.geo_id).trim()
+        ? String(c.geo_id)
+        : `city:${String(c.city ?? 'unknown').toLowerCase()}:${String(c.country ?? c.country_code ?? 'xx')}`;
+      return {
+        artist_id: artistId,
+        geo_id: geoId,
+        city: (c.city as string) ?? null,
+        area_name: (c.area as string) ?? (c.area_name as string) ?? null,
+        country_code: (c.country as string) ?? (c.country_code as string) ?? null,
+        latitude: c.latitude ?? null,
+        longitude: c.longitude ?? null,
+        spins_total: Number(c.spins) || 0,
+        has_spins_data: true,
+        snapshot_week: week,
+        metadata: { source: 'amfa_kpi_city_breakout' },
+      };
+    }).filter((r) => (r.spins_total ?? 0) > 0);
+
+    if (cityRows.length) {
+      const { error: cErr } = await supabase
+        .from('apple_city_spins')
+        .upsert(cityRows, { onConflict: 'geo_id,snapshot_week' });
+      if (cErr) throw cErr;
+      citiesIngested = cityRows.length;
+    }
+  }
+
   // Roll up into radio_targets (one row per station for this capture).
   const byStation = new Map<string, any>();
   for (const p of plays) {
@@ -231,6 +262,7 @@ async function ingestAppleSpins(
     ok: true,
     snapshot_week: week,
     plays_ingested: playRows.length,
+    cities_ingested: citiesIngested,
     stations_upserted: targetRows.length,
   };
 }
@@ -243,6 +275,21 @@ async function getRadioTargets(supabase: ReturnType<typeof createClient>) {
     .limit(500);
   if (error) throw error;
   return { targets: data || [] };
+}
+
+async function getIgRosterCounts(
+  supabase: ReturnType<typeof createClient>,
+): Promise<{ mutual: number; total: number }> {
+  const [{ count: mutual, error: e1 }, { count: total, error: e2 }] = await Promise.all([
+    supabase.from('instagram_curator_roster').select('*', { count: 'exact', head: true }).eq('is_mutual', true),
+    supabase.from('instagram_curator_roster').select('*', { count: 'exact', head: true }),
+  ]);
+  const err = e1 ?? e2;
+  if (err && /does not exist|relation.*not found/i.test(err.message)) {
+    return { mutual: 0, total: 0 };
+  }
+  if (err) throw err;
+  return { mutual: mutual ?? 0, total: total ?? 0 };
 }
 
 /** Cross-channel counts for admin Send center. */
@@ -258,6 +305,7 @@ async function getOutreachStats(supabase: ReturnType<typeof createClient>) {
     { count: radioWithEmail },
     { count: radioNotPitched },
     { count: igQueue },
+    igRoster,
     { count: radioEmails24h },
   ] = await Promise.all([
     supabase.from('email_contacts').select('*', { count: 'exact', head: true }).eq('subscribed', true),
@@ -268,6 +316,7 @@ async function getOutreachStats(supabase: ReturnType<typeof createClient>) {
     supabase.from('radio_targets').select('*', { count: 'exact', head: true }).not('contact_email', 'is', null),
     supabase.from('radio_targets').select('*', { count: 'exact', head: true }).neq('pitch_status', 'pitched'),
     supabase.from('social_engagement_queue').select('*', { count: 'exact', head: true }).eq('platform', 'instagram').eq('status', 'pending'),
+    getIgRosterCounts(supabase),
     supabase.from('radio_pitch_log').select('*', { count: 'exact', head: true }).eq('channel', 'email').eq('status', 'sent').gte('sent_at', dayAgo),
   ]);
 
@@ -283,6 +332,8 @@ async function getOutreachStats(supabase: ReturnType<typeof createClient>) {
     radio_ready_to_pitch: radioNotPitched ?? 0,
     radio_emails_24h: radioEmails24h ?? 0,
     instagram_dm_queue: igQueue ?? 0,
+    ig_roster_mutual: igRoster.mutual,
+    ig_roster_total: igRoster.total,
     telegram_stats: tgStats ?? null,
   };
 }

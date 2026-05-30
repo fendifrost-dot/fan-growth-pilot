@@ -19,6 +19,8 @@ type OutreachStats = {
   radio_ready_to_pitch: number;
   radio_emails_24h: number;
   instagram_dm_queue: number;
+  ig_roster_mutual?: number;
+  ig_roster_total?: number;
   telegram_stats: Record<string, unknown> | null;
 };
 
@@ -51,6 +53,9 @@ type QueueRow = {
   id: string;
   target_url: string;
   draft_text: string | null;
+  operator_brief: string | null;
+  dm_ref: string | null;
+  ig_handle: string | null;
   playlist_id: string | null;
 };
 
@@ -492,11 +497,12 @@ const AdminSendCenter: React.FC = () => {
           <Card className="p-5 space-y-3">
             <h2 className="font-medium">Instagram DM (manual, 10/day)</h2>
             <p className="text-sm text-muted-foreground">
-              Personalized thank-you + catalog pitch for playlists that already feature you. Each DM uses a
-              different opener (same goal). Copy → paste in IG → Mark sent.
+              Mutual-follow only. Operator brief confirms identity; paste the short message only.
+              Roster: {stats?.ig_roster_mutual ?? 0} mutual / {stats?.ig_roster_total ?? 0} tracked.
             </p>
             <div className="flex flex-wrap gap-2">
               <Button variant="outline" asChild><Link to="/admin/playlists">Find playlists with my music</Link></Button>
+              <Button variant="outline" asChild><Link to="/admin/ig-roster">IG roster</Link></Button>
               <Button variant="secondary" asChild><Link to="/admin/ig-queue">IG queue ({stats?.instagram_dm_queue ?? 0} pending)</Link></Button>
             </div>
           </Card>
@@ -505,7 +511,7 @@ const AdminSendCenter: React.FC = () => {
               <thead className="bg-muted/50">
                 <tr>
                   <th className="text-left p-2">Profile</th>
-                  <th className="text-left p-2">Draft</th>
+                  <th className="text-left p-2">REF / message</th>
                   <th className="text-left p-2">Actions</th>
                 </tr>
               </thead>
@@ -518,12 +524,15 @@ const AdminSendCenter: React.FC = () => {
                       <td className="p-2">
                         <a href={r.target_url} target="_blank" rel="noreferrer" className="underline text-xs">{r.target_url}</a>
                       </td>
-                      <td className="p-2 text-xs max-w-md truncate">{r.draft_text ?? "—"}</td>
+                      <td className="p-2 text-xs max-w-md">
+                        <div className="text-muted-foreground">{r.dm_ref ?? "—"}</div>
+                        <div className="truncate">{r.draft_text ?? "—"}</div>
+                      </td>
                       <td className="p-2">
                         <Button size="sm" variant="outline" onClick={() => {
                           navigator.clipboard.writeText(r.draft_text ?? "");
-                          toast.success("Copied");
-                        }}>Copy draft</Button>
+                          toast.success("Copied message only");
+                        }}>Copy message</Button>
                       </td>
                     </tr>
                   ))

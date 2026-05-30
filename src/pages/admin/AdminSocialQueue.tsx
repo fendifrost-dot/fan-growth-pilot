@@ -11,6 +11,9 @@ type QueueRow = {
   action: string;
   target_url: string;
   draft_text: string | null;
+  operator_brief: string | null;
+  dm_ref: string | null;
+  ig_handle: string | null;
   playlist_id: string | null;
   status: string;
   created_at: string;
@@ -18,6 +21,8 @@ type QueueRow = {
     engagement_type?: string;
     featuring?: string[];
     pitch_track?: string;
+    pitch_reason?: string;
+    mutual_ok?: boolean;
   } | null;
 };
 
@@ -26,6 +31,7 @@ const AdminSocialQueue: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [quota, setQuota] = useState({ cap: 10, queued: 0, remaining: 10 });
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const fetchRows = useCallback(async () => {
     setLoading(true);
@@ -53,10 +59,10 @@ const AdminSocialQueue: React.FC = () => {
     fetchRows();
   }, [fetchRows]);
 
-  const copyText = async (text: string) => {
+  const copyText = async (text: string, label: string) => {
     try {
       await navigator.clipboard.writeText(text);
-      toast.success("Copied — paste in IG DM");
+      toast.success(label);
     } catch {
       toast.error("Copy failed");
     }
@@ -81,8 +87,8 @@ const AdminSocialQueue: React.FC = () => {
         <Link to="/admin/send" className="text-xs text-muted-foreground hover:underline">← Send center</Link>
         <h1 className="text-2xl font-semibold tracking-tight mt-1">Instagram DM queue</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Up to <strong>{quota.cap}</strong> personalized DMs per day (UTC). Each message is unique — thank-you for
-          existing placements + pitch for your new track. Send manually from Fendi&apos;s IG account.
+          Mutual-follow curators only. Each row has an <strong>operator brief</strong> (identity + checklist) and a
+          separate <strong>message to paste</strong> — never paste the brief into IG.
         </p>
       </div>
 
@@ -93,69 +99,89 @@ const AdminSocialQueue: React.FC = () => {
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={fetchRows}>Refresh</Button>
           <Button variant="secondary" size="sm" asChild>
+            <Link to="/admin/ig-roster">Roster → verify mutual</Link>
+          </Button>
+          <Button variant="secondary" size="sm" asChild>
             <Link to="/admin/playlists">Find placements → Queue batch</Link>
           </Button>
         </div>
       </Card>
 
-      <div className="rounded border overflow-auto">
-        <table className="w-full text-sm">
-          <thead className="bg-muted/50">
-            <tr>
-              <th className="text-left p-2">Curator</th>
-              <th className="text-left p-2">Type</th>
-              <th className="text-left p-2">Draft (unique)</th>
-              <th className="text-left p-2">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr><td colSpan={4} className="p-4 text-muted-foreground">Loading…</td></tr>
-            ) : rows.length === 0 ? (
-              <tr>
-                <td colSpan={4} className="p-4 text-muted-foreground">
-                  No pending DMs. Use Playlists → <em>Find playlists with my music</em> → Enrich →{" "}
-                  <em>Queue 10 IG DMs</em>.
-                </td>
-              </tr>
-            ) : (
-              rows.map((r) => (
-                <tr key={r.id} className="border-t align-top">
-                  <td className="p-2">
-                    <a href={r.target_url} target="_blank" rel="noreferrer" className="underline">
-                      {r.target_url.replace(/^https?:\/\/(www\.)?instagram\.com\//, "@").replace(/\/$/, "")}
-                    </a>
+      <div className="space-y-4">
+        {loading ? (
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        ) : rows.length === 0 ? (
+          <Card className="p-4 text-sm text-muted-foreground">
+            No pending DMs. Sync roster → mark mutual → Playlists → <em>Queue 10 IG DMs</em>.
+          </Card>
+        ) : (
+          rows.map((r) => {
+            const handle = r.ig_handle ?? r.target_url.replace(/^https?:\/\/(www\.)?instagram\.com\//, "").replace(/\/$/, "");
+            const expanded = expandedId === r.id;
+            return (
+              <Card key={r.id} className="p-4 space-y-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <div className="font-medium">
+                      {r.dm_ref && <span className="text-xs text-muted-foreground mr-2">{r.dm_ref}</span>}
+                      <a href={r.target_url} target="_blank" rel="noreferrer" className="underline">
+                        @{handle}
+                      </a>
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-1">
+                      {r.result?.engagement_type ?? "pitch"}
+                      {r.result?.mutual_ok === false && " · mutual not verified"}
+                      {r.result?.featuring?.[0] && ` · spun: ${r.result.featuring[0]}`}
+                      {r.result?.pitch_track && ` · pitch: ${r.result.pitch_track}`}
+                    </div>
                     <div className="text-xs text-muted-foreground">{r.playlist_id ?? "—"}</div>
-                  </td>
-                  <td className="p-2 text-xs">
-                    {r.result?.engagement_type ?? "pitch"}
-                    {r.result?.featuring?.[0] && (
-                      <div className="text-muted-foreground">Spun: {r.result.featuring[0]}</div>
-                    )}
-                  </td>
-                  <td className="p-2 max-w-md whitespace-pre-wrap text-xs">{r.draft_text ?? "—"}</td>
-                  <td className="p-2 space-y-1">
+                  </div>
+                  <div className="flex flex-wrap gap-2">
                     {r.draft_text && (
-                      <Button size="sm" variant="secondary" onClick={() => copyText(r.draft_text!)}>
-                        Copy DM
+                      <Button size="sm" variant="default" onClick={() => copyText(r.draft_text!, "Copied DM message only")}>
+                        Copy message
                       </Button>
                     )}
+                    {r.operator_brief && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => copyText(r.operator_brief!, "Copied operator brief")}
+                      >
+                        Copy brief
+                      </Button>
+                    )}
+                    <Button size="sm" variant="outline" onClick={() => setExpandedId(expanded ? null : r.id)}>
+                      {expanded ? "Hide" : "Details"}
+                    </Button>
                     <Button size="sm" variant="outline" asChild>
                       <a href={r.target_url} target="_blank" rel="noreferrer">Open IG</a>
                     </Button>
-                    <Button
-                      size="sm"
-                      disabled={busyId === r.id}
-                      onClick={() => markSent(r.id)}
-                    >
+                    <Button size="sm" disabled={busyId === r.id} onClick={() => markSent(r.id)}>
                       Mark sent
                     </Button>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+                  </div>
+                </div>
+                {expanded && (
+                  <div className="grid md:grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <p className="font-medium mb-1 text-muted-foreground">Operator brief</p>
+                      <pre className="whitespace-pre-wrap bg-muted/40 rounded p-3 max-h-64 overflow-auto">
+                        {r.operator_brief ?? "—"}
+                      </pre>
+                    </div>
+                    <div>
+                      <p className="font-medium mb-1 text-muted-foreground">Message to send</p>
+                      <pre className="whitespace-pre-wrap bg-muted/40 rounded p-3 max-h-64 overflow-auto border border-primary/20">
+                        {r.draft_text ?? "—"}
+                      </pre>
+                    </div>
+                  </div>
+                )}
+              </Card>
+            );
+          })
+        )}
       </div>
     </div>
   );

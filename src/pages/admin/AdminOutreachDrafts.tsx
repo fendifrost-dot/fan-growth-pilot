@@ -17,6 +17,11 @@ type DraftRow = {
   body: string;
   status: string;
   generated_at: string;
+  metadata?: {
+    operator_brief?: string | null;
+    dm_ref?: string | null;
+    placement_source?: string | null;
+  } | null;
 };
 
 const AdminOutreachDrafts: React.FC = () => {
@@ -178,7 +183,16 @@ const AdminOutreachDrafts: React.FC = () => {
             <>
               <div className="text-xs text-muted-foreground">
                 {selected.playlist_id} · {selected.channel}
+                {selected.metadata?.dm_ref && ` · ${selected.metadata.dm_ref}`}
               </div>
+              {selected.metadata?.operator_brief && (
+                <div>
+                  <label className="text-xs text-muted-foreground">Operator brief (placement context — not sent)</label>
+                  <pre className="text-xs whitespace-pre-wrap bg-muted/40 rounded p-3 max-h-40 overflow-auto">
+                    {selected.metadata.operator_brief}
+                  </pre>
+                </div>
+              )}
               <div>
                 <label className="text-xs text-muted-foreground">Recipient</label>
                 <Input value={editRecipient} onChange={(e) => setEditRecipient(e.target.value)} />

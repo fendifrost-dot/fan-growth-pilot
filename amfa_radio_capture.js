@@ -108,6 +108,44 @@
     };
   }
 
+  function mapCityKpiRow(row) {
+    const result = row.result || row;
+    const meta = result.meta || row.meta || {};
+    const geo = meta.geo || {};
+    const spins = Number(result.kpiTotal ?? row.kpiTotal ?? 0);
+    if (!spins) return null;
+    const geo_id = geo.id != null ? String(geo.id) : '';
+    const city = geo.name ?? geo.city ?? null;
+    if (!geo_id && !city) return null;
+    return {
+      geo_id: geo_id || `city:${String(city).toLowerCase()}:${geo.countryCode ?? 'xx'}`,
+      city,
+      area: geo.areaName ?? geo.area ?? null,
+      country: geo.countryCode ?? geo.country ?? null,
+      latitude: geo.latitude ?? null,
+      longitude: geo.longitude ?? null,
+      spins,
+    };
+  }
+
+  /** Artist-level city breakout (real spin counts; not top_cities flags-only endpoint). */
+  async function fetchCitySpins(artistId) {
+    const qs = new URLSearchParams({
+      breakout: 'city',
+      metric: 'RADIO_SPINS',
+      artist: artistId,
+      period: 'ltd',
+    });
+    const j = await getJson(`/api/measure/stats/kpi?${qs}`);
+    const rows = j?.results || j?.data || (Array.isArray(j) ? j : []);
+    const cities = [];
+    for (const row of rows) {
+      const mapped = mapCityKpiRow(row);
+      if (mapped) cities.push(mapped);
+    }
+    return cities;
+  }
+
   async function fetchSongStations(artistId, song) {
     const qs = new URLSearchParams({
       breakout: 'station',
@@ -195,6 +233,15 @@
       `[amfa] ${allPlays.length} rows, ${stations.size} stations, ${totalSpins} lifetime spins — ingesting…`,
     );
 
+    console.log('[amfa] fetching city KPI breakout…');
+    let cities = [];
+    try {
+      cities = await fetchCitySpins(artist_id);
+      console.log(`[amfa] ${cities.length} cities with spin counts`);
+    } catch (e) {
+      console.warn('[amfa] city breakout failed (stations still ingested):', e.message);
+    }
+
     const result = await ingest({
       artist_id,
       captured_at: new Date().toISOString(),
@@ -202,6 +249,7 @@
       period_start,
       period_end,
       plays: allPlays,
+      cities,
     });
     console.log('[amfa] done', result);
     return result;

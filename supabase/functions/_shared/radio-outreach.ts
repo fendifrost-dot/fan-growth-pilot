@@ -1,4 +1,5 @@
 import { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import { enrichRadioContacts } from "./radio-enrich.ts";
 
 export type RunResult = { status: number; data: Record<string, unknown> };
 
@@ -8,6 +9,7 @@ const RADIO_ACTIONS = new Set([
   "patch_radio_target",
   "get_radio_pitch_log",
   "backfill_apple_station_baseline",
+  "enrich_radio_contacts",
 ]);
 
 export function isRadioAction(action: string): boolean {
@@ -26,6 +28,24 @@ const DEFAULT_STREAM_LINKS: Record<string, string> = {
 };
 
 type PlayedSong = { song_id?: string; song_name?: string | null; spins?: number };
+
+async function syntheticSongIdFromName(songName: string): Promise<string> {
+  const key = songName.toLowerCase().trim();
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
+  const hex = Array.from(new Uint8Array(hash))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("")
+    .slice(0, 20);
+  return `backfill-name:${hex}`;
+}
+
+async function resolvePlaySongId(s: PlayedSong): Promise<string | null> {
+  const id = String(s.song_id ?? "").trim();
+  if (id) return id;
+  const name = (s.song_name as string | null)?.trim();
+  if (!name) return null;
+  return syntheticSongIdFromName(name);
+}
 
 function parseSongsPlayed(raw: unknown): PlayedSong[] {
   if (Array.isArray(raw)) return raw as PlayedSong[];
@@ -329,14 +349,20 @@ export async function runBackfillAppleStationBaseline(
   if (tErr) return { status: 500, data: { error: tErr.message } };
 
   const playRows: Record<string, unknown>[] = [];
+  let skippedNoSong = 0;
   for (const t of targets ?? []) {
     const songs = parseSongsPlayed(t.songs_played);
     for (const s of songs) {
       const spins = Number(s.spins) || 0;
-      if (!spins || !s.song_id) continue;
+      if (!spins) continue;
+      const songId = await resolvePlaySongId(s);
+      if (!songId) {
+        skippedNoSong++;
+        continue;
+      }
       playRows.push({
         artist_id: artistId,
-        song_id: String(s.song_id),
+        song_id: songId,
         song_name: s.song_name ?? null,
         station_id: t.station_id,
         station_call_sign: t.station_call_sign,
@@ -346,12 +372,22 @@ export async function runBackfillAppleStationBaseline(
         timezone: t.timezone,
         spins_total: spins,
         snapshot_week: snapshotWeek,
+        metadata: songId.startsWith("backfill-name:")
+          ? { source: "backfill_songs_played", lossy: true }
+          : {},
       });
     }
   }
 
   if (!playRows.length) {
-    return { status: 400, data: { error: "No songs_played rows on radio_targets to backfill" } };
+    return {
+      status: 400,
+      data: {
+        error: "No songs_played rows on radio_targets to backfill",
+        hint: "Expected [{song_name, spins}] or [{song_id, song_name, spins}]",
+        skipped_no_song: skippedNoSong,
+      },
+    };
   }
 
   const { error: upErr } = await sb.from("apple_station_plays")
@@ -370,8 +406,21 @@ export async function runBackfillAppleStationBaseline(
       plays_upserted: playRows.length,
       stations: stations.size,
       spins_total: totalSpins,
+      lossy_song_ids: playRows.some((r) => String(r.song_id).startsWith("backfill-name:")),
     },
   };
+}
+
+export async function runEnrichRadioContacts(
+  body: Record<string, unknown>,
+  sb: SupabaseClient,
+): Promise<RunResult> {
+  try {
+    const result = await enrichRadioContacts(sb, body);
+    return { status: 200, data: { ok: true, ...result } };
+  } catch (e) {
+    return { status: 500, data: { error: e instanceof Error ? e.message : String(e) } };
+  }
 }
 
 export async function runRadioAction(
@@ -391,6 +440,8 @@ export async function runRadioAction(
       return runGetRadioPitchLog(body, sb);
     case "backfill_apple_station_baseline":
       return runBackfillAppleStationBaseline(body, sb);
+    case "enrich_radio_contacts":
+      return runEnrichRadioContacts(body, sb);
     default:
       return { status: 400, data: { error: `Unknown radio action: ${action}` } };
   }

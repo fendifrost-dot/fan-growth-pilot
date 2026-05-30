@@ -32,15 +32,23 @@ import {
 import {
   profileCuratorBioLinks,
   scrapeSpotifyPlaylistDetail,
+  scrapeSpotifySearchPlaylists,
   scrapeSpotifyUserProfile,
 } from "./spotify-scrape.ts";
 import { discoverSpotifyPlacements } from "./spotify-placements.ts";
+import { importSpotifyForArtistsCsv } from "./spotify-for-artists-csv.ts";
+import { isWarmPlacementSource } from "./placement-sources.ts";
 import {
-  buildPersonalizedIgDm,
+  buildIgQueueInsert,
+  queueIgDm,
   runQueueIgOutreachBatch,
   IG_DM_DAILY_CAP,
   countIgDmsToday,
+  type IgQueueInsert,
 } from "./ig-outreach.ts";
+import { runIgRosterAdmin, getRosterEntry } from "./ig-roster.ts";
+import { loadCatalogTracks, pickCatalogTrackForPlacement } from "./catalog-match.ts";
+import { buildIgOutreachPackage, nextDmRef } from "./outreach-templates.ts";
 
 export type RunResult = { status: number; data: unknown };
 
@@ -130,13 +138,21 @@ function buildPitchBody(row: Record<string, unknown>, trackName: string, pitchAn
 
 export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseClient): Promise<RunResult> {
   const playlistId = String(body.playlist_id ?? "").trim();
-  const trackName = String(body.track_name ?? "").trim();
+  let trackName = String(body.track_name ?? "").trim();
   const channelOverride = typeof body.channel === "string" ? body.channel : "";
   const generatedBy = String(body.generated_by ?? body.approved_by ?? "auto").trim() || "auto";
-  if (!playlistId || !trackName) return { status: 400, data: { error: "playlist_id and track_name required" } };
+  if (!playlistId) return { status: 400, data: { error: "playlist_id required" } };
 
   const { data: row, error: rowErr } = await sb.from("playlist_targets").select("*").eq("playlist_id", playlistId).maybeSingle();
   if (rowErr || !row) return { status: 404, data: { error: "Playlist not found" } };
+
+  const rc = row.research_context as Record<string, unknown> | null;
+  const isPlacement = isWarmPlacementSource(rc?.source as string | undefined);
+  const catalog = await loadCatalogTracks(sb);
+  if (!trackName) {
+    const pick = pickCatalogTrackForPlacement(row, catalog, catalog[0]?.name ?? "Designed For Me (Control)");
+    trackName = pick.track;
+  }
 
   const channel = pickChannel(row, channelOverride);
   if (!channel) return { status: 400, data: { error: "No outreach channel available (email, IG, or submission URL)" } };
@@ -150,13 +166,41 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
   else if (channel === "instagram_dm") recipient = (row.curator_instagram as string)?.trim() ?? null;
   else if (channel === "web_form") recipient = (row.submission_url as string)?.trim() ?? null;
 
-  const subject = typeof body.override_subject === "string" && body.override_subject.trim()
-    ? body.override_subject.trim()
-    : `Submission for ${row.playlist_name}: Fendi Frost — ${trackName}`;
   const streamLink = await resolveStreamLink(sb, trackName);
-  const pitchBody = typeof body.override_body === "string" && body.override_body.trim()
-    ? body.override_body.trim()
-    : buildPitchBody(row, trackName, pitchAngle, streamLink);
+  let subject: string;
+  let pitchBody: string;
+  let operatorBrief: string | null = null;
+  let dmRef: string | null = null;
+
+  if (typeof body.override_body === "string" && body.override_body.trim()) {
+    pitchBody = body.override_body.trim();
+    subject = typeof body.override_subject === "string" && body.override_subject.trim()
+      ? body.override_subject.trim()
+      : `Submission for ${row.playlist_name}: Fendi Frost — ${trackName}`;
+  } else if (isPlacement && channel === "email") {
+    const handle = ((row.curator_submission_dm as string) || (row.curator_instagram as string) || "")
+      .replace(/^@/, "").trim();
+    const roster = handle ? await getRosterEntry(sb, handle) : null;
+    const { reason } = pickCatalogTrackForPlacement(row, catalog, trackName);
+    dmRef = await nextDmRef(sb);
+    const pkg = buildIgOutreachPackage(
+      row,
+      trackName,
+      reason,
+      streamLink,
+      "thank_and_pitch",
+      roster,
+      dmRef,
+    );
+    subject = pkg.email.subject;
+    pitchBody = pkg.email.body;
+    operatorBrief = pkg.operator_brief;
+  } else {
+    subject = typeof body.override_subject === "string" && body.override_subject.trim()
+      ? body.override_subject.trim()
+      : `Submission for ${row.playlist_name}: Fendi Frost — ${trackName}`;
+    pitchBody = buildPitchBody(row, trackName, pitchAngle, streamLink);
+  }
 
   const { data: draft, error: insErr } = await sb.from("outreach_drafts").insert({
     playlist_id: playlistId, track_name: trackName, channel, recipient,
@@ -166,6 +210,9 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
       lane: lane || null,
       why_it_fits: (row.why_it_fits as string | null) ?? null,
       stream_link: streamLink || null,
+      placement_source: isPlacement ? (rc?.source as string) : null,
+      operator_brief: operatorBrief,
+      dm_ref: dmRef,
     },
   }).select("id, channel, subject, body, recipient").single();
 
@@ -359,37 +406,42 @@ async function enrichFromWebSearch(
 
 async function queueInstagramPitch(
   sb: SupabaseClient,
-  playlistId: string,
-  handle: string,
+  row: Record<string, unknown>,
+  insert: IgQueueInsert | null,
   lane: string | null,
-  draftText?: string,
   resultMeta?: Record<string, unknown>,
 ): Promise<boolean> {
-  const clean = handle.replace(/^@/, "").trim();
-  if (!isValidCuratorIgHandle(clean)) return false;
-  const { data: existing } = await sb.from("social_engagement_queue")
-    .select("id")
-    .eq("playlist_id", playlistId)
-    .eq("platform", "instagram")
-    .eq("status", "pending")
-    .limit(1)
-    .maybeSingle();
-  if (existing?.id) return true;
-
-  const { error } = await sb.from("social_engagement_queue").insert({
-    platform: "instagram",
-    action: "pitch_dm",
-    target_url: `https://www.instagram.com/${clean}/`,
-    draft_text: draftText ?? null,
-    playlist_id: playlistId,
-    status: "pending",
-    result: { lane, source: "enrich_v2", ...resultMeta },
-  });
-  if (error) {
-    console.error("[enrich] queue insert failed:", playlistId, error.message);
-    return false;
+  const playlistId = String(row.playlist_id ?? "");
+  if (!insert) {
+    const clean = String(
+      (row.curator_submission_dm as string) || (row.curator_instagram as string) || "",
+    ).replace(/^@/, "").trim();
+    if (!isValidCuratorIgHandle(clean)) return false;
+    const { data: existing } = await sb.from("social_engagement_queue")
+      .select("id")
+      .eq("playlist_id", playlistId)
+      .eq("platform", "instagram")
+      .eq("status", "pending")
+      .limit(1)
+      .maybeSingle();
+    if (existing?.id) return true;
+    const { error } = await sb.from("social_engagement_queue").insert({
+      platform: "instagram",
+      action: "pitch_dm",
+      target_url: `https://www.instagram.com/${clean}/`,
+      draft_text: typeof resultMeta?.draft_text === "string" ? resultMeta.draft_text : null,
+      ig_handle: clean.toLowerCase(),
+      playlist_id: playlistId,
+      status: "pending",
+      result: { lane, source: "enrich_v2", ...resultMeta },
+    });
+    if (error) {
+      console.error("[enrich] queue insert failed:", playlistId, error.message);
+      return false;
+    }
+    return true;
   }
-  return true;
+  return queueIgDm(sb, row, { ...insert, meta: { lane, ...insert.meta, ...resultMeta } });
 }
 
 export async function runQueueInstagramPitch(
@@ -421,20 +473,51 @@ export async function runQueueInstagramPitch(
   const pitchAngle = lane ? (lanes[lane]?.pitch_angle ?? "") : "";
   const streamLink = await resolveStreamLink(sb, trackName);
   const rc = row.research_context as Record<string, unknown> | null;
-  const isPlacement = rc?.source === "spotify_placement";
-  const engagementType = (body.engagement_type as string) || (isPlacement ? "thank_and_pitch" : "cross_pitch");
-  const draftText = isPlacement
-    ? buildPersonalizedIgDm(row, trackName, streamLink, engagementType as "thank_you" | "cross_pitch" | "thank_and_pitch")
-    : buildPitchBody(row, trackName, pitchAngle, streamLink);
+  const isPlacement = isWarmPlacementSource(rc?.source as string | undefined);
+  const engagementType = ((body.engagement_type as string) || (isPlacement ? "thank_and_pitch" : "cross_pitch")) as
+    "thank_you" | "cross_pitch" | "thank_and_pitch";
+  const requireMutual = body.require_mutual !== false;
 
   const queuedToday = await countIgDmsToday(sb);
   if (queuedToday >= IG_DM_DAILY_CAP) {
     return { status: 429, data: { error: `IG DM daily cap (${IG_DM_DAILY_CAP}) reached for today UTC` } };
   }
 
-  const queued = await queueInstagramPitch(sb, playlistId, handle, lane || null, draftText, {
+  if (isPlacement) {
+    const { reason } = pickCatalogTrackForPlacement(row, await loadCatalogTracks(sb), trackName);
+    const built = await buildIgQueueInsert(
+      sb,
+      row,
+      trackName,
+      reason,
+      streamLink,
+      engagementType,
+      requireMutual,
+      { source: "spotify_placement" },
+    );
+    if (!built.ok) {
+      return { status: 400, data: { error: built.reason, hint: "Add curator to IG roster with mutual flags" } };
+    }
+    const queued = await queueIgDm(sb, row, built.insert);
+    if (!queued) return { status: 500, data: { error: "Failed to queue DM (duplicate?)" } };
+    return {
+      status: 200,
+      data: {
+        ok: true,
+        queued: true,
+        dm_ref: built.insert.dm_ref,
+        target_url: `https://www.instagram.com/${built.insert.ig_handle}/`,
+        draft_text: built.insert.draft_text,
+        operator_brief: built.insert.operator_brief,
+      },
+    };
+  }
+
+  const draftText = buildPitchBody(row, trackName, pitchAngle, streamLink);
+  const queued = await queueInstagramPitch(sb, row, null, lane || null, {
     engagement_type: engagementType,
-    source: isPlacement ? "spotify_placement" : "manual_queue",
+    source: "manual_queue",
+    draft_text: draftText,
   });
   if (!queued) return { status: 500, data: { error: "Failed to queue DM" } };
 
@@ -499,8 +582,31 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
   for (const row of rows) {
     if (!row.playlist_id?.startsWith("spotify:")) continue;
 
-    const spotifyId = row.playlist_id.replace(/^spotify:/, "");
+    let spotifyId = row.playlist_id.replace(/^spotify:/, "");
+    if (spotifyId.startsWith("sfa:") && row.playlist_name) {
+      const rc0 = row.research_context as Record<string, unknown> | null;
+      const cached = typeof rc0?.spotify_playlist_id === "string" ? rc0.spotify_playlist_id : "";
+      if (cached && !cached.startsWith("37i9dQZF")) {
+        spotifyId = cached.replace(/^spotify:/, "");
+      } else {
+        const stubs = await scrapeSpotifySearchPlaylists(String(row.playlist_name));
+        const want = String(row.playlist_name).toLowerCase();
+        const hit = stubs.find((s) =>
+          s.playlist_id && !s.playlist_id.startsWith("37i9dQZF") &&
+          (s.name ?? "").toLowerCase().includes(want.slice(0, Math.min(12, want.length))),
+        );
+        if (!hit?.playlist_id) continue;
+        spotifyId = hit.playlist_id;
+      }
+    }
     const patch: Record<string, unknown> = {};
+    if (row.playlist_id.replace(/^spotify:/, "").startsWith("sfa:") && !spotifyId.startsWith("sfa:")) {
+      patch.submission_url = `https://open.spotify.com/playlist/${spotifyId}`;
+      patch.research_context = {
+        ...(row.research_context as Record<string, unknown> ?? {}),
+        spotify_playlist_id: spotifyId,
+      };
+    }
     let bestConfidence = Number((row as { contact_confidence?: number }).contact_confidence ?? 0) || 0;
     const recordConfidence = (c: number) => {
       if (c > bestConfidence) bestConfidence = c;
@@ -718,7 +824,7 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
       } else if (finalSubDm || finalIg) {
         patch.submission_method = "instagram_dm";
         const handle = finalSubDm || `@${String(finalIg).replace(/^@/, "")}`;
-        if (await queueInstagramPitch(sb, row.playlist_id, handle, row.lane, undefined)) {
+        if (await queueInstagramPitch(sb, row as Record<string, unknown>, null, row.lane, { routed_handle: handle })) {
           fieldsAdded.routed_instagram_dm++;
           recordConfidence(Math.max(bestConfidence, 4));
         }
@@ -867,7 +973,9 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
     if (body.fraud_verdict) q = q.eq("fraud_verdict", String(body.fraud_verdict));
     if (body.has_email) q = q.not("curator_email", "is", null);
     if (body.pitchable_only) q = q.in("submission_method", ["email", "instagram_dm"]);
-    if (body.placement_only) q = q.filter("research_context->>source", "eq", "spotify_placement");
+    if (body.placement_only) {
+      q = q.or("research_context->>source.eq.spotify_placement,research_context->>source.eq.spotify_for_artists_csv");
+    }
     if (body.has_social) q = q.or("curator_instagram.not.is.null,curator_tiktok.not.is.null,curator_twitter.not.is.null");
     const { data, error } = await q;
     if (error) return { status: 500, data: { error: error.message } };
@@ -922,7 +1030,7 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
     const limit = Math.min(50, Math.max(1, Number(body.limit) || 30));
     const status = String(body.status ?? "pending").trim() || "pending";
     let q = sb.from("social_engagement_queue")
-      .select("id, platform, action, target_url, draft_text, playlist_id, status, created_at, result")
+      .select("id, platform, action, target_url, draft_text, operator_brief, dm_ref, ig_handle, playlist_id, status, created_at, result")
       .eq("platform", "instagram")
       .order("created_at", { ascending: false })
       .limit(limit);
@@ -1120,6 +1228,8 @@ const PLAYLIST_AGENT_ACTIONS = new Set([
   "reconcile_lane_targets",
   "list_social_queue", "mark_social_queue_sent",
   "discover_spotify_placements", "queue_ig_outreach_batch",
+  "import_spotify_for_artists_csv",
+  "list_ig_roster", "patch_ig_roster", "import_ig_roster", "sync_ig_roster_from_targets",
 ]);
 
 export function isPlaylistAgentAction(action: string): boolean {
@@ -1166,6 +1276,24 @@ export async function runPlaylistAgentAction(
       } catch (e) {
         return { status: 500, data: { error: errMsg(e) } };
       }
+    case "import_spotify_for_artists_csv":
+      try {
+        const csvText = String(body.csv_text ?? "").trim();
+        if (!csvText) return { status: 400, data: { error: "csv_text required" } };
+        const result = await importSpotifyForArtistsCsv(sb, {
+          csv_text: csvText,
+          period_label: String(body.period_label ?? "").trim() || undefined,
+          lane: String(body.lane ?? "").trim(),
+          references: Array.isArray(body.references) ? body.references.map(String) : [],
+          artist_name: String(body.artist_name ?? "").trim() || undefined,
+          resolve_urls: Boolean(body.resolve_urls),
+          resolve_limit: Number(body.resolve_limit) || 12,
+          deactivate_missing: Boolean(body.deactivate_missing),
+        });
+        return { status: 200, data: { ok: true, ...result } };
+      } catch (e) {
+        return { status: 400, data: { error: errMsg(e) } };
+      }
     case "queue_ig_outreach_batch":
       return runQueueIgOutreachBatch(sb, body, resolveStreamLink, rowDiscoveryReferences);
     case "connect_spotify_init":
@@ -1180,6 +1308,11 @@ export async function runPlaylistAgentAction(
       return runPlaylistAdmin({ ...body, action: "list_social_queue" }, sb);
     case "mark_social_queue_sent":
       return runPlaylistAdmin({ ...body, action: "mark_social_queue_sent" }, sb);
+    case "list_ig_roster":
+    case "patch_ig_roster":
+    case "import_ig_roster":
+    case "sync_ig_roster_from_targets":
+      return runIgRosterAdmin(action, body, sb);
     default:
       return { status: 400, data: { error: `Unknown playlist agent action: ${action}` } };
   }

@@ -18,6 +18,7 @@ import AdminContacts from "./pages/admin/AdminContacts";
 import AdminPlaylistTargets from "./pages/admin/AdminPlaylistTargets";
 import AdminOutreachDrafts from "./pages/admin/AdminOutreachDrafts";
 import AdminSocialQueue from "./pages/admin/AdminSocialQueue";
+import AdminIgRoster from "./pages/admin/AdminIgRoster";
 import AdminRadioTargets from "./pages/admin/AdminRadioTargets";
 
 const queryClient = new QueryClient();
@@ -49,6 +50,7 @@ const App = () => (
             <Route path="playlists" element={<AdminPlaylistTargets />} />
             <Route path="outreach" element={<AdminOutreachDrafts />} />
             <Route path="ig-queue" element={<AdminSocialQueue />} />
+            <Route path="ig-roster" element={<AdminIgRoster />} />
             <Route path="send" element={<AdminSendCenter />} />
             <Route path="radio" element={<AdminRadioTargets />} />
             <Route path="pitch-log" element={<AdminPitchLog />} />

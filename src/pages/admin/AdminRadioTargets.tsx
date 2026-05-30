@@ -52,6 +52,7 @@ const AdminRadioTargets: React.FC = () => {
   const [notPitchedOnly, setNotPitchedOnly] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [backfilling, setBackfilling] = useState(false);
+  const [enriching, setEnriching] = useState(false);
   const [emailEdits, setEmailEdits] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
@@ -133,6 +134,38 @@ const AdminRadioTargets: React.FC = () => {
     }
   };
 
+  const enrichContacts = async (limit = 10) => {
+    setEnriching(true);
+    try {
+      let offset = 0;
+      let total = 0;
+      for (let round = 0; round < 5; round++) {
+        const res = await callHubFn<{
+          enriched: number;
+          skipped: Record<string, number>;
+          done: boolean;
+          next_offset: number | null;
+          stations: { station_id: string; contact_email?: string }[];
+        }>("enrich_radio_contacts", { limit, offset, skip_with_email: true });
+        total += res.enriched ?? 0;
+        const skip = res.skipped
+          ? Object.entries(res.skipped).filter(([, n]) => (n ?? 0) > 0).map(([k, n]) => `${k}:${n}`).join(" · ")
+          : "";
+        if (res.done) {
+          toast.success(`Enriched ${total} station(s)${skip ? ` · skipped ${skip}` : ""}`);
+          break;
+        }
+        offset = res.next_offset ?? offset + limit;
+        if (round === 4) toast.success(`Enriched ${total} so far — run again for more`);
+      }
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Enrich failed");
+    } finally {
+      setEnriching(false);
+    }
+  };
+
   const backfillBaseline = async () => {
     if (!confirm("Upsert apple_station_plays from radio_targets.songs_played (2026-05-30 week baseline)?")) return;
     setBackfilling(true);
@@ -165,12 +198,16 @@ const AdminRadioTargets: React.FC = () => {
           <Link to="/admin" className="text-xs text-muted-foreground hover:underline">← Command center</Link>
           <h1 className="text-2xl font-semibold tracking-tight mt-1">Radio / DJ outreach</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            {targets.length} warm stations (already spinning you) · {withEmail} with email
+            {targets.length} warm stations (already spinning you) · {withEmail} with email · enrich finds
+            station sites via Firecrawl
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" onClick={load} disabled={loading}>
             Refresh
+          </Button>
+          <Button variant="default" onClick={() => enrichContacts(10)} disabled={enriching}>
+            {enriching ? "Enriching…" : "Enrich contacts (top 10)"}
           </Button>
           <Button variant="secondary" onClick={backfillBaseline} disabled={backfilling}>
             {backfilling ? "Backfilling…" : "Backfill play-log baseline"}

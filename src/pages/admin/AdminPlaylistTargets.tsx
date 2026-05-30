@@ -24,7 +24,13 @@ type PlaylistRow = {
   pitch_status: string | null;
   follower_count: number | null;
   why_it_fits: string | null;
-  research_context?: { source?: string; featuring_tracks?: string[] } | null;
+  research_context?: {
+    source?: string;
+    featuring_tracks?: string[];
+    sfa_streams?: number;
+    sfa_listeners?: number;
+    sfa_date_added?: string | null;
+  } | null;
 };
 
 function ContactCell({ row }: { row: PlaylistRow }) {
@@ -102,6 +108,10 @@ const AdminPlaylistTargets: React.FC = () => {
   const [researching, setResearching] = useState(false);
   const [discoveringPlacements, setDiscoveringPlacements] = useState(false);
   const [placementOnly, setPlacementOnly] = useState(false);
+  const [importingSfa, setImportingSfa] = useState(false);
+  const [sfaPeriod, setSfaPeriod] = useState("1year");
+  const [sfaResolveUrls, setSfaResolveUrls] = useState(false);
+  const [sfaDeactivateMissing, setSfaDeactivateMissing] = useState(false);
 
   const refreshSpotifyStatus = useCallback(async () => {
     try {
@@ -197,16 +207,56 @@ const AdminPlaylistTargets: React.FC = () => {
     }
   };
 
+  const importSfaCsv = async (file: File) => {
+    setImportingSfa(true);
+    try {
+      const csv_text = await file.text();
+      const res = await callHubFn<{
+        parsed: number;
+        ingested: number;
+        updated: number;
+        skipped: Record<string, number>;
+      }>("import_spotify_for_artists_csv", {
+        csv_text,
+        period_label: sfaPeriod.trim() || "import",
+        lane: filterLane || lane,
+        references: ["Kaytranada", "Channel Tres", "SG Lewis"],
+        resolve_urls: sfaResolveUrls,
+        deactivate_missing: sfaDeactivateMissing,
+      });
+      const skip = res.skipped
+        ? Object.entries(res.skipped).filter(([, n]) => (n ?? 0) > 0).map(([k, n]) => `${k} ${n}`).join(" · ")
+        : "";
+      toast.success(
+        `SFA import: ${res.ingested} new, ${res.updated} updated (${res.parsed} rows)${skip ? `. Skipped: ${skip}` : ""}`,
+      );
+      setPlacementOnly(true);
+      await fetchRows();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setImportingSfa(false);
+    }
+  };
+
   const queueIgBatch = async () => {
     try {
-      const res = await callHubFn<{ queued: number; remaining_today: number }>("queue_ig_outreach_batch", {
-        track_name: trackName,
-        lane: filterLane || lane,
-        placement_only: true,
-        engagement_type: "thank_and_pitch",
-        limit: 10,
-      });
-      toast.success(`Queued ${res.queued} personalized IG DMs (${res.remaining_today} slots left today)`);
+      const res = await callHubFn<{ queued: number; remaining_today: number; skipped?: Record<string, string> }>(
+        "queue_ig_outreach_batch",
+        {
+          track_name: trackName || undefined,
+          auto_match_track: !trackName,
+          lane: filterLane || lane,
+          placement_only: true,
+          engagement_type: "thank_and_pitch",
+          require_mutual: true,
+          limit: 10,
+        },
+      );
+      const skipN = res.skipped ? Object.keys(res.skipped).length : 0;
+      toast.success(
+        `Queued ${res.queued} IG DMs (${res.remaining_today} left).${skipN ? ` Skipped ${skipN} (roster/mutual).` : ""}`,
+      );
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     }
@@ -406,6 +456,50 @@ const AdminPlaylistTargets: React.FC = () => {
         </Card>
       )}
 
+      <Card className="p-5 space-y-4 border-emerald-500/30">
+        <h2 className="text-sm font-medium">Spotify for Artists — playlist report (CSV)</h2>
+        <p className="text-xs text-muted-foreground">
+          Export from Spotify for Artists → Playlists → download CSV. Import once, then re-upload weekly to refresh
+          streams/listeners. Skips Spotify algorithmic playlists (Radio, Discover Weekly, etc.).
+        </p>
+        <div className="flex flex-wrap gap-3 items-end">
+          <div>
+            <label className="text-xs text-muted-foreground">Report label</label>
+            <Input value={sfaPeriod} onChange={(e) => setSfaPeriod(e.target.value)} placeholder="1year" />
+          </div>
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={sfaResolveUrls}
+              onChange={(e) => setSfaResolveUrls(e.target.checked)}
+            />
+            Resolve Spotify URLs (slower, uses Firecrawl)
+          </label>
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={sfaDeactivateMissing}
+              onChange={(e) => setSfaDeactivateMissing(e.target.checked)}
+            />
+            Deactivate rows missing from this file
+          </label>
+        </div>
+        <div>
+          <input
+            type="file"
+            accept=".csv,text/csv"
+            disabled={importingSfa}
+            className="text-sm"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void importSfaCsv(f);
+              e.target.value = "";
+            }}
+          />
+          {importingSfa && <p className="text-xs text-muted-foreground mt-2">Importing…</p>}
+        </div>
+      </Card>
+
       <Card className="p-5 space-y-4">
         <h2 className="text-sm font-medium">Step 1–2: Discovery &amp; enrich</h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -445,8 +539,11 @@ const AdminPlaylistTargets: React.FC = () => {
           <Button variant="outline" size="sm" asChild>
             <Link to="/admin/pitch-log">Pitch log</Link>
           </Button>
-          <Button variant="secondary" size="sm" onClick={queueIgBatch}>
-            Queue 10 IG DMs (placements)
+          <Button variant="secondary" size="sm" onClick={queueIgBatch} title="Requires mutual flags on IG roster">
+            Queue 10 IG DMs (mutual)
+          </Button>
+          <Button variant="outline" size="sm" asChild>
+            <Link to="/admin/ig-roster">IG roster</Link>
           </Button>
         </div>
       </Card>
@@ -505,12 +602,16 @@ const AdminPlaylistTargets: React.FC = () => {
                   <td className="p-2">
                     <div className="font-medium">{r.playlist_name}</div>
                     <div className="text-xs text-muted-foreground truncate max-w-[200px]">{r.why_it_fits}</div>
-                    {r.research_context?.source === "spotify_placement" && (
+                    {(r.research_context?.source === "spotify_placement" ||
+                      r.research_context?.source === "spotify_for_artists_csv") && (
                       <div className="text-[10px] text-emerald-700 dark:text-emerald-400 mt-0.5">
-                        ✓ Already features you
-                        {r.research_context.featuring_tracks?.[0]
-                          ? ` · ${r.research_context.featuring_tracks[0]}`
-                          : ""}
+                        ✓ Placement
+                        {r.research_context.source === "spotify_for_artists_csv" &&
+                          r.research_context.sfa_streams != null &&
+                          ` · ${r.research_context.sfa_streams} streams`}
+                        {r.research_context.featuring_tracks?.[0] &&
+                          r.research_context.source !== "spotify_for_artists_csv" &&
+                          ` · ${r.research_context.featuring_tracks[0]}`}
                       </div>
                     )}
                   </td>

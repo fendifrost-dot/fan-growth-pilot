@@ -1,5 +1,7 @@
 # Claude handoff — FanFuel Hub (Fan Growth Pilot)
 
+> **2026-05-28 — Outreach / IG / SFA CSV (execute next):** see **`docs/HANDOFF_CLAUDE_OUTREACH_DEPLOY.md`** for uncommitted IG roster + operator briefs + Spotify for Artists CSV import, migration `20260531`, deploy, and seeding `Fendi Frost-playlists-1year.csv`.
+
 **Date:** 2026-05-24  
 **Repo:** https://github.com/fendifrost-dot/fan-growth-pilot (`main` @ `11d7bb1`)  
 **Lovable:** https://lovable.dev/projects/4778d2a5-781c-45e5-b165-9497cdba4918  

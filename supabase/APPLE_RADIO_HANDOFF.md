@@ -38,7 +38,8 @@ Commit to `main`, then Lovable → **Publish** (redeploys the existing function 
 | `send_radio_pitch` | Sends via `send-pitch-email` (`kind: radio`), 90d cooldown, 10/day cap |
 | `patch_radio_target` | `{ station_id, contact_email, … }` |
 | `get_radio_pitch_log` | Audit list + 24h send count |
-| `backfill_apple_station_baseline` | Expands `radio_targets.songs_played` → `apple_station_plays` for WoW baseline |
+| `backfill_apple_station_baseline` | Expands `radio_targets.songs_played` → `apple_station_plays` (supports `{song_name, spins}` shape) |
+| `enrich_radio_contacts` | Firecrawl station contact discovery; `{ limit, offset, station_ids? }` |
 
 **Baseline (one-time):**
 

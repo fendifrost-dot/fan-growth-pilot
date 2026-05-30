@@ -12,6 +12,8 @@ type OutreachStats = {
   radio_stations: number;
   radio_with_email: number;
   instagram_dm_queue: number;
+  ig_roster_mutual?: number;
+  ig_roster_total?: number;
 };
 
 const AdminHub: React.FC = () => {
@@ -41,7 +43,7 @@ const AdminHub: React.FC = () => {
             <li>Fan Telegram: {stats.fan_telegram_subscribers} subscribers</li>
             <li>Playlist: {stats.playlist_pending_drafts} pending drafts · {stats.playlist_emails_24h} emails (24h)</li>
             <li>Radio: {stats.radio_with_email}/{stats.radio_stations} stations with email</li>
-            <li>Instagram: {stats.instagram_dm_queue} DMs queued</li>
+            <li>Instagram: {stats.instagram_dm_queue} DMs queued · {stats.ig_roster_mutual ?? 0} mutual on roster</li>
           </ul>
         )}
         <Button className="mt-4" asChild>
@@ -69,6 +71,13 @@ const AdminHub: React.FC = () => {
           <p className="text-sm text-muted-foreground mt-1">Fan list batch sends (Resend)</p>
           <Button variant="outline" size="sm" className="mt-3" asChild>
             <Link to="/admin/campaigns">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">IG roster (mutual)</h3>
+          <p className="text-sm text-muted-foreground mt-1">Verify follow-back before queuing DMs</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/ig-roster">Open →</Link>
           </Button>
         </Card>
         <Card className="p-5">

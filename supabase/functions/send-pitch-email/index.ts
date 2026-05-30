@@ -25,7 +25,14 @@ Deno.serve(async (req) => {
       return json({ error: "Unauthorized" }, 401);
     }
 
-    const { playlist_id, curator_email, curator_name, playlist_name, track_name, subject, body } = await req.json();
+    const payload = await req.json();
+    const kind = String(payload.kind ?? "playlist").toLowerCase();
+
+    if (kind === "radio") {
+      return await handleRadioPitch(payload);
+    }
+
+    const { playlist_id, curator_email, curator_name, playlist_name, track_name, subject, body } = payload;
 
     if (!curator_email || !subject || !body || !track_name || !playlist_id) {
       return json({ error: "curator_email, subject, body, track_name, and playlist_id are required" }, 400);
@@ -120,6 +127,98 @@ Fendi Frost`;
     return json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
 });
+
+async function handleRadioPitch(payload: Record<string, unknown>) {
+  const stationId = String(payload.station_id ?? "").trim();
+  const curatorEmail = String(payload.curator_email ?? "").trim();
+  const trackName = String(payload.track_name ?? "").trim();
+  const subject = String(payload.subject ?? "").trim();
+  const body = String(payload.body ?? "").trim();
+  const pitchLogId = String(payload.pitch_log_id ?? "").trim();
+
+  if (!stationId || !curatorEmail || !subject || !body || !trackName) {
+    return json({ error: "radio: station_id, curator_email, subject, body, track_name required" }, 400);
+  }
+
+  const resendKey = Deno.env.get("RESEND_API_KEY");
+  const fromEmail = Deno.env.get("FROM_EMAIL") || "pitches@fendifrost.com";
+  if (!resendKey) return json({ error: "RESEND_API_KEY not configured" }, 500);
+
+  const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+  const sentAt = new Date().toISOString();
+
+  const resendResp = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${resendKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: `Fendi Frost <${fromEmail}>`,
+      to: [curatorEmail],
+      subject,
+      text: body,
+      html: body.replace(/\n/g, "<br>"),
+    }),
+  });
+
+  if (!resendResp.ok) {
+    const errText = await resendResp.text();
+    if (pitchLogId) {
+      await supabase.from("radio_pitch_log").update({
+        status: "error",
+        body: `${body}\n\n--- send error ---\n${errText.slice(0, 500)}`,
+      }).eq("id", pitchLogId);
+    }
+    return json({ error: `Email send failed: ${resendResp.status} - ${errText}` }, 500);
+  }
+
+  const resendData = await resendResp.json() as { id?: string };
+
+  const logPatch = {
+    station_id: stationId,
+    station_call_sign: payload.station_call_sign ?? null,
+    song_id: payload.song_id ?? null,
+    song_name: trackName,
+    channel: "email",
+    recipient: curatorEmail,
+    subject,
+    body,
+    status: "sent",
+    sent_at: sentAt,
+    resend_message_id: resendData.id ?? null,
+  };
+
+  if (pitchLogId) {
+    const { error: upErr } = await supabase.from("radio_pitch_log").update(logPatch).eq("id", pitchLogId);
+    if (upErr) {
+      console.error("radio_pitch_log update failed after send:", upErr.message);
+      return json({
+        error: `Email sent but logging failed: ${upErr.message}`,
+        message_id: resendData.id,
+      }, 500);
+    }
+  } else {
+    const { error: insErr } = await supabase.from("radio_pitch_log").insert(logPatch);
+    if (insErr) {
+      console.error("radio_pitch_log insert failed after send:", insErr.message);
+      return json({
+        error: `Email sent but logging failed: ${insErr.message}`,
+        message_id: resendData.id,
+      }, 500);
+    }
+  }
+
+  return json({
+    success: true,
+    kind: "radio",
+    message_id: resendData.id,
+    to: curatorEmail,
+    track: trackName,
+    station_id: stationId,
+    pitch_log_id: pitchLogId || null,
+  });
+}
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {

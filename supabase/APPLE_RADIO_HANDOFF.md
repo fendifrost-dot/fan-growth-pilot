@@ -26,6 +26,32 @@ Commit to `main`, then Lovable → **Publish** (redeploys the existing function 
 - `SELECT station_call_sign, city, total_spins, warmth FROM radio_targets ORDER BY total_spins DESC LIMIT 10;`
 - Re-run weekly: diffing `snapshot_week` rows gives real week-over-week spin deltas (no fabricated numbers).
 
+## Radio outreach (after schema + ingest)
+
+**Admin UI:** `/admin/radio` — patch emails, draft/send “thanks for spinning” pitches.
+
+**CCA actions** (via `control-center-api`):
+
+| Action | Purpose |
+|--------|---------|
+| `draft_radio_pitch` | `{ station_id, track_name }` → draft in `radio_pitch_log` |
+| `send_radio_pitch` | Sends via `send-pitch-email` (`kind: radio`), 90d cooldown, 10/day cap |
+| `patch_radio_target` | `{ station_id, contact_email, … }` |
+| `get_radio_pitch_log` | Audit list + 24h send count |
+| `backfill_apple_station_baseline` | Expands `radio_targets.songs_played` → `apple_station_plays` for WoW baseline |
+
+**Baseline (one-time):**
+
+```bash
+curl -sS -X POST "$CCA" -H "content-type: application/json" -d '{
+  "action": "backfill_apple_station_baseline",
+  "snapshot_week": "2026-05-26",
+  "artist_id": "ami:identity:YOUR_ID"
+}'
+```
+
+Or use **Backfill play-log baseline** in `/admin/radio` (needs `AMFA_ARTIST_ID` secret or `artist_config` key `amfa_artist_id`).
+
 ## Notes
 - `radio_targets` upsert preserves manual fields (`contact_email`, `pitch_status`, `notes`, `pitched_at`) — only metrics/geo/warmth refresh each capture.
-- Next build (after this lands): seed `contact_email`/`submission_url` enrichment + DJ/station pitch send via existing `send-pitch-email`, logged to `radio_pitch_log`.
+- Enrichment of `contact_email` / submission URLs for stations is still manual or a future enrich pass.

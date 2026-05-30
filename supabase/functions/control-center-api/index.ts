@@ -1,5 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { isPlaylistAgentAction, runPlaylistAgentAction } from '../_shared/playlist-agent-run.ts';
+import { isRadioAction, runRadioAction } from '../_shared/radio-outreach.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -62,6 +63,14 @@ Deno.serve(async (req) => {
 
     if (isPlaylistAgentAction(String(action ?? ''))) {
       const result = await runPlaylistAgentAction(String(action), body, supabase, expectedKey);
+      return new Response(JSON.stringify(result.data), {
+        status: result.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isRadioAction(String(action ?? ''))) {
+      const result = await runRadioAction(String(action), body, supabase, expectedKey);
       return new Response(JSON.stringify(result.data), {
         status: result.status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },

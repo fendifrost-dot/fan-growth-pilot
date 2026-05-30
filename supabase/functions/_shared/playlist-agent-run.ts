@@ -34,6 +34,13 @@ import {
   scrapeSpotifyPlaylistDetail,
   scrapeSpotifyUserProfile,
 } from "./spotify-scrape.ts";
+import { discoverSpotifyPlacements } from "./spotify-placements.ts";
+import {
+  buildPersonalizedIgDm,
+  runQueueIgOutreachBatch,
+  IG_DM_DAILY_CAP,
+  countIgDmsToday,
+} from "./ig-outreach.ts";
 
 export type RunResult = { status: number; data: unknown };
 
@@ -356,6 +363,7 @@ async function queueInstagramPitch(
   handle: string,
   lane: string | null,
   draftText?: string,
+  resultMeta?: Record<string, unknown>,
 ): Promise<boolean> {
   const clean = handle.replace(/^@/, "").trim();
   if (!isValidCuratorIgHandle(clean)) return false;
@@ -375,7 +383,7 @@ async function queueInstagramPitch(
     draft_text: draftText ?? null,
     playlist_id: playlistId,
     status: "pending",
-    result: { lane, source: "enrich_v2" },
+    result: { lane, source: "enrich_v2", ...resultMeta },
   });
   if (error) {
     console.error("[enrich] queue insert failed:", playlistId, error.message);
@@ -412,9 +420,22 @@ export async function runQueueInstagramPitch(
   const lane = String(row.lane ?? "").trim();
   const pitchAngle = lane ? (lanes[lane]?.pitch_angle ?? "") : "";
   const streamLink = await resolveStreamLink(sb, trackName);
-  const draftText = buildPitchBody(row, trackName, pitchAngle, streamLink);
+  const rc = row.research_context as Record<string, unknown> | null;
+  const isPlacement = rc?.source === "spotify_placement";
+  const engagementType = (body.engagement_type as string) || (isPlacement ? "thank_and_pitch" : "cross_pitch");
+  const draftText = isPlacement
+    ? buildPersonalizedIgDm(row, trackName, streamLink, engagementType as "thank_you" | "cross_pitch" | "thank_and_pitch")
+    : buildPitchBody(row, trackName, pitchAngle, streamLink);
 
-  const queued = await queueInstagramPitch(sb, playlistId, handle, lane || null, draftText);
+  const queuedToday = await countIgDmsToday(sb);
+  if (queuedToday >= IG_DM_DAILY_CAP) {
+    return { status: 429, data: { error: `IG DM daily cap (${IG_DM_DAILY_CAP}) reached for today UTC` } };
+  }
+
+  const queued = await queueInstagramPitch(sb, playlistId, handle, lane || null, draftText, {
+    engagement_type: engagementType,
+    source: isPlacement ? "spotify_placement" : "manual_queue",
+  });
   if (!queued) return { status: 500, data: { error: "Failed to queue DM" } };
 
   return {
@@ -839,13 +860,14 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
   const action = String(body.action ?? "").trim();
   if (action === "list_targets") {
     let q = sb.from("playlist_targets").select(
-      "playlist_id, playlist_name, curator_name, curator_email, curator_instagram, curator_linktree, curator_submission_url, curator_submission_dm, curator_submission_note, lane, tier, authenticity_score, fraud_verdict, contact_confidence, pitch_status, follower_count, is_active, why_it_fits, recommended_pitch_angle, submission_url, submission_method, last_enriched_at",
+      "playlist_id, playlist_name, curator_name, curator_email, curator_instagram, curator_linktree, curator_submission_url, curator_submission_dm, curator_submission_note, lane, tier, authenticity_score, fraud_verdict, contact_confidence, pitch_status, follower_count, is_active, why_it_fits, recommended_pitch_angle, submission_url, submission_method, last_enriched_at, research_context",
     ).eq("is_active", true).order("follower_count", { ascending: false, nullsFirst: false }).limit(200);
     if (body.lane) q = q.eq("lane", String(body.lane));
     if (body.tier != null && body.tier !== "") q = q.eq("tier", Number(body.tier));
     if (body.fraud_verdict) q = q.eq("fraud_verdict", String(body.fraud_verdict));
     if (body.has_email) q = q.not("curator_email", "is", null);
     if (body.pitchable_only) q = q.in("submission_method", ["email", "instagram_dm"]);
+    if (body.placement_only) q = q.filter("research_context->>source", "eq", "spotify_placement");
     if (body.has_social) q = q.or("curator_instagram.not.is.null,curator_tiktok.not.is.null,curator_twitter.not.is.null");
     const { data, error } = await q;
     if (error) return { status: 500, data: { error: error.message } };
@@ -907,7 +929,35 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
     if (status !== "all") q = q.eq("status", status);
     const { data, error } = await q;
     if (error) return { status: 500, data: { error: error.message } };
-    return { status: 200, data: { ok: true, rows: data ?? [] } };
+    const queuedToday = await countIgDmsToday(sb);
+    return {
+      status: 200,
+      data: {
+        ok: true,
+        rows: data ?? [],
+        ig_dm_cap: IG_DM_DAILY_CAP,
+        ig_dm_queued_today: queuedToday,
+        ig_dm_remaining: Math.max(0, IG_DM_DAILY_CAP - queuedToday),
+      },
+    };
+  }
+  if (action === "mark_social_queue_sent") {
+    const id = String(body.queue_id ?? "").trim();
+    if (!id) return { status: 400, data: { error: "queue_id required" } };
+    const { error } = await sb.from("social_engagement_queue").update({
+      status: "sent",
+      performed_at: new Date().toISOString(),
+      performed_by: String(body.performed_by ?? "admin:ui"),
+    }).eq("id", id);
+    if (error) return { status: 500, data: { error: error.message } };
+    const { data: item } = await sb.from("social_engagement_queue").select("playlist_id").eq("id", id).maybeSingle();
+    if (item?.playlist_id) {
+      await sb.from("playlist_targets").update({
+        pitch_status: "pitched",
+        last_contact_at: new Date().toISOString(),
+      }).eq("playlist_id", item.playlist_id);
+    }
+    return { status: 200, data: { ok: true } };
   }
   if (action === "get_pitch_log") {
     const limit = Math.min(50, Math.max(1, Number(body.limit) || 10));
@@ -1068,7 +1118,8 @@ const PLAYLIST_AGENT_ACTIONS = new Set([
   "connect_spotify_init", "connect_spotify_status",
   "queue_instagram_pitch",
   "reconcile_lane_targets",
-  "list_social_queue",
+  "list_social_queue", "mark_social_queue_sent",
+  "discover_spotify_placements", "queue_ig_outreach_batch",
 ]);
 
 export function isPlaylistAgentAction(action: string): boolean {
@@ -1099,6 +1150,24 @@ export async function runPlaylistAgentAction(
       return runSendCampaignProxy(body, hubKey);
     case "send_telegram_campaign":
       return runSendTelegramCampaignProxy(body, hubKey);
+    case "discover_spotify_placements":
+      try {
+        const trackName = String(body.track_name ?? "").trim();
+        const trackNames = Array.isArray(body.track_names)
+          ? body.track_names.map(String).filter(Boolean)
+          : trackName ? [trackName] : undefined;
+        const result = await discoverSpotifyPlacements(sb, {
+          lane: String(body.lane ?? "").trim(),
+          references: Array.isArray(body.references) ? body.references.map(String) : [],
+          track_names: trackNames,
+          quick: Boolean(body.quick),
+        });
+        return { status: 200, data: { ok: true, ...result } };
+      } catch (e) {
+        return { status: 500, data: { error: errMsg(e) } };
+      }
+    case "queue_ig_outreach_batch":
+      return runQueueIgOutreachBatch(sb, body, resolveStreamLink, rowDiscoveryReferences);
     case "connect_spotify_init":
       return runConnectSpotifyInit(body);
     case "connect_spotify_status":
@@ -1109,6 +1178,8 @@ export async function runPlaylistAgentAction(
       return runReconcileLaneTargets(body, sb);
     case "list_social_queue":
       return runPlaylistAdmin({ ...body, action: "list_social_queue" }, sb);
+    case "mark_social_queue_sent":
+      return runPlaylistAdmin({ ...body, action: "mark_social_queue_sent" }, sb);
     default:
       return { status: 400, data: { error: `Unknown playlist agent action: ${action}` } };
   }

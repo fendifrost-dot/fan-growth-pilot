@@ -489,12 +489,16 @@ const AdminSendCenter: React.FC = () => {
         </TabsContent>
 
         <TabsContent value="instagram" className="mt-4 space-y-4">
-          <Card className="p-5 space-y-2">
-            <h2 className="font-medium">Instagram DM (manual)</h2>
+          <Card className="p-5 space-y-3">
+            <h2 className="font-medium">Instagram DM (manual, 10/day)</h2>
             <p className="text-sm text-muted-foreground">
-              Queued from playlist enrich. Copy draft → open profile → paste in IG. Not automated.
+              Personalized thank-you + catalog pitch for playlists that already feature you. Each DM uses a
+              different opener (same goal). Copy → paste in IG → Mark sent.
             </p>
-            <Button variant="outline" asChild><Link to="/admin/ig-queue">Full IG queue</Link></Button>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" asChild><Link to="/admin/playlists">Find playlists with my music</Link></Button>
+              <Button variant="secondary" asChild><Link to="/admin/ig-queue">IG queue ({stats?.instagram_dm_queue ?? 0} pending)</Link></Button>
+            </div>
           </Card>
           <div className="rounded border overflow-auto">
             <table className="w-full text-sm">

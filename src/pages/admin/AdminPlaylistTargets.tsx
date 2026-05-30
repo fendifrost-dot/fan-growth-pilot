@@ -24,6 +24,7 @@ type PlaylistRow = {
   pitch_status: string | null;
   follower_count: number | null;
   why_it_fits: string | null;
+  research_context?: { source?: string; featuring_tracks?: string[] } | null;
 };
 
 function ContactCell({ row }: { row: PlaylistRow }) {
@@ -99,6 +100,8 @@ const AdminPlaylistTargets: React.FC = () => {
   const [spotifyStatus, setSpotifyStatus] = useState<{ connected: boolean; reason?: string } | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [researching, setResearching] = useState(false);
+  const [discoveringPlacements, setDiscoveringPlacements] = useState(false);
+  const [placementOnly, setPlacementOnly] = useState(false);
 
   const refreshSpotifyStatus = useCallback(async () => {
     try {
@@ -159,6 +162,7 @@ const AdminPlaylistTargets: React.FC = () => {
         ...(filterTier ? { tier: Number(filterTier) } : {}),
         ...(hasEmailOnly ? { has_email: true } : {}),
         ...(pitchableOnly ? { pitchable_only: true } : {}),
+        ...(placementOnly ? { placement_only: true } : {}),
       });
       setRows(data.rows ?? []);
     } catch (e) {
@@ -166,7 +170,47 @@ const AdminPlaylistTargets: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [filterLane, filterTier, hasEmailOnly, pitchableOnly]);
+  }, [filterLane, filterTier, hasEmailOnly, pitchableOnly, placementOnly]);
+
+  const discoverPlacements = async () => {
+    setDiscoveringPlacements(true);
+    try {
+      const res = await callHubFn<{
+        found: number;
+        verified: number;
+        ingested: number;
+        skipped: Record<string, number>;
+      }>("discover_spotify_placements", {
+        track_name: trackName,
+        lane,
+        references: ["Kaytranada", "Channel Tres", "SG Lewis"],
+      });
+      toast.success(
+        `Placements: ${res.ingested} ingested (${res.verified} verified / ${res.found} found). Run Enrich → Queue IG batch.`,
+      );
+      setPlacementOnly(true);
+      await fetchRows();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDiscoveringPlacements(false);
+    }
+  };
+
+  const queueIgBatch = async () => {
+    try {
+      const res = await callHubFn<{ queued: number; remaining_today: number }>("queue_ig_outreach_batch", {
+        track_name: trackName,
+        lane: filterLane || lane,
+        placement_only: true,
+        engagement_type: "thank_and_pitch",
+        limit: 10,
+      });
+      toast.success(`Queued ${res.queued} personalized IG DMs (${res.remaining_today} slots left today)`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   useEffect(() => {
     fetchRows();
@@ -383,6 +427,15 @@ const AdminPlaylistTargets: React.FC = () => {
             <Button type="button" variant="outline" onClick={enrichBatch}>
               Enrich contacts
             </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={discoveringPlacements}
+              onClick={discoverPlacements}
+              title="Find Spotify playlists that already feature your music"
+            >
+              {discoveringPlacements ? "Scanning…" : "Find playlists with my music"}
+            </Button>
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -391,6 +444,9 @@ const AdminPlaylistTargets: React.FC = () => {
           </Button>
           <Button variant="outline" size="sm" asChild>
             <Link to="/admin/pitch-log">Pitch log</Link>
+          </Button>
+          <Button variant="secondary" size="sm" onClick={queueIgBatch}>
+            Queue 10 IG DMs (placements)
           </Button>
         </div>
       </Card>
@@ -413,6 +469,10 @@ const AdminPlaylistTargets: React.FC = () => {
           <label className="flex items-center gap-2 text-sm pb-2">
             <input type="checkbox" checked={pitchableOnly} onChange={(e) => setPitchableOnly(e.target.checked)} />
             Pitchable only
+          </label>
+          <label className="flex items-center gap-2 text-sm pb-2">
+            <input type="checkbox" checked={placementOnly} onChange={(e) => setPlacementOnly(e.target.checked)} />
+            Already features me
           </label>
           <Button type="button" variant="outline" onClick={fetchRows}>Refresh</Button>
           <Button type="button" variant="secondary" disabled={reconciling} onClick={reconcileLane}>
@@ -445,6 +505,14 @@ const AdminPlaylistTargets: React.FC = () => {
                   <td className="p-2">
                     <div className="font-medium">{r.playlist_name}</div>
                     <div className="text-xs text-muted-foreground truncate max-w-[200px]">{r.why_it_fits}</div>
+                    {r.research_context?.source === "spotify_placement" && (
+                      <div className="text-[10px] text-emerald-700 dark:text-emerald-400 mt-0.5">
+                        ✓ Already features you
+                        {r.research_context.featuring_tracks?.[0]
+                          ? ` · ${r.research_context.featuring_tracks[0]}`
+                          : ""}
+                      </div>
+                    )}
                   </td>
                   <td className="p-2">{r.curator_name ?? "—"}</td>
                   <td className="p-2">{r.lane ?? "—"}</td>

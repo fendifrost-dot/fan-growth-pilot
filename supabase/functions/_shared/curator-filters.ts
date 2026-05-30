@@ -63,10 +63,13 @@ export function isSpotifyOwnedCurator(
   playlistName?: string | null,
   playlistId?: string | null,
 ): boolean {
+  const pid = (playlistId ?? "").trim();
+  if (pid && /^spotify:37i9dQZF/i.test(pid)) return true;
   if (isSpotifyCuratorName(curatorName)) return true;
-  const algoName = playlistName && ALGORITHMIC_SUFFIXES.some((re) => re.test(playlistName));
-  if (algoName && (isSpotifyCuratorName(curatorName) || !curatorName?.trim() || isSpotifyEditorialPlaylistId(playlistId))) {
-    return true;
+  if (playlistName && ALGORITHMIC_SUFFIXES.some((re) => re.test(playlistName))) {
+    if (isSpotifyCuratorName(curatorName) || !curatorName?.trim() || isSpotifyEditorialPlaylistId(playlistId)) {
+      return true;
+    }
   }
   return false;
 }

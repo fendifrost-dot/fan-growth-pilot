@@ -6,4 +6,5 @@ UPDATE public.playlist_targets
        submission_method = 'none'
  WHERE curator_name = 'Spotify'
     OR curator_name ILIKE 'spotify %'
-    OR curator_name IN ('Filtr', 'Topsify', 'Digster');
+    OR curator_name IN ('Filtr', 'Topsify', 'Digster')
+    OR playlist_id ILIKE 'spotify:37i9dQZF%';

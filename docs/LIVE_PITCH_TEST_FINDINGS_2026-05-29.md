@@ -66,5 +66,8 @@ Draft `02a91c55-68b1-4842-87cf-939ef8658d81` (Run The Trap TV) — reject, edit,
 | `0abc779` | Lane-fit gate, discovery quality filters, `discovery_skips` |
 | `d385317` | Enrich v2: playlist description, web search, empty profiles |
 | `78e96c3` | IG chrome hardening, `sanitizeCuratorIgHandle` |
+| `63a1f93` | Artist-as-curator, Spotify-owned, IG path-keyword filters |
+| `a1f3861` | Pitchable filter, reconcile, discovery toasts, enrich disclaim |
+| (latest) | `37i9dQZF` id gate, IG queue admin, execute-pitch send unify, enrich v3 website disclaim |
 
 See [MANUAL_PITCH_PLAYBOOK_DEEP_HOUSE.md](./MANUAL_PITCH_PLAYBOOK_DEEP_HOUSE.md).

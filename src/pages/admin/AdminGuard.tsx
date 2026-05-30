@@ -13,6 +13,7 @@ const AdminGuard: React.FC = () => {
               <Link to="/admin/contacts" className="hover:underline">Contacts</Link>
               <Link to="/admin/playlists" className="hover:underline">Playlists</Link>
               <Link to="/admin/outreach" className="hover:underline">Outreach</Link>
+              <Link to="/admin/ig-queue" className="hover:underline">IG queue</Link>
             </nav>
           </div>
         </div>

@@ -217,30 +217,26 @@ const AdminPlaylistTargets: React.FC = () => {
       let offset = 0;
       let total = 0;
       let done = false;
+      const totals = { curator_email: 0, routed_instagram_dm: 0, curator_linktree: 0 };
       while (!done) {
         const res = await callHubFn<{
           enriched: number;
           done?: boolean;
           next_offset?: number | null;
           fields_added?: Record<string, number>;
-        }>("enrich_curator_contacts", {
-          lane,
-          limit: 8,
-          offset,
-        });
+        }>("enrich_curator_contacts", { lane, limit: 8, offset });
         total += res.enriched ?? 0;
+        const fa = res.fields_added ?? {};
+        totals.curator_email += fa.curator_email ?? 0;
+        totals.routed_instagram_dm += fa.routed_instagram_dm ?? 0;
+        totals.curator_linktree += fa.curator_linktree ?? 0;
         done = res.done ?? true;
         offset = res.next_offset ?? offset + 8;
-        const fa = res.fields_added;
-        if (fa && (fa.curator_email || fa.routed_instagram_dm)) {
-          toast.message(
-            `+${fa.curator_email ?? 0} emails, +${fa.routed_instagram_dm ?? 0} IG queue`,
-          );
-        }
-        if (done) break;
-        toast.message(`Enriched ${total} so far… continuing`);
+        if (!done) toast.message(`Enriching… ${total} rows processed`);
       }
-      toast.success(`Enriched ${total} playlist(s). Filter by lane and check Contact column.`);
+      toast.success(
+        `Enrich done: ${total} rows · +${totals.curator_email} emails · +${totals.routed_instagram_dm} IG queue · see /admin/ig-queue`,
+      );
       await fetchRows();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));

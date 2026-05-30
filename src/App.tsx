@@ -14,6 +14,7 @@ import AdminCampaignDetail from "./pages/admin/AdminCampaignDetail";
 import AdminContacts from "./pages/admin/AdminContacts";
 import AdminPlaylistTargets from "./pages/admin/AdminPlaylistTargets";
 import AdminOutreachDrafts from "./pages/admin/AdminOutreachDrafts";
+import AdminSocialQueue from "./pages/admin/AdminSocialQueue";
 
 const queryClient = new QueryClient();
 
@@ -43,6 +44,7 @@ const App = () => (
             <Route path="contacts" element={<AdminContacts />} />
             <Route path="playlists" element={<AdminPlaylistTargets />} />
             <Route path="outreach" element={<AdminOutreachDrafts />} />
+            <Route path="ig-queue" element={<AdminSocialQueue />} />
           </Route>
 
           {/* Public smart link pages (CATCH-ALL — must stay last among meaningful routes) */}

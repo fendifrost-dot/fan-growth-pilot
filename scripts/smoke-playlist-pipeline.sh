@@ -63,6 +63,10 @@ spotify_curators = [r for r in rows if (r.get("curator_name") or "").strip() == 
 if spotify_curators:
     errors.append(f"list_targets: {len(spotify_curators)} active Spotify-owned row(s) — run deactivate SQL")
 
+editorial_ids = [r for r in rows if (r.get("playlist_id") or "").lower().startswith("spotify:37i9dqzf")]
+if editorial_ids:
+    errors.append(f"list_targets: {len(editorial_ids)} active 37i9dQZF editorial playlist(s) — run deactivate SQL")
+
 if errors:
     print("FAIL:")
     for e in errors:

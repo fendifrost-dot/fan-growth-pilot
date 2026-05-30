@@ -169,25 +169,55 @@ export async function runApproveDraft(body: Record<string, unknown>, sb: Supabas
   if (channel !== "email") return { status: 400, data: { error: `Send not implemented for channel: ${channel}` } };
 
   const base = Deno.env.get("SUPABASE_URL")!.replace(/\/$/, "");
-  const email = (draft.recipient as string)?.trim() || (pl?.curator_email as string | undefined)?.trim();
-  if (!email) return { status: 400, data: { error: "No recipient email on draft" } };
-
-  const sendRes = await fetch(`${base}/functions/v1/send-pitch-email`, {
+  const execRes = await fetch(`${base}/functions/v1/execute-pitch`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-api-key": hubKey },
     body: JSON.stringify({
-      playlist_id: draft.playlist_id, curator_email: email, curator_name: curatorName,
-      playlist_name: playlistName, track_name: draft.track_name,
-      subject: draft.subject ?? `Submission: ${draft.track_name} — Fendi Frost`, body: draft.body,
+      playlist_id: draft.playlist_id,
+      track_name: draft.track_name,
+      draft_id: draftId,
     }),
   });
-  const sendData = await sendRes.json().catch(() => ({}));
-  if (!sendRes.ok) return { status: 500, data: { error: (sendData as { error?: string }).error ?? `Send failed ${sendRes.status}` } };
+  const execData = await execRes.json().catch(() => ({})) as {
+    ok?: boolean;
+    action_taken?: string;
+    message_to_user?: string;
+    cooldown_until?: string | null;
+  };
+  if (!execRes.ok || !execData.ok || execData.action_taken !== "email_sent") {
+    return {
+      status: execRes.ok ? 422 : execRes.status,
+      data: {
+        ok: false,
+        status: "approved",
+        sent: false,
+        error: execData.message_to_user ?? (execData as { error?: string }).error ?? `Send failed ${execRes.status}`,
+        execute_pitch: execData,
+      },
+    };
+  }
 
   const { data: logRow } = await sb.from("pitch_log").select("id").eq("playlist_id", draft.playlist_id)
-    .eq("track_name", draft.track_name).order("pitched_at", { ascending: false }).limit(1).maybeSingle();
-  await sb.from("outreach_drafts").update({ status: "sent", sent_at: new Date().toISOString(), pitch_log_id: logRow?.id ?? null }).eq("id", draftId);
-  return { status: 200, data: { ok: true, status: "sent", sent: true, channel: "email", send_result: sendData, pitch_log_id: logRow?.id ?? null } };
+    .eq("track_name", draft.track_name).eq("status", "sent").order("pitched_at", { ascending: false }).limit(1).maybeSingle();
+  await sb.from("outreach_drafts").update({
+    status: "sent",
+    sent_at: new Date().toISOString(),
+    pitch_log_id: logRow?.id ?? null,
+  }).eq("id", draftId);
+  await sb.from("playlist_targets").update({ pitch_status: "pitched" }).eq("playlist_id", draft.playlist_id);
+
+  return {
+    status: 200,
+    data: {
+      ok: true,
+      status: "sent",
+      sent: true,
+      channel: "email",
+      cooldown_until: execData.cooldown_until ?? null,
+      message: execData.message_to_user,
+      pitch_log_id: logRow?.id ?? null,
+    },
+  };
 }
 
 type Extracted = { curator_instagram?: string; curator_tiktok?: string; curator_twitter?: string; curator_website?: string; curator_linktree?: string; curator_email?: string };
@@ -357,9 +387,10 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
   let query = sb
     .from("playlist_targets")
     .select(
-      "playlist_id, playlist_name, curator_name, curator_email, curator_instagram, curator_linktree, curator_website, curator_submission_url, curator_submission_dm, research_context, lane, submission_method, contact_confidence",
+      "playlist_id, playlist_name, curator_name, curator_email, curator_instagram, curator_linktree, curator_website, curator_submission_url, curator_submission_dm, research_context, lane, submission_method, contact_confidence, pitch_status",
     )
     .eq("is_active", true)
+    .neq("pitch_status", "disclaim_brand")
     .or("curator_email.is.null,submission_method.is.null")
     .or(`last_enriched_at.is.null,last_enriched_at.lt.${staleBefore}`)
     .order("follower_count", { ascending: false, nullsFirst: false });
@@ -402,6 +433,8 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
     };
 
     try {
+      if ((row as { pitch_status?: string }).pitch_status === "disclaim_brand") continue;
+
       const detail = await scrapeSpotifyPlaylistDetail(spotifyId);
       if (!detail) continue;
 
@@ -582,6 +615,27 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
           }
         } catch (e) {
           console.error(`[enrich] hunter for ${website} failed:`, errMsg(e));
+        }
+      }
+
+      const websiteForDisclaim = (patch.curator_website as string) || row.curator_website;
+      if (!patch.pitch_status && websiteForDisclaim && !patch.curator_email && !row.curator_email) {
+        try {
+          const w = await firecrawl(
+            websiteForDisclaim.startsWith("http") ? websiteForDisclaim : `https://${websiteForDisclaim}`,
+            { formats: ["markdown", "html"], waitFor: 2000 },
+          );
+          if (isDisclaimBrand(`${w.data.markdown}\n${w.data.html}`)) {
+            patch.pitch_status = "disclaim_brand";
+            patch.submission_method = "none";
+            patch.last_enriched_at = new Date().toISOString();
+            await sb.from("playlist_targets").update(patch).eq("playlist_id", row.playlist_id);
+            enriched++;
+            continue;
+          }
+          await sleep(ENRICH_POLLITE_MS);
+        } catch (e) {
+          console.error(`[enrich] website disclaim ${websiteForDisclaim} failed:`, errMsg(e));
         }
       }
 
@@ -788,6 +842,19 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
     if (error) return { status: 500, data: { error: error.message } };
     return { status: 200, data: { ok: true, playlist_id: playlistId, patched: Object.keys(patch) } };
   }
+  if (action === "list_social_queue") {
+    const limit = Math.min(50, Math.max(1, Number(body.limit) || 30));
+    const status = String(body.status ?? "pending").trim() || "pending";
+    let q = sb.from("social_engagement_queue")
+      .select("id, platform, action, target_url, draft_text, playlist_id, status, created_at, result")
+      .eq("platform", "instagram")
+      .order("created_at", { ascending: false })
+      .limit(limit);
+    if (status !== "all") q = q.eq("status", status);
+    const { data, error } = await q;
+    if (error) return { status: 500, data: { error: error.message } };
+    return { status: 200, data: { ok: true, rows: data ?? [] } };
+  }
   if (action === "get_pitch_log") {
     const limit = Math.min(50, Math.max(1, Number(body.limit) || 10));
     const trackName = String(body.track_name ?? "").trim();
@@ -940,6 +1007,7 @@ const PLAYLIST_AGENT_ACTIONS = new Set([
   "connect_spotify_init", "connect_spotify_status",
   "queue_instagram_pitch",
   "reconcile_lane_targets",
+  "list_social_queue",
 ]);
 
 export function isPlaylistAgentAction(action: string): boolean {
@@ -976,6 +1044,8 @@ export async function runPlaylistAgentAction(
       return runQueueInstagramPitch(body, sb);
     case "reconcile_lane_targets":
       return runReconcileLaneTargets(body, sb);
+    case "list_social_queue":
+      return runPlaylistAdmin({ ...body, action: "list_social_queue" }, sb);
     default:
       return { status: 400, data: { error: `Unknown playlist agent action: ${action}` } };
   }

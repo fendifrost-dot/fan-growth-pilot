@@ -101,6 +101,9 @@ Deno.serve(async (req) => {
       case 'get_radio_targets':
         return jsonResponse(await getRadioTargets(supabase), corsHeaders);
 
+      case 'get_outreach_stats':
+        return jsonResponse(await getOutreachStats(supabase), corsHeaders);
+
       default:
         return new Response(
           JSON.stringify({ error: `Unknown action: ${action}` }),
@@ -240,6 +243,48 @@ async function getRadioTargets(supabase: ReturnType<typeof createClient>) {
     .limit(500);
   if (error) throw error;
   return { targets: data || [] };
+}
+
+/** Cross-channel counts for admin Send center. */
+async function getOutreachStats(supabase: ReturnType<typeof createClient>) {
+  const dayAgo = new Date(Date.now() - 86400000).toISOString();
+
+  const [
+    { count: fanEmailSubs },
+    { count: fanTelegramSubs },
+    { count: pendingDrafts },
+    { count: playlistEmails24h },
+    { count: radioStations },
+    { count: radioWithEmail },
+    { count: radioNotPitched },
+    { count: igQueue },
+    { count: radioEmails24h },
+  ] = await Promise.all([
+    supabase.from('email_contacts').select('*', { count: 'exact', head: true }).eq('subscribed', true),
+    supabase.from('telegram_subscribers').select('*', { count: 'exact', head: true }).eq('subscribed', true),
+    supabase.from('outreach_drafts').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
+    supabase.from('pitch_log').select('*', { count: 'exact', head: true }).eq('method', 'email').eq('status', 'sent').gte('pitched_at', dayAgo),
+    supabase.from('radio_targets').select('*', { count: 'exact', head: true }),
+    supabase.from('radio_targets').select('*', { count: 'exact', head: true }).not('contact_email', 'is', null),
+    supabase.from('radio_targets').select('*', { count: 'exact', head: true }).neq('pitch_status', 'pitched'),
+    supabase.from('social_engagement_queue').select('*', { count: 'exact', head: true }).eq('platform', 'instagram').eq('status', 'pending'),
+    supabase.from('radio_pitch_log').select('*', { count: 'exact', head: true }).eq('channel', 'email').eq('status', 'sent').gte('sent_at', dayAgo),
+  ]);
+
+  const { data: tgStats } = await supabase.from('telegram_inner_circle_stats').select('*').maybeSingle();
+
+  return {
+    fan_email_subscribers: fanEmailSubs ?? 0,
+    fan_telegram_subscribers: fanTelegramSubs ?? 0,
+    playlist_pending_drafts: pendingDrafts ?? 0,
+    playlist_emails_24h: playlistEmails24h ?? 0,
+    radio_stations: radioStations ?? 0,
+    radio_with_email: radioWithEmail ?? 0,
+    radio_ready_to_pitch: radioNotPitched ?? 0,
+    radio_emails_24h: radioEmails24h ?? 0,
+    instagram_dm_queue: igQueue ?? 0,
+    telegram_stats: tgStats ?? null,
+  };
 }
 
 async function getFanStats(supabase: ReturnType<typeof createClient>) {

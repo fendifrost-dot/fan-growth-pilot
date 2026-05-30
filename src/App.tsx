@@ -10,6 +10,7 @@ import SmartLinkPage from "./pages/SmartLinkPage";
 import Unsubscribe from "./pages/Unsubscribe";
 import AdminGuard from "./pages/admin/AdminGuard";
 import AdminHub from "./pages/admin/AdminHub";
+import AdminSendCenter from "./pages/admin/AdminSendCenter";
 import AdminCampaigns from "./pages/admin/AdminCampaigns";
 import AdminPitchLog from "./pages/admin/AdminPitchLog";
 import AdminCampaignDetail from "./pages/admin/AdminCampaignDetail";
@@ -48,6 +49,7 @@ const App = () => (
             <Route path="playlists" element={<AdminPlaylistTargets />} />
             <Route path="outreach" element={<AdminOutreachDrafts />} />
             <Route path="ig-queue" element={<AdminSocialQueue />} />
+            <Route path="send" element={<AdminSendCenter />} />
             <Route path="radio" element={<AdminRadioTargets />} />
             <Route path="pitch-log" element={<AdminPitchLog />} />
           </Route>

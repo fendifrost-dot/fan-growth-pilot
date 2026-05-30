@@ -979,6 +979,13 @@ export async function runSendCampaignProxy(
   return proxyToEdgeFunction("send-campaign-email", body, hubKey);
 }
 
+export async function runSendTelegramCampaignProxy(
+  body: Record<string, unknown>,
+  hubKey: string,
+): Promise<RunResult> {
+  return proxyToEdgeFunction("telegram-send-campaign", body, hubKey);
+}
+
 export async function runConnectSpotifyInit(_body: Record<string, unknown>): Promise<RunResult> {
   const artistUserId = (Deno.env.get("ARTIST_USER_ID") || "").trim();
   const clientId = Deno.env.get("SPOTIFY_CLIENT_ID");
@@ -1057,7 +1064,7 @@ export async function runConnectSpotifyStatus(
 const PLAYLIST_AGENT_ACTIONS = new Set([
   "draft_pitch", "approve_draft", "enrich_curator_contacts", "schedule_follow_up",
   "list_targets", "list_drafts", "update_draft", "deactivate_target", "patch_target", "get_pitch_log",
-  "run_playlist_research", "send_campaign",
+  "run_playlist_research", "send_campaign", "send_telegram_campaign",
   "connect_spotify_init", "connect_spotify_status",
   "queue_instagram_pitch",
   "reconcile_lane_targets",
@@ -1090,6 +1097,8 @@ export async function runPlaylistAgentAction(
       return runPlaylistResearchProxy(body, hubKey);
     case "send_campaign":
       return runSendCampaignProxy(body, hubKey);
+    case "send_telegram_campaign":
+      return runSendTelegramCampaignProxy(body, hubKey);
     case "connect_spotify_init":
       return runConnectSpotifyInit(body);
     case "connect_spotify_status":

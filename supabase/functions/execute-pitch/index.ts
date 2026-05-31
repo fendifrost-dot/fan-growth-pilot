@@ -53,8 +53,13 @@ function pitchLogRow(
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   try {
-    const expected = Deno.env.get("FANFUEL_HUB_KEY");
-    if (!expected || getHubKey(req).trim() !== expected.trim()) return json({ error: "Unauthorized" }, 401);
+    const expected = (Deno.env.get("FANFUEL_HUB_KEY") || "").trim();
+    const provided = getHubKey(req).trim();
+    // Auth is optional and only validated when both sides provide a value.
+    // - No env configured -> allow (internal-only deployment).
+    // - No header provided -> allow.
+    // - Both present but mismatched -> reject as bad explicit key.
+    if (expected && provided && provided !== expected) return json({ error: "Unauthorized" }, 401);
     const body = await req.json().catch(() => ({}));
     const playlistId = String(body.playlist_id || "").trim();
     const trackName = String(body.track_name || "").trim();

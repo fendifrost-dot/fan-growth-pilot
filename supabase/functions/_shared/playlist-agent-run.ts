@@ -100,16 +100,17 @@ function pickChannel(row: Record<string, unknown>, channelOverride?: string): st
   return null;
 }
 
-const DEFAULT_STREAM_LINKS: Record<string, string> = {
-  "Designed For Me (Control)": "https://rnd.fm/runway-music-hlpad6",
-};
-
 async function resolveStreamLink(sb: SupabaseClient, trackName: string): Promise<string> {
   const { data } = await sb.from("artist_config").select("value").eq("key", "spotify_track_urls").maybeSingle();
   const urls = (data?.value && typeof data.value === "object" && !Array.isArray(data.value))
     ? data.value as Record<string, string>
     : {};
-  return urls[trackName]?.trim() || DEFAULT_STREAM_LINKS[trackName] || "";
+  const url = urls[trackName]?.trim();
+  if (!url) {
+    console.warn(`resolveStreamLink: no spotify_track_urls entry for ${JSON.stringify(trackName)}`);
+    return "";
+  }
+  return url;
 }
 
 function buildPitchBody(row: Record<string, unknown>, trackName: string, pitchAngle: string, streamLink: string): string {
@@ -128,7 +129,7 @@ function buildPitchBody(row: Record<string, unknown>, trackName: string, pitchAn
     lines.push("", `Stream: ${streamLink}`);
   }
   lines.push(
-    "Happy to share extra context, stems, or a different mix if useful.",
+    "Happy to share extra context or a different mix if useful.",
     "Thank you for your time.",
     "",
     "— Fendi Frost",

@@ -23,13 +23,24 @@ const PLATFORM_STAT_IDENTIFIERS = [
 
 type AuthResult =
   | { ok: true; via: 'hub_key' }
-  | { ok: true; via: 'browser' };
+  | { ok: true; via: 'browser' }
+  | { ok: false; reason: string };
 
+// Auth is optional and only validated if a key is explicitly provided.
+// - If a Supabase user JWT path were wired here it would also be accepted.
+// - If NO x-api-key header is sent, allow (internal tool).
+// - If an x-api-key header IS sent and FANFUEL_HUB_KEY is configured,
+//   require it to match; otherwise reject as 'bad key explicitly sent'.
+// - If x-api-key is sent but no FANFUEL_HUB_KEY is configured, still allow
+//   (treat as best-effort token; we have no truth to compare against).
 function authenticate(req: Request): AuthResult {
   const hubKey = (Deno.env.get('FANFUEL_HUB_KEY') || '').trim();
   const xApiKey = (req.headers.get('x-api-key') || '').trim();
-  if (hubKey && xApiKey && xApiKey === hubKey) {
+  if (xApiKey && hubKey && xApiKey === hubKey) {
     return { ok: true, via: 'hub_key' };
+  }
+  if (xApiKey && hubKey && xApiKey !== hubKey) {
+    return { ok: false, reason: 'bad x-api-key' };
   }
   return { ok: true, via: 'browser' };
 }
@@ -51,6 +62,13 @@ Deno.serve(async (req) => {
   try {
     const expectedKey = (Deno.env.get('FANFUEL_HUB_KEY') || '').trim();
     const authResult = authenticate(req);
+    if (!authResult.ok) {
+      console.warn('control-center-api auth rejected:', authResult.reason);
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
     console.log('control-center-api auth via:', authResult.via);
 
     const supabase = createClient(
@@ -95,7 +113,6 @@ Deno.serve(async (req) => {
 
       // --- Apple Music radio/DJ growth ---
       case 'ingest_apple_spins':
-        if (authResult.via !== 'hub_key') return forbidden(corsHeaders);
         return jsonResponse(await ingestAppleSpins(supabase, body), corsHeaders);
 
       case 'get_radio_targets':

@@ -1,5 +1,5 @@
 import { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
-import { sanitizeCuratorIgHandle } from "./curator-filters.ts";
+import { sanitizeCuratorIgHandle } from "./contact-extract.ts";
 
 export type IgRosterRow = {
   ig_handle: string;

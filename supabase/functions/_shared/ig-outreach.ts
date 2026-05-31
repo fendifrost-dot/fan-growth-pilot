@@ -1,9 +1,9 @@
 import { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import { isArtistIgHandle } from "./curator-filters.ts";
 import {
   isValidCuratorIgHandle,
   sanitizeCuratorIgHandle,
-  isArtistIgHandle,
-} from "./curator-filters.ts";
+} from "./contact-extract.ts";
 import { loadLanesConfig } from "./playlist-lanes.ts";
 import { loadCatalogTracks, pickCatalogTrackForPlacement } from "./catalog-match.ts";
 import { requireMutualForQueue } from "./ig-roster.ts";

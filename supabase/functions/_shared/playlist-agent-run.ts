@@ -49,6 +49,7 @@ import {
 import { runIgRosterAdmin, getRosterEntry } from "./ig-roster.ts";
 import { loadCatalogTracks, pickCatalogTrackForPlacement } from "./catalog-match.ts";
 import { buildIgOutreachPackage, nextDmRef } from "./outreach-templates.ts";
+import { defaultPlaylistPitchSubject } from "./resend-pitch.ts";
 
 export type RunResult = { status: number; data: unknown };
 
@@ -177,7 +178,7 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
     pitchBody = body.override_body.trim();
     subject = typeof body.override_subject === "string" && body.override_subject.trim()
       ? body.override_subject.trim()
-      : `Submission for ${row.playlist_name}: Fendi Frost — ${trackName}`;
+      : defaultPlaylistPitchSubject(trackName, String(row.playlist_name ?? ""));
   } else if (isPlacement && channel === "email") {
     const handle = ((row.curator_submission_dm as string) || (row.curator_instagram as string) || "")
       .replace(/^@/, "").trim();
@@ -199,7 +200,7 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
   } else {
     subject = typeof body.override_subject === "string" && body.override_subject.trim()
       ? body.override_subject.trim()
-      : `Submission for ${row.playlist_name}: Fendi Frost — ${trackName}`;
+      : defaultPlaylistPitchSubject(trackName, String(row.playlist_name ?? ""));
     pitchBody = buildPitchBody(row, trackName, pitchAngle, streamLink);
   }
 

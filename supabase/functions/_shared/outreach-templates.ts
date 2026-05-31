@@ -143,7 +143,7 @@ export function buildOperatorBrief(id: OutreachIdentity): string {
 }
 
 export function buildPlacementEmail(id: OutreachIdentity): { subject: string; body: string } {
-  const subject = `[${id.dm_ref}] ${id.playlist_name} — thank you + ${id.pitch_track}`;
+  const subject = `Thank you — ${id.playlist_name} (${id.pitch_track})`;
   const curator = id.display_name.split(" ")[0] || "there";
   const lines = [
     `Hi ${curator},`,

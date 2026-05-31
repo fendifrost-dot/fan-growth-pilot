@@ -1,4 +1,10 @@
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import {
+  defaultPlaylistPitchSubject,
+  htmlToPlainText,
+  pitchFromHeader,
+  pitchReplyTo,
+} from "../_shared/resend-pitch.ts";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-api-key",
@@ -147,20 +153,34 @@ async function handleEmailPitch(
   const { count: capCount } = await sb.from("pitch_log").select("*", { count:"exact", head:true }).eq("method", "email").eq("status", "sent").gte("pitched_at", new Date(Date.now() - 86400000).toISOString());
   if ((capCount ?? 0) >= 10) return jsonPitch({ ok:false, method_used:method, action_taken:"skipped", cooldown_until:null, message_to_user:"📧 Daily email pitch cap reached (10 per 24h). Try again tomorrow." });
   const resendKey = Deno.env.get("RESEND_API_KEY");
-  const fromEmail = (Deno.env.get("FROM_EMAIL") ?? "Fendi Frost <submissions@fendifrost.com>").trim();
+  const fromEmail = pitchFromHeader();
   const { artistId, trackUrls } = await getArtistConfig(sb);
   const trackUrl = trackUrls[trackName] || trackUrls[trackName.toLowerCase()] || "https://open.spotify.com/artist/" + (artistId || "0000000000000000000000");
   const cooldownDays = await getCooldownDays(sb);
   const cooldownIso = new Date(Date.now() + cooldownDays * 86400000).toISOString();
   const bodyHtml = draft?.bodyHtml ?? ["<p>Hi,</p>","<p>I'm reaching out to submit <strong>" + escapeHtml(trackName) + "</strong> by <strong>Fendi Frost</strong> for playlist consideration.</p>","<p>Listen: <a href=\"" + escapeHtml(trackUrl) + "\">" + escapeHtml(trackUrl) + "</a></p>",artistId ? "<p>Artist on Spotify: <a href=\"https://open.spotify.com/artist/" + escapeHtml(artistId) + "\">profile</a></p>" : "","<p>Thank you for your time.</p>","<p>— Fendi Frost team</p>"].filter(Boolean).join("\n");
-  const subject = draft?.subject ?? ("Submission: " + trackName + " — Fendi Frost");
+  const subject = draft?.subject ?? defaultPlaylistPitchSubject(trackName, playlistName);
   if (!resendKey) {
     await sb.from("pitch_log").insert(pitchLogRow(playlistId, trackName, email, method, "error", {
       response_notes: "RESEND_API_KEY not configured",
     }));
     return jsonPitch({ ok:false, method_used:method, action_taken:"error", cooldown_until:null, message_to_user:"❌ Email not sent (Hub missing RESEND_API_KEY)." });
   }
-  const res = await fetch("https://api.resend.com/emails", { method:"POST", headers: { Authorization:"Bearer " + resendKey, "Content-Type":"application/json" }, body: JSON.stringify({ from:fromEmail, to:[email], subject, html:bodyHtml }) });
+  const textBody = htmlToPlainText(bodyHtml);
+  const resendBody: Record<string, unknown> = {
+    from: fromEmail,
+    to: [email],
+    subject,
+    text: textBody,
+    html: bodyHtml,
+  };
+  const replyTo = pitchReplyTo();
+  if (replyTo) resendBody.reply_to = replyTo;
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + resendKey, "Content-Type": "application/json" },
+    body: JSON.stringify(resendBody),
+  });
   const raw = await res.text();
   if (!res.ok) {
     await sb.from("pitch_log").insert(pitchLogRow(playlistId, trackName, email, method, "error", {

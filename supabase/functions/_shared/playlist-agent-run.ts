@@ -1257,6 +1257,22 @@ export async function runScheduleFollowUp(body: Record<string, unknown>, sb: Sup
   return { status: 200, data: { ok: true, pitch_log_id: pitchLogId, follow_up_at: followUpAt } };
 }
 
+const PATCH_PITCH_STATUS = ["not_pitched", "pitched", "no_contact", "no_response"] as const;
+const PATCH_SUBMISSION_METHOD = [
+  "email", "groover", "submithub", "one_submit", "soundplate", "manual_form", "none",
+] as const;
+
+function invalidFieldValue(
+  field: string,
+  received: unknown,
+  allowed: readonly string[],
+): RunResult {
+  return {
+    status: 400,
+    data: { error: "invalid_field_value", field, received, allowed: [...allowed] },
+  };
+}
+
 export async function runPlaylistAdmin(body: Record<string, unknown>, sb: SupabaseClient): Promise<RunResult> {
   const action = String(body.action ?? "").trim();
   if (action === "list_targets") {
@@ -1297,8 +1313,11 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
       .select("lane, research_context, similar_artists, curator_instagram")
       .eq("playlist_id", playlistId)
       .maybeSingle();
+    if (!existingRow) {
+      return { status: 404, data: { error: "playlist_not_found", playlist_id: playlistId } };
+    }
     const lanesForPatch = await loadLanesConfig(sb);
-    const patchRefs = existingRow ? rowDiscoveryReferences(existingRow, lanesForPatch, []) : [];
+    const patchRefs = rowDiscoveryReferences(existingRow, lanesForPatch, []);
     const patch: Record<string, unknown> = {};
     if (body.curator_email !== undefined) {
       const em = String(body.curator_email ?? "").trim();
@@ -1323,7 +1342,41 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
     if (body.submission_url !== undefined) {
       patch.submission_url = String(body.submission_url ?? "").trim() || null;
     }
-    if (!Object.keys(patch).length) return { status: 400, data: { error: "Nothing to patch (curator_email, curator_instagram, lane, submission_url)" } };
+    if (body.pitch_status !== undefined) {
+      const v = String(body.pitch_status ?? "").trim();
+      if (!(PATCH_PITCH_STATUS as readonly string[]).includes(v)) {
+        return invalidFieldValue("pitch_status", body.pitch_status, PATCH_PITCH_STATUS);
+      }
+      patch.pitch_status = v;
+    }
+    if (body.contact_confidence !== undefined) {
+      const n = Number(body.contact_confidence);
+      if (!Number.isInteger(n) || n < 1 || n > 10) {
+        return invalidFieldValue("contact_confidence", body.contact_confidence, ["1-10 integer"]);
+      }
+      patch.contact_confidence = n;
+    }
+    if (body.is_active !== undefined) {
+      if (typeof body.is_active !== "boolean") {
+        return invalidFieldValue("is_active", body.is_active, ["true", "false"]);
+      }
+      patch.is_active = body.is_active;
+    }
+    if (body.submission_method !== undefined) {
+      const v = String(body.submission_method ?? "").trim();
+      if (!(PATCH_SUBMISSION_METHOD as readonly string[]).includes(v)) {
+        return invalidFieldValue("submission_method", body.submission_method, PATCH_SUBMISSION_METHOD);
+      }
+      patch.submission_method = v;
+    }
+    if (!Object.keys(patch).length) {
+      return {
+        status: 400,
+        data: {
+          error: "Nothing to patch (curator_email, curator_instagram, lane, submission_url, pitch_status, contact_confidence, is_active, submission_method)",
+        },
+      };
+    }
     const { error } = await sb.from("playlist_targets").update(patch).eq("playlist_id", playlistId);
     if (error) return { status: 500, data: { error: error.message } };
     return { status: 200, data: { ok: true, playlist_id: playlistId, patched: Object.keys(patch) } };

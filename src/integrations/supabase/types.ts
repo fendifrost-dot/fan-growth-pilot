@@ -1015,6 +1015,10 @@ export type Database = {
           pitched_at: string | null
           placed: boolean | null
           placement_status: string | null
+          platform_cost_usd: number | null
+          platform_name: string | null
+          platform_pitch_id: string | null
+          platform_pitch_url: string | null
           playlist_id: string | null
           reply_received: boolean | null
           resend_message_id: string | null
@@ -1038,6 +1042,10 @@ export type Database = {
           pitched_at?: string | null
           placed?: boolean | null
           placement_status?: string | null
+          platform_cost_usd?: number | null
+          platform_name?: string | null
+          platform_pitch_id?: string | null
+          platform_pitch_url?: string | null
           playlist_id?: string | null
           reply_received?: boolean | null
           resend_message_id?: string | null
@@ -1061,6 +1069,10 @@ export type Database = {
           pitched_at?: string | null
           placed?: boolean | null
           placement_status?: string | null
+          platform_cost_usd?: number | null
+          platform_name?: string | null
+          platform_pitch_id?: string | null
+          platform_pitch_url?: string | null
           playlist_id?: string | null
           reply_received?: boolean | null
           resend_message_id?: string | null

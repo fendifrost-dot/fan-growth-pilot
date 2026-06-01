@@ -49,6 +49,12 @@ import {
 import { runIgRosterAdmin, getRosterEntry } from "./ig-roster.ts";
 import { loadCatalogTracks, pickCatalogTrackForPlacement } from "./catalog-match.ts";
 import { buildIgOutreachPackage, nextDmRef } from "./outreach-templates.ts";
+import {
+  renderPitchBody,
+  trackUrlForPlatform,
+  type Platform,
+  type Tone,
+} from "./pitch-templates.ts";
 import { defaultPlaylistPitchSubject } from "./resend-pitch.ts";
 
 export type RunResult = { status: number; data: unknown };
@@ -138,15 +144,131 @@ function buildPitchBody(row: Record<string, unknown>, trackName: string, pitchAn
   return lines.join("\n");
 }
 
+const VALID_TONES = new Set(["warm_personal", "casual_friendly", "business_formal", "hyped_energetic"]);
+
+async function detectWarmPlacement(
+  sb: SupabaseClient,
+  playlistId: string,
+): Promise<{ isWarm: boolean; priorTrack?: string }> {
+  const { data: warmRows } = await sb.from("pitch_log")
+    .select("track_name, pitched_at")
+    .eq("playlist_id", playlistId)
+    .or("placed.eq.true,placement_status.eq.placed")
+    .order("pitched_at", { ascending: false })
+    .limit(1);
+  const warm = warmRows?.[0];
+  if (!warm) return { isWarm: false };
+  return { isWarm: true, priorTrack: String(warm.track_name ?? "").trim() || undefined };
+}
+
 export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseClient): Promise<RunResult> {
   const playlistId = String(body.playlist_id ?? "").trim();
+  const trackId = String(body.track_id ?? "").trim();
   let trackName = String(body.track_name ?? "").trim();
   const channelOverride = typeof body.channel === "string" ? body.channel : "";
   const generatedBy = String(body.generated_by ?? body.approved_by ?? "auto").trim() || "auto";
   if (!playlistId) return { status: 400, data: { error: "playlist_id required" } };
 
-  const { data: row, error: rowErr } = await sb.from("playlist_targets").select("*").eq("playlist_id", playlistId).maybeSingle();
+  const { data: row, error: rowErr } = await sb.from("playlist_targets")
+    .select("*, playlist_categories(category_id, categories(id, slug, label, family))")
+    .eq("playlist_id", playlistId)
+    .maybeSingle();
   if (rowErr || !row) return { status: 404, data: { error: "Playlist not found" } };
+
+  if (trackId) {
+    const { data: track, error: trackErr } = await sb.from("tracks")
+      .select("*, track_categories(category_id, categories(id, slug, label, family))")
+      .eq("id", trackId)
+      .maybeSingle();
+    if (trackErr || !track) return { status: 404, data: { error: "Track not found" } };
+
+    trackName = String(track.name ?? "").trim();
+    const channel = pickChannel(row, channelOverride);
+    if (!channel) return { status: 400, data: { error: "No outreach channel available (email, IG, or submission URL)" } };
+    if (channel !== "email") {
+      return { status: 400, data: { error: "Catalogue pitch composer supports email channel only" } };
+    }
+
+    const trackCatIds = ((track.track_categories ?? []) as { category_id: string }[]).map((tc) => tc.category_id);
+    const playlistCatIds = ((row.playlist_categories ?? []) as { category_id: string }[]).map((pc) => pc.category_id);
+    const trackCats = ((track.track_categories ?? []) as { categories: { id: string; slug: string; label: string } | null }[])
+      .map((tc) => tc.categories).filter(Boolean);
+    const playlistCats = ((row.playlist_categories ?? []) as { categories: { id: string; slug: string; label: string } | null }[])
+      .map((pc) => pc.categories).filter(Boolean);
+    const overlap = trackCatIds.filter((id) => playlistCatIds.includes(id));
+    if (overlap.length === 0 && !Boolean(body.override_category_check)) {
+      return {
+        status: 422,
+        data: {
+          error: "Category mismatch",
+          track_categories: trackCats,
+          playlist_categories: playlistCats,
+        },
+      };
+    }
+
+    const platform = (String(row.platform ?? "spotify").trim() || "spotify") as Platform;
+    const streamUrl = trackUrlForPlatform(track, platform);
+    if (!streamUrl) {
+      return { status: 400, data: { error: `Track has no URL for platform: ${platform}` } };
+    }
+
+    const toneRaw = String(body.tone ?? track.default_tone ?? "warm_personal");
+    const tone = (VALID_TONES.has(toneRaw) ? toneRaw : "warm_personal") as Tone;
+    const { isWarm, priorTrack } = await detectWarmPlacement(sb, playlistId);
+    if (isWarm && !priorTrack) {
+      return { status: 422, data: { error: "Warm placement found but prior track name missing" } };
+    }
+
+    const shortPitch = String(track.short_pitch ?? track.pitch_angle ?? "").trim()
+      || "Melodic rap with a deep-house groove — late-night luxury energy.";
+    const rendered = renderPitchBody({
+      curatorName: (row.curator_name as string | null)?.trim() || "there",
+      playlistName: (row.playlist_name as string | null)?.trim() || "your playlist",
+      trackName,
+      shortPitch,
+      platform,
+      streamUrl,
+      isWarm,
+      priorTrack,
+      tone,
+      artistName: "Fendi Frost",
+    });
+
+    let subject = rendered.subject;
+    let pitchBody = rendered.body;
+    if (typeof body.override_body === "string" && body.override_body.trim()) {
+      pitchBody = body.override_body.trim();
+    }
+    if (typeof body.override_subject === "string" && body.override_subject.trim()) {
+      subject = body.override_subject.trim();
+    }
+
+    const recipient = (row.curator_email as string)?.trim() ?? null;
+    const lane = String(row.lane ?? "").trim();
+
+    const { data: draft, error: insErr } = await sb.from("outreach_drafts").insert({
+      playlist_id: playlistId, track_name: trackName, channel: "email", recipient,
+      subject, body: pitchBody,
+      generated_by: generatedBy, status: "pending",
+      metadata: {
+        lane: lane || null,
+        why_it_fits: (row.why_it_fits as string | null) ?? null,
+        stream_link: streamUrl,
+        tone,
+        platform,
+        is_warm: isWarm,
+        prior_track: priorTrack ?? null,
+        track_id: trackId,
+      },
+    }).select("id, channel, subject, body, recipient").single();
+
+    if (insErr) return { status: 500, data: { error: insErr.message } };
+    return {
+      status: 200,
+      data: { ok: true, draft_id: draft.id, channel: draft.channel, subject: draft.subject, body: draft.body, recipient: draft.recipient },
+    };
+  }
 
   const rc = row.research_context as Record<string, unknown> | null;
   const isPlacement = isWarmPlacementSource(rc?.source as string | undefined);
@@ -261,6 +383,7 @@ export async function runApproveDraft(body: Record<string, unknown>, sb: Supabas
   if (channel !== "email") return { status: 400, data: { error: `Send not implemented for channel: ${channel}` } };
 
   const base = Deno.env.get("SUPABASE_URL")!.replace(/\/$/, "");
+  const testMode = Boolean(body.test_mode);
   const execRes = await fetch(`${base}/functions/v1/execute-pitch`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-api-key": hubKey },
@@ -269,6 +392,7 @@ export async function runApproveDraft(body: Record<string, unknown>, sb: Supabas
       track_name: draft.track_name,
       draft_id: draftId,
       test_mode: testMode,
+      test_email: typeof body.test_email === "string" ? body.test_email.trim() : undefined,
     }),
   });
   const execData = await execRes.json().catch(() => ({})) as {
@@ -1251,7 +1375,208 @@ const PLAYLIST_AGENT_ACTIONS = new Set([
   "discover_spotify_placements", "queue_ig_outreach_batch",
   "import_spotify_for_artists_csv",
   "list_ig_roster", "patch_ig_roster", "import_ig_roster", "sync_ig_roster_from_targets",
+  "list_tracks", "upsert_track", "delete_track",
+  "list_categories", "upsert_category", "delete_category",
+  "set_track_categories", "set_playlist_categories",
+  "recommend_targets_for_track", "list_warm_curators",
 ]);
+
+export async function runCatalogueAdmin(body: Record<string, unknown>, sb: SupabaseClient): Promise<RunResult> {
+  const action = String(body.action ?? "").trim();
+
+  if (action === "list_tracks") {
+    const { data: tracks } = await sb.from("tracks")
+      .select("*, track_categories(category_id, categories(id, slug, label, family))")
+      .order("updated_at", { ascending: false });
+    return { status: 200, data: { ok: true, rows: tracks ?? [] } };
+  }
+
+  if (action === "list_categories") {
+    const { data } = await sb.from("categories").select("*").order("family").order("label");
+    return { status: 200, data: { ok: true, rows: data ?? [] } };
+  }
+
+  if (action === "upsert_category") {
+    const slug = String(body.slug ?? "").trim();
+    const label = String(body.label ?? "").trim();
+    if (!slug || !label) return { status: 400, data: { error: "slug and label required" } };
+    const family = (["genre", "vibe", "mood"].includes(String(body.family)) ? String(body.family) : "genre");
+    const { data, error } = await sb.from("categories").upsert(
+      { slug, label, family, description: body.description ?? null },
+      { onConflict: "slug" },
+    ).select().single();
+    if (error) return { status: 500, data: { error: error.message } };
+    return { status: 200, data: { ok: true, category: data } };
+  }
+
+  if (action === "delete_category") {
+    const id = String(body.id ?? "").trim();
+    if (!id) return { status: 400, data: { error: "id required" } };
+    const { error } = await sb.from("categories").delete().eq("id", id);
+    if (error) return { status: 500, data: { error: error.message } };
+    return { status: 200, data: { ok: true } };
+  }
+
+  if (action === "upsert_track") {
+    const id = body.id ? String(body.id) : null;
+    const fields: Record<string, unknown> = {
+      name: String(body.name ?? "").trim(),
+      isrc: body.isrc ? String(body.isrc).trim() : null,
+      spotify_url: body.spotify_url ? String(body.spotify_url).trim() : null,
+      apple_music_url: body.apple_music_url ? String(body.apple_music_url).trim() : null,
+      soundcloud_url: body.soundcloud_url ? String(body.soundcloud_url).trim() : null,
+      status: ["active", "archived", "unreleased"].includes(String(body.status)) ? String(body.status) : "active",
+      release_date: body.release_date ?? null,
+      default_tone: VALID_TONES.has(String(body.default_tone)) ? String(body.default_tone) : "warm_personal",
+      short_pitch: body.short_pitch ?? null,
+      pitch_angle: body.pitch_angle ?? null,
+      reference_artists: Array.isArray(body.reference_artists) ? body.reference_artists.map(String) : [],
+      notes: body.notes ?? null,
+      updated_at: new Date().toISOString(),
+    };
+    if (!fields.name) return { status: 400, data: { error: "name required" } };
+    let track;
+    if (id) {
+      const { data, error } = await sb.from("tracks").update(fields).eq("id", id).select().single();
+      if (error) return { status: 500, data: { error: error.message } };
+      track = data;
+    } else {
+      const { data, error } = await sb.from("tracks").insert(fields).select().single();
+      if (error) return { status: 500, data: { error: error.message } };
+      track = data;
+    }
+    if (Array.isArray(body.category_ids)) {
+      const ids = body.category_ids.slice(0, 5).map(String);
+      await sb.from("track_categories").delete().eq("track_id", track.id);
+      if (ids.length) {
+        await sb.from("track_categories").insert(ids.map((cid) => ({ track_id: track.id, category_id: cid })));
+      }
+    }
+    return { status: 200, data: { ok: true, track } };
+  }
+
+  if (action === "delete_track") {
+    const id = String(body.id ?? "").trim();
+    if (!id) return { status: 400, data: { error: "id required" } };
+    const { error } = await sb.from("tracks").delete().eq("id", id);
+    if (error) return { status: 500, data: { error: error.message } };
+    return { status: 200, data: { ok: true } };
+  }
+
+  if (action === "set_track_categories") {
+    const trackId = String(body.track_id ?? "").trim();
+    if (!trackId) return { status: 400, data: { error: "track_id required" } };
+    const ids = Array.isArray(body.category_ids) ? body.category_ids.slice(0, 5).map(String) : [];
+    await sb.from("track_categories").delete().eq("track_id", trackId);
+    if (ids.length) {
+      const { error } = await sb.from("track_categories").insert(ids.map((cid) => ({ track_id: trackId, category_id: cid })));
+      if (error) return { status: 500, data: { error: error.message } };
+    }
+    return { status: 200, data: { ok: true } };
+  }
+
+  if (action === "set_playlist_categories") {
+    const pid = String(body.playlist_id ?? "").trim();
+    if (!pid) return { status: 400, data: { error: "playlist_id required" } };
+    const ids = Array.isArray(body.category_ids) ? body.category_ids.slice(0, 5).map(String) : [];
+    await sb.from("playlist_categories").delete().eq("playlist_id", pid);
+    if (ids.length) {
+      const { error } = await sb.from("playlist_categories").insert(ids.map((cid) => ({ playlist_id: pid, category_id: cid })));
+      if (error) return { status: 500, data: { error: error.message } };
+    }
+    return { status: 200, data: { ok: true } };
+  }
+
+  if (action === "recommend_targets_for_track") {
+    const trackId = String(body.track_id ?? "").trim();
+    if (!trackId) return { status: 400, data: { error: "track_id required" } };
+    const mode = String(body.mode ?? "warm_aligned");
+    const limit = Math.min(200, Math.max(1, Number(body.limit) || 50));
+
+    const { data: track } = await sb.from("tracks").select("*, track_categories(category_id)").eq("id", trackId).single();
+    if (!track) return { status: 404, data: { error: "Track not found" } };
+    const trackCatIds = (track.track_categories ?? []).map((tc: { category_id: string }) => tc.category_id);
+
+    const availablePlatforms: string[] = [];
+    if (track.spotify_url) availablePlatforms.push("spotify");
+    if (track.apple_music_url) availablePlatforms.push("apple_music");
+    if (track.soundcloud_url) availablePlatforms.push("soundcloud");
+    if (availablePlatforms.length === 0) return { status: 400, data: { error: "Track has no streaming URL on any platform" } };
+
+    const { data: placedLog } = await sb.from("pitch_log")
+      .select("playlist_id, track_name")
+      .or("placed.eq.true,placement_status.eq.placed");
+    const warmPids = new Set((placedLog ?? []).map((r: { playlist_id: string }) => r.playlist_id));
+
+    const { data: targets } = await sb.from("playlist_targets")
+      .select("*, playlist_categories(category_id)")
+      .eq("is_active", true)
+      .in("platform", availablePlatforms)
+      .limit(500);
+    const rows = targets ?? [];
+
+    type Scored = { row: Record<string, unknown>; overlap: number; warm: boolean; tier: number; followers: number };
+    const scored: Scored[] = rows.map((r: Record<string, unknown>) => {
+      const pcs = (r.playlist_categories ?? []) as { category_id: string }[];
+      const overlap = pcs.filter((pc) => trackCatIds.includes(pc.category_id)).length;
+      return {
+        row: r,
+        overlap,
+        warm: warmPids.has(r.playlist_id as string),
+        tier: Number(r.tier ?? 99),
+        followers: Number(r.follower_count ?? 0),
+      };
+    });
+
+    let filtered: Scored[];
+    if (mode === "warm_aligned") {
+      filtered = scored.filter((s) => s.warm && s.overlap > 0);
+    } else if (mode === "new_cold") {
+      filtered = scored.filter((s) => !s.warm && s.overlap > 0);
+    } else if (mode === "all_warm") {
+      filtered = scored.filter((s) => s.warm);
+    } else {
+      return { status: 400, data: { error: "mode must be warm_aligned | new_cold | all_warm" } };
+    }
+
+    filtered.sort((a, b) => (b.overlap - a.overlap) || (a.tier - b.tier) || (b.followers - a.followers));
+    return {
+      status: 200,
+      data: {
+        ok: true,
+        mode,
+        track_id: trackId,
+        available_platforms: availablePlatforms,
+        rows: filtered.slice(0, limit).map((s) => ({ ...s.row, _overlap: s.overlap, _warm: s.warm })),
+      },
+    };
+  }
+
+  if (action === "list_warm_curators") {
+    const { data: log } = await sb.from("pitch_log")
+      .select("playlist_id, track_name, pitched_at")
+      .or("placed.eq.true,placement_status.eq.placed")
+      .order("pitched_at", { ascending: false });
+    const byPid = new Map<string, { last_placed_track: string; last_placed_at: string }>();
+    for (const r of log ?? []) {
+      if (!byPid.has(r.playlist_id)) {
+        byPid.set(r.playlist_id, { last_placed_track: r.track_name, last_placed_at: r.pitched_at });
+      }
+    }
+    const pids = Array.from(byPid.keys());
+    if (pids.length === 0) return { status: 200, data: { ok: true, rows: [] } };
+    const { data: targets } = await sb.from("playlist_targets")
+      .select("*, playlist_categories(category_id)")
+      .in("playlist_id", pids);
+    const rows = (targets ?? []).map((r: Record<string, unknown>) => ({
+      ...r,
+      ...byPid.get(r.playlist_id as string),
+    }));
+    return { status: 200, data: { ok: true, rows } };
+  }
+
+  return { status: 400, data: { error: `Unknown catalogue action: ${action}` } };
+}
 
 export function isPlaylistAgentAction(action: string): boolean {
   return PLAYLIST_AGENT_ACTIONS.has(action);
@@ -1334,6 +1659,17 @@ export async function runPlaylistAgentAction(
     case "import_ig_roster":
     case "sync_ig_roster_from_targets":
       return runIgRosterAdmin(action, body, sb);
+    case "list_tracks":
+    case "upsert_track":
+    case "delete_track":
+    case "list_categories":
+    case "upsert_category":
+    case "delete_category":
+    case "set_track_categories":
+    case "set_playlist_categories":
+    case "recommend_targets_for_track":
+    case "list_warm_curators":
+      return runCatalogueAdmin({ ...body, action }, sb);
     default:
       return { status: 400, data: { error: `Unknown playlist agent action: ${action}` } };
   }

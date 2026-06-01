@@ -74,6 +74,7 @@ Deno.serve(async (req) => {
     const bulk = Boolean(body.bulk);
     const draftId = String(body.draft_id ?? "").trim();
     const testMode = Boolean(body.test_mode);
+    const testEmail = String(body.test_email ?? "fendifrost@gmail.com").trim() || "fendifrost@gmail.com";
     if (!playlistId || !trackName) return jsonPitch({ ok:false, method_used:"none", action_taken:"error", cooldown_until:null, message_to_user:"Missing playlist_id or track_name." });
     const url = Deno.env.get("SUPABASE_URL")!;
     const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -100,7 +101,7 @@ Deno.serve(async (req) => {
     const tierRaw = row.tier;
     const tier = typeof tierRaw === "number" ? tierRaw : tierRaw != null && tierRaw !== "" ? Number(tierRaw) : null;
     if (tier === 3 && !tierConfirmed) return jsonPitch({ ok:false, method_used:method, action_taken:"tier_gate", cooldown_until:null, message_to_user:"⚠️ *Tier 3 playlist* — *" + (row.playlist_name ?? playlistId) + "*\n\nFlagged for verify-first pitching. Reply *confirm* to send." });
-    if (method === "email") return await handleEmailPitch(sb, row, trackName, bulk, draftOverrides, testMode);
+    if (method === "email") return await handleEmailPitch(sb, row, trackName, bulk, draftOverrides, testMode, testEmail);
     return jsonPitch(buildNonEmailMessage(row, method, trackName));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -136,9 +137,11 @@ async function handleEmailPitch(
   _bulk: boolean,
   draft?: { email?: string; subject?: string; bodyHtml?: string },
   testMode = false,
+  testEmail = "fendifrost@gmail.com",
 ): Promise<Response> {
   const playlistId = String(row.playlist_id);
-  const email = await resolveCuratorEmail(sb, row, draft);
+  const curatorEmail = await resolveCuratorEmail(sb, row, draft);
+  const email = testMode ? testEmail : curatorEmail;
   const playlistName = (row.playlist_name as string|null) ?? playlistId;
   const method = "email";
   if (!email) {

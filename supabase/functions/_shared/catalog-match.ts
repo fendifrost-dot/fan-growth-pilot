@@ -11,7 +11,27 @@ const DEFAULT_TRACKS: CatalogTrack[] = [
   { name: "Designed For Me (Control)", lane: "deep_house_groove" },
 ];
 
-export async function loadCatalogTracks(sb: SupabaseClient): Promise<CatalogTrack[]> {
+async function loadTracksFromTable(sb: SupabaseClient): Promise<CatalogTrack[]> {
+  const { data: tracks } = await sb
+    .from("tracks")
+    .select("name, spotify_url, track_categories(categories(slug))")
+    .eq("status", "active")
+    .order("updated_at", { ascending: false });
+
+  if (!tracks?.length) return [];
+
+  return tracks.map((t) => {
+    const cats = (t.track_categories ?? []) as { categories: { slug: string } | null }[];
+    const lane = cats.find((c) => c.categories?.slug)?.categories?.slug;
+    return {
+      name: t.name as string,
+      stream_url: (t.spotify_url as string | null)?.trim() || undefined,
+      lane,
+    };
+  });
+}
+
+async function loadTracksFromJson(sb: SupabaseClient): Promise<CatalogTrack[]> {
   const { data } = await sb.from("artist_config").select("value").eq("key", "spotify_track_urls").maybeSingle();
   const lanes = await loadLanesConfig(sb);
   if (!data?.value || typeof data.value !== "object" || Array.isArray(data.value)) {
@@ -25,6 +45,12 @@ export async function loadCatalogTracks(sb: SupabaseClient): Promise<CatalogTrac
       (cfg.pitch_angle ?? "").toLowerCase().includes(name.toLowerCase().slice(0, 12)),
     )?.[0],
   }));
+}
+
+export async function loadCatalogTracks(sb: SupabaseClient): Promise<CatalogTrack[]> {
+  const fromTable = await loadTracksFromTable(sb);
+  if (fromTable.length) return fromTable;
+  return loadTracksFromJson(sb);
 }
 
 function tokenize(s: string): string[] {

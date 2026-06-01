@@ -95,7 +95,7 @@ export function renderPitchBody(ctx: PitchContext): RenderedPitch {
         body: [
           `Hey ${curatorName},`,
           "",
-          `Hope your week's been good. Wanted to share my new one — **${trackName}** — for *${playlistName}*.`,
+          `Hope your week's been good. Wanted to share my new song — **${trackName}** — for *${playlistName}*.`,
           "",
           pitch,
           "",

@@ -698,6 +698,11 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
   const includeInactive = Boolean(body.include_inactive);
   const reactivateOnSuccess = Boolean(body.reactivate_on_success);
   const runExpandedStrategies = body.run_expanded_strategies !== false; // default ON
+  // When true, skip the "only-stale-rows" filter so callers can re-enrich
+  // rows that were just touched (e.g. re-running the same 18 rows the
+  // overnight sweep had already enriched a few hours earlier, against the
+  // new expanded discovery chain).
+  const forceStale = Boolean(body.force_stale);
   const expandedOrder: CuratorStrategyName[] =
     Array.isArray(body.expanded_strategies) && body.expanded_strategies.length
       ? (body.expanded_strategies as CuratorStrategyName[])
@@ -710,8 +715,10 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
     )
     .neq("pitch_status", "disclaim_brand")
     .or("curator_email.is.null,submission_method.is.null")
-    .or(`last_enriched_at.is.null,last_enriched_at.lt.${staleBefore}`)
     .order("follower_count", { ascending: false, nullsFirst: false });
+  if (!forceStale) {
+    query = query.or(`last_enriched_at.is.null,last_enriched_at.lt.${staleBefore}`);
+  }
 
   // Default: only active rows. Caller can opt in to inactive (e.g. to re-run the
   // 18 deep-house rows that were soft-deactivated after the prior enrichment

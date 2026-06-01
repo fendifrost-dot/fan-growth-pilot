@@ -51,6 +51,7 @@ run_batch() {
       \"include_inactive\": true,
       \"reactivate_on_success\": true,
       \"run_expanded_strategies\": true,
+      \"force_stale\": true,
       \"limit\": $BATCH_SIZE,
       \"offset\": $offset
     }"

@@ -75,6 +75,7 @@ Deno.serve(async (req) => {
     const draftId = String(body.draft_id ?? "").trim();
     const testMode = Boolean(body.test_mode);
     const testEmail = String(body.test_email ?? "fendifrost@gmail.com").trim() || "fendifrost@gmail.com";
+    const batchOverrideCap = Boolean(body.batch_override_cap);
     if (!playlistId || !trackName) return jsonPitch({ ok:false, method_used:"none", action_taken:"error", cooldown_until:null, message_to_user:"Missing playlist_id or track_name." });
     const url = Deno.env.get("SUPABASE_URL")!;
     const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -101,7 +102,7 @@ Deno.serve(async (req) => {
     const tierRaw = row.tier;
     const tier = typeof tierRaw === "number" ? tierRaw : tierRaw != null && tierRaw !== "" ? Number(tierRaw) : null;
     if (tier === 3 && !tierConfirmed) return jsonPitch({ ok:false, method_used:method, action_taken:"tier_gate", cooldown_until:null, message_to_user:"⚠️ *Tier 3 playlist* — *" + (row.playlist_name ?? playlistId) + "*\n\nFlagged for verify-first pitching. Reply *confirm* to send." });
-    if (method === "email") return await handleEmailPitch(sb, row, trackName, bulk, draftOverrides, testMode, testEmail);
+    if (method === "email") return await handleEmailPitch(sb, row, trackName, bulk, draftOverrides, testMode, testEmail, batchOverrideCap);
     return jsonPitch(buildNonEmailMessage(row, method, trackName));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -138,6 +139,7 @@ async function handleEmailPitch(
   draft?: { email?: string; subject?: string; bodyHtml?: string },
   testMode = false,
   testEmail = "fendifrost@gmail.com",
+  batchOverrideCap = false,
 ): Promise<Response> {
   const playlistId = String(row.playlist_id);
   const curatorEmail = await resolveCuratorEmail(sb, row, draft);
@@ -157,8 +159,10 @@ async function handleEmailPitch(
       const until = existing.cooldown_until ? new Date(existing.cooldown_until as string).toLocaleDateString() : "?";
       return jsonPitch({ ok:false, method_used:method, action_taken:"skipped", cooldown_until:existing.cooldown_until as string, message_to_user:"⏳ Already pitched *" + playlistName + "* for *" + trackName + "*. Cooldown until *" + until + "*." });
     }
-    const { count: capCount } = await sb.from("pitch_log").select("*", { count:"exact", head:true }).eq("method", "email").eq("status", "sent").gte("pitched_at", new Date(Date.now() - 86400000).toISOString());
-    if ((capCount ?? 0) >= 10) return jsonPitch({ ok:false, method_used:method, action_taken:"skipped", cooldown_until:null, message_to_user:"📧 Daily email pitch cap reached (10 per 24h). Try again tomorrow." });
+    if (!batchOverrideCap) {
+      const { count: capCount } = await sb.from("pitch_log").select("*", { count:"exact", head:true }).eq("method", "email").eq("status", "sent").gte("pitched_at", new Date(Date.now() - 86400000).toISOString());
+      if ((capCount ?? 0) >= 10) return jsonPitch({ ok:false, method_used:method, action_taken:"skipped", cooldown_until:null, message_to_user:"📧 Daily email pitch cap reached (10 per 24h). Try again tomorrow." });
+    }
   }
   const resendKey = Deno.env.get("RESEND_API_KEY");
   const fromEmail = pitchFromHeader();

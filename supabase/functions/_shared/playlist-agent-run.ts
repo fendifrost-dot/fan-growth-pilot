@@ -352,6 +352,7 @@ export async function runApproveDraft(body: Record<string, unknown>, sb: Supabas
   const approvedBy = String(body.approved_by ?? "admin").trim();
   const sendImmediately = Boolean(body.send_immediately);
   const testMode = Boolean(body.test_mode);
+  const batchOverrideCap = Boolean(body.batch_override_cap);
   const reject = Boolean(body.reject);
   if (!draftId) return { status: 400, data: { error: "draft_id required" } };
 
@@ -392,6 +393,7 @@ export async function runApproveDraft(body: Record<string, unknown>, sb: Supabas
       draft_id: draftId,
       test_mode: testMode,
       test_email: typeof body.test_email === "string" ? body.test_email.trim() : undefined,
+      batch_override_cap: batchOverrideCap,
     }),
   });
   const execData = await execRes.json().catch(() => ({})) as {
@@ -1378,6 +1380,7 @@ const PLAYLIST_AGENT_ACTIONS = new Set([
   "list_categories", "upsert_category", "delete_category",
   "set_track_categories", "set_playlist_categories",
   "recommend_targets_for_track", "list_warm_curators",
+  "mark_pitch_response", "pitch_stats_summary", "list_pitches",
 ]);
 
 export async function runCatalogueAdmin(body: Record<string, unknown>, sb: SupabaseClient): Promise<RunResult> {
@@ -1531,7 +1534,12 @@ export async function runCatalogueAdmin(body: Record<string, unknown>, sb: Supab
     if (mode === "warm_aligned") {
       filtered = scored.filter((s) => s.warm && s.overlap > 0);
     } else if (mode === "new_cold") {
-      filtered = scored.filter((s) => !s.warm && s.overlap > 0);
+      // Exclude already-pitched rows and inactive rows
+      filtered = scored.filter((s) =>
+        !s.warm && s.overlap > 0 &&
+        (s.row.pitch_status !== "pitched") &&
+        (s.row.is_active !== false)
+      );
     } else if (mode === "all_warm") {
       filtered = scored.filter((s) => s.warm);
     } else {
@@ -1572,6 +1580,68 @@ export async function runCatalogueAdmin(body: Record<string, unknown>, sb: Supab
       ...byPid.get(r.playlist_id as string),
     }));
     return { status: 200, data: { ok: true, rows } };
+  }
+
+  if (action === "mark_pitch_response") {
+    const id = String(body.pitch_log_id ?? body.id ?? "").trim();
+    if (!id) return { status: 400, data: { error: "pitch_log_id required" } };
+    const patch: Record<string, unknown> = {};
+    if (typeof body.reply_received === "boolean") patch.reply_received = body.reply_received;
+    if (typeof body.placed === "boolean") patch.placed = body.placed;
+    if (typeof body.placement_status === "string") patch.placement_status = body.placement_status.trim() || null;
+    if (typeof body.response_notes === "string") patch.response_notes = body.response_notes.trim() || null;
+    if (typeof body.follow_up_at === "string") patch.follow_up_at = body.follow_up_at;
+    if (!Object.keys(patch).length) return { status: 400, data: { error: "Nothing to update (reply_received | placed | placement_status | response_notes | follow_up_at)" } };
+    const { data, error } = await sb.from("pitch_log").update(patch).eq("id", id).select().single();
+    if (error) return { status: 500, data: { error: error.message } };
+    return { status: 200, data: { ok: true, row: data } };
+  }
+
+  if (action === "pitch_stats_summary") {
+    const trackName = String(body.track_name ?? "").trim();
+    let base = sb.from("pitch_log").select("status, reply_received, placed, placement_status, sent_at, method, playlist_id, track_name");
+    if (trackName) base = base.ilike("track_name", `%${trackName}%`);
+    const { data: all, error } = await base;
+    if (error) return { status: 500, data: { error: error.message } };
+    const rows = all ?? [];
+    const sent = rows.filter((r) => r.status === "sent").length;
+    const replied = rows.filter((r) => r.reply_received === true).length;
+    const placed = rows.filter((r) => r.placed === true || r.placement_status === "placed").length;
+    const errored = rows.filter((r) => r.status === "error").length;
+    const pending = rows.filter((r) => r.status === "sent" && !r.reply_received && !r.placed).length;
+    const now = Date.now();
+    const since24h = rows.filter((r) => r.sent_at && new Date(r.sent_at).getTime() > now - 86400000).length;
+    const since7d = rows.filter((r) => r.sent_at && new Date(r.sent_at).getTime() > now - 7 * 86400000).length;
+    const replyRate = sent > 0 ? Math.round((replied / sent) * 1000) / 10 : 0;
+    const placementRate = sent > 0 ? Math.round((placed / sent) * 1000) / 10 : 0;
+    return {
+      status: 200,
+      data: {
+        ok: true,
+        track_name: trackName || null,
+        totals: {
+          sent, replied, placed, errored, pending,
+          sent_last_24h: since24h,
+          sent_last_7d: since7d,
+          reply_rate_pct: replyRate,
+          placement_rate_pct: placementRate,
+        },
+      },
+    };
+  }
+
+  if (action === "list_pitches") {
+    const limit = Math.min(200, Math.max(1, Number(body.limit) || 50));
+    const trackName = String(body.track_name ?? "").trim();
+    const statusFilter = String(body.status ?? "").trim();
+    const onlyPending = Boolean(body.only_pending_response);
+    let q = sb.from("pitch_log").select("*").order("sent_at", { ascending: false }).limit(limit);
+    if (trackName) q = q.ilike("track_name", `%${trackName}%`);
+    if (statusFilter) q = q.eq("status", statusFilter);
+    if (onlyPending) q = q.eq("status", "sent").eq("reply_received", false).eq("placed", false);
+    const { data, error } = await q;
+    if (error) return { status: 500, data: { error: error.message } };
+    return { status: 200, data: { ok: true, rows: data ?? [] } };
   }
 
   return { status: 400, data: { error: `Unknown catalogue action: ${action}` } };
@@ -1668,6 +1738,9 @@ export async function runPlaylistAgentAction(
     case "set_playlist_categories":
     case "recommend_targets_for_track":
     case "list_warm_curators":
+    case "mark_pitch_response":
+    case "pitch_stats_summary":
+    case "list_pitches":
       return runCatalogueAdmin({ ...body, action }, sb);
     default:
       return { status: 400, data: { error: `Unknown playlist agent action: ${action}` } };

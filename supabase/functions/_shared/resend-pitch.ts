@@ -12,7 +12,7 @@ export function pitchFromHeader(): string {
 
 /** Curator replies land on Fendi's primary inbox — improves trust signals vs. null reply-to. */
 export function pitchReplyTo(): string | undefined {
-  const v = (Deno.env.get("REPLY_TO_EMAIL") || "fendifrost@gmail.com").trim();
+  const v = (Deno.env.get("REPLY_TO_EMAIL") || "replies@fendifrost.com").trim();
   return v || undefined;
 }
 

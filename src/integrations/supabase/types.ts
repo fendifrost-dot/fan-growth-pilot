@@ -235,6 +235,33 @@ export type Database = {
         }
         Relationships: []
       }
+      categories: {
+        Row: {
+          created_at: string
+          description: string | null
+          family: string
+          id: string
+          label: string
+          slug: string
+        }
+        Insert: {
+          created_at?: string
+          description?: string | null
+          family?: string
+          id?: string
+          label: string
+          slug: string
+        }
+        Update: {
+          created_at?: string
+          description?: string | null
+          family?: string
+          id?: string
+          label?: string
+          slug?: string
+        }
+        Relationships: []
+      }
       email_campaigns: {
         Row: {
           audience_filter: Json | null
@@ -1115,6 +1142,36 @@ export type Database = {
           },
         ]
       }
+      playlist_categories: {
+        Row: {
+          category_id: string
+          playlist_id: string
+        }
+        Insert: {
+          category_id: string
+          playlist_id: string
+        }
+        Update: {
+          category_id?: string
+          playlist_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "playlist_categories_category_id_fkey"
+            columns: ["category_id"]
+            isOneToOne: false
+            referencedRelation: "categories"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "playlist_categories_playlist_id_fkey"
+            columns: ["playlist_id"]
+            isOneToOne: false
+            referencedRelation: "playlist_targets"
+            referencedColumns: ["playlist_id"]
+          },
+        ]
+      }
       playlist_targets: {
         Row: {
           authenticity_notes: string | null
@@ -1190,7 +1247,7 @@ export type Database = {
           pitch_count?: number
           pitch_status?: string | null
           pitched_at?: string | null
-          platform: string
+          platform?: string
           playlist_id: string
           playlist_name: string
           recommended_pitch_angle?: string | null
@@ -1898,6 +1955,90 @@ export type Database = {
         Update: {
           received_at?: string
           update_id?: number
+        }
+        Relationships: []
+      }
+      track_categories: {
+        Row: {
+          category_id: string
+          track_id: string
+        }
+        Insert: {
+          category_id: string
+          track_id: string
+        }
+        Update: {
+          category_id?: string
+          track_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "track_categories_category_id_fkey"
+            columns: ["category_id"]
+            isOneToOne: false
+            referencedRelation: "categories"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "track_categories_track_id_fkey"
+            columns: ["track_id"]
+            isOneToOne: false
+            referencedRelation: "tracks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      tracks: {
+        Row: {
+          apple_music_url: string | null
+          created_at: string
+          default_tone: string
+          id: string
+          isrc: string | null
+          name: string
+          notes: string | null
+          pitch_angle: string | null
+          reference_artists: string[]
+          release_date: string | null
+          short_pitch: string | null
+          soundcloud_url: string | null
+          spotify_url: string | null
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          apple_music_url?: string | null
+          created_at?: string
+          default_tone?: string
+          id?: string
+          isrc?: string | null
+          name: string
+          notes?: string | null
+          pitch_angle?: string | null
+          reference_artists?: string[]
+          release_date?: string | null
+          short_pitch?: string | null
+          soundcloud_url?: string | null
+          spotify_url?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          apple_music_url?: string | null
+          created_at?: string
+          default_tone?: string
+          id?: string
+          isrc?: string | null
+          name?: string
+          notes?: string | null
+          pitch_angle?: string | null
+          reference_artists?: string[]
+          release_date?: string | null
+          short_pitch?: string | null
+          soundcloud_url?: string | null
+          spotify_url?: string | null
+          status?: string
+          updated_at?: string
         }
         Relationships: []
       }

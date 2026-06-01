@@ -1381,6 +1381,55 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
     if (error) return { status: 500, data: { error: error.message } };
     return { status: 200, data: { ok: true, playlist_id: playlistId, patched: Object.keys(patch) } };
   }
+  if (action === "log_platform_pitch") {
+    const playlistId = String(body.playlist_id ?? "").trim();
+    const platformName = String(body.platform_name ?? "").trim().toLowerCase();
+    if (!playlistId) return { status: 400, data: { error: "playlist_id required" } };
+    if (!platformName) return { status: 400, data: { error: "platform_name required" } };
+    const { data: target, error: targetErr } = await sb.from("playlist_targets")
+      .select("playlist_id, track_name, curator_email")
+      .eq("playlist_id", playlistId)
+      .maybeSingle();
+    if (targetErr) return { status: 500, data: { error: targetErr.message } };
+    if (!target) {
+      return { status: 404, data: { error: "playlist_not_found", playlist_id: playlistId } };
+    }
+    const pitchedAt = body.sent_at ? String(body.sent_at) : new Date().toISOString();
+    const platformPitchId = body.platform_pitch_id != null
+      ? (String(body.platform_pitch_id).trim() || null)
+      : null;
+    const platformPitchUrl = body.platform_pitch_url != null
+      ? (String(body.platform_pitch_url).trim() || null)
+      : null;
+    const rawCost = body.platform_cost_usd != null ? Number(body.platform_cost_usd) : 0;
+    const platformCostUsd = Number.isFinite(rawCost) ? rawCost : 0;
+    const curatorEmail = (target.curator_email as string | null)?.trim()
+      || `platform:${platformName}@manual`;
+    const { data: logRow, error: logErr } = await sb.from("pitch_log").insert({
+      playlist_id: playlistId,
+      track_name: target.track_name,
+      curator_email: curatorEmail,
+      method: platformName,
+      status: "sent",
+      pitched_at: pitchedAt,
+      resend_message_id: null,
+      platform_name: platformName,
+      platform_pitch_id: platformPitchId,
+      platform_pitch_url: platformPitchUrl,
+      platform_cost_usd: platformCostUsd,
+    }).select("id").single();
+    if (logErr) return { status: 500, data: { error: logErr.message } };
+    const now = new Date().toISOString();
+    const { error: upErr } = await sb.from("playlist_targets").update({
+      pitch_status: "pitched",
+      last_pitched_at: now,
+    }).eq("playlist_id", playlistId);
+    if (upErr) return { status: 500, data: { error: upErr.message } };
+    return {
+      status: 200,
+      data: { ok: true, playlist_id: playlistId, pitch_log_id: logRow?.id ?? null },
+    };
+  }
   if (action === "list_social_queue") {
     const limit = Math.min(50, Math.max(1, Number(body.limit) || 30));
     const status = String(body.status ?? "pending").trim() || "pending";
@@ -1584,7 +1633,7 @@ export async function runConnectSpotifyStatus(
 
 const PLAYLIST_AGENT_ACTIONS = new Set([
   "draft_pitch", "approve_draft", "enrich_curator_contacts", "schedule_follow_up",
-  "list_targets", "list_drafts", "update_draft", "delete_draft", "deactivate_target", "activate_target", "patch_target", "get_pitch_log",
+  "list_targets", "list_drafts", "update_draft", "delete_draft", "deactivate_target", "activate_target", "patch_target", "log_platform_pitch", "get_pitch_log",
   "run_playlist_research", "send_campaign", "send_telegram_campaign",
   "connect_spotify_init", "connect_spotify_status",
   "queue_instagram_pitch",
@@ -1886,6 +1935,7 @@ export async function runPlaylistAgentAction(
     case "deactivate_target":
     case "activate_target":
     case "patch_target":
+    case "log_platform_pitch":
     case "get_pitch_log":
       return runPlaylistAdmin({ ...body, action }, sb);
     case "run_playlist_research":

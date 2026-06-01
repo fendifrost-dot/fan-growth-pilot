@@ -1134,6 +1134,13 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
     if (error) return { status: 500, data: { error: error.message } };
     return { status: 200, data: { ok: true } };
   }
+  if (action === "activate_target") {
+    const playlistId = String(body.playlist_id ?? "").trim();
+    if (!playlistId) return { status: 400, data: { error: "playlist_id required" } };
+    const { error } = await sb.from("playlist_targets").update({ is_active: true }).eq("playlist_id", playlistId);
+    if (error) return { status: 500, data: { error: error.message } };
+    return { status: 200, data: { ok: true } };
+  }
   if (action === "patch_target") {
     const playlistId = String(body.playlist_id ?? "").trim();
     if (!playlistId) return { status: 400, data: { error: "playlist_id required" } };
@@ -1367,7 +1374,7 @@ export async function runConnectSpotifyStatus(
 
 const PLAYLIST_AGENT_ACTIONS = new Set([
   "draft_pitch", "approve_draft", "enrich_curator_contacts", "schedule_follow_up",
-  "list_targets", "list_drafts", "update_draft", "deactivate_target", "patch_target", "get_pitch_log",
+  "list_targets", "list_drafts", "update_draft", "deactivate_target", "activate_target", "patch_target", "get_pitch_log",
   "run_playlist_research", "send_campaign", "send_telegram_campaign",
   "connect_spotify_init", "connect_spotify_status",
   "queue_instagram_pitch",
@@ -1666,6 +1673,7 @@ export async function runPlaylistAgentAction(
     case "list_drafts":
     case "update_draft":
     case "deactivate_target":
+    case "activate_target":
     case "patch_target":
     case "get_pitch_log":
       return runPlaylistAdmin({ ...body, action }, sb);

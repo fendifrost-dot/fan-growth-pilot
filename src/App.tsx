@@ -20,6 +20,9 @@ import AdminOutreachDrafts from "./pages/admin/AdminOutreachDrafts";
 import AdminSocialQueue from "./pages/admin/AdminSocialQueue";
 import AdminIgRoster from "./pages/admin/AdminIgRoster";
 import AdminRadioTargets from "./pages/admin/AdminRadioTargets";
+import AdminCatalogue from "./pages/admin/AdminCatalogue";
+import AdminCategories from "./pages/admin/AdminCategories";
+import AdminPitchComposer from "./pages/admin/AdminPitchComposer";
 
 const queryClient = new QueryClient();
 
@@ -54,6 +57,9 @@ const App = () => (
             <Route path="send" element={<AdminSendCenter />} />
             <Route path="radio" element={<AdminRadioTargets />} />
             <Route path="pitch-log" element={<AdminPitchLog />} />
+            <Route path="catalogue" element={<AdminCatalogue />} />
+            <Route path="categories" element={<AdminCategories />} />
+            <Route path="pitch-composer" element={<AdminPitchComposer />} />
           </Route>
 
           {/* Public smart link pages (CATCH-ALL — must stay last among meaningful routes) */}

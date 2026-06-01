@@ -53,6 +53,20 @@ const AdminHub: React.FC = () => {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Card className="p-5">
+          <h3 className="font-medium">Pitch Composer</h3>
+          <p className="text-sm text-muted-foreground mt-1">Multi-tone drafts with warm/cold detection</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/pitch-composer">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">Song catalogue</h3>
+          <p className="text-sm text-muted-foreground mt-1">Tracks, tones, and category tags</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/catalogue">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
           <h3 className="font-medium">Find playlists</h3>
           <p className="text-sm text-muted-foreground mt-1">Research → enrich → draft curator emails</p>
           <Button variant="outline" size="sm" className="mt-3" asChild>

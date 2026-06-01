@@ -73,6 +73,7 @@ Deno.serve(async (req) => {
     const tierConfirmed = Boolean(body.tier_confirmed);
     const bulk = Boolean(body.bulk);
     const draftId = String(body.draft_id ?? "").trim();
+    const testMode = Boolean(body.test_mode);
     if (!playlistId || !trackName) return jsonPitch({ ok:false, method_used:"none", action_taken:"error", cooldown_until:null, message_to_user:"Missing playlist_id or track_name." });
     const url = Deno.env.get("SUPABASE_URL")!;
     const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -99,7 +100,7 @@ Deno.serve(async (req) => {
     const tierRaw = row.tier;
     const tier = typeof tierRaw === "number" ? tierRaw : tierRaw != null && tierRaw !== "" ? Number(tierRaw) : null;
     if (tier === 3 && !tierConfirmed) return jsonPitch({ ok:false, method_used:method, action_taken:"tier_gate", cooldown_until:null, message_to_user:"⚠️ *Tier 3 playlist* — *" + (row.playlist_name ?? playlistId) + "*\n\nFlagged for verify-first pitching. Reply *confirm* to send." });
-    if (method === "email") return await handleEmailPitch(sb, row, trackName, bulk, draftOverrides);
+    if (method === "email") return await handleEmailPitch(sb, row, trackName, bulk, draftOverrides, testMode);
     return jsonPitch(buildNonEmailMessage(row, method, trackName));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -134,6 +135,7 @@ async function handleEmailPitch(
   trackName: string,
   _bulk: boolean,
   draft?: { email?: string; subject?: string; bodyHtml?: string },
+  testMode = false,
 ): Promise<Response> {
   const playlistId = String(row.playlist_id);
   const email = await resolveCuratorEmail(sb, row, draft);
@@ -145,13 +147,16 @@ async function handleEmailPitch(
       message_to_user: "No curator email on file for *" + playlistName + "*. Patch playlist_targets before sending.",
     });
   }
-  const { data: existing } = await sb.from("pitch_log").select("id, cooldown_until").eq("playlist_id", playlistId).eq("track_name", trackName).eq("status", "sent").gt("cooldown_until", new Date().toISOString()).maybeSingle();
-  if (existing?.id) {
-    const until = existing.cooldown_until ? new Date(existing.cooldown_until as string).toLocaleDateString() : "?";
-    return jsonPitch({ ok:false, method_used:method, action_taken:"skipped", cooldown_until:existing.cooldown_until as string, message_to_user:"⏳ Already pitched *" + playlistName + "* for *" + trackName + "*. Cooldown until *" + until + "*." });
+  // test_mode bypasses cooldown + daily cap checks (QA sends should be unblocked).
+  if (!testMode) {
+    const { data: existing } = await sb.from("pitch_log").select("id, cooldown_until").eq("playlist_id", playlistId).eq("track_name", trackName).eq("status", "sent").gt("cooldown_until", new Date().toISOString()).maybeSingle();
+    if (existing?.id) {
+      const until = existing.cooldown_until ? new Date(existing.cooldown_until as string).toLocaleDateString() : "?";
+      return jsonPitch({ ok:false, method_used:method, action_taken:"skipped", cooldown_until:existing.cooldown_until as string, message_to_user:"⏳ Already pitched *" + playlistName + "* for *" + trackName + "*. Cooldown until *" + until + "*." });
+    }
+    const { count: capCount } = await sb.from("pitch_log").select("*", { count:"exact", head:true }).eq("method", "email").eq("status", "sent").gte("pitched_at", new Date(Date.now() - 86400000).toISOString());
+    if ((capCount ?? 0) >= 10) return jsonPitch({ ok:false, method_used:method, action_taken:"skipped", cooldown_until:null, message_to_user:"📧 Daily email pitch cap reached (10 per 24h). Try again tomorrow." });
   }
-  const { count: capCount } = await sb.from("pitch_log").select("*", { count:"exact", head:true }).eq("method", "email").eq("status", "sent").gte("pitched_at", new Date(Date.now() - 86400000).toISOString());
-  if ((capCount ?? 0) >= 10) return jsonPitch({ ok:false, method_used:method, action_taken:"skipped", cooldown_until:null, message_to_user:"📧 Daily email pitch cap reached (10 per 24h). Try again tomorrow." });
   const resendKey = Deno.env.get("RESEND_API_KEY");
   const fromEmail = pitchFromHeader();
   const { artistId, trackUrls } = await getArtistConfig(sb);
@@ -161,9 +166,11 @@ async function handleEmailPitch(
   const bodyHtml = draft?.bodyHtml ?? ["<p>Hi,</p>","<p>I'm reaching out to submit <strong>" + escapeHtml(trackName) + "</strong> by <strong>Fendi Frost</strong> for playlist consideration.</p>","<p>Listen: <a href=\"" + escapeHtml(trackUrl) + "\">" + escapeHtml(trackUrl) + "</a></p>",artistId ? "<p>Artist on Spotify: <a href=\"https://open.spotify.com/artist/" + escapeHtml(artistId) + "\">profile</a></p>" : "","<p>Thank you for your time.</p>","<p>— Fendi Frost team</p>"].filter(Boolean).join("\n");
   const subject = draft?.subject ?? defaultPlaylistPitchSubject(trackName, playlistName);
   if (!resendKey) {
-    await sb.from("pitch_log").insert(pitchLogRow(playlistId, trackName, email, method, "error", {
-      response_notes: "RESEND_API_KEY not configured",
-    }));
+    if (!testMode) {
+      await sb.from("pitch_log").insert(pitchLogRow(playlistId, trackName, email, method, "error", {
+        response_notes: "RESEND_API_KEY not configured",
+      }));
+    }
     return jsonPitch({ ok:false, method_used:method, action_taken:"error", cooldown_until:null, message_to_user:"❌ Email not sent (Hub missing RESEND_API_KEY)." });
   }
   const textBody = htmlToPlainText(bodyHtml);
@@ -183,10 +190,20 @@ async function handleEmailPitch(
   });
   const raw = await res.text();
   if (!res.ok) {
-    await sb.from("pitch_log").insert(pitchLogRow(playlistId, trackName, email, method, "error", {
-      response_notes: "Resend " + res.status + ": " + raw.slice(0, 500),
-    }));
+    if (!testMode) {
+      await sb.from("pitch_log").insert(pitchLogRow(playlistId, trackName, email, method, "error", {
+        response_notes: "Resend " + res.status + ": " + raw.slice(0, 500),
+      }));
+    }
     return jsonPitch({ ok:false, method_used:method, action_taken:"error", cooldown_until:null, message_to_user:"❌ Email failed (" + res.status + "). No cooldown applied — retry after fixing." });
+  }
+  if (testMode) {
+    // Zero state footprint: no pitch_log row, no cooldown_until applied.
+    return jsonPitch({
+      ok: true, method_used: method, action_taken: "email_sent", cooldown_until: null,
+      pitch_log_id: null,
+      message_to_user: "🧪 [TEST MODE] Pitch email sent to *" + email + "* for *" + playlistName + "* (" + trackName + "). No pitch_log row, no cooldown applied.",
+    });
   }
   const { data: logRow, error: insOk } = await sb.from("pitch_log")
     .insert(pitchLogRow(playlistId, trackName, email, method, "sent", { cooldown_until: cooldownIso }))

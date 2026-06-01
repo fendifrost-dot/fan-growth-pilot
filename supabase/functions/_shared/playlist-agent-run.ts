@@ -229,6 +229,7 @@ export async function runApproveDraft(body: Record<string, unknown>, sb: Supabas
   const draftId = String(body.draft_id ?? "").trim();
   const approvedBy = String(body.approved_by ?? "admin").trim();
   const sendImmediately = Boolean(body.send_immediately);
+  const testMode = Boolean(body.test_mode);
   const reject = Boolean(body.reject);
   if (!draftId) return { status: 400, data: { error: "draft_id required" } };
 
@@ -267,6 +268,7 @@ export async function runApproveDraft(body: Record<string, unknown>, sb: Supabas
       playlist_id: draft.playlist_id,
       track_name: draft.track_name,
       draft_id: draftId,
+      test_mode: testMode,
     }),
   });
   const execData = await execRes.json().catch(() => ({})) as {
@@ -297,6 +299,23 @@ export async function runApproveDraft(body: Record<string, unknown>, sb: Supabas
     };
   }
 
+  if (testMode) {
+    // Zero state footprint: delete the draft (it was a QA send), skip playlist_targets pitch_status update.
+    await sb.from("outreach_drafts").delete().eq("id", draftId);
+    return {
+      status: 200,
+      data: {
+        ok: true,
+        status: "sent_test",
+        sent: true,
+        channel: "email",
+        cooldown_until: null,
+        message: execData.message_to_user,
+        pitch_log_id: null,
+        test_mode: true,
+      },
+    };
+  }
   const pitchLogId = execData.pitch_log_id ?? null;
   const { data: logRow } = pitchLogId
     ? { data: { id: pitchLogId } }

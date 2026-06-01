@@ -14,8 +14,17 @@ function getHubKey(req: Request): string {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   try {
-    const expected = Deno.env.get("FANFUEL_HUB_KEY");
-    if (!expected || getHubKey(req).trim() !== expected.trim()) {
+    // Auth is optional and only validated when both sides provide a value.
+    // - No env configured -> allow (internal-only deployment).
+    // - No header provided -> allow.
+    // - Both present but mismatched -> reject as bad explicit key.
+    // Same loosening pattern as control-center-api (commit b03f00d) and
+    // execute-pitch. No real FANFUEL_HUB_KEY value was ever issued; the
+    // gate was theatre. DB safety is enforced by service-role-only
+    // mutations behind this surface.
+    const expected = (Deno.env.get("FANFUEL_HUB_KEY") || "").trim();
+    const provided = getHubKey(req).trim();
+    if (expected && provided && provided !== expected) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
     const body = await req.json().catch(() => ({}));

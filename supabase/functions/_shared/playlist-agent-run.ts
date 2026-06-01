@@ -1253,9 +1253,17 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
     if (body.subject !== undefined) patch.subject = body.subject;
     if (body.body !== undefined) patch.body = body.body;
     if (body.recipient !== undefined) patch.recipient = body.recipient;
+    if (body.status !== undefined) patch.status = body.status;
     const { error } = await sb.from("outreach_drafts").update(patch).eq("id", draftId);
     if (error) return { status: 500, data: { error: error.message } };
     return { status: 200, data: { ok: true } };
+  }
+  if (action === "delete_draft") {
+    const draftId = String(body.draft_id ?? "").trim();
+    if (!draftId) return { status: 400, data: { error: "draft_id required" } };
+    const { error } = await sb.from("outreach_drafts").delete().eq("id", draftId);
+    if (error) return { status: 500, data: { error: error.message } };
+    return { status: 200, data: { ok: true, draft_id: draftId } };
   }
   return { status: 400, data: { error: `Unknown playlist admin action: ${action}` } };
 }
@@ -1374,7 +1382,7 @@ export async function runConnectSpotifyStatus(
 
 const PLAYLIST_AGENT_ACTIONS = new Set([
   "draft_pitch", "approve_draft", "enrich_curator_contacts", "schedule_follow_up",
-  "list_targets", "list_drafts", "update_draft", "deactivate_target", "activate_target", "patch_target", "get_pitch_log",
+  "list_targets", "list_drafts", "update_draft", "delete_draft", "deactivate_target", "activate_target", "patch_target", "get_pitch_log",
   "run_playlist_research", "send_campaign", "send_telegram_campaign",
   "connect_spotify_init", "connect_spotify_status",
   "queue_instagram_pitch",
@@ -1672,6 +1680,7 @@ export async function runPlaylistAgentAction(
     case "list_targets":
     case "list_drafts":
     case "update_draft":
+    case "delete_draft":
     case "deactivate_target":
     case "activate_target":
     case "patch_target":

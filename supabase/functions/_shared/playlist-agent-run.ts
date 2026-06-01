@@ -383,7 +383,6 @@ export async function runApproveDraft(body: Record<string, unknown>, sb: Supabas
   if (channel !== "email") return { status: 400, data: { error: `Send not implemented for channel: ${channel}` } };
 
   const base = Deno.env.get("SUPABASE_URL")!.replace(/\/$/, "");
-  const testMode = Boolean(body.test_mode);
   const execRes = await fetch(`${base}/functions/v1/execute-pitch`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-api-key": hubKey },

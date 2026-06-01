@@ -755,7 +755,14 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
   const perRowResults: Array<Record<string, unknown>> = [];
 
   for (const row of rows) {
-    if (!row.playlist_id?.startsWith("spotify:")) continue;
+    if (!row.playlist_id?.startsWith("spotify:")) {
+      perRowResults.push({
+        playlist_id: row.playlist_id,
+        playlist_name: row.playlist_name,
+        skipped: "non_spotify_prefix",
+      });
+      continue;
+    }
 
     let spotifyId = row.playlist_id.replace(/^spotify:/, "");
     if (spotifyId.startsWith("sfa:") && row.playlist_name) {
@@ -770,7 +777,14 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
           s.playlist_id && !s.playlist_id.startsWith("37i9dQZF") &&
           (s.name ?? "").toLowerCase().includes(want.slice(0, Math.min(12, want.length))),
         );
-        if (!hit?.playlist_id) continue;
+        if (!hit?.playlist_id) {
+          perRowResults.push({
+            playlist_id: row.playlist_id,
+            playlist_name: row.playlist_name,
+            skipped: "sfa_resolve_failed",
+          });
+          continue;
+        }
         spotifyId = hit.playlist_id;
       }
     }
@@ -788,10 +802,25 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
     };
 
     try {
-      if ((row as { pitch_status?: string }).pitch_status === "disclaim_brand") continue;
+      if ((row as { pitch_status?: string }).pitch_status === "disclaim_brand") {
+        perRowResults.push({
+          playlist_id: row.playlist_id,
+          playlist_name: row.playlist_name,
+          skipped: "disclaim_brand",
+        });
+        continue;
+      }
 
       const detail = await scrapeSpotifyPlaylistDetail(spotifyId);
-      if (!detail) continue;
+      if (!detail) {
+        perRowResults.push({
+          playlist_id: row.playlist_id,
+          playlist_name: row.playlist_name,
+          spotify_id: spotifyId,
+          skipped: "playlist_detail_null",
+        });
+        continue;
+      }
 
       const rowRefs = rowDiscoveryReferences(row, lanesConfig, bodyReferences);
 
@@ -1097,6 +1126,12 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
       }
     } catch (e) {
       console.error(`[enrich] ${row.playlist_id} failed:`, errMsg(e));
+      perRowResults.push({
+        playlist_id: row.playlist_id,
+        playlist_name: row.playlist_name,
+        skipped: "loop_exception",
+        error: errMsg(e).slice(0, 200),
+      });
     }
   }
 

@@ -43,7 +43,12 @@ function pitchLogRow(
   curatorEmail: string,
   method: string,
   status: string,
-  extra: { cooldown_until?: string | null; response_notes?: string; pitched_at?: string } = {},
+  extra: {
+    cooldown_until?: string | null;
+    response_notes?: string;
+    pitched_at?: string;
+    resend_message_id?: string | null;
+  } = {},
 ) {
   return {
     playlist_id: playlistId,
@@ -54,6 +59,7 @@ function pitchLogRow(
     pitched_at: extra.pitched_at ?? new Date().toISOString(),
     cooldown_until: extra.cooldown_until ?? null,
     response_notes: extra.response_notes ?? null,
+    resend_message_id: extra.resend_message_id ?? null,
   };
 }
 Deno.serve(async (req) => {
@@ -196,6 +202,13 @@ async function handleEmailPitch(
     body: JSON.stringify(resendBody),
   });
   const raw = await res.text();
+  let resendMessageId: string | null = null;
+  if (res.ok) {
+    try {
+      const parsed = JSON.parse(raw) as { id?: string };
+      resendMessageId = typeof parsed?.id === "string" ? parsed.id : null;
+    } catch { /* non-JSON success body */ }
+  }
   if (!res.ok) {
     if (!testMode) {
       await sb.from("pitch_log").insert(pitchLogRow(playlistId, trackName, email, method, "error", {
@@ -213,7 +226,10 @@ async function handleEmailPitch(
     });
   }
   const { data: logRow, error: insOk } = await sb.from("pitch_log")
-    .insert(pitchLogRow(playlistId, trackName, email, method, "sent", { cooldown_until: cooldownIso }))
+    .insert(pitchLogRow(playlistId, trackName, email, method, "sent", {
+      cooldown_until: cooldownIso,
+      resend_message_id: resendMessageId,
+    }))
     .select("id")
     .single();
   if (insOk) {

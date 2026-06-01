@@ -13,6 +13,23 @@ const EMAIL_DENYLIST = new Set([
   "noreply@instagram.com",
 ]);
 
+/** Domain suffixes — subdomains match (e.g. vendor.spotify.com). */
+const EMAIL_DOMAIN_DENYLIST = [
+  "spotify.com",
+  "spotifyforvendors.com",
+  "noreply.form",
+];
+
+function isDeniedEmail(email: string): boolean {
+  const lower = email.toLowerCase();
+  if (EMAIL_DENYLIST.has(lower)) return true;
+  const domain = lower.split("@")[1] ?? "";
+  if (!domain) return false;
+  return EMAIL_DOMAIN_DENYLIST.some(
+    (suffix) => domain === suffix || domain.endsWith("." + suffix),
+  );
+}
+
 export const IG_HANDLE_DENYLIST = new Set([
   "spotify",
   "spotifyusa",
@@ -61,7 +78,7 @@ export function extractEmails(text: string, html?: string): EmailHit[] {
   const seen = new Set<string>();
   const add = (v: string, source: EmailHit["source"]) => {
     const lower = v.toLowerCase();
-    if (EMAIL_DENYLIST.has(lower) || seen.has(lower)) return;
+    if (isDeniedEmail(lower) || seen.has(lower)) return;
     seen.add(lower);
     out.push({ value: lower, source });
   };

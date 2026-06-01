@@ -56,6 +56,14 @@ import {
   type Tone,
 } from "./pitch-templates.ts";
 import { defaultPlaylistPitchSubject } from "./resend-pitch.ts";
+import {
+  DEFAULT_STRATEGY_ORDER,
+  newContext as newCuratorContext,
+  runStrategyChain as runCuratorStrategyChain,
+  type AttemptLog as CuratorAttemptLog,
+  type CuratorRow,
+  type StrategyName as CuratorStrategyName,
+} from "./curator-strategies.ts";
 
 export type RunResult = { status: number; data: unknown };
 
@@ -686,17 +694,29 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
   const offset = Math.max(0, Number(body.offset) || 0);
   const limit = Math.min(12, Math.max(1, Number(body.limit) || ENRICH_PER_CALL_LIMIT));
   const staleBefore = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+  // v2 expanded-strategy chain controls
+  const includeInactive = Boolean(body.include_inactive);
+  const reactivateOnSuccess = Boolean(body.reactivate_on_success);
+  const runExpandedStrategies = body.run_expanded_strategies !== false; // default ON
+  const expandedOrder: CuratorStrategyName[] =
+    Array.isArray(body.expanded_strategies) && body.expanded_strategies.length
+      ? (body.expanded_strategies as CuratorStrategyName[])
+      : DEFAULT_STRATEGY_ORDER;
 
   let query = sb
     .from("playlist_targets")
     .select(
-      "playlist_id, playlist_name, curator_name, curator_email, curator_instagram, curator_linktree, curator_website, curator_submission_url, curator_submission_dm, research_context, lane, submission_method, contact_confidence, pitch_status",
+      "playlist_id, playlist_name, curator_name, curator_email, curator_instagram, curator_linktree, curator_website, curator_submission_url, curator_submission_dm, research_context, lane, submission_method, contact_confidence, pitch_status, is_active",
     )
-    .eq("is_active", true)
     .neq("pitch_status", "disclaim_brand")
     .or("curator_email.is.null,submission_method.is.null")
     .or(`last_enriched_at.is.null,last_enriched_at.lt.${staleBefore}`)
     .order("follower_count", { ascending: false, nullsFirst: false });
+
+  // Default: only active rows. Caller can opt in to inactive (e.g. to re-run the
+  // 18 deep-house rows that were soft-deactivated after the prior enrichment
+  // sweep surfaced no emails).
+  if (!includeInactive) query = query.eq("is_active", true);
 
   if (playlistIds.length) {
     query = query.in("playlist_id", playlistIds.slice(0, 30));
@@ -724,6 +744,8 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
     routed_instagram_dm: 0,
   };
   let enriched = 0;
+  let reactivated = 0;
+  const perRowResults: Array<Record<string, unknown>> = [];
 
   for (const row of rows) {
     if (!row.playlist_id?.startsWith("spotify:")) continue;
@@ -953,6 +975,45 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
         }
       }
 
+      // ---- v2 expanded discovery chain ---------------------------------
+      // The existing pipeline above is the well-trodden Spotify→Linktree→IG
+      // path. It works when curators expose contact info on those surfaces.
+      // For curators that don't (the dominant case for independent
+      // deep-house playlists), we now run a wider strategy chain that probes
+      // Twitter/X, personal websites with /contact /submit /about, other
+      // playlists by the same creator, the Wayback Machine, free-read
+      // submission-aggregator profiles, Substack/beehiiv newsletters, and
+      // does targeted Google-style dorking via firecrawl search.
+      //
+      // The chain short-circuits on the first plausible verified email. It
+      // never adds a paid dependency — Firecrawl is the only outbound, and
+      // it was already on the stack. LinkedIn and Hunter.io are explicitly
+      // omitted (per the project's standing direction).
+      let expandedHit:
+        | { email: string; source: string; source_url?: string; confidence: number }
+        | null = null;
+      let expandedAttempts: CuratorAttemptLog[] = [];
+      let expandedDiscoveredUrls: string[] = [];
+      let expandedDiscoveredHandles: Record<string, string> = {};
+      const emailBeforeExpanded = (patch.curator_email as string | undefined) ?? row.curator_email ?? null;
+
+      if (runExpandedStrategies && !emailBeforeExpanded) {
+        try {
+          const expCtx = newCuratorContext(row as CuratorRow);
+          expandedHit = await runCuratorStrategyChain(expCtx, expandedOrder);
+          expandedAttempts = expCtx.attempts;
+          expandedDiscoveredUrls = [...expCtx.discoveredUrls].slice(0, 30);
+          expandedDiscoveredHandles = Object.fromEntries(expCtx.discoveredHandles.entries());
+        } catch (e) {
+          console.error(`[enrich] expanded chain ${row.playlist_id} failed:`, errMsg(e));
+        }
+        if (expandedHit) {
+          patch.curator_email = expandedHit.email;
+          fieldsAdded.curator_email++;
+          recordConfidence(expandedHit.confidence);
+        }
+      }
+
       const finalEmail = (patch.curator_email as string) ?? row.curator_email ?? null;
       const finalIgRaw = (patch.curator_instagram as string) ?? row.curator_instagram ?? null;
       let finalIg = finalIgRaw && isValidCuratorIgHandle(finalIgRaw) ? finalIgRaw.replace(/^@/, "") : null;
@@ -978,11 +1039,55 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
         patch.submission_method = "none";
       }
 
+      // Reactivate when the caller asks for it AND we landed a verified email
+      // on a row that was previously soft-deactivated.
+      let reactivatedThisRow = false;
+      if (reactivateOnSuccess && finalEmail && (row as { is_active?: boolean }).is_active === false) {
+        patch.is_active = true;
+        reactivatedThisRow = true;
+      }
+
       patch.contact_confidence = bestConfidence;
       patch.last_enriched_at = new Date().toISOString();
 
+      // Audit: record what the expanded chain tried into research_context so
+      // we have a per-row trail of "we ran X, Y, Z and they all returned
+      // nothing" without polluting the schema with a new column.
+      if (runExpandedStrategies) {
+        const existingCtx = (row.research_context as Record<string, unknown> | null) ?? {};
+        patch.research_context = {
+          ...(typeof patch.research_context === "object" && patch.research_context !== null
+            ? patch.research_context as Record<string, unknown>
+            : existingCtx),
+          curator_strategy_audit: {
+            ran_at: patch.last_enriched_at,
+            order: expandedOrder,
+            attempts: expandedAttempts,
+            result: expandedHit
+              ? { hit: true, source: expandedHit.source, confidence: expandedHit.confidence, source_url: expandedHit.source_url }
+              : { hit: false },
+            discovered_handles: expandedDiscoveredHandles,
+            discovered_urls: expandedDiscoveredUrls,
+            reactivated: reactivatedThisRow,
+          },
+        };
+      }
+
       const { error: upErr } = await sb.from("playlist_targets").update(patch).eq("playlist_id", row.playlist_id);
-      if (!upErr) enriched++;
+      if (!upErr) {
+        enriched++;
+        if (reactivatedThisRow) reactivated++;
+        perRowResults.push({
+          playlist_id: row.playlist_id,
+          playlist_name: row.playlist_name,
+          email: finalEmail ?? null,
+          source: expandedHit?.source ?? (finalEmail ? "existing_pipeline" : null),
+          source_url: expandedHit?.source_url ?? null,
+          confidence: bestConfidence || null,
+          reactivated: reactivatedThisRow,
+          attempts: expandedAttempts,
+        });
+      }
     } catch (e) {
       console.error(`[enrich] ${row.playlist_id} failed:`, errMsg(e));
     }
@@ -996,9 +1101,11 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
     data: {
       ok: true,
       enriched,
+      reactivated,
       done,
       next_offset: done ? null : nextOffset,
       fields_added: fieldsAdded,
+      results: perRowResults,
     },
   };
 }

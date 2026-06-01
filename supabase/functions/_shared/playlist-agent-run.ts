@@ -365,7 +365,7 @@ export async function runApproveDraft(body: Record<string, unknown>, sb: Supabas
   if (!draftId) return { status: 400, data: { error: "draft_id required" } };
 
   const { data: draft, error: dErr } = await sb.from("outreach_drafts")
-    .select("*, playlist_targets(playlist_name, curator_name, curator_email, curator_instagram)")
+    .select("*, playlist_targets(playlist_name, curator_name, curator_email, curator_instagram, tier)")
     .eq("id", draftId).maybeSingle();
   if (dErr || !draft) return { status: 404, data: { error: "Draft not found" } };
   if (draft.status !== "pending") return { status: 400, data: { error: `Draft status is ${draft.status}, expected pending` } };
@@ -402,6 +402,8 @@ export async function runApproveDraft(body: Record<string, unknown>, sb: Supabas
       test_mode: testMode,
       test_email: typeof body.test_email === "string" ? body.test_email.trim() : undefined,
       batch_override_cap: batchOverrideCap,
+      // Admin approve-and-send is the tier-3 confirm step.
+      tier_confirmed: Boolean(body.tier_confirmed) || !testMode,
     }),
   });
   const execData = await execRes.json().catch(() => ({})) as {
@@ -459,7 +461,11 @@ export async function runApproveDraft(body: Record<string, unknown>, sb: Supabas
     sent_at: new Date().toISOString(),
     pitch_log_id: logRow?.id ?? null,
   }).eq("id", draftId);
-  await sb.from("playlist_targets").update({ pitch_status: "pitched" }).eq("playlist_id", draft.playlist_id);
+  const pitchedAt = new Date().toISOString();
+  await sb.from("playlist_targets").update({
+    pitch_status: "pitched",
+    last_pitched_at: pitchedAt,
+  }).eq("playlist_id", draft.playlist_id);
 
   return {
     status: 200,
@@ -1261,6 +1267,9 @@ const PATCH_PITCH_STATUS = ["not_pitched", "pitched", "no_contact", "no_response
 const PATCH_SUBMISSION_METHOD = [
   "email", "groover", "submithub", "one_submit", "soundplate", "manual_form", "none",
 ] as const;
+const LOG_PLATFORM_NAMES = [
+  "groover", "submithub", "soundplate", "one_submit", "submitlink", "dailyplaylists", "indiemono",
+] as const;
 
 function invalidFieldValue(
   field: string,
@@ -1310,7 +1319,7 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
     const playlistId = String(body.playlist_id ?? "").trim();
     if (!playlistId) return { status: 400, data: { error: "playlist_id required" } };
     const { data: existingRow } = await sb.from("playlist_targets")
-      .select("lane, research_context, similar_artists, curator_instagram")
+      .select("lane, research_context, similar_artists, curator_instagram, curator_email")
       .eq("playlist_id", playlistId)
       .maybeSingle();
     if (!existingRow) {
@@ -1322,7 +1331,8 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
     if (body.curator_email !== undefined) {
       const em = String(body.curator_email ?? "").trim();
       patch.curator_email = em || null;
-      if (em) {
+      const hadEmail = Boolean((existingRow.curator_email as string | null)?.trim());
+      if (em && !hadEmail && body.contact_confidence === undefined) {
         patch.contact_confidence = 9;
         patch.submission_method = "email";
       }
@@ -1369,11 +1379,23 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
       }
       patch.submission_method = v;
     }
+    if (body.last_pitched_at !== undefined) {
+      if (body.last_pitched_at === null || body.last_pitched_at === "") {
+        patch.last_pitched_at = null;
+      } else {
+        const ts = String(body.last_pitched_at).trim();
+        const parsed = Date.parse(ts);
+        if (!Number.isFinite(parsed)) {
+          return { status: 400, data: { error: "invalid_field_value", field: "last_pitched_at", received: body.last_pitched_at, allowed: ["ISO timestamp or null"] } };
+        }
+        patch.last_pitched_at = new Date(parsed).toISOString();
+      }
+    }
     if (!Object.keys(patch).length) {
       return {
         status: 400,
         data: {
-          error: "Nothing to patch (curator_email, curator_instagram, lane, submission_url, pitch_status, contact_confidence, is_active, submission_method)",
+          error: "Nothing to patch (curator_email, curator_instagram, lane, submission_url, pitch_status, contact_confidence, is_active, submission_method, last_pitched_at)",
         },
       };
     }
@@ -1386,6 +1408,9 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
     const platformName = String(body.platform_name ?? "").trim().toLowerCase();
     if (!playlistId) return { status: 400, data: { error: "playlist_id required" } };
     if (!platformName) return { status: 400, data: { error: "platform_name required" } };
+    if (!(LOG_PLATFORM_NAMES as readonly string[]).includes(platformName)) {
+      return invalidFieldValue("platform_name", body.platform_name, LOG_PLATFORM_NAMES);
+    }
     const { data: target, error: targetErr } = await sb.from("playlist_targets")
       .select("playlist_id, track_name, curator_email")
       .eq("playlist_id", playlistId)
@@ -1393,6 +1418,10 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
     if (targetErr) return { status: 500, data: { error: targetErr.message } };
     if (!target) {
       return { status: 404, data: { error: "playlist_not_found", playlist_id: playlistId } };
+    }
+    const trackName = String(body.track_name ?? target.track_name ?? "").trim();
+    if (!trackName) {
+      return { status: 400, data: { error: "track_name required (pass in body or set on playlist_targets)" } };
     }
     const pitchedAt = body.sent_at ? String(body.sent_at) : new Date().toISOString();
     const platformPitchId = body.platform_pitch_id != null
@@ -1407,7 +1436,7 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
       || `platform:${platformName}@manual`;
     const { data: logRow, error: logErr } = await sb.from("pitch_log").insert({
       playlist_id: playlistId,
-      track_name: target.track_name,
+      track_name: trackName,
       curator_email: curatorEmail,
       method: platformName,
       status: "sent",

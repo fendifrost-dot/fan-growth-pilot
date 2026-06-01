@@ -94,4 +94,18 @@ curl -sS -X POST "$CCA" -H "content-type: application/json" \
 # Approve + send (use draft_id from response)
 curl -sS -X POST "$CCA" -H "content-type: application/json" \
   -d '{"action":"approve_draft","draft_id":"UUID","approved_by":"fendi","send_immediately":true}'
+
+# QA send — real email, no pitch_log / cooldown / pitched status
+curl -sS -X POST "$CCA" -H "content-type: application/json" \
+  -d '{"action":"approve_draft","draft_id":"UUID","approved_by":"fendi","send_immediately":true,"test_mode":true,"test_email":"fendifrost@gmail.com"}'
+
+# Log manual Groover / Soundplate submission (track_name required if target row has none)
+curl -sS -X POST "$CCA" -H "content-type: application/json" \
+  -d '{"action":"log_platform_pitch","playlist_id":"spotify:ID","platform_name":"groover","track_name":"Designed For Me (Control)","platform_pitch_url":"https://groover.co/...","platform_cost_usd":3}'
+
+# Clear last_pitched_at after accidental QA (no SQL needed)
+curl -sS -X POST "$CCA" -H "content-type: application/json" \
+  -d '{"action":"patch_target","playlist_id":"spotify:ID","last_pitched_at":null}'
 ```
+
+**Spotify vendor emails:** if enrich stored `ap@spotify.com`, run `supabase/migrations/20260601_scrub_spotify_vendor_emails.sql` in SQL Editor.

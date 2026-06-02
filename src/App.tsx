@@ -18,6 +18,7 @@ import AdminContacts from "./pages/admin/AdminContacts";
 import AdminPlaylistTargets from "./pages/admin/AdminPlaylistTargets";
 import AdminOutreachDrafts from "./pages/admin/AdminOutreachDrafts";
 import AdminSocialQueue from "./pages/admin/AdminSocialQueue";
+import AdminFanIgQueue from "./pages/admin/AdminFanIgQueue";
 import AdminIgRoster from "./pages/admin/AdminIgRoster";
 import AdminRadioTargets from "./pages/admin/AdminRadioTargets";
 import AdminCatalogue from "./pages/admin/AdminCatalogue";
@@ -53,6 +54,7 @@ const App = () => (
             <Route path="playlists" element={<AdminPlaylistTargets />} />
             <Route path="outreach" element={<AdminOutreachDrafts />} />
             <Route path="ig-queue" element={<AdminSocialQueue />} />
+            <Route path="fan-ig-queue" element={<AdminFanIgQueue />} />
             <Route path="ig-roster" element={<AdminIgRoster />} />
             <Route path="send" element={<AdminSendCenter />} />
             <Route path="radio" element={<AdminRadioTargets />} />

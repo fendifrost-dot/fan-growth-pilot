@@ -503,8 +503,16 @@ const AdminSendCenter: React.FC = () => {
             <div className="flex flex-wrap gap-2">
               <Button variant="outline" asChild><Link to="/admin/playlists">Find playlists with my music</Link></Button>
               <Button variant="outline" asChild><Link to="/admin/ig-roster">IG roster</Link></Button>
-              <Button variant="secondary" asChild><Link to="/admin/ig-queue">IG queue ({stats?.instagram_dm_queue ?? 0} pending)</Link></Button>
+              <Button variant="secondary" asChild><Link to="/admin/ig-queue">Curator IG queue ({stats?.instagram_dm_queue ?? 0} pending)</Link></Button>
             </div>
+          </Card>
+          <Card className="p-5 space-y-3">
+            <h2 className="font-medium">Fan Instagram DMs (followers, 10/day)</h2>
+            <p className="text-sm text-muted-foreground">
+              Engagement-first messages for people who follow you. Daily template + AI personalization.
+              Use <strong>Open &amp; copy</strong> — or <strong>Send via API</strong> when your Meta token is valid.
+            </p>
+            <Button variant="secondary" asChild><Link to="/admin/fan-ig-queue">Fan IG queue →</Link></Button>
           </Card>
           <div className="rounded border overflow-auto">
             <table className="w-full text-sm">

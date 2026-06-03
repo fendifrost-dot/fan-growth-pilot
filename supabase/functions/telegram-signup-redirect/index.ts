@@ -73,9 +73,10 @@ Deno.serve(async (req) => {
     null;
   const ipHash = ip ? await sha256Hex(ip) : null;
 
-  const botUsername = Deno.env.get("INNER_CIRCLE_BOT_USERNAME");
+  const { getTelegramBotUsername } = await import("../_shared/telegramEnv.ts");
+  const botUsername = getTelegramBotUsername();
   if (!botUsername) {
-    console.error("[telegram-signup-redirect] INNER_CIRCLE_BOT_USERNAME not set");
+    console.error("[telegram-signup-redirect] telegram_bot_username not set");
     return new Response("server misconfigured", { status: 500, headers: corsHeaders });
   }
 

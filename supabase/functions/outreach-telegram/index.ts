@@ -1,4 +1,5 @@
 import { createSupabaseServiceClient } from "../_shared/truth/supabaseService.ts";
+import { getTelegramBotToken } from "../_shared/telegramEnv.ts";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -39,9 +40,9 @@ async function sendTelegram(
   | { ok: true; messageId: number }
   | { ok: false; errorCode: string; errorMessage: string; httpStatus: number }
 > {
-  const token = Deno.env.get("TELEGRAM_BOT_TOKEN");
+  const token = getTelegramBotToken();
   if (!token) {
-    return { ok: false, errorCode: "no_bot_token", errorMessage: "TELEGRAM_BOT_TOKEN missing", httpStatus: 500 };
+    return { ok: false, errorCode: "no_bot_token", errorMessage: "telegram_bot_token missing", httpStatus: 500 };
   }
   const body: Record<string, unknown> = {
     chat_id: chatId,

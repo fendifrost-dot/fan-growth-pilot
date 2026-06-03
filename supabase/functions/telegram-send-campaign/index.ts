@@ -128,8 +128,9 @@ Deno.serve(async (req) => {
 
   if (!authOK(req)) return json({ error: "Unauthorized" }, 401);
 
-  const botToken = Deno.env.get("INNER_CIRCLE_BOT_TOKEN");
-  if (!botToken) return json({ error: "INNER_CIRCLE_BOT_TOKEN not configured" }, 500);
+  const { getTelegramBotToken } = await import("../_shared/telegramEnv.ts");
+  const botToken = getTelegramBotToken();
+  if (!botToken) return json({ error: "telegram_bot_token not configured" }, 500);
 
   const supabase: SupabaseClient = createClient(
     Deno.env.get("SUPABASE_URL")!,

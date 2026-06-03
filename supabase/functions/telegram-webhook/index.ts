@@ -129,11 +129,13 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "POST only" }, 405);
 
+  const { getTelegramBotToken, getTelegramWebhookSecret } = await import("../_shared/telegramEnv.ts");
+
   // 1) Verify Telegram secret token header.
-  const expectedSecret = Deno.env.get("INNER_CIRCLE_WEBHOOK_SECRET");
+  const expectedSecret = getTelegramWebhookSecret();
   const gotSecret = req.headers.get("x-telegram-bot-api-secret-token");
   if (!expectedSecret) {
-    console.error("[telegram-webhook] INNER_CIRCLE_WEBHOOK_SECRET not configured");
+    console.error("[telegram-webhook] telegram_webhook_secret not configured");
     return json({ error: "server_misconfigured" }, 500);
   }
   if (gotSecret !== expectedSecret) {
@@ -141,9 +143,9 @@ Deno.serve(async (req) => {
     return json({ error: "forbidden" }, 403);
   }
 
-  const botToken = Deno.env.get("INNER_CIRCLE_BOT_TOKEN");
+  const botToken = getTelegramBotToken();
   if (!botToken) {
-    console.error("[telegram-webhook] INNER_CIRCLE_BOT_TOKEN not configured");
+    console.error("[telegram-webhook] telegram_bot_token not configured");
     return json({ error: "server_misconfigured" }, 500);
   }
 

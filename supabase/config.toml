@@ -31,6 +31,9 @@ verify_jwt = false
 [functions.meta-conversions]
 verify_jwt = false
 
+[functions.truth-verify]
+verify_jwt = false
+
 [functions.project-stats]
 verify_jwt = false
 

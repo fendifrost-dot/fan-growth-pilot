@@ -4,6 +4,7 @@ import { createSupabaseServiceClient } from "./supabaseService.ts";
 import {
   normalizeIngestPayload,
   isAllowedEventType,
+  allowedEventTypesHint,
   type CanonicalIngestInput,
   type TruthIdentityFieldsCanonical,
 } from "./truthContract.ts";
@@ -253,9 +254,7 @@ export async function ingestTruthEvent(
 
   if (!isAllowedEventType(eventType)) {
     await logSystem(sb, "ingest:invalid_event_type", { eventType }, { ok: false });
-    throw new Error(
-      `Unsupported event_type: ${eventType}. Allowed: page_view, link_click, email_submit, purchase.`
-    );
+    throw new Error(`Unsupported event_type: ${eventType}. Allowed: ${allowedEventTypesHint()}.`);
   }
 
   if (fbclid && metadata.fbclid === undefined) metadata.fbclid = fbclid;

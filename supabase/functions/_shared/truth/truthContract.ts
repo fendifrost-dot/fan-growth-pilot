@@ -2,11 +2,22 @@
  * Canonical ingest contract (Edge). Mirrors lib/truthContract.ts.
  */
 
-export const CANONICAL_EVENT_TYPES = ["page_view", "link_click", "email_submit", "purchase"] as const;
+export const CANONICAL_EVENT_TYPES = [
+  "page_view",
+  "link_click",
+  "email_submit",
+  "purchase",
+  "telegram_signup_initiated",
+  "telegram_signup_completed",
+] as const;
 
 export function isAllowedEventType(eventType: string): boolean {
   const t = eventType.toLowerCase();
   return (CANONICAL_EVENT_TYPES as readonly string[]).includes(t);
+}
+
+export function allowedEventTypesHint(): string {
+  return CANONICAL_EVENT_TYPES.join(", ");
 }
 
 export type TruthIdentityFieldsCanonical = {

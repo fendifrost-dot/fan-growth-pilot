@@ -52,10 +52,14 @@ VERIFY_VIA_EDGE=1 npm run verify:funnel
 
 ## Deploy checklist
 
-- [ ] `TRUTH_VERIFY_SECRET` in Lovable Secrets  
-- [ ] `truth-verify` published from this repo  
+- [x] `TRUTH_VERIFY_SECRET` in Lovable Secrets  
+- [x] `truth-verify` published — funnel `mode=full` passes  
+- [ ] `truth-ingest` published (production browser ingest)  
+- [ ] `meta-conversions` published after CAPI payload fix  
 - [ ] `.env` has anon URL + key + `TRUTH_VERIFY_SECRET`  
-- [ ] `npm run verify:funnel` returns `"ok": true`
+- [x] `npm run verify:funnel` returns `"ok": true`
+
+See `docs/PHASE2_TRUTH_FUNNEL.md` for full Phase 2 sign-off.
 
 ## If `truth-verify` returns 404
 

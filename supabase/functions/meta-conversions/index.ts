@@ -24,7 +24,13 @@ serve(async (req) => {
 
   try {
     const body = await req.json();
-    const { event_name, event_id, user_data, custom_data, event_source_url } = body;
+    const event_name = body.event_name ?? body.capi_event_name;
+    const event_id = body.event_id;
+    const user_data = body.user_data ?? {};
+    const custom_data = body.custom_data;
+    const event_source_url = body.event_source_url;
+    const event_time =
+      typeof body.event_time === 'number' ? body.event_time : Math.floor(Date.now() / 1000);
 
     if (!event_name) {
       return new Response(JSON.stringify({ error: 'event_name is required' }), {
@@ -33,21 +39,32 @@ serve(async (req) => {
       });
     }
 
-    // Build the event payload per Meta CAPI spec
+    const metaUserData: Record<string, unknown> = {
+      client_ip_address: user_data.client_ip_address,
+      client_user_agent: user_data.client_user_agent,
+      fbc: user_data.fbc,
+      fbp: user_data.fbp,
+    };
+
+    if (user_data.em != null) {
+      metaUserData.em = Array.isArray(user_data.em) ? user_data.em : [user_data.em];
+    } else if (user_data.email && typeof user_data.email === 'string') {
+      metaUserData.em = [await hashSHA256(user_data.email.toLowerCase().trim())];
+    }
+
+    if (user_data.external_id != null) {
+      metaUserData.external_id = Array.isArray(user_data.external_id)
+        ? user_data.external_id
+        : [user_data.external_id];
+    }
+
     const event = {
       event_name,
-      event_time: Math.floor(Date.now() / 1000),
-      event_id, // Matches the client-side eventID for deduplication
+      event_time,
+      event_id,
       event_source_url,
-      action_source: 'website',
-      user_data: {
-        // Hash PII fields with SHA-256 if provided
-        ...(user_data?.email && { em: await hashSHA256(user_data.email.toLowerCase().trim()) }),
-        client_ip_address: user_data?.client_ip_address,
-        client_user_agent: user_data?.client_user_agent,
-        fbc: user_data?.fbc, // Facebook click ID cookie
-        fbp: user_data?.fbp, // Facebook browser ID cookie
-      },
+      action_source: body.action_source ?? 'website',
+      user_data: metaUserData,
       custom_data: custom_data || {},
     };
 

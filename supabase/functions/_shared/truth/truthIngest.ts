@@ -60,12 +60,41 @@ async function logSystem(
   if (error) console.error("[truth-layer] system_logs insert failed", error.message);
 }
 
+async function resolveOwnerUserId(
+  sb: SupabaseClient,
+  metadata: Record<string, unknown>,
+  smartLinkId?: string
+): Promise<string | null> {
+  let owner =
+    (metadata.smart_link_owner_id as string) ||
+    (metadata.owner_user_id as string) ||
+    null;
+  if (!owner && smartLinkId) {
+    const { data } = await sb.from("smart_links").select("user_id").eq("id", smartLinkId).maybeSingle();
+    owner = (data?.user_id as string) || null;
+  }
+  if (!owner) {
+    const envId = (env("ARTIST_USER_ID") || "").trim();
+    if (envId) owner = envId;
+  }
+  if (!owner) {
+    const { data } = await sb.from("profiles").select("id").limit(1).maybeSingle();
+    owner = (data?.id as string) || null;
+  }
+  return owner;
+}
+
 async function upsertFanProfile(
   sb: SupabaseClient,
-  fields: TruthIdentityFieldsCanonical
+  fields: TruthIdentityFieldsCanonical,
+  ownerUserId: string | null
 ): Promise<string | null> {
   const hasAny = Object.values(fields).some((v) => v != null && String(v).length > 0);
   if (!hasAny) return null;
+  if (!ownerUserId) {
+    console.warn("[truth-layer] skip fan_profile: no owner user_id");
+    return null;
+  }
 
   const meta: Record<string, string> = {};
   if (fields.meta_fbp) meta.meta_fbp = fields.meta_fbp;
@@ -78,23 +107,35 @@ async function upsertFanProfile(
   let existing: { id: string } | null = null;
 
   if (fields.email?.trim()) {
-    const { data } = await sb.from("fan_profiles").select("id").ilike("email", fields.email.trim()).maybeSingle();
+    const { data } = await sb
+      .from("fan_profiles")
+      .select("id")
+      .eq("user_id", ownerUserId)
+      .ilike("email", fields.email.trim())
+      .maybeSingle();
     if (data?.id) existing = data;
   }
   if (!existing && fields.phone?.trim()) {
-    const { data } = await sb.from("fan_profiles").select("id").eq("phone", fields.phone.trim()).maybeSingle();
+    const { data } = await sb
+      .from("fan_profiles")
+      .select("id")
+      .eq("user_id", ownerUserId)
+      .eq("phone", fields.phone.trim())
+      .maybeSingle();
     if (data?.id) existing = data;
   }
   if (!existing && fields.device_id) {
     const { data } = await sb
       .from("fan_profiles")
       .select("id")
+      .eq("user_id", ownerUserId)
       .contains("metadata", { device_id: fields.device_id })
       .maybeSingle();
     if (data?.id) existing = data;
   }
 
   const row: Record<string, unknown> = {
+    user_id: ownerUserId,
     email: fields.email?.trim() || null,
     phone: fields.phone?.trim() || null,
     metadata: Object.keys(meta).length ? meta : {},
@@ -230,23 +271,19 @@ export async function ingestTruthEvent(
     anonymous_id: anonymousId,
   };
 
+  const smartLinkId = (metadata.smartLinkId ?? metadata.smart_link_id) as string | undefined;
+  const ownerUserId = await resolveOwnerUserId(sb, metadata, smartLinkId);
+
   let fanProfileId: string | null = fan_profile_id || null;
 
   const fields: TruthIdentityFieldsCanonical = { ...identity_fields };
   if (anonymousId && !fields.anonymous_id) fields.anonymous_id = anonymousId;
 
   if (Object.values(fields).some((v) => v != null && String(v).length > 0)) {
-    const id = await upsertFanProfile(sb, fields);
+    const id = await upsertFanProfile(sb, fields, ownerUserId);
     if (id) fanProfileId = id;
-    await logSystem(sb, "ingest:fan_profile", { fanProfileId }, { ok: true });
+    await logSystem(sb, "ingest:fan_profile", { fanProfileId, ownerUserId }, { ok: true });
   }
-
-  const ownerUserId =
-    (metadata.smart_link_owner_id as string) ||
-    (metadata.owner_user_id as string) ||
-    null;
-
-  const smartLinkId = (metadata.smartLinkId ?? metadata.smart_link_id) as string | undefined;
   const isLinkClick = eventType.toLowerCase() === "link_click";
   const occurredAt = canon.event_time
     ? new Date(canon.event_time).toISOString()

@@ -36,6 +36,11 @@ const json = (body: unknown, status = 200) =>
 const BROADCAST_DELAY_MS = 35;
 
 function authOK(req: Request): boolean {
+  const truthSecret = Deno.env.get("TRUTH_VERIFY_SECRET");
+  const providedTruth =
+    req.headers.get("x-truth-verify-secret") || req.headers.get("x-api-key") || "";
+  if (truthSecret && providedTruth.trim() === truthSecret.trim()) return true;
+
   const xApiKey = req.headers.get("x-api-key");
   const authHeader = req.headers.get("authorization");
   const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;

@@ -93,17 +93,14 @@ Deno.serve(async (req) => {
       }
       if (mode === "sources") {
         const { data, error } = await sb
-          .from("email_contacts")
-          .select("telegram_source_smart_link")
-          .eq("telegram_subscribed", true)
-          .not("telegram_source_smart_link", "is", null);
+          .from("telegram_subscribers_by_source")
+          .select("source_smart_link, active_subscribers")
+          .gt("active_subscribers", 0);
         if (error) return json({ ok: false, error: error.message }, 500);
-        const slugs = new Set<string>();
-        for (const row of data ?? []) {
-          const s = row.telegram_source_smart_link as string | null;
-          if (s) slugs.add(s);
-        }
-        return json({ ok: true, sources: Array.from(slugs).sort() });
+        const slugs = (data ?? [])
+          .map((r) => r.source_smart_link as string)
+          .filter((s) => s && s !== "(unknown)");
+        return json({ ok: true, sources: slugs.sort() });
       }
       return json({ ok: false, error: "unknown_mode" }, 400);
     } catch (e: unknown) {
@@ -136,13 +133,13 @@ Deno.serve(async (req) => {
   const dryRun = filter.dry_run === true;
   const sourceFilter = filter.source_smart_link as string | undefined;
   const inline_buttons = body.inline_buttons as { text: string; url?: string }[][] | undefined;
+  const batch_label = campaign_name.slice(0, 120);
 
   let q = sb
-    .from("email_contacts")
-    .select("id, telegram_chat_id, telegram_block_count")
-    .eq("telegram_subscribed", true)
-    .not("telegram_chat_id", "is", null);
-  if (sourceFilter) q = q.eq("telegram_source_smart_link", sourceFilter);
+    .from("telegram_subscribers")
+    .select("id, telegram_chat_id, first_name, source_smart_link, block_count")
+    .eq("subscribed", true);
+  if (sourceFilter) q = q.eq("source_smart_link", sourceFilter);
 
   const { data: subscribers, error: subErr } = await q;
   if (subErr) return json({ ok: false, error: subErr.message }, 500);
@@ -166,55 +163,63 @@ Deno.serve(async (req) => {
     });
   }
 
+  if (dryRun) {
+    return json({
+      ok: true,
+      campaign_id: campaignId,
+      campaign_name,
+      attempted,
+      succeeded: attempted,
+      failed: 0,
+      blocked: 0,
+      dry_run: true,
+      note: "dry run — no Telegram API calls",
+      sample: (subscribers ?? []).slice(0, 5).map((s) => ({
+        chat_id: s.telegram_chat_id,
+        source: s.source_smart_link,
+      })),
+    });
+  }
+
   for (const sub of subscribers!) {
     const chatId = sub.telegram_chat_id as string;
-    const contactId = sub.id as string;
-
-    if (dryRun) {
-      await sb.from("message_sends").insert({
-        channel: "telegram",
-        campaign_id: campaignId,
-        contact_id: contactId,
-        recipient: chatId,
-        status: "dry_run",
-      });
-      succeeded++;
-      continue;
-    }
+    const subId = sub.id as string;
 
     const result = await sendTelegram(chatId, text, inline_buttons);
     if (result.ok) {
       succeeded++;
-      await sb.from("message_sends").insert({
-        channel: "telegram",
+      await sb.from("telegram_sends").insert({
         campaign_id: campaignId,
-        contact_id: contactId,
-        recipient: chatId,
+        subscriber_id: subId,
+        recipient_chat_id: chatId,
         status: "sent",
-        provider_message_id: String(result.messageId),
+        telegram_message_id: String(result.messageId),
+        test_send: false,
+        batch_label,
         sent_at: new Date().toISOString(),
       });
     } else {
       failed++;
-      await sb.from("message_sends").insert({
-        channel: "telegram",
+      await sb.from("telegram_sends").insert({
         campaign_id: campaignId,
-        contact_id: contactId,
-        recipient: chatId,
+        subscriber_id: subId,
+        recipient_chat_id: chatId,
         status: "failed",
         error_code: result.errorCode,
         error_message: result.errorMessage,
+        test_send: false,
+        batch_label,
       });
       if (result.errorCode === "telegram_403_blocked") {
         blocked++;
         await sb
-          .from("email_contacts")
+          .from("telegram_subscribers")
           .update({
-            telegram_subscribed: false,
-            telegram_unsubscribed_at: new Date().toISOString(),
-            telegram_block_count: ((sub.telegram_block_count as number) ?? 0) + 1,
+            subscribed: false,
+            unsubscribed_at: new Date().toISOString(),
+            block_count: ((sub.block_count as number) ?? 0) + 1,
           })
-          .eq("id", contactId);
+          .eq("id", subId);
       }
     }
     await sleep(BROADCAST_DELAY_MS);
@@ -228,6 +233,6 @@ Deno.serve(async (req) => {
     succeeded,
     failed,
     blocked,
-    dry_run: dryRun,
+    dry_run: false,
   });
 });

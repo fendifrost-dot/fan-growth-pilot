@@ -687,6 +687,15 @@ export async function runQueueInstagramPitch(
   };
 }
 
+/**
+ * Enrich curator contacts on `playlist_targets`.
+ *
+ * Pass `run_expanded_strategies:true` to re-run the expanded 12-strategy chain
+ * on rows that have already been enriched. Set `force:true` for an unconditional
+ * re-enrich regardless of strategy mix.
+ *
+ * Backwards-compat: `force_stale:true` is honored as a synonym of `force:true`.
+ */
 export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb: SupabaseClient): Promise<RunResult> {
   if (!Deno.env.get("FIRECRAWL_API_KEY")) {
     return { status: 500, data: { error: "FIRECRAWL_API_KEY not configured" } };
@@ -708,7 +717,17 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
   // rows that were just touched (e.g. re-running the same 18 rows the
   // overnight sweep had already enriched a few hours earlier, against the
   // new expanded discovery chain).
-  const forceStale = Boolean(body.force_stale);
+  //
+  // Re-enrich semantics:
+  //   - `force:true`         -> unconditional re-enrich (skip 7-day filter).
+  //   - `force_stale:true`   -> legacy synonym, still honored.
+  //   - `run_expanded_strategies:true` with no explicit `force` flag ->
+  //                            implicit re-enrich, because the whole point of
+  //                            asking for the expanded chain is to re-touch
+  //                            rows already enriched by the narrower chain.
+  const explicitForce = Boolean(body.force) || Boolean(body.force_stale);
+  const implicitForce = body.run_expanded_strategies === true && body.force === undefined && body.force_stale === undefined;
+  const forceStale = explicitForce || implicitForce;
   const expandedOrder: CuratorStrategyName[] =
     Array.isArray(body.expanded_strategies) && body.expanded_strategies.length
       ? (body.expanded_strategies as CuratorStrategyName[])

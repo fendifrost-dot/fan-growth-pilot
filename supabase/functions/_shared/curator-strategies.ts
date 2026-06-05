@@ -15,7 +15,7 @@
  */
 
 import { firecrawlScrape, firecrawlMarkdown, firecrawlSearch } from "./firecrawl.ts";
-import { extractEmails, extractLinktreeUrls, type EmailHit } from "./contact-extract.ts";
+import { extractEmails, extractLinktreeUrls, isDeniedSourceUrl, type EmailHit } from "./contact-extract.ts";
 
 /** Row shape we care about (subset of playlist_targets). */
 export type CuratorRow = Record<string, unknown> & {
@@ -291,6 +291,10 @@ export async function strategyLinktree(ctx: EnrichmentContext): Promise<Strategy
     }
     if (!candidates.size) return null;
     for (const url of candidates) {
+      if (isDeniedSourceUrl(url)) {
+        ctx.attempts.push({ strategy: "linktree", status: "skipped", detail: "denied_source_url", source_url: url, ms: 0 });
+        continue;
+      }
       try {
         const { markdown, html } = await firecrawlScrape(url, { waitFor: 1500 });
         for (const u of harvestBioLinks(markdown)) ctx.discoveredUrls.add(u);
@@ -308,14 +312,18 @@ export async function strategyPersonalWebsite(ctx: EnrichmentContext): Promise<S
   return withTiming("personal_website", ctx, async () => {
     const sites = new Set<string>();
     const rowWeb = (ctx.row.curator_website as string | undefined)?.trim();
-    if (rowWeb && isPersonalSiteUrl(rowWeb)) sites.add(rowWeb);
+    if (rowWeb && isPersonalSiteUrl(rowWeb) && !isDeniedSourceUrl(rowWeb)) sites.add(rowWeb);
     for (const u of ctx.discoveredUrls) {
-      if (isPersonalSiteUrl(u)) {
+      if (isPersonalSiteUrl(u) && !isDeniedSourceUrl(u)) {
         try { sites.add(new URL(u).origin); } catch {}
       }
     }
     if (!sites.size) return null;
     for (const origin of sites) {
+      if (isDeniedSourceUrl(origin)) {
+        ctx.attempts.push({ strategy: "personal_website", status: "skipped", detail: "denied_source_url", source_url: origin, ms: 0 });
+        continue;
+      }
       // Probe homepage first, then a small set of likely contact paths.
       const probes = [origin, ...PERSONAL_PATHS.map((p) => origin.replace(/\/$/, "") + p)];
       for (const url of probes) {

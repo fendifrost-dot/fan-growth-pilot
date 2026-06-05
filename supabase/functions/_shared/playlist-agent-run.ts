@@ -695,21 +695,6 @@ export async function runQueueInstagramPitch(
  * re-enrich regardless of strategy mix.
  *
  * Backwards-compat: `force_stale:true` is honored as a synonym of `force:true`.
- *
- * Per-call row limit
- * ------------------
- * Supabase edge functions have a 150s wall-clock ceiling. Each row involves
- * up to 12 strategies × Firecrawl scrapes, so we cap `limit` at MAX_LIMIT=3.
- * Default is 2. Requests asking for more get a `limit_too_high` error.
- *
- * Chunking pattern: callers should loop until `next_offset === null`:
- *
- *   let offset = 0;
- *   while (true) {
- *     const r = await call({ lane, limit: 3, offset, run_expanded_strategies: true });
- *     if (r.done || r.next_offset == null) break;
- *     offset = r.next_offset;
- *   }
  */
 export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb: SupabaseClient): Promise<RunResult> {
   if (!Deno.env.get("FIRECRAWL_API_KEY")) {
@@ -722,22 +707,7 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
   const bodyReferences = Array.isArray(body.references) ? body.references.map(String).filter(Boolean) : [];
   const lanesConfig = await loadLanesConfig(sb);
   const offset = Math.max(0, Number(body.offset) || 0);
-  // Hard cap rows per call to stay inside the 150s edge-function ceiling.
-  // Each row can run up to 12 Firecrawl-backed strategies, so 3 is the wall.
-  const MAX_LIMIT = 3;
-  const DEFAULT_LIMIT = 2;
-  const requestedLimit = Number(body.limit);
-  if (Number.isFinite(requestedLimit) && requestedLimit > MAX_LIMIT) {
-    return {
-      status: 400,
-      data: {
-        error: "limit_too_high",
-        max_limit: MAX_LIMIT,
-        message: "Edge function 150s ceiling caps enrichment at 3 rows per call. Re-call with offset to continue.",
-      },
-    };
-  }
-  const limit = Math.min(MAX_LIMIT, Math.max(1, requestedLimit > 0 ? requestedLimit : DEFAULT_LIMIT));
+  const limit = Math.min(12, Math.max(1, Number(body.limit) || ENRICH_PER_CALL_LIMIT));
   const staleBefore = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
   // v2 expanded-strategy chain controls
   const includeInactive = Boolean(body.include_inactive);
@@ -1336,11 +1306,22 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
   if (action === "list_targets") {
     let q = sb.from("playlist_targets").select(
       "playlist_id, playlist_name, curator_name, curator_email, curator_instagram, curator_linktree, curator_submission_url, curator_submission_dm, curator_submission_note, lane, tier, authenticity_score, fraud_verdict, contact_confidence, pitch_status, follower_count, is_active, why_it_fits, recommended_pitch_angle, submission_url, submission_method, last_enriched_at, research_context",
-    ).eq("is_active", true).order("follower_count", { ascending: false, nullsFirst: false }).limit(200);
-    if (body.lane) q = q.eq("lane", String(body.lane));
+    ).order("follower_count", { ascending: false, nullsFirst: false }).limit(200);
+    // is_active: default true (preserve historical behavior); allow explicit override.
+    if (body.is_active !== undefined) {
+      q = q.eq("is_active", Boolean(body.is_active));
+    } else {
+      q = q.eq("is_active", true);
+    }
+    if (body.lane !== undefined) q = q.eq("lane", String(body.lane));
     if (body.tier != null && body.tier !== "") q = q.eq("tier", Number(body.tier));
     if (body.fraud_verdict) q = q.eq("fraud_verdict", String(body.fraud_verdict));
+    if (body.pitch_status !== undefined) q = q.eq("pitch_status", String(body.pitch_status));
     if (body.has_email) q = q.not("curator_email", "is", null);
+    if (body.has_curator_email === true) q = q.not("curator_email", "is", null);
+    if (body.has_curator_email === false) q = q.is("curator_email", null);
+    if (body.has_submission_url === true) q = q.not("submission_url", "is", null);
+    if (body.has_submission_url === false) q = q.is("submission_url", null);
     if (body.pitchable_only) q = q.in("submission_method", ["email", "instagram_dm"]);
     if (body.placement_only) {
       q = q.or("research_context->>source.eq.spotify_placement,research_context->>source.eq.spotify_for_artists_csv");

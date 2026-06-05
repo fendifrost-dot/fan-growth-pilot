@@ -17,17 +17,50 @@ const EMAIL_DENYLIST = new Set([
 const EMAIL_DOMAIN_DENYLIST = [
   "spotify.com",
   "spotifyforvendors.com",
+  "graphiteconnect.com",
+  "anonaddy.com",
   "noreply.form",
+];
+
+/** Local-part prefixes that mark an email as vendor-form / non-human. */
+const EMAIL_LOCAL_PREFIX_DENYLIST = [
+  "noreply",
+  "no-reply",
+  "donotreply",
+  "do-not-reply",
+  "mailer-daemon",
 ];
 
 function isDeniedEmail(email: string): boolean {
   const lower = email.toLowerCase();
   if (EMAIL_DENYLIST.has(lower)) return true;
-  const domain = lower.split("@")[1] ?? "";
+  const [local, domain] = lower.split("@");
   if (!domain) return false;
+  if (EMAIL_LOCAL_PREFIX_DENYLIST.some((p) => local === p || local.startsWith(p + "."))) {
+    return true;
+  }
   return EMAIL_DOMAIN_DENYLIST.some(
     (suffix) => domain === suffix || domain.endsWith("." + suffix),
   );
+}
+
+/** Source URLs that should be skipped before scraping (vendor forms etc.). */
+export const SOURCE_URL_DOMAIN_DENYLIST = [
+  "spotifyforvendors.com",
+  "spotify.com",
+  "graphiteconnect.com",
+];
+
+export function isDeniedSourceUrl(url: string): boolean {
+  try {
+    const u = new URL(url.startsWith("http") ? url : `https://${url}`);
+    const host = u.hostname.replace(/^www\./, "").toLowerCase();
+    return SOURCE_URL_DOMAIN_DENYLIST.some(
+      (suffix) => host === suffix || host.endsWith("." + suffix),
+    );
+  } catch {
+    return false;
+  }
 }
 
 export const IG_HANDLE_DENYLIST = new Set([
@@ -171,3 +204,4 @@ export function scoreHunterEmail(e: { value: string; type?: string; first_name?:
   if (e.first_name) s -= 5;
   return s;
 }
+

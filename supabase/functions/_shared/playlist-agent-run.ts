@@ -695,6 +695,21 @@ export async function runQueueInstagramPitch(
  * re-enrich regardless of strategy mix.
  *
  * Backwards-compat: `force_stale:true` is honored as a synonym of `force:true`.
+ *
+ * Per-call row limit
+ * ------------------
+ * Supabase edge functions have a 150s wall-clock ceiling. Each row involves
+ * up to 12 strategies × Firecrawl scrapes, so we cap `limit` at MAX_LIMIT=3.
+ * Default is 2. Requests asking for more get a `limit_too_high` error.
+ *
+ * Chunking pattern: callers should loop until `next_offset === null`:
+ *
+ *   let offset = 0;
+ *   while (true) {
+ *     const r = await call({ lane, limit: 3, offset, run_expanded_strategies: true });
+ *     if (r.done || r.next_offset == null) break;
+ *     offset = r.next_offset;
+ *   }
  */
 export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb: SupabaseClient): Promise<RunResult> {
   if (!Deno.env.get("FIRECRAWL_API_KEY")) {
@@ -707,7 +722,22 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
   const bodyReferences = Array.isArray(body.references) ? body.references.map(String).filter(Boolean) : [];
   const lanesConfig = await loadLanesConfig(sb);
   const offset = Math.max(0, Number(body.offset) || 0);
-  const limit = Math.min(12, Math.max(1, Number(body.limit) || ENRICH_PER_CALL_LIMIT));
+  // Hard cap rows per call to stay inside the 150s edge-function ceiling.
+  // Each row can run up to 12 Firecrawl-backed strategies, so 3 is the wall.
+  const MAX_LIMIT = 3;
+  const DEFAULT_LIMIT = 2;
+  const requestedLimit = Number(body.limit);
+  if (Number.isFinite(requestedLimit) && requestedLimit > MAX_LIMIT) {
+    return {
+      status: 400,
+      data: {
+        error: "limit_too_high",
+        max_limit: MAX_LIMIT,
+        message: "Edge function 150s ceiling caps enrichment at 3 rows per call. Re-call with offset to continue.",
+      },
+    };
+  }
+  const limit = Math.min(MAX_LIMIT, Math.max(1, requestedLimit > 0 ? requestedLimit : DEFAULT_LIMIT));
   const staleBefore = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
   // v2 expanded-strategy chain controls
   const includeInactive = Boolean(body.include_inactive);

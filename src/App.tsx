@@ -8,6 +8,8 @@ import Index from "./pages/Index";
 import NotFound from "./pages/NotFound";
 import SmartLinkPage from "./pages/SmartLinkPage";
 import Unsubscribe from "./pages/Unsubscribe";
+import PrivacyPolicy from "./pages/PrivacyPolicy";
+import DataDeletion from "./pages/DataDeletion";
 import AdminGuard from "./pages/admin/AdminGuard";
 import AdminHub from "./pages/admin/AdminHub";
 import AdminSendCenter from "./pages/admin/AdminSendCenter";
@@ -44,6 +46,10 @@ const App = () => (
           <Route path="/" element={<RootRoute />} />
           {/* Public unsubscribe endpoint — receives links from emails */}
           <Route path="/unsubscribe" element={<Unsubscribe />} />
+
+          {/* Public Meta-required pages — must be above the /:slug catch-all */}
+          <Route path="/privacy" element={<PrivacyPolicy />} />
+          <Route path="/data-deletion" element={<DataDeletion />} />
 
           {/* Admin (single-operator internal) */}
           <Route path="/admin" element={<AdminGuard />}>

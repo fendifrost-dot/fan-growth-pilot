@@ -10,6 +10,7 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-api-key",
 };
 const NON_BULK_METHODS = new Set(["algorithmic", "distributor_pitch"]);
+const MAX_DAILY_PITCHES = 30; // raised from 10 on 2026-06-10 to clear queued batch-3 sends
 function getHubKey(req: Request): string {
   return (req.headers.get("x-api-key") || req.headers.get("apikey") ||
     (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim());
@@ -167,7 +168,7 @@ async function handleEmailPitch(
     }
     if (!batchOverrideCap) {
       const { count: capCount } = await sb.from("pitch_log").select("*", { count:"exact", head:true }).eq("method", "email").eq("status", "sent").gte("pitched_at", new Date(Date.now() - 86400000).toISOString());
-      if ((capCount ?? 0) >= 10) return jsonPitch({ ok:false, method_used:method, action_taken:"skipped", cooldown_until:null, message_to_user:"📧 Daily email pitch cap reached (10 per 24h). Try again tomorrow." });
+      if ((capCount ?? 0) >= MAX_DAILY_PITCHES) return jsonPitch({ ok:false, method_used:method, action_taken:"skipped", cooldown_until:null, message_to_user:"📧 Daily email pitch cap reached (10 per 24h). Try again tomorrow." });
     }
   }
   const resendKey = Deno.env.get("RESEND_API_KEY");

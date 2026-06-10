@@ -1670,8 +1670,11 @@ export type Database = {
           approved_at: string | null
           approved_by: string | null
           created_at: string
+          dm_ref: string | null
           draft_text: string | null
           id: string
+          ig_handle: string | null
+          operator_brief: string | null
           performed_at: string | null
           performed_by: string | null
           platform: string
@@ -1685,8 +1688,11 @@ export type Database = {
           approved_at?: string | null
           approved_by?: string | null
           created_at?: string
+          dm_ref?: string | null
           draft_text?: string | null
           id?: string
+          ig_handle?: string | null
+          operator_brief?: string | null
           performed_at?: string | null
           performed_by?: string | null
           platform: string
@@ -1700,8 +1706,11 @@ export type Database = {
           approved_at?: string | null
           approved_by?: string | null
           created_at?: string
+          dm_ref?: string | null
           draft_text?: string | null
           id?: string
+          ig_handle?: string | null
+          operator_brief?: string | null
           performed_at?: string | null
           performed_by?: string | null
           platform?: string

@@ -75,13 +75,13 @@ const Index = () => {
   }, [statsLoading]);
 
   return (
-    <div className="min-h-screen bg-gradient-dark">
+    <div className="min-h-screen bg-gradient-dark overflow-x-hidden">
       <DashboardHeader />
-      
-      <main className="container mx-auto px-6 py-8">
+
+      <main className="container mx-auto px-4 sm:px-6 py-8">
         {/* Hero Section */}
         <div className="mb-12">
-          <h2 className="text-4xl font-bold mb-3">
+          <h2 className="text-3xl sm:text-4xl font-bold mb-3">
             Welcome back, <span className="bg-gradient-gold bg-clip-text text-transparent">Fendi</span>
           </h2>
           <p className="text-muted-foreground text-lg">
@@ -91,9 +91,9 @@ const Index = () => {
 
         {/* Key Metrics */}
         <section className="mb-12">
-          <div className="flex items-center justify-between mb-6">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
             <h3 className="text-2xl font-semibold">Performance Overview</h3>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button variant="outline" size="sm" onClick={() => setPlatformDialogOpen(true)}>
                 <Plus className="w-4 h-4" />
                 Connect Platform
@@ -183,7 +183,7 @@ const Index = () => {
 
         {/* Smart Links — full width now that Connected Accounts is removed */}
         <section className="mb-12">
-          <div className="flex items-center justify-between mb-6">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
             <h3 className="text-2xl font-semibold">Smart Links</h3>
             <Button variant="outline" className="gap-2" onClick={() => setSmartLinkDialogOpen(true)}>
               <Plus className="w-4 h-4" />
@@ -265,14 +265,14 @@ const Index = () => {
         {/* Quick Actions */}
         <section className="mt-12 mb-8">
           <Card className="p-8 bg-gradient-gold text-primary-foreground">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
               <div>
                 <h3 className="text-2xl font-bold mb-2">Ready to grow your fanbase?</h3>
                 <p className="text-primary-foreground/80">
                   Create a new smart link to expand your reach
                 </p>
               </div>
-              <Button size="lg" variant="secondary" onClick={() => setSmartLinkDialogOpen(true)}>
+              <Button size="lg" variant="secondary" className="self-start sm:self-auto" onClick={() => setSmartLinkDialogOpen(true)}>
                 <LinkIcon className="w-5 h-5 mr-2" />
                 Create Smart Link
               </Button>

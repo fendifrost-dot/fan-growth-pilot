@@ -24,6 +24,30 @@ type DraftRow = {
   } | null;
 };
 
+// Map raw server/RPC errors to user-facing wording. Falls back to the raw message.
+function friendlyError(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e);
+  if (/expected pending|already \w+ — nothing to/i.test(raw)) return "This draft is already approved. Use Send instead.";
+  if (/test\/staging|env="/i.test(raw)) return "This is a test/staging draft and won't be sent to a real recipient.";
+  if (/cap reached|per 24h/i.test(raw)) return "Daily send cap reached (30/24h). Try again tomorrow.";
+  if (/bounce/i.test(raw)) return "Email bounced — check the recipient.";
+  if (/no curator email|email on file/i.test(raw)) return "No email on file for this curator. Add one before sending.";
+  return raw;
+}
+
+const STATUS_BADGE: Record<string, string> = {
+  approved: "bg-green-500/15 text-green-600 dark:text-green-400",
+  pending: "bg-yellow-500/15 text-yellow-600 dark:text-yellow-400",
+  rejected: "bg-red-500/15 text-red-600 dark:text-red-400",
+  sent: "bg-blue-500/15 text-blue-600 dark:text-blue-400",
+};
+
+const StatusBadge: React.FC<{ status: string }> = ({ status }) => (
+  <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${STATUS_BADGE[status] ?? "bg-muted text-muted-foreground"}`}>
+    {status}
+  </span>
+);
+
 const AdminOutreachDrafts: React.FC = () => {
   const [drafts, setDrafts] = useState<DraftRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -41,7 +65,7 @@ const AdminOutreachDrafts: React.FC = () => {
       });
       setDrafts(data.rows ?? []);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
+      toast.error(friendlyError(e));
     } finally {
       setLoading(false);
     }
@@ -72,7 +96,7 @@ const AdminOutreachDrafts: React.FC = () => {
       await fetchDrafts();
       setSelected((s) => s ? { ...s, subject: editSubject, body: editBody, recipient: editRecipient } : null);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
+      toast.error(friendlyError(e));
     } finally {
       setSaving(false);
     }
@@ -108,7 +132,7 @@ const AdminOutreachDrafts: React.FC = () => {
       await fetchDrafts();
       setSelected(null);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
+      toast.error(friendlyError(e));
     } finally {
       setSaving(false);
     }
@@ -127,7 +151,7 @@ const AdminOutreachDrafts: React.FC = () => {
       await fetchDrafts();
       setSelected(null);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
+      toast.error(friendlyError(e));
     } finally {
       setSaving(false);
     }
@@ -164,9 +188,12 @@ const AdminOutreachDrafts: React.FC = () => {
                       className={`w-full text-left p-3 border-b hover:bg-muted/40 ${selected?.id === d.id ? "bg-muted/60" : ""}`}
                       onClick={() => setSelected(d)}
                     >
-                      <div className="font-medium text-sm">{d.track_name}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {d.channel} · {d.status} · {new Date(d.generated_at).toLocaleString()}
+                      <div className="flex items-center gap-2">
+                        <StatusBadge status={d.status} />
+                        <span className="font-medium text-sm">{d.track_name}</span>
+                      </div>
+                      <div className="text-xs text-muted-foreground mt-0.5">
+                        {d.channel} · {new Date(d.generated_at).toLocaleString()}
                       </div>
                     </button>
                   </li>
@@ -209,8 +236,12 @@ const AdminOutreachDrafts: React.FC = () => {
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button type="button" variant="outline" disabled={saving} onClick={saveEdits}>Save edits</Button>
-                <Button type="button" variant="secondary" disabled={saving} onClick={() => approve(false)}>Approve only</Button>
-                <Button type="button" disabled={saving} onClick={() => approve(true)}>Approve &amp; send</Button>
+                {selected.status !== "approved" && (
+                  <Button type="button" variant="secondary" disabled={saving} onClick={() => approve(false)}>Approve only</Button>
+                )}
+                <Button type="button" disabled={saving} onClick={() => approve(true)}>
+                  {selected.status === "approved" ? "Send" : "Approve & send"}
+                </Button>
                 <Button type="button" variant="ghost" disabled={saving} onClick={reject}>Reject</Button>
               </div>
             </>

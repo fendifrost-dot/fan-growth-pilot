@@ -168,7 +168,7 @@ async function handleEmailPitch(
     }
     if (!batchOverrideCap) {
       const { count: capCount } = await sb.from("pitch_log").select("*", { count:"exact", head:true }).eq("method", "email").eq("status", "sent").gte("pitched_at", new Date(Date.now() - 86400000).toISOString());
-      if ((capCount ?? 0) >= MAX_DAILY_PITCHES) return jsonPitch({ ok:false, method_used:method, action_taken:"skipped", cooldown_until:null, message_to_user:"📧 Daily email pitch cap reached (10 per 24h). Try again tomorrow." });
+      if ((capCount ?? 0) >= MAX_DAILY_PITCHES) return jsonPitch({ ok:false, method_used:method, action_taken:"skipped", cooldown_until:null, message_to_user:`📧 Daily email pitch cap reached (${MAX_DAILY_PITCHES} per 24h). Try again tomorrow.` });
     }
   }
   const resendKey = Deno.env.get("RESEND_API_KEY");

@@ -128,6 +128,37 @@ async function resolveStreamLink(sb: SupabaseClient, trackName: string): Promise
   return url;
 }
 
+// Platforms we hold real per-track streaming URLs for. For anything else we'd rather send
+// no link than a wrong-platform one (a Spotify link to a SoundCloud curator is the
+// cross-platform contamination this guards against).
+const STREAMABLE_PLATFORMS = new Set<Platform>(["spotify", "apple_music", "soundcloud"]);
+
+// Resolve the streaming link that matches the *curator's* platform, not whatever the
+// legacy spotify_track_urls config happens to hold. Falls back to the Spotify config only
+// for Spotify targets; returns "" (no link) rather than contaminate a non-Spotify pitch.
+async function resolveStreamLinkForPlatform(
+  sb: SupabaseClient,
+  trackName: string,
+  platform: Platform,
+): Promise<string> {
+  if (STREAMABLE_PLATFORMS.has(platform)) {
+    const { data: track } = await sb.from("tracks")
+      .select("spotify_url, soundcloud_url, apple_music_url")
+      .eq("name", trackName)
+      .maybeSingle();
+    if (track) {
+      const url = trackUrlForPlatform(track, platform);
+      if (url) return url;
+    }
+  }
+  if (platform === "spotify") {
+    const legacy = await resolveStreamLink(sb, trackName);
+    if (legacy) return legacy;
+  }
+  console.warn(`resolveStreamLinkForPlatform: no ${platform} stream URL for ${JSON.stringify(trackName)}`);
+  return "";
+}
+
 function buildPitchBody(row: Record<string, unknown>, trackName: string, pitchAngle: string, streamLink: string): string {
   const curator = (row.curator_name as string | null)?.trim() || "there";
   const playlist = (row.playlist_name as string | null)?.trim() || "your playlist";
@@ -298,7 +329,10 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
   else if (channel === "instagram_dm") recipient = (row.curator_instagram as string)?.trim() ?? null;
   else if (channel === "web_form") recipient = (row.submission_url as string)?.trim() ?? null;
 
-  const streamLink = await resolveStreamLink(sb, trackName);
+  // Match the streaming link to the curator's platform (Spotify / SoundCloud / Apple),
+  // not the legacy Spotify-only config — prevents cross-platform contamination in pitches.
+  const targetPlatform = (String(row.platform ?? "spotify").trim() || "spotify") as Platform;
+  const streamLink = await resolveStreamLinkForPlatform(sb, trackName, targetPlatform);
   let subject: string;
   let pitchBody: string;
   let operatorBrief: string | null = null;
@@ -342,6 +376,7 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
       lane: lane || null,
       why_it_fits: (row.why_it_fits as string | null) ?? null,
       stream_link: streamLink || null,
+      platform: targetPlatform,
       placement_source: isPlacement ? (rc?.source as string) : null,
       operator_brief: operatorBrief,
       dm_ref: dmRef,
@@ -368,14 +403,32 @@ export async function runApproveDraft(body: Record<string, unknown>, sb: Supabas
     .select("*, playlist_targets(playlist_name, curator_name, curator_email, curator_instagram, tier)")
     .eq("id", draftId).maybeSingle();
   if (dErr || !draft) return { status: 404, data: { error: "Draft not found" } };
-  if (draft.status !== "pending") return { status: 400, data: { error: `Draft status is ${draft.status}, expected pending` } };
+
+  // A draft is actionable from "pending" (needs approval) or "approved" (approved earlier,
+  // not yet sent). Terminal states (sent*, rejected) can't be approved/sent/rejected again.
+  const draftStatus = String(draft.status ?? "");
+  const actionable = draftStatus === "pending" || draftStatus === "approved";
 
   if (reject) {
+    if (!actionable) return { status: 400, data: { error: `Draft is already ${draftStatus} — nothing to reject.` } };
     await sb.from("outreach_drafts").update({ status: "rejected", approved_at: new Date().toISOString(), approved_by: approvedBy }).eq("id", draftId);
     return { status: 200, data: { ok: true, status: "rejected" } };
   }
 
-  await sb.from("outreach_drafts").update({ status: "approved", approved_at: new Date().toISOString(), approved_by: approvedBy }).eq("id", draftId);
+  if (!actionable) return { status: 400, data: { error: `Draft is already ${draftStatus} — nothing to approve or send.` } };
+
+  // Defense in depth: test/staging drafts must never reach a real curator inbox.
+  // (`env` may be absent on older rows → undefined → treated as production.)
+  const draftEnv = (draft as { env?: string | null }).env;
+  if (sendImmediately && draftEnv && draftEnv !== "production") {
+    return { status: 400, data: { error: `Draft is marked env="${draftEnv}" (test/staging) and will not be sent to a real recipient.` } };
+  }
+
+  // Only flip pending → approved. An already-approved draft skips re-approval and proceeds
+  // straight to send (this is what lets the UI "Send" an approved draft).
+  if (draftStatus === "pending") {
+    await sb.from("outreach_drafts").update({ status: "approved", approved_at: new Date().toISOString(), approved_by: approvedBy }).eq("id", draftId);
+  }
   if (!sendImmediately) return { status: 200, data: { ok: true, status: "approved", sent: false } };
 
   const pl = draft.playlist_targets as Record<string, unknown> | null;

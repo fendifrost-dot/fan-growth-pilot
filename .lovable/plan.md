@@ -1,5 +1,14 @@
-Redeploy the `execute-pitch` edge function (no code changes) to refresh the running instance.
+## Plan
 
-Steps:
-1. Call `supabase--deploy_edge_functions` with `["execute-pitch"]`.
-2. Confirm deploy success and report back.
+1. Apply migration `supabase/migrations/20260612_outreach_verification_gate.sql` as-written (idempotent, no edits).
+2. Redeploy these 8 edge functions in one batch:
+   - execute-pitch
+   - resend-webhook
+   - playlist-admin-api
+   - draft-pitch
+   - approve-draft
+   - schedule-follow-up
+   - control-center-api
+   - enrich-curator-contacts
+
+No source code changes. No other functions touched.

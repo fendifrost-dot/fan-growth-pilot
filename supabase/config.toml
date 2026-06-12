@@ -120,3 +120,6 @@ verify_jwt = false
 
 [functions.playlist-admin-api]
 verify_jwt = false
+
+[functions.resend-webhook]
+verify_jwt = false

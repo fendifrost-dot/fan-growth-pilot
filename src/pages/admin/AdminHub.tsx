@@ -74,6 +74,13 @@ const AdminHub: React.FC = () => {
           </Button>
         </Card>
         <Card className="p-5">
+          <h3 className="font-medium">Review queue</h3>
+          <p className="text-sm text-muted-foreground mt-1">Verify targets before they're draftable</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/playlists/review">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
           <h3 className="font-medium">Curator drafts</h3>
           <p className="text-sm text-muted-foreground mt-1">Full editor for approve &amp; send</p>
           <Button variant="outline" size="sm" className="mt-3" asChild>

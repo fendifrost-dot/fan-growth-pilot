@@ -56,12 +56,14 @@ const AdminOutreachDrafts: React.FC = () => {
   const [editBody, setEditBody] = useState("");
   const [editRecipient, setEditRecipient] = useState("");
   const [saving, setSaving] = useState(false);
+  const [showTest, setShowTest] = useState(false);
 
   const fetchDrafts = useCallback(async () => {
     setLoading(true);
     try {
       const data = await callHubFn<{ rows: DraftRow[] }>("list_drafts", {
         statuses: ["pending", "approved"],
+        include_test: showTest,
       });
       setDrafts(data.rows ?? []);
     } catch (e) {
@@ -69,7 +71,7 @@ const AdminOutreachDrafts: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [showTest]);
 
   useEffect(() => {
     fetchDrafts();
@@ -172,7 +174,13 @@ const AdminOutreachDrafts: React.FC = () => {
         <Card className="p-0 overflow-hidden">
           <div className="p-3 border-b flex justify-between items-center">
             <span className="text-sm font-medium">Pending / approved</span>
-            <Button size="sm" variant="outline" onClick={fetchDrafts}>Refresh</Button>
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-1.5 text-xs text-muted-foreground select-none cursor-pointer">
+                <input type="checkbox" checked={showTest} onChange={(e) => setShowTest(e.target.checked)} />
+                Show test data
+              </label>
+              <Button size="sm" variant="outline" onClick={fetchDrafts}>Refresh</Button>
+            </div>
           </div>
           <div className="max-h-[480px] overflow-auto">
             {loading ? (

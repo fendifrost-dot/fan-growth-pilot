@@ -18,6 +18,7 @@ import AdminPitchLog from "./pages/admin/AdminPitchLog";
 import AdminCampaignDetail from "./pages/admin/AdminCampaignDetail";
 import AdminContacts from "./pages/admin/AdminContacts";
 import AdminPlaylistTargets from "./pages/admin/AdminPlaylistTargets";
+import AdminPlaylistReview from "./pages/admin/AdminPlaylistReview";
 import AdminOutreachDrafts from "./pages/admin/AdminOutreachDrafts";
 import AdminSocialQueue from "./pages/admin/AdminSocialQueue";
 import AdminFanIgQueue from "./pages/admin/AdminFanIgQueue";
@@ -58,6 +59,7 @@ const App = () => (
             <Route path="campaigns/:slug" element={<AdminCampaignDetail />} />
             <Route path="contacts" element={<AdminContacts />} />
             <Route path="playlists" element={<AdminPlaylistTargets />} />
+            <Route path="playlists/review" element={<AdminPlaylistReview />} />
             <Route path="outreach" element={<AdminOutreachDrafts />} />
             <Route path="ig-queue" element={<AdminSocialQueue />} />
             <Route path="fan-ig-queue" element={<AdminFanIgQueue />} />

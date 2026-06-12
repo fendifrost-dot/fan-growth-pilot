@@ -56,6 +56,7 @@ import {
   type Tone,
 } from "./pitch-templates.ts";
 import { defaultPlaylistPitchSubject } from "./resend-pitch.ts";
+import { isDraftable, verifyEmail, domainOf, normalizeEmail } from "./verify-target.ts";
 import {
   DEFAULT_STRATEGY_ORDER,
   newContext as newCuratorContext,
@@ -213,6 +214,20 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
     .eq("playlist_id", playlistId)
     .maybeSingle();
   if (rowErr || !row) return { status: 404, data: { error: "Playlist not found" } };
+
+  // Verification gate: never draft for a target that hasn't passed verification. No-op
+  // until the verification_status column is populated (see isDraftable), so this is safe
+  // to ship before the migration + backfill land.
+  const vStatus = (row as { verification_status?: string | null }).verification_status;
+  if (!isDraftable(vStatus)) {
+    return {
+      status: 422,
+      data: {
+        error: `Target ${playlistId} is "${vStatus}" — verify it in the review queue before drafting.`,
+        verification_status: vStatus,
+      },
+    };
+  }
 
   if (trackId) {
     const { data: track, error: trackErr } = await sb.from("tracks")
@@ -1634,10 +1649,15 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
   }
   if (action === "list_drafts") {
     const statuses = body.statuses ?? ["pending", "approved"];
+    const includeTest = Boolean(body.include_test);
     const { data, error } = await sb.from("outreach_drafts").select("*").in("status", statuses as string[])
       .order("generated_at", { ascending: false }).limit(100);
     if (error) return { status: 500, data: { error: error.message } };
-    return { status: 200, data: { ok: true, rows: data ?? [] } };
+    // Filter test/staging drafts out of the production Send view by default. Done in JS so
+    // it's tolerant of the env column not existing yet (missing → treated as production).
+    const rows = (data ?? []).filter((r) =>
+      includeTest || ((r as { env?: string | null }).env ?? "production") === "production");
+    return { status: 200, data: { ok: true, rows } };
   }
   if (action === "update_draft") {
     const draftId = String(body.draft_id ?? "").trim();
@@ -1658,6 +1678,73 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
     if (error) return { status: 500, data: { error: error.message } };
     return { status: 200, data: { ok: true, draft_id: draftId } };
   }
+
+  // ── Verification gate actions (require the verification migration to be applied) ──
+
+  // Auto-verify a batch of unverified email targets (format/TLD/MX/blocklist).
+  if (action === "verify_targets") {
+    const limit = Math.min(Number(body.limit ?? 50) || 50, 200);
+    const { data: targets, error } = await sb.from("playlist_targets")
+      .select("playlist_id, curator_email, bounce_count, verification_status")
+      .eq("verification_status", "unverified")
+      .limit(limit);
+    if (error) return { status: 500, data: { error: `verify_targets needs the verification migration applied: ${error.message}` } };
+    let verified = 0, flagged = 0;
+    const details: { playlist_id: string; ok: boolean; reason: string }[] = [];
+    for (const t of targets ?? []) {
+      const verdict = await verifyEmail(sb, t.curator_email as string | null, Number(t.bounce_count ?? 0));
+      const patch = verdict.ok
+        ? { verification_status: "auto_verified", verification_notes: verdict.reason, last_verified_at: new Date().toISOString() }
+        : { verification_notes: verdict.reason };
+      await sb.from("playlist_targets").update(patch).eq("playlist_id", t.playlist_id);
+      verdict.ok ? verified++ : flagged++;
+      details.push({ playlist_id: String(t.playlist_id), ok: verdict.ok, reason: verdict.reason });
+    }
+    return { status: 200, data: { ok: true, checked: targets?.length ?? 0, verified, flagged, details } };
+  }
+
+  // Manual review queue: targets that failed (or haven't passed) auto-verification.
+  if (action === "list_unverified_targets") {
+    const { data, error } = await sb.from("playlist_targets")
+      .select("playlist_id, playlist_name, curator_name, curator_email, platform, contact_method, submission_cost, verification_status, verification_notes, bounce_count")
+      .in("verification_status", ["unverified", "rejected", "bounced", "spam_flagged"])
+      .order("playlist_name", { ascending: true }).limit(300);
+    if (error) return { status: 500, data: { error: `list_unverified_targets needs the verification migration applied: ${error.message}` } };
+    return { status: 200, data: { ok: true, rows: data ?? [] } };
+  }
+
+  // Approve/reject a target from the review queue. Reject also records the domain as a
+  // non-curator so the next scrape doesn't re-fetch it.
+  if (action === "review_target") {
+    const playlistId = String(body.playlist_id ?? "").trim();
+    if (!playlistId) return { status: 400, data: { error: "playlist_id required" } };
+    const decision = String(body.decision ?? "").trim();
+    const notes = typeof body.notes === "string" ? body.notes : null;
+    if (decision === "approve") {
+      const { error } = await sb.from("playlist_targets").update({
+        verification_status: "manually_verified", verification_notes: notes, last_verified_at: new Date().toISOString(),
+      }).eq("playlist_id", playlistId);
+      if (error) return { status: 500, data: { error: error.message } };
+      return { status: 200, data: { ok: true, verification_status: "manually_verified" } };
+    }
+    if (decision === "reject") {
+      const { error } = await sb.from("playlist_targets").update({
+        verification_status: "rejected", verification_notes: notes, is_active: false,
+      }).eq("playlist_id", playlistId);
+      if (error) return { status: 500, data: { error: error.message } };
+      const email = normalizeEmail(String(body.curator_email ?? ""));
+      const domain = email ? domainOf(email) : null;
+      if (domain) {
+        await sb.from("non_curator_domains").upsert(
+          { domain, category: typeof body.category === "string" ? body.category : "manual", notes: notes ?? "rejected via review queue" },
+          { onConflict: "domain" },
+        );
+      }
+      return { status: 200, data: { ok: true, verification_status: "rejected" } };
+    }
+    return { status: 400, data: { error: "decision must be 'approve' or 'reject'" } };
+  }
+
   return { status: 400, data: { error: `Unknown playlist admin action: ${action}` } };
 }
 
@@ -1776,6 +1863,7 @@ export async function runConnectSpotifyStatus(
 const PLAYLIST_AGENT_ACTIONS = new Set([
   "draft_pitch", "approve_draft", "enrich_curator_contacts", "schedule_follow_up",
   "list_targets", "list_drafts", "update_draft", "delete_draft", "deactivate_target", "activate_target", "patch_target", "log_platform_pitch", "get_pitch_log",
+  "verify_targets", "list_unverified_targets", "review_target",
   "run_playlist_research", "send_campaign", "send_telegram_campaign",
   "connect_spotify_init", "connect_spotify_status",
   "queue_instagram_pitch",
@@ -2079,6 +2167,9 @@ export async function runPlaylistAgentAction(
     case "patch_target":
     case "log_platform_pitch":
     case "get_pitch_log":
+    case "verify_targets":
+    case "list_unverified_targets":
+    case "review_target":
       return runPlaylistAdmin({ ...body, action }, sb);
     case "run_playlist_research":
       return runPlaylistResearchProxy(body, hubKey);

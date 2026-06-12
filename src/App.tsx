@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -27,6 +27,7 @@ import AdminRadioTargets from "./pages/admin/AdminRadioTargets";
 import AdminCatalogue from "./pages/admin/AdminCatalogue";
 import AdminCategories from "./pages/admin/AdminCategories";
 import AdminPitchComposer from "./pages/admin/AdminPitchComposer";
+import { supabase } from "@/integrations/supabase/client";
 
 const queryClient = new QueryClient();
 
@@ -37,7 +38,18 @@ const RootRoute = () => {
   return <Index />;
 };
 
-const App = () => (
+const App = () => {
+  useEffect(() => {
+    (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        const { error } = await supabase.auth.signInAnonymously();
+        if (error) console.error("Anon sign-in failed:", error);
+      }
+    })();
+  }, []);
+
+  return (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
       <Toaster />
@@ -80,6 +92,7 @@ const App = () => (
       </BrowserRouter>
     </TooltipProvider>
   </QueryClientProvider>
-);
+  );
+};
 
 export default App;

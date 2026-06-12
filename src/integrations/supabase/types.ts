@@ -262,6 +262,27 @@ export type Database = {
         }
         Relationships: []
       }
+      domain_blocklist: {
+        Row: {
+          added_at: string | null
+          added_by: string | null
+          domain: string
+          reason: string
+        }
+        Insert: {
+          added_at?: string | null
+          added_by?: string | null
+          domain: string
+          reason: string
+        }
+        Update: {
+          added_at?: string | null
+          added_by?: string | null
+          domain?: string
+          reason?: string
+        }
+        Relationships: []
+      }
       email_campaigns: {
         Row: {
           audience_filter: Json | null
@@ -925,6 +946,27 @@ export type Database = {
           },
         ]
       }
+      non_curator_domains: {
+        Row: {
+          added_at: string | null
+          category: string | null
+          domain: string
+          notes: string | null
+        }
+        Insert: {
+          added_at?: string | null
+          category?: string | null
+          domain: string
+          notes?: string | null
+        }
+        Update: {
+          added_at?: string | null
+          category?: string | null
+          domain?: string
+          notes?: string | null
+        }
+        Relationships: []
+      }
       outreach_drafts: {
         Row: {
           approved_at: string | null
@@ -932,15 +974,19 @@ export type Database = {
           body: string
           channel: string
           created_at: string
+          env: string
           generated_at: string
           generated_by: string
           id: string
+          is_test: boolean
           metadata: Json | null
           pitch_log_id: string | null
+          platform: string | null
           playlist_id: string
           recipient: string | null
           sent_at: string | null
           status: string
+          streaming_link: string | null
           subject: string | null
           track_name: string
           updated_at: string
@@ -951,15 +997,19 @@ export type Database = {
           body: string
           channel: string
           created_at?: string
+          env?: string
           generated_at?: string
           generated_by?: string
           id?: string
+          is_test?: boolean
           metadata?: Json | null
           pitch_log_id?: string | null
+          platform?: string | null
           playlist_id: string
           recipient?: string | null
           sent_at?: string | null
           status?: string
+          streaming_link?: string | null
           subject?: string | null
           track_name: string
           updated_at?: string
@@ -970,15 +1020,19 @@ export type Database = {
           body?: string
           channel?: string
           created_at?: string
+          env?: string
           generated_at?: string
           generated_by?: string
           id?: string
+          is_test?: boolean
           metadata?: Json | null
           pitch_log_id?: string | null
+          platform?: string | null
           playlist_id?: string
           recipient?: string | null
           sent_at?: string | null
           status?: string
+          streaming_link?: string | null
           subject?: string | null
           track_name?: string
           updated_at?: string
@@ -1188,9 +1242,12 @@ export type Database = {
         Row: {
           authenticity_notes: string | null
           authenticity_score: number | null
+          bounce_count: number | null
           contact_confidence: number | null
+          contact_method: string
           created_at: string | null
           curator_email: string | null
+          curator_handle: string | null
           curator_instagram: string | null
           curator_linktree: string | null
           curator_name: string | null
@@ -1199,6 +1256,7 @@ export type Database = {
           curator_submission_url: string | null
           curator_tiktok: string | null
           curator_twitter: string | null
+          curator_url: string | null
           curator_website: string | null
           follower_count: number | null
           fraud_score: number | null
@@ -1206,8 +1264,10 @@ export type Database = {
           id: string
           is_active: boolean | null
           lane: string | null
+          last_bounced_at: string | null
           last_enriched_at: string | null
           last_pitched_at: string | null
+          last_verified_at: string | null
           legitimacy_score: number | null
           notes: string | null
           overlap_score: number | null
@@ -1220,12 +1280,15 @@ export type Database = {
           recommended_pitch_angle: string | null
           research_context: Json | null
           similar_artists: Json | null
+          submission_cost: string
           submission_method: string | null
           submission_url: string | null
           tier: number | null
           track_count: number | null
           track_name: string
           updated_at: string | null
+          verification_notes: string | null
+          verification_status: string
           vibe_tags: Json | null
           whitelist_status: boolean | null
           why_it_fits: string | null
@@ -1233,9 +1296,12 @@ export type Database = {
         Insert: {
           authenticity_notes?: string | null
           authenticity_score?: number | null
+          bounce_count?: number | null
           contact_confidence?: number | null
+          contact_method?: string
           created_at?: string | null
           curator_email?: string | null
+          curator_handle?: string | null
           curator_instagram?: string | null
           curator_linktree?: string | null
           curator_name?: string | null
@@ -1244,6 +1310,7 @@ export type Database = {
           curator_submission_url?: string | null
           curator_tiktok?: string | null
           curator_twitter?: string | null
+          curator_url?: string | null
           curator_website?: string | null
           follower_count?: number | null
           fraud_score?: number | null
@@ -1251,8 +1318,10 @@ export type Database = {
           id?: string
           is_active?: boolean | null
           lane?: string | null
+          last_bounced_at?: string | null
           last_enriched_at?: string | null
           last_pitched_at?: string | null
+          last_verified_at?: string | null
           legitimacy_score?: number | null
           notes?: string | null
           overlap_score?: number | null
@@ -1265,12 +1334,15 @@ export type Database = {
           recommended_pitch_angle?: string | null
           research_context?: Json | null
           similar_artists?: Json | null
+          submission_cost?: string
           submission_method?: string | null
           submission_url?: string | null
           tier?: number | null
           track_count?: number | null
           track_name?: string
           updated_at?: string | null
+          verification_notes?: string | null
+          verification_status?: string
           vibe_tags?: Json | null
           whitelist_status?: boolean | null
           why_it_fits?: string | null
@@ -1278,9 +1350,12 @@ export type Database = {
         Update: {
           authenticity_notes?: string | null
           authenticity_score?: number | null
+          bounce_count?: number | null
           contact_confidence?: number | null
+          contact_method?: string
           created_at?: string | null
           curator_email?: string | null
+          curator_handle?: string | null
           curator_instagram?: string | null
           curator_linktree?: string | null
           curator_name?: string | null
@@ -1289,6 +1364,7 @@ export type Database = {
           curator_submission_url?: string | null
           curator_tiktok?: string | null
           curator_twitter?: string | null
+          curator_url?: string | null
           curator_website?: string | null
           follower_count?: number | null
           fraud_score?: number | null
@@ -1296,8 +1372,10 @@ export type Database = {
           id?: string
           is_active?: boolean | null
           lane?: string | null
+          last_bounced_at?: string | null
           last_enriched_at?: string | null
           last_pitched_at?: string | null
+          last_verified_at?: string | null
           legitimacy_score?: number | null
           notes?: string | null
           overlap_score?: number | null
@@ -1310,12 +1388,15 @@ export type Database = {
           recommended_pitch_angle?: string | null
           research_context?: Json | null
           similar_artists?: Json | null
+          submission_cost?: string
           submission_method?: string | null
           submission_url?: string | null
           tier?: number | null
           track_count?: number | null
           track_name?: string
           updated_at?: string | null
+          verification_notes?: string | null
+          verification_status?: string
           vibe_tags?: Json | null
           whitelist_status?: boolean | null
           why_it_fits?: string | null

@@ -33,12 +33,14 @@ const corsHeaders = {
 
 const MAX_RESULTS = 20;
 const DISCOVER_DEADLINE_MS = 55_000;
-const SEARCH_REF_CAP_FULL = 5;
-const STUBS_PER_REF_FULL = 10;
-const DETAIL_CAP_FULL = 20;
-const SEARCH_REF_CAP_QUICK = 2;
-const STUBS_PER_REF_QUICK = 6;
-const DETAIL_CAP_QUICK = 8;
+// Broadened discovery: many more seed queries + deeper crawl so each run
+// surfaces genuinely new playlists instead of re-hitting the same exhausted set.
+const SEARCH_REF_CAP_FULL = 16;
+const STUBS_PER_REF_FULL = 12;
+const DETAIL_CAP_FULL = 32;
+const SEARCH_REF_CAP_QUICK = 6;
+const STUBS_PER_REF_QUICK = 8;
+const DETAIL_CAP_QUICK = 14;
 type DiscoverySkips = {
   disclaim_brand: number;
   casual_user: number;
@@ -223,25 +225,56 @@ export async function findPlaylistOpportunities(
   return scored.slice(0, MAX_RESULTS);
 }
 
+// Modifier templates appended to the lane label. Rotated per-run so successive
+// discoveries probe different facets of Spotify search instead of the same 2 queries.
+const LANE_MODIFIERS = [
+  "playlist", "curator", "best", "fresh", "new", "2025", "weekly", "underground",
+  "indie", "submissions", "mix", "radio", "vibes", "essentials", "rising", "hidden gems",
+];
+// Templates applied to each reference artist (e.g. "Kaytranada type playlist").
+const REF_MODIFIERS = ["type playlist", "radio", "mix", "similar artists playlist", "essentials"];
+
+/**
+ * Build a broad, varied query set. Combines the lane label with many genre/keyword
+ * modifiers and each reference artist with several templates, then rotates the
+ * modifier order by `rotation` so re-runs surface different playlists.
+ */
+function buildDiscoveryQueries(
+  references: string[],
+  lane: string,
+  cap: number,
+  rotation: number,
+): string[] {
+  const laneLabel = lane ? lane.replace(/_/g, " ") : "";
+  const rotate = <T,>(arr: T[]): T[] =>
+    arr.length ? [...arr.slice(rotation % arr.length), ...arr.slice(0, rotation % arr.length)] : arr;
+
+  const out: string[] = [];
+  if (laneLabel) {
+    for (const m of rotate(LANE_MODIFIERS)) out.push(`${laneLabel} ${m}`);
+  }
+  const refs = references.map((r) => r.split(/[—–-]/)[0].trim()).filter(Boolean);
+  for (const ref of refs) {
+    for (const m of rotate(REF_MODIFIERS)) out.push(`${ref} ${m}`);
+  }
+  // Interleave lane + ref queries so a low cap still gets a mix of both.
+  return [...new Set(out)].slice(0, cap);
+}
+
 async function discoverViaSpotifyWeb(
   references: string[],
   lane: string,
   quick = false,
+  excludeIds: Set<string> = new Set(),
 ): Promise<DiscoveredPlaylist[]> {
   const refCap = quick ? SEARCH_REF_CAP_QUICK : SEARCH_REF_CAP_FULL;
   const stubsPerRef = quick ? STUBS_PER_REF_QUICK : STUBS_PER_REF_FULL;
   const detailCap = quick ? DETAIL_CAP_QUICK : DETAIL_CAP_FULL;
 
   const deadline = Date.now() + DISCOVER_DEADLINE_MS;
-  const laneLabel = lane ? lane.replace(/_/g, " ") : "";
-  const refQueries = references
-    .slice(0, Math.max(1, refCap - (laneLabel ? 2 : 0)))
-    .map((r) => r.split(/[—–-]/)[0].trim())
-    .filter(Boolean);
-  const laneQueries = laneLabel
-    ? [`${laneLabel} playlist`, `${laneLabel} curator`]
-    : [];
-  const queries = [...new Set([...laneQueries, ...refQueries])].slice(0, refCap);
+  // Rotate seeds by day so two runs on the same lane don't repeat the same queries.
+  const rotation = Math.floor(Date.now() / 86_400_000);
+  const queries = buildDiscoveryQueries(references, lane, refCap, rotation);
 
   if (!queries.length) {
     console.warn("[playlist-research] no references or lane for web discovery");
@@ -256,6 +289,7 @@ async function discoverViaSpotifyWeb(
   const seen = new Set<string>();
   const out: DiscoveredPlaylist[] = [];
   const log: { query: string; count: number; ok: boolean }[] = [];
+  let skippedRecent = 0;
 
   for (const query of queries) {
     if (Date.now() > deadline) break;
@@ -266,6 +300,9 @@ async function discoverViaSpotifyWeb(
         if (!s.playlist_id) continue;
         const pid = `spotify:${s.playlist_id}`;
         if (seen.has(pid)) continue;
+        // Dedupe against the 90-day pitch log so we surface genuinely new
+        // playlists each run instead of re-discovering recently-pitched ones.
+        if (excludeIds.has(pid)) { skippedRecent++; continue; }
         seen.add(pid);
         added++;
         out.push({
@@ -305,8 +342,31 @@ async function discoverViaSpotifyWeb(
   }
 
   out.sort((a, b) => (b.followers ?? 0) - (a.followers ?? 0));
-  console.log("[playlist-research] web discover log:", JSON.stringify(log), "total:", out.length);
+  console.log(
+    "[playlist-research] web discover log:", JSON.stringify(log),
+    "total:", out.length, "skipped_recent:", skippedRecent,
+  );
   return out;
+}
+
+/** Playlist IDs pitched in the last 90 days (any track) — excluded from discovery. */
+async function recentlyPitchedIds(supabase: SupabaseClient): Promise<Set<string>> {
+  const since = new Date(Date.now() - 90 * 86_400_000).toISOString();
+  try {
+    const { data, error } = await supabase
+      .from("pitch_log")
+      .select("playlist_id, pitched_at, created_at")
+      .or(`pitched_at.gte.${since},created_at.gte.${since}`)
+      .limit(5000);
+    if (error) {
+      console.error("[playlist-research] recentlyPitchedIds:", error.message);
+      return new Set();
+    }
+    return new Set((data ?? []).map((r: { playlist_id: string }) => r.playlist_id).filter(Boolean));
+  } catch (e) {
+    console.error("[playlist-research] recentlyPitchedIds failed:", e instanceof Error ? e.message : e);
+    return new Set();
+  }
 }
 
 async function filterDiscoveryCandidates(
@@ -447,7 +507,8 @@ export async function mergeCatalogAndLive(
 
   const start = Date.now();
   const quick = Boolean(opts?.quick);
-  const discovered = await discoverViaSpotifyWeb(references, lane, quick);
+  const excludeIds = await recentlyPitchedIds(supabase);
+  const discovered = await discoverViaSpotifyWeb(references, lane, quick, excludeIds);
   const discovery_skips: DiscoverySkips = {
     disclaim_brand: 0,
     casual_user: 0,

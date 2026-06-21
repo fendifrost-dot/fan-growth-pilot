@@ -5,12 +5,15 @@
 import { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import {
   confidenceForEmailSource,
+  detectSubmissionCost,
+  emailProximityScore,
   extractEmails,
   extractLinktreeUrls,
   extractSubmissionDM,
   extractIgHandle,
   extractSubmissionLinkFromMarkdown,
   extractSubmissionNote,
+  isNonCuratorEmail,
   isValidCuratorIgHandle,
   sanitizeCuratorIgHandle,
   scoreHunterEmail,
@@ -955,6 +958,9 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
       }
 
       const playlistHaystack = [detail.description ?? "", detail.name ?? ""].join("\n");
+      // Accumulate every scraped surface so we can detect a placement fee
+      // (free vs paid) at the end of the chain — see detectSubmissionCost.
+      const costTexts: string[] = [playlistHaystack];
       const linktreeSeen = new Set<string>(
         row.curator_linktree ? [String(row.curator_linktree)] : [],
       );
@@ -985,6 +991,7 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
       if (profile) {
         const bioLinks = profileCuratorBioLinks(profile);
         const bioText = [profile.bio ?? "", bioLinks.join("\n")].join("\n");
+        if (profile.bio) costTexts.push(profile.bio);
         addLinktrees(extractLinktreeUrls(bioText));
 
         if (!row.curator_email && !patch.curator_email && profile.bio) {
@@ -1035,6 +1042,7 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
           const lt = await firecrawl(linktreeUrl, { formats: ["markdown", "html"], waitFor: 2000 });
           const md = lt.data.markdown;
           const html = lt.data.html;
+          if (md) costTexts.push(md);
           if (isDisclaimBrand(`${md}\n${html}`)) {
             patch.pitch_status = "disclaim_brand";
             patch.submission_method = "none";
@@ -1071,6 +1079,7 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
           });
           const md = ig.data.markdown;
           const html = ig.data.html;
+          if (md) costTexts.push(md);
           const found = extractEmails(md, html);
           if (found.length) {
             patch.curator_email = found[0].value;
@@ -1103,7 +1112,7 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
           const ranked = emails
             .map((e) => ({ ...e, score: scoreHunterEmail(e) }))
             .sort((a, b) => (b.score - a.score) || ((b.confidence ?? 0) - (a.confidence ?? 0)));
-          if (ranked[0] && (ranked[0].confidence ?? 0) >= 50) {
+          if (ranked[0] && (ranked[0].confidence ?? 0) >= 50 && !isNonCuratorEmail(ranked[0].value)) {
             patch.curator_email = ranked[0].value.toLowerCase();
             fieldsAdded.curator_email++;
             recordConfidence(3);
@@ -1120,6 +1129,7 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
             websiteForDisclaim.startsWith("http") ? websiteForDisclaim : `https://${websiteForDisclaim}`,
             { formats: ["markdown", "html"], waitFor: 2000 },
           );
+          if (w.data.markdown) costTexts.push(w.data.markdown);
           if (isDisclaimBrand(`${w.data.markdown}\n${w.data.html}`)) {
             patch.pitch_status = "disclaim_brand";
             patch.submission_method = "none";
@@ -1166,12 +1176,80 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
         } catch (e) {
           console.error(`[enrich] expanded chain ${row.playlist_id} failed:`, errMsg(e));
         }
-        if (expandedHit) {
+        if (expandedHit && !isNonCuratorEmail(expandedHit.email)) {
           patch.curator_email = expandedHit.email;
           fieldsAdded.curator_email++;
           recordConfidence(expandedHit.confidence);
         }
       }
+
+      // ---- Write-time contact verification gate -------------------------
+      // Only a VERIFIED curator email is allowed to land in curator_email. A
+      // newly-discovered email must clear three checks: (1) the non-curator
+      // denylist (edu/gov/SaaS/role), (2) curator-name/handle/domain proximity
+      // OR a strong first-party source signal, and (3) MX + DB-blocklist
+      // verification (verifyEmail). Anything that fails is dropped — never
+      // saved — with a recorded reason, so junk like a university .edu or a
+      // SaaS analytics address can no longer be pitched.
+      const newEmail = typeof patch.curator_email === "string" && (patch.curator_email as string).trim()
+        ? (patch.curator_email as string).trim().toLowerCase()
+        : null;
+      if (newEmail) {
+        const proximity = emailProximityScore(newEmail, {
+          curatorName: detail.owner_name ?? (row as { curator_name?: string }).curator_name ?? null,
+          playlistName: detail.name ?? (row as { playlist_name?: string }).playlist_name ?? null,
+          igHandle: (patch.curator_instagram as string) ?? row.curator_instagram ?? null,
+          website: (patch.curator_website as string) ?? row.curator_website ?? null,
+        });
+        const denied = isNonCuratorEmail(newEmail);
+        // Accept on a strong first-party source (conf>=7, e.g. mailto/emoji in
+        // the curator's own bio), a clear name/handle/domain match (proximity 2),
+        // or a music-contact role backed by a moderate source (proximity>=1 && conf>=4).
+        const passesHeuristic = !denied &&
+          (bestConfidence >= 7 || proximity >= 2 || (proximity >= 1 && bestConfidence >= 4));
+        let rejectReason: string | null = passesHeuristic
+          ? null
+          : denied
+            ? "non-curator domain/role"
+            : `weak signal (proximity ${proximity}, confidence ${bestConfidence})`;
+
+        let verification: { status: string; notes: string } | null = null;
+        if (!rejectReason) {
+          try {
+            const verdict = await verifyEmail(sb, newEmail, 0);
+            if (verdict.ok) {
+              verification = { status: "auto_verified", notes: verdict.reason };
+            } else if (/blocklist|non-curator|invalid|no domain|no email/i.test(verdict.reason)) {
+              rejectReason = verdict.reason;
+            } else {
+              // Transient MX-lookup failure etc. — keep the email but leave it
+              // for the verification batch rather than dropping a good contact.
+              verification = { status: "unverified", notes: verdict.reason };
+            }
+          } catch (e) {
+            verification = { status: "unverified", notes: `verify error: ${errMsg(e)}` };
+          }
+        }
+
+        if (rejectReason) {
+          patch.curator_email = null;
+          if (fieldsAdded.curator_email > 0) fieldsAdded.curator_email--;
+          patch.verification_status = "rejected";
+          patch.verification_notes = `auto-rejected: ${rejectReason} (${newEmail})`;
+        } else if (verification) {
+          patch.curator_email = newEmail;
+          patch.verification_status = verification.status;
+          patch.verification_notes = verification.notes;
+          if (verification.status === "auto_verified") {
+            patch.last_verified_at = new Date().toISOString();
+          }
+        }
+      }
+
+      // Free vs paid placement detection. submission_cost is the stored value;
+      // is_paid is a generated column derived from it (see migration).
+      const costDetected = detectSubmissionCost(costTexts.join("\n"));
+      if (costDetected) patch.submission_cost = costDetected;
 
       const finalEmail = (patch.curator_email as string) ?? row.curator_email ?? null;
       const finalIgRaw = (patch.curator_instagram as string) ?? row.curator_instagram ?? null;
@@ -1403,7 +1481,7 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
   const action = String(body.action ?? "").trim();
   if (action === "list_targets") {
     let q = sb.from("playlist_targets").select(
-      "playlist_id, playlist_name, curator_name, curator_email, curator_instagram, curator_linktree, curator_submission_url, curator_submission_dm, curator_submission_note, lane, tier, authenticity_score, fraud_verdict, contact_confidence, pitch_status, follower_count, is_active, why_it_fits, recommended_pitch_angle, submission_url, submission_method, last_enriched_at, research_context",
+      "playlist_id, playlist_name, curator_name, curator_email, curator_instagram, curator_linktree, curator_submission_url, curator_submission_dm, curator_submission_note, lane, tier, authenticity_score, fraud_verdict, contact_confidence, pitch_status, follower_count, is_active, why_it_fits, recommended_pitch_angle, submission_url, submission_method, submission_cost, is_paid, verification_status, last_enriched_at, research_context",
     ).order("follower_count", { ascending: false, nullsFirst: false }).limit(200);
     // is_active: default true (preserve historical behavior); allow explicit override.
     if (body.is_active !== undefined) {
@@ -1421,6 +1499,13 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
     if (body.has_submission_url === true) q = q.not("submission_url", "is", null);
     if (body.has_submission_url === false) q = q.is("submission_url", null);
     if (body.pitchable_only) q = q.in("submission_method", ["email", "instagram_dm"]);
+    // Free/Paid placement-cost filter. cost_filter: "free" → free + tip + unknown
+    // (i.e. NOT a known paid playlist); "paid" → known paid only.
+    if (body.cost_filter === "paid" || body.is_paid === true) {
+      q = q.eq("is_paid", true);
+    } else if (body.cost_filter === "free" || body.is_paid === false) {
+      q = q.or("is_paid.is.false,is_paid.is.null");
+    }
     if (body.placement_only) {
       q = q.or("research_context->>source.eq.spotify_placement,research_context->>source.eq.spotify_for_artists_csv");
     }

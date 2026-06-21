@@ -14,6 +14,9 @@ type PlaylistRow = {
   curator_instagram: string | null;
   curator_submission_url: string | null;
   curator_submission_dm: string | null;
+  submission_cost: string | null;
+  is_paid: boolean | null;
+  verification_status: string | null;
   lane: string | null;
   tier: number | null;
   authenticity_score: number | null;
@@ -90,6 +93,20 @@ function ContactCell({ row }: { row: PlaylistRow }) {
   return <span className="text-muted-foreground" title={tip}>—</span>;
 }
 
+function CostCell({ row }: { row: PlaylistRow }) {
+  const cost = row.is_paid === true ? "paid" : (row.submission_cost ?? "unknown");
+  if (cost === "paid") {
+    return <span className="text-[10px] uppercase rounded bg-red-500/15 text-red-600 px-1.5 py-0.5">Paid</span>;
+  }
+  if (cost === "free") {
+    return <span className="text-[10px] uppercase rounded bg-emerald-500/15 text-emerald-600 px-1.5 py-0.5">Free</span>;
+  }
+  if (cost === "tip_appreciated") {
+    return <span className="text-[10px] uppercase rounded bg-amber-500/15 text-amber-600 px-1.5 py-0.5" title="Tip appreciated, not required">Tip</span>;
+  }
+  return <span className="text-muted-foreground">—</span>;
+}
+
 const TRACK_DEFAULT = "Designed For Me (Control)";
 
 const AdminPlaylistTargets: React.FC = () => {
@@ -100,6 +117,7 @@ const AdminPlaylistTargets: React.FC = () => {
   const [filterLane, setFilterLane] = useState("");
   const [filterTier, setFilterTier] = useState("");
   const [hasEmailOnly, setHasEmailOnly] = useState(false);
+  const [costFilter, setCostFilter] = useState<"" | "free" | "paid">("");
   const [pitchableOnly, setPitchableOnly] = useState(false);
   const [reconciling, setReconciling] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -171,6 +189,7 @@ const AdminPlaylistTargets: React.FC = () => {
         ...(filterLane ? { lane: filterLane } : {}),
         ...(filterTier ? { tier: Number(filterTier) } : {}),
         ...(hasEmailOnly ? { has_email: true } : {}),
+        ...(costFilter ? { cost_filter: costFilter } : {}),
         ...(pitchableOnly ? { pitchable_only: true } : {}),
         ...(placementOnly ? { placement_only: true } : {}),
       });
@@ -180,7 +199,7 @@ const AdminPlaylistTargets: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [filterLane, filterTier, hasEmailOnly, pitchableOnly, placementOnly]);
+  }, [filterLane, filterTier, hasEmailOnly, costFilter, pitchableOnly, placementOnly]);
 
   const discoverPlacements = async () => {
     setDiscoveringPlacements(true);
@@ -563,6 +582,18 @@ const AdminPlaylistTargets: React.FC = () => {
             <input type="checkbox" checked={hasEmailOnly} onChange={(e) => setHasEmailOnly(e.target.checked)} />
             Has email
           </label>
+          <div className="flex flex-col pb-2">
+            <label className="text-xs text-muted-foreground">Cost</label>
+            <select
+              className="h-9 rounded-md border bg-background px-2 text-sm"
+              value={costFilter}
+              onChange={(e) => setCostFilter(e.target.value as "" | "free" | "paid")}
+            >
+              <option value="">All</option>
+              <option value="free">Free</option>
+              <option value="paid">Paid</option>
+            </select>
+          </div>
           <label className="flex items-center gap-2 text-sm pb-2">
             <input type="checkbox" checked={pitchableOnly} onChange={(e) => setPitchableOnly(e.target.checked)} />
             Pitchable only
@@ -587,15 +618,16 @@ const AdminPlaylistTargets: React.FC = () => {
               <th className="text-left p-2">Lane</th>
               <th className="text-left p-2">Tier</th>
               <th className="text-left p-2">Auth</th>
+              <th className="text-left p-2">Cost</th>
               <th className="text-left p-2">Contact</th>
               <th className="text-left p-2">Actions</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={7} className="p-4 text-muted-foreground">Loading…</td></tr>
+              <tr><td colSpan={8} className="p-4 text-muted-foreground">Loading…</td></tr>
             ) : filtered.length === 0 ? (
-              <tr><td colSpan={7} className="p-4 text-muted-foreground">No rows — run research or apply filters.</td></tr>
+              <tr><td colSpan={8} className="p-4 text-muted-foreground">No rows — run research or apply filters.</td></tr>
             ) : (
               filtered.map((r) => (
                 <tr key={r.playlist_id} className="border-t">
@@ -619,6 +651,9 @@ const AdminPlaylistTargets: React.FC = () => {
                   <td className="p-2">{r.lane ?? "—"}</td>
                   <td className="p-2">{r.tier ?? "—"}</td>
                   <td className="p-2">{r.authenticity_score ?? "—"}</td>
+                  <td className="p-2">
+                    <CostCell row={r} />
+                  </td>
                   <td className="p-2 text-xs max-w-[180px]">
                     <ContactCell row={r} />
                   </td>

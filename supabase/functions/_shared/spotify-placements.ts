@@ -9,8 +9,8 @@ import { scrapeSpotifyPlaylistDetail, scrapeSpotifySearchPlaylists, sleep } from
 import { loadLanesConfig, rowMatchesLane, laneRegexBoost } from "./playlist-lanes.ts";
 
 const PLAYLIST_ID_RE = /open\.spotify\.com\/playlist\/([a-zA-Z0-9]{22})/g;
-const DETAIL_CAP = 35;
-const SEARCH_LIMIT = 8;
+const DETAIL_CAP = 50;
+const SEARCH_LIMIT = 10;
 
 export type PlacementDiscoveryResult = {
   found: number;
@@ -89,10 +89,15 @@ export async function discoverSpotifyPlacements(
   const lanesConfig = await loadLanesConfig(sb);
   const laneRe = lane ? laneRegexBoost(lanesConfig, lane) : null;
 
+  const laneLabel = lane ? lane.replace(/_/g, " ") : "";
   const queries = [
     `"${artistName}" site:open.spotify.com/playlist`,
     `${artistName} playlist spotify`,
-    ...tracks.slice(0, 5).map((t) => `"${t}" "${artistName}" spotify playlist`),
+    `${artistName} spotify playlist submission`,
+    ...(laneLabel ? [`${artistName} ${laneLabel} playlist`, `${laneLabel} playlist curator`] : []),
+    ...references.slice(0, 3).map((r) => `${artistName} ${r.split(/[—–-]/)[0].trim()} playlist`),
+    ...tracks.slice(0, 8).map((t) => `"${t}" "${artistName}" spotify playlist`),
+    ...tracks.slice(0, 4).map((t) => `"${t}" spotify playlist`),
   ];
 
   const seen = new Set<string>();
@@ -123,7 +128,24 @@ export async function discoverSpotifyPlacements(
   }
 
   const found = seen.size;
-  const ids = [...seen].slice(0, DETAIL_CAP);
+  // Dedupe against the 90-day pitch log so re-runs spend the detail-scrape
+  // budget on genuinely new playlists rather than recently-pitched ones.
+  const since90 = new Date(Date.now() - 90 * 86_400_000).toISOString();
+  const recentlyPitched = new Set<string>();
+  try {
+    const { data: recent } = await sb
+      .from("pitch_log")
+      .select("playlist_id, pitched_at, created_at")
+      .or(`pitched_at.gte.${since90},created_at.gte.${since90}`)
+      .limit(5000);
+    for (const r of recent ?? []) {
+      const pid = (r as { playlist_id?: string }).playlist_id;
+      if (pid) recentlyPitched.add(pid.replace(/^spotify:/, ""));
+    }
+  } catch (e) {
+    console.error("[placements] recent pitch_log query failed:", e instanceof Error ? e.message : e);
+  }
+  const ids = [...seen].filter((id) => !recentlyPitched.has(id)).slice(0, DETAIL_CAP);
   let verified = 0;
   let ingested = 0;
 

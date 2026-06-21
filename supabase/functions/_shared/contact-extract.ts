@@ -15,21 +15,116 @@ const EMAIL_DENYLIST = new Set([
 
 /** Domain suffixes — subdomains match (e.g. vendor.spotify.com). */
 const EMAIL_DOMAIN_DENYLIST = [
+  // Platform / vendor-form domains
   "spotify.com",
   "spotifyforvendors.com",
   "graphiteconnect.com",
   "anonaddy.com",
   "noreply.form",
+  // SaaS / analytics / non-curator companies that scraping mistakes for curators.
+  // (DB-driven non_curator_domains/domain_blocklist is the authoritative list at
+  //  send time; this in-code set blocks the most common offenders at WRITE time so
+  //  junk like a music-analytics SaaS address never lands in curator_email.)
+  "viberate.com",
+  "chartmetric.com",
+  "soundcharts.com",
+  "songstats.com",
+  "submithub.com",
+  "groover.co",
+  "playlistpush.com",
+  "daotao.com",
+  "linktr.ee",
+  "beacons.ai",
+  "hubspot.com",
+  "mailchimp.com",
+  "intercom.io",
+  "zendesk.com",
+  "squarespace.com",
+  "wixpress.com",
+  "shopify.com",
+  "stripe.com",
+  "sentry.io",
+  "wordpress.com",
+  "gmail.example",
 ];
 
-/** Local-part prefixes that mark an email as vendor-form / non-human. */
+/**
+ * Academic / government / institutional TLD suffixes — these are never independent
+ * playlist curators. A university `.edu` mailbox or a `.gov` inbox scraped off a
+ * page is junk and tanks sender reputation when pitched.
+ */
+const NON_CURATOR_TLD_SUFFIXES = [
+  ".edu",
+  ".gov",
+  ".mil",
+  ".ac.uk",
+  ".edu.au",
+  ".edu.in",
+  ".ac.in",
+  ".ac.jp",
+  ".gov.uk",
+  ".edu.cn",
+  ".sch.uk",
+  ".k12.",
+];
+
+/** Local-part prefixes that mark an email as vendor-form / non-human / wrong-role. */
 const EMAIL_LOCAL_PREFIX_DENYLIST = [
   "noreply",
   "no-reply",
   "donotreply",
   "do-not-reply",
   "mailer-daemon",
+  "postmaster",
+  "abuse",
+  "webmaster",
+  "hostmaster",
 ];
+
+/**
+ * Role local-parts that belong to non-curator business functions. These are NOT
+ * the music-contact roles (submissions@, demos@, music@, hello@, info@, contact@,
+ * pitch@, management@, booking@, press@) which are GOOD for curator outreach — so
+ * those are deliberately excluded here.
+ */
+const NON_CURATOR_ROLE_LOCALS = new Set([
+  "sales",
+  "billing",
+  "invoices",
+  "accounts",
+  "accounting",
+  "careers",
+  "jobs",
+  "recruiting",
+  "hr",
+  "legal",
+  "privacy",
+  "compliance",
+  "security",
+  "admin",
+  "administrator",
+  "it",
+  "helpdesk",
+  "support",
+  "customerservice",
+  "orders",
+  "returns",
+  "marketing",
+  "advertising",
+  "ads",
+  "partnerships",
+  "investors",
+  "media",
+  "newsletter",
+  "subscribe",
+  "unsubscribe",
+]);
+
+function hasNonCuratorTld(domain: string): boolean {
+  return NON_CURATOR_TLD_SUFFIXES.some((s) =>
+    s.endsWith(".") ? domain.includes(s) : domain === s.slice(1) || domain.endsWith(s),
+  );
+}
 
 function isDeniedEmail(email: string): boolean {
   const lower = email.toLowerCase();
@@ -39,9 +134,21 @@ function isDeniedEmail(email: string): boolean {
   if (EMAIL_LOCAL_PREFIX_DENYLIST.some((p) => local === p || local.startsWith(p + "."))) {
     return true;
   }
+  if (NON_CURATOR_ROLE_LOCALS.has(local)) return true;
+  if (hasNonCuratorTld(domain)) return true;
   return EMAIL_DOMAIN_DENYLIST.some(
     (suffix) => domain === suffix || domain.endsWith("." + suffix),
   );
+}
+
+/**
+ * Public predicate: true when an email must NEVER be saved as a curator contact
+ * (academic/gov TLD, SaaS/analytics company, vendor form, or non-curator role).
+ * Used as the write-time denylist gate in enrichment.
+ */
+export function isNonCuratorEmail(email: string | null | undefined): boolean {
+  if (!email?.trim()) return true;
+  return isDeniedEmail(email.trim().toLowerCase());
 }
 
 /** Source URLs that should be skipped before scraping (vendor forms etc.). */
@@ -203,5 +310,113 @@ export function scoreHunterEmail(e: { value: string; type?: string; first_name?:
   if (e.type === "generic") s += 10;
   if (e.first_name) s -= 5;
   return s;
+}
+
+const FREE_EMAIL_DOMAINS = new Set([
+  "gmail.com", "googlemail.com", "yahoo.com", "ymail.com", "hotmail.com",
+  "outlook.com", "live.com", "icloud.com", "me.com", "aol.com", "proton.me",
+  "protonmail.com", "gmx.com", "mail.com", "zoho.com",
+]);
+
+function nameTokens(...parts: Array<string | null | undefined>): string[] {
+  return parts
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t.length >= 3 && !["the", "and", "playlist", "music", "official", "spotify"].includes(t));
+}
+
+/**
+ * Curator-name / handle proximity score for a candidate email.
+ *
+ *   2  → domain (or its root label) clearly belongs to the curator
+ *        (e.g. curator runs example.com and email is x@example.com, or the
+ *         local-part / domain contains a curator name or IG-handle token)
+ *   1  → local-part is a music-contact role (submissions@, demos@, hello@…),
+ *        which is acceptable even without a name match
+ *   0  → free-mail or unrelated domain with no name/handle relationship
+ *
+ * Higher is better; enrichment requires a minimum combined (source + proximity)
+ * signal before it will save curator_email.
+ */
+export function emailProximityScore(
+  email: string,
+  ctx: {
+    curatorName?: string | null;
+    playlistName?: string | null;
+    igHandle?: string | null;
+    website?: string | null;
+  },
+): number {
+  const lower = email.toLowerCase();
+  const [local, domain] = lower.split("@");
+  if (!local || !domain) return 0;
+  const domainRoot = domain.split(".").slice(-2, -1)[0] ?? "";
+  const tokens = new Set(nameTokens(ctx.curatorName, ctx.playlistName));
+  const handle = (ctx.igHandle ?? "").replace(/^@/, "").toLowerCase();
+  if (handle && handle.length >= 3) tokens.add(handle);
+
+  // Curator's own website domain → strong signal.
+  if (ctx.website) {
+    try {
+      const wHost = new URL(ctx.website.startsWith("http") ? ctx.website : `https://${ctx.website}`)
+        .hostname.replace(/^www\./, "").toLowerCase();
+      if (wHost === domain || domain.endsWith("." + wHost) || wHost.endsWith("." + domain)) return 2;
+    } catch { /* ignore */ }
+  }
+
+  // Token appears in the (non-free) domain or in the local-part.
+  if (!FREE_EMAIL_DOMAINS.has(domain)) {
+    for (const t of tokens) {
+      if (domainRoot.includes(t) || t.includes(domainRoot)) return 2;
+    }
+  }
+  for (const t of tokens) {
+    if (local.includes(t) || (t.length >= 4 && t.includes(local))) return 2;
+  }
+
+  // Music-contact role local-part is acceptable without a name match.
+  if (/^(submissions?|demos?|music|pitch|hello|info|contact|management|booking|press|playlist)/.test(local)) {
+    return 1;
+  }
+  return 0;
+}
+
+/**
+ * Detect whether a curator charges a placement fee from scraped page text.
+ * Returns 'paid' | 'free' | 'tip_appreciated' | null (unknown). Conservative:
+ * only returns non-null on an explicit signal.
+ */
+export function detectSubmissionCost(
+  text: string | null | undefined,
+): "paid" | "free" | "tip_appreciated" | null {
+  if (!text) return null;
+  const t = text.toLowerCase();
+
+  // Explicit paid / placement-fee language.
+  const paid =
+    /\$\s?\d|€\s?\d|£\s?\d|\d+\s?(?:usd|eur|gbp)\b/.test(t) &&
+      /(submission|placement|playlist|consider|review|feature|guarantee)/.test(t)
+      ? true
+      : /\b(paid|premium)\s+(?:submission|placement|playlist|promo|promotion)\b/.test(t) ||
+        /\b(placement|submission)\s+fee\b/.test(t) ||
+        /\bpay\s+(?:to|for)\s+(?:submit|placement|play|feature)\b/.test(t) ||
+        /\bper\s+(?:placement|track|song)\b.*\$/.test(t) ||
+        /\bguaranteed\s+placement\b/.test(t);
+  if (paid) return "paid";
+
+  // Tip / donation appreciated but not required.
+  if (/\b(tip|donation|paypal|venmo|cash\s?app|ko-?fi|buy\s+me\s+a\s+coffee)\b/.test(t) &&
+      /\b(optional|appreciated|welcome|no\s+(?:fee|charge)|free)\b/.test(t)) {
+    return "tip_appreciated";
+  }
+
+  // Explicit free / no-fee language.
+  if (/\b(free\s+submissions?|no\s+(?:fee|charge|payment|cost)|submit\s+for\s+free|always\s+free)\b/.test(t)) {
+    return "free";
+  }
+  return null;
 }
 

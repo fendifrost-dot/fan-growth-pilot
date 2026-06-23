@@ -1263,6 +1263,7 @@ export type Database = {
           fraud_verdict: string | null
           id: string
           is_active: boolean | null
+          is_paid: boolean | null
           lane: string | null
           last_bounced_at: string | null
           last_enriched_at: string | null
@@ -1317,6 +1318,7 @@ export type Database = {
           fraud_verdict?: string | null
           id?: string
           is_active?: boolean | null
+          is_paid?: boolean | null
           lane?: string | null
           last_bounced_at?: string | null
           last_enriched_at?: string | null
@@ -1371,6 +1373,7 @@ export type Database = {
           fraud_verdict?: string | null
           id?: string
           is_active?: boolean | null
+          is_paid?: boolean | null
           lane?: string | null
           last_bounced_at?: string | null
           last_enriched_at?: string | null

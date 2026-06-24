@@ -11,6 +11,28 @@ const corsHeaders = {
 };
 const NON_BULK_METHODS = new Set(["algorithmic", "distributor_pitch"]);
 const MAX_DAILY_PITCHES = 30; // raised from 10 on 2026-06-10 to clear queued batch-3 sends
+
+// Curator-friendly send window: Mon–Fri, 10:00–16:00 America/Chicago (CT). Uses the
+// IANA zone so DST (CDT/CST) is handled automatically rather than a fixed offset.
+const SEND_WINDOW_DAYS = new Set(["Mon", "Tue", "Wed", "Thu", "Fri"]);
+const SEND_WINDOW_START_HOUR = 10; // inclusive
+const SEND_WINDOW_END_HOUR = 16; // exclusive (4p)
+function isWithinSendWindow(now: Date): boolean {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago",
+    weekday: "short",
+    hour: "numeric",
+    hour12: false,
+  }).formatToParts(now);
+  const weekday = parts.find((p) => p.type === "weekday")?.value ?? "";
+  let hour = Number(parts.find((p) => p.type === "hour")?.value ?? "-1");
+  if (hour === 24) hour = 0; // some runtimes emit "24" for midnight
+  return (
+    SEND_WINDOW_DAYS.has(weekday) &&
+    hour >= SEND_WINDOW_START_HOUR &&
+    hour < SEND_WINDOW_END_HOUR
+  );
+}
 function getHubKey(req: Request): string {
   return (req.headers.get("x-api-key") || req.headers.get("apikey") ||
     (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim());
@@ -83,6 +105,8 @@ Deno.serve(async (req) => {
     const testMode = Boolean(body.test_mode);
     const testEmail = String(body.test_email ?? "fendifrost@gmail.com").trim() || "fendifrost@gmail.com";
     const batchOverrideCap = Boolean(body.batch_override_cap);
+    // Escape hatch for legitimate off-hours admin sends; defaults to enforcing the window.
+    const ignoreSendWindow = Boolean(body.ignore_send_window);
     if (!playlistId || !trackName) return jsonPitch({ ok:false, method_used:"none", action_taken:"error", cooldown_until:null, message_to_user:"Missing playlist_id or track_name." });
     const url = Deno.env.get("SUPABASE_URL")!;
     const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -109,7 +133,7 @@ Deno.serve(async (req) => {
     const tierRaw = row.tier;
     const tier = typeof tierRaw === "number" ? tierRaw : tierRaw != null && tierRaw !== "" ? Number(tierRaw) : null;
     if (tier === 3 && !tierConfirmed) return jsonPitch({ ok:false, method_used:method, action_taken:"tier_gate", cooldown_until:null, message_to_user:"⚠️ *Tier 3 playlist* — *" + (row.playlist_name ?? playlistId) + "*\n\nFlagged for verify-first pitching. Reply *confirm* to send." });
-    if (method === "email") return await handleEmailPitch(sb, row, trackName, bulk, draftOverrides, testMode, testEmail, batchOverrideCap);
+    if (method === "email") return await handleEmailPitch(sb, row, trackName, bulk, draftOverrides, testMode, testEmail, batchOverrideCap, ignoreSendWindow);
     return jsonPitch(buildNonEmailMessage(row, method, trackName));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -147,6 +171,7 @@ async function handleEmailPitch(
   testMode = false,
   testEmail = "fendifrost@gmail.com",
   batchOverrideCap = false,
+  ignoreSendWindow = false,
 ): Promise<Response> {
   const playlistId = String(row.playlist_id);
   const curatorEmail = await resolveCuratorEmail(sb, row, draft);
@@ -159,8 +184,12 @@ async function handleEmailPitch(
       message_to_user: "No curator email on file for *" + playlistName + "*. Patch playlist_targets before sending.",
     });
   }
-  // test_mode bypasses cooldown + daily cap checks (QA sends should be unblocked).
+  // test_mode bypasses send-window + cooldown + daily cap checks (QA sends should be unblocked).
   if (!testMode) {
+    // Real curator emails only go out Mon–Fri 10a–4p CT unless explicitly overridden.
+    if (!ignoreSendWindow && !isWithinSendWindow(new Date())) {
+      return jsonPitch({ ok:false, method_used:method, action_taken:"skipped", cooldown_until:null, message_to_user:"🕑 Outside send window for *" + playlistName + "*. Pitch emails go out *Mon–Fri 10a–4p CT*. Retry during the window (or pass ignore_send_window to force)." });
+    }
     const { data: existing } = await sb.from("pitch_log").select("id, cooldown_until").eq("playlist_id", playlistId).eq("track_name", trackName).eq("status", "sent").gt("cooldown_until", new Date().toISOString()).maybeSingle();
     if (existing?.id) {
       const until = existing.cooldown_until ? new Date(existing.cooldown_until as string).toLocaleDateString() : "?";

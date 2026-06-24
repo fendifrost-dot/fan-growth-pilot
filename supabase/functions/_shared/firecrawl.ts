@@ -8,12 +8,21 @@ export type FirecrawlScrapeResult = {
 
 export type FirecrawlResponse = { data: FirecrawlScrapeResult };
 
+/**
+ * Hard ceiling for a single Firecrawl request. Without this, a stalled scrape
+ * blocks indefinitely — and because the discovery loop in playlist-research only
+ * checks its deadline *between* iterations, one hung fetch silently blows past the
+ * ~55s edge-function wall and the function times out (returning the stale set).
+ */
+const DEFAULT_SCRAPE_TIMEOUT_MS = 12_000;
+
 export async function firecrawlScrape(
   url: string,
   opts?: {
     schema?: Record<string, unknown>;
     formats?: string[];
     waitFor?: number;
+    timeoutMs?: number;
   },
 ): Promise<FirecrawlScrapeResult> {
   const key = Deno.env.get("FIRECRAWL_API_KEY");
@@ -32,11 +41,25 @@ export async function firecrawlScrape(
     body.extract = { schema: opts.schema };
   }
 
-  const res = await fetch(FIRECRAWL_URL, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const timeoutMs = opts?.timeoutMs ?? DEFAULT_SCRAPE_TIMEOUT_MS;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  let res: Response;
+  try {
+    res = await fetch(FIRECRAWL_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+  } catch (e) {
+    if (ctrl.signal.aborted) {
+      throw new Error(`Firecrawl timeout after ${timeoutMs}ms: ${url}`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -110,5 +133,5 @@ export async function firecrawlSearch(query: string, limit = 5): Promise<Firecra
         description: o.description ? String(o.description) : undefined,
       };
     })
-    .filter((h): h is FirecrawlSearchHit => h !== null);
+    .filter((h): h is NonNullable<typeof h> => h !== null);
 }

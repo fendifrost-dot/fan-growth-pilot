@@ -473,6 +473,8 @@ export async function runApproveDraft(body: Record<string, unknown>, sb: Supabas
       test_mode: testMode,
       test_email: typeof body.test_email === "string" ? body.test_email.trim() : undefined,
       batch_override_cap: batchOverrideCap,
+      // Optional off-hours override for the Mon–Fri 10a–4p CT send window.
+      ignore_send_window: Boolean(body.ignore_send_window) || undefined,
       // Admin approve-and-send is the tier-3 confirm step.
       tier_confirmed: Boolean(body.tier_confirmed) || !testMode,
     }),

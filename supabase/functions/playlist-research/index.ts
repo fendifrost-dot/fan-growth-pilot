@@ -32,15 +32,24 @@ const corsHeaders = {
 };
 
 const MAX_RESULTS = 20;
-const DISCOVER_DEADLINE_MS = 55_000;
-// Broadened discovery: many more seed queries + deeper crawl so each run
-// surfaces genuinely new playlists instead of re-hitting the same exhausted set.
-const SEARCH_REF_CAP_FULL = 16;
-const STUBS_PER_REF_FULL = 12;
-const DETAIL_CAP_FULL = 32;
+// Scrape budget measured from the start of mergeCatalogAndLive, NOT 55s. The edge
+// wall is ~55s; we stop all scraping at 45s so the post-discovery DB work (upserts,
+// re-query, merge, lane patches) finishes and we return partial-but-FRESH results
+// before the wall instead of being killed mid-flight and returning the stale set.
+const SCRAPE_BUDGET_MS = 45_000;
+// Capped discovery breadth: enough seed queries for variety, small enough that the
+// deadline guard isn't the only thing keeping us under budget. The per-request
+// Firecrawl timeout (see firecrawl.ts) bounds any single hung scrape.
+const SEARCH_REF_CAP_FULL = 12;
+const STUBS_PER_REF_FULL = 10;
+const DETAIL_CAP_FULL = 18;
 const SEARCH_REF_CAP_QUICK = 6;
 const STUBS_PER_REF_QUICK = 8;
-const DETAIL_CAP_QUICK = 14;
+const DETAIL_CAP_QUICK = 12;
+// Politeness pauses between scrapes — trimmed so more useful work fits the budget.
+const SLEEP_SEARCH_MS = 500;
+const SLEEP_DETAIL_MS = 400;
+const SLEEP_PROFILE_MS = 300;
 type DiscoverySkips = {
   disclaim_brand: number;
   casual_user: number;
@@ -266,12 +275,12 @@ async function discoverViaSpotifyWeb(
   lane: string,
   quick = false,
   excludeIds: Set<string> = new Set(),
+  deadline: number = Date.now() + SCRAPE_BUDGET_MS,
 ): Promise<DiscoveredPlaylist[]> {
   const refCap = quick ? SEARCH_REF_CAP_QUICK : SEARCH_REF_CAP_FULL;
   const stubsPerRef = quick ? STUBS_PER_REF_QUICK : STUBS_PER_REF_FULL;
   const detailCap = quick ? DETAIL_CAP_QUICK : DETAIL_CAP_FULL;
 
-  const deadline = Date.now() + DISCOVER_DEADLINE_MS;
   // Rotate seeds by day so two runs on the same lane don't repeat the same queries.
   const rotation = Math.floor(Date.now() / 86_400_000);
   const queries = buildDiscoveryQueries(references, lane, refCap, rotation);
@@ -315,7 +324,7 @@ async function discoverViaSpotifyWeb(
         });
       }
       log.push({ query, count: added, ok: true });
-      await sleep(1200);
+      await sleep(SLEEP_SEARCH_MS);
     } catch (e) {
       log.push({ query, count: 0, ok: false });
       console.error(`[discover] search "${query}" failed:`, e instanceof Error ? e.message : String(e));
@@ -335,7 +344,7 @@ async function discoverViaSpotifyWeb(
         pl.owner_id = detail.owner_id ?? pl.owner_id;
         pl._track_artists = detail.track_artists ?? [];
       }
-      await sleep(1000);
+      await sleep(SLEEP_DETAIL_MS);
     } catch (e) {
       console.error(`[discover] detail ${pl.id} failed:`, e instanceof Error ? e.message : String(e));
     }
@@ -373,6 +382,7 @@ async function filterDiscoveryCandidates(
   items: DiscoveredPlaylist[],
   references: string[],
   quick: boolean,
+  deadline: number = Date.now() + SCRAPE_BUDGET_MS,
 ): Promise<{ items: DiscoveredPlaylist[]; skips: DiscoverySkips }> {
   const skips: DiscoverySkips = {
     disclaim_brand: 0,
@@ -405,7 +415,10 @@ async function filterDiscoveryCandidates(
       skips.micro_playlist++;
       continue;
     }
-    if (!quick && pl.owner_id) {
+    // The casual-user check requires an extra profile scrape per candidate. Skip it
+    // once we're past the scrape budget so a slow run still returns its kept items
+    // before the wall instead of grinding through unbounded network work.
+    if (!quick && pl.owner_id && Date.now() < deadline) {
       try {
         const profile = await scrapeSpotifyUserProfile(pl.owner_id);
         const fc = profile?.follower_count;
@@ -413,13 +426,13 @@ async function filterDiscoveryCandidates(
         if (fc != null && fg != null && fc < 1000 && fc < fg) {
           console.log("[discover] casual-user skip:", pl.playlist_id, pl.owner, fc, "<", fg);
           skips.casual_user++;
-          await sleep(800);
+          await sleep(SLEEP_PROFILE_MS);
           continue;
         }
       } catch (e) {
         console.error("[discover] profile scrape failed:", pl.owner_id, e instanceof Error ? e.message : e);
       }
-      await sleep(800);
+      await sleep(SLEEP_PROFILE_MS);
     }
     kept.push(pl);
   }
@@ -506,9 +519,13 @@ export async function mergeCatalogAndLive(
   const pitchAngle = lane ? (lanesConfig[lane]?.pitch_angle ?? "") : "";
 
   const start = Date.now();
+  // One shared scrape deadline for the whole request: discovery + candidate
+  // filtering must both finish by `start + SCRAPE_BUDGET_MS`, leaving headroom for
+  // the DB upserts/merge/patches below to complete before the ~55s edge wall.
+  const scrapeDeadline = start + SCRAPE_BUDGET_MS;
   const quick = Boolean(opts?.quick);
   const excludeIds = await recentlyPitchedIds(supabase);
-  const discovered = await discoverViaSpotifyWeb(references, lane, quick, excludeIds);
+  const discovered = await discoverViaSpotifyWeb(references, lane, quick, excludeIds, scrapeDeadline);
   const discovery_skips: DiscoverySkips = {
     disclaim_brand: 0,
     casual_user: 0,
@@ -518,7 +535,7 @@ export async function mergeCatalogAndLive(
   };
   let live: DiscoveredPlaylist[] = [];
   if (discovered.length) {
-    const filtered = await filterDiscoveryCandidates(discovered, references, quick);
+    const filtered = await filterDiscoveryCandidates(discovered, references, quick, scrapeDeadline);
     discovery_skips.disclaim_brand = filtered.skips.disclaim_brand;
     discovery_skips.casual_user = filtered.skips.casual_user;
     discovery_skips.micro_playlist = filtered.skips.micro_playlist;

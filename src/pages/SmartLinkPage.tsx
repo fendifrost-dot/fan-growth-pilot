@@ -345,6 +345,7 @@ export default function SmartLinkPage() {
   if (meta) {
     if (meta.spotify_url) dspLinks.push({ name: 'Spotify', url: meta.spotify_url, bg: '#1DB954', color: '#fff' });
     if (meta.apple_music_url) dspLinks.push({ name: 'Apple Music', url: meta.apple_music_url, bg: '#FFFFFF', color: '#000' });
+    if (meta.soundcloud_url) dspLinks.push({ name: 'SoundCloud', url: meta.soundcloud_url, bg: '#FF5500', color: '#fff' });
     if (meta.youtube_url) dspLinks.push({ name: 'YouTube', url: meta.youtube_url, bg: '#FF0000', color: '#fff' });
     if (meta.tidal_url) dspLinks.push({ name: 'Tidal', url: meta.tidal_url, bg: '#000000', color: '#fff' });
     if (meta.even_url) dspLinks.push({ name: 'EVEN', url: meta.even_url, bg: 'linear-gradient(135deg, #D4AF37, #FFD700)', color: '#000' });

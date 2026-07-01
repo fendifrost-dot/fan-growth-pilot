@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -10,6 +10,8 @@ import SmartLinkPage from "./pages/SmartLinkPage";
 import Unsubscribe from "./pages/Unsubscribe";
 import PrivacyPolicy from "./pages/PrivacyPolicy";
 import DataDeletion from "./pages/DataDeletion";
+import Auth from "./pages/Auth";
+import RequireAuth from "@/components/RequireAuth";
 import AdminGuard from "./pages/admin/AdminGuard";
 import AdminHub from "./pages/admin/AdminHub";
 import AdminSendCenter from "./pages/admin/AdminSendCenter";
@@ -27,7 +29,6 @@ import AdminRadioTargets from "./pages/admin/AdminRadioTargets";
 import AdminCatalogue from "./pages/admin/AdminCatalogue";
 import AdminCategories from "./pages/admin/AdminCategories";
 import AdminPitchComposer from "./pages/admin/AdminPitchComposer";
-import { supabase } from "@/integrations/supabase/client";
 
 const queryClient = new QueryClient();
 
@@ -35,20 +36,14 @@ const RootRoute = () => {
   if (window.location.hostname.startsWith('links.')) {
     return <NotFound />;
   }
-  return <Index />;
+  return (
+    <RequireAuth>
+      <Index />
+    </RequireAuth>
+  );
 };
 
 const App = () => {
-  useEffect(() => {
-    (async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        const { error } = await supabase.auth.signInAnonymously();
-        if (error) console.error("Anon sign-in failed:", error);
-      }
-    })();
-  }, []);
-
   return (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
@@ -57,6 +52,7 @@ const App = () => {
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<RootRoute />} />
+          <Route path="/auth" element={<Auth />} />
           {/* Public unsubscribe endpoint — receives links from emails */}
           <Route path="/unsubscribe" element={<Unsubscribe />} />
 
@@ -65,7 +61,7 @@ const App = () => {
           <Route path="/data-deletion" element={<DataDeletion />} />
 
           {/* Admin (single-operator internal) */}
-          <Route path="/admin" element={<AdminGuard />}>
+          <Route path="/admin" element={<RequireAuth><AdminGuard /></RequireAuth>}>
             <Route index element={<AdminHub />} />
             <Route path="campaigns" element={<AdminCampaigns />} />
             <Route path="campaigns/:slug" element={<AdminCampaignDetail />} />

@@ -85,6 +85,18 @@ export const useSmartLinks = () => {
         .single();
 
       if (error) throw error;
+
+      // Auto-populate cover art from the streaming destination when the user
+      // didn't upload their own image. Best-effort: never block link creation.
+      if (data && !data.image_url) {
+        try {
+          await supabase.functions.invoke("resolve-artwork", {
+            body: { linkId: data.id },
+          });
+        } catch (e) {
+          console.warn("Artwork auto-fetch failed (non-fatal):", e);
+        }
+      }
       return data;
     },
     onSuccess: () => {

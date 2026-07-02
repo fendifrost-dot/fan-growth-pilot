@@ -72,6 +72,13 @@ export default {
       // STRIP ALL existing OG and Twitter meta tags to prevent duplicates
       html = html.replace(/<meta\s+(property|name)="(og:[^"]+|twitter:[^"]+)"[^>]*>\s*/gi, "");
 
+      // STRIP the static favicon/icon links so we can inject a per-link one
+      // (otherwise every slug shows the default Runway Music favicon)
+      html = html.replace(/<link\s+[^>]*rel="(shortcut icon|icon|apple-touch-icon)"[^>]*>\s*/gi, "");
+
+      // Per-link favicon = this link's own artwork (falls back to default in the edge fn)
+      const icon = metadata.icon || metadata.image;
+
       // Build the single authoritative OG + Twitter block
       const metaBlock = [
         `<meta property="og:title" content="${escapeHtml(metadata.title)}" />`,
@@ -84,6 +91,8 @@ export default {
         `<meta name="twitter:title" content="${escapeHtml(metadata.title)}" />`,
         `<meta name="twitter:description" content="${escapeHtml(metadata.description)}" />`,
         `<meta name="twitter:image" content="${escapeHtml(metadata.image)}" />`,
+        `<link rel="icon" href="${escapeHtml(icon)}" />`,
+        `<link rel="apple-touch-icon" href="${escapeHtml(icon)}" />`,
         `<link rel="canonical" href="${escapeHtml(metadata.canonical)}" />`,
       ].join("\n    ");
 

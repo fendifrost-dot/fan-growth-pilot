@@ -22,6 +22,9 @@ verify_jwt = false
 [functions.get-og-metadata]
 verify_jwt = false
 
+[functions.resolve-artwork]
+verify_jwt = false
+
 [functions.fetch-public-spotify-data]
 verify_jwt = false
 

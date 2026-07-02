@@ -146,6 +146,20 @@ export default function SmartLinkPage() {
   useEffect(() => {
     if (!smartLink) return;
     document.title = smartLink.headline || smartLink.title;
+
+    // Drive the browser-tab favicon from this link's own artwork so it never
+    // falls back to the shared default (Runway Music) favicon. image_url has
+    // already been resolved to an absolute/signed URL by fetchSmartLink().
+    const iconUrl = smartLink.image_url;
+    if (iconUrl) {
+      let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+      if (!link) {
+        link = document.createElement("link");
+        link.rel = "icon";
+        document.head.appendChild(link);
+      }
+      link.href = iconUrl;
+    }
   }, [smartLink]);
 
   // Initialize HLS.js for adaptive streaming

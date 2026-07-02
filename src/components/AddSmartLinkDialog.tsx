@@ -70,7 +70,8 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
   const [videoUrl, setVideoUrl] = useState(editLink?.video_url || "");
   const [backgroundImageUrl, setBackgroundImageUrl] = useState(editLink?.background_image_url || "");
   const [isUploading, setIsUploading] = useState(false);
-  
+  const [isFetchingArt, setIsFetchingArt] = useState(false);
+
   // New fields for enhanced landing pages
   const [headline, setHeadline] = useState(editLink?.headline || "");
   const [subheadline, setSubheadline] = useState(editLink?.subheadline || "");
@@ -151,6 +152,31 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
     // Return storage path instead of public URL
     // Signed URLs will be generated when content is accessed
     return uploadData.path;
+  };
+
+  // Auto-fetch cover art from the streaming destination (Spotify/Apple/etc.)
+  const handleFetchArtwork = async () => {
+    if (!editLink?.id) {
+      toast.error("Save the link first, then fetch artwork.");
+      return;
+    }
+    setIsFetchingArt(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("resolve-artwork", {
+        body: { linkId: editLink.id, force: true },
+      });
+      if (error) throw error;
+      if (data?.status === "updated" && data.image_url) {
+        setImageUrl(data.image_url);
+        toast.success(`Artwork fetched from ${data.source}`);
+      } else {
+        toast.error(`Couldn't fetch artwork: ${data?.detail || data?.status || "not found"}`);
+      }
+    } catch (e: any) {
+      toast.error("Artwork fetch failed: " + (e?.message || "unknown error"));
+    } finally {
+      setIsFetchingArt(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -347,6 +373,21 @@ export const AddSmartLinkDialog = ({ open, onOpenChange, onAdd, editLink, onUpda
                 {imageFile ? `New: ${imageFile.name}` : imageUrl ? "Current image will be kept (upload new to replace)" : "Image uploaded"}
               </p>
             )}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleFetchArtwork}
+              disabled={isFetchingArt || !isEditMode}
+              className="w-full"
+            >
+              {isFetchingArt ? "Fetching artwork…" : "Auto-fetch artwork from streaming link"}
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              {isEditMode
+                ? "Pulls the official cover art from the Spotify/Apple link."
+                : "Save the link first — artwork is auto-fetched on creation."}
+            </p>
           </div>
 
           <div className="space-y-2">

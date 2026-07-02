@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 
@@ -25,6 +26,39 @@ export const useSmartLinks = () => {
     refetchOnWindowFocus: true,
     refetchOnMount: true,
   });
+
+  // Automatic artwork backfill: whenever the list loads and any active link is
+  // missing cover art, pull it from the streaming destination. Runs once per
+  // browser session (new links are handled on-create). No manual action needed.
+  const sweepRan = useRef(false);
+  useEffect(() => {
+    if (sweepRan.current || !smartLinks?.length) return;
+    if (sessionStorage.getItem("artwork-backfill-done")) {
+      sweepRan.current = true;
+      return;
+    }
+    const hasMissingArt = smartLinks.some(
+      (l: any) => l.is_active !== false && !l.image_url,
+    );
+    sweepRan.current = true;
+    if (!hasMissingArt) {
+      sessionStorage.setItem("artwork-backfill-done", "1");
+      return;
+    }
+    void (async () => {
+      try {
+        const { error } = await supabase.functions.invoke("resolve-artwork", {
+          body: { backfill: true },
+        });
+        if (!error) {
+          sessionStorage.setItem("artwork-backfill-done", "1");
+          queryClient.invalidateQueries({ queryKey: ["smart-links"] });
+        }
+      } catch (e) {
+        console.warn("Artwork backfill sweep failed (non-fatal):", e);
+      }
+    })();
+  }, [smartLinks, queryClient]);
 
   const createMutation = useMutation({
     mutationFn: async (link: { 

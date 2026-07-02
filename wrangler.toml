@@ -1,0 +1,25 @@
+# Cloudflare Worker deploy config for the smart-link OG/favicon injector.
+#
+# This makes public/cloudflare-worker.js version-controlled and deployable via
+# Wrangler / CI instead of hand-pasting into the Cloudflare dashboard.
+# Deploy: `wrangler deploy` (or automatically via .github/workflows/deploy-worker.yml).
+#
+# ONE-TIME SETUP (see docs/CLOUDFLARE_WORKER_DEPLOY.md):
+#   1. Set `name` below to your EXISTING Worker's name (Cloudflare dashboard →
+#      Workers & Pages). If you pick a new name, first remove the old Worker's
+#      route for links.fendifrost.com/* so this one can claim it.
+#   2. Confirm the zone_name matches your Cloudflare zone (fendifrost.com).
+#   3. Add repo secrets CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID for CI.
+
+name = "smartlink-og-injector"          # TODO: match your existing Worker's name
+main = "public/cloudflare-worker.js"
+compatibility_date = "2024-11-01"
+
+# Route the custom domain through this Worker (same route the dashboard Worker uses today).
+routes = [
+  { pattern = "links.fendifrost.com/*", zone_name = "fendifrost.com" }
+]
+
+# Origin the Worker fetches the SPA shell from (Lovable published app).
+[vars]
+ORIGIN_URL = "https://fan-growth-pilot.lovable.app"

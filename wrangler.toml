@@ -11,13 +11,15 @@
 #   2. Confirm the zone_name matches your Cloudflare zone (fendifrost.com).
 #   3. Add repo secrets CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID for CI.
 
-name = "smartlink-og-injector"          # TODO: match your existing Worker's name
+name = "links-og-worker"
 main = "public/cloudflare-worker.js"
 compatibility_date = "2024-11-01"
+account_id = "40493bbc3abd329a8b89d5d8171a7525"
 
-# Route the custom domain through this Worker (same route the dashboard Worker uses today).
+# Routes (links + legacy go subdomain — both were on the dashboard Worker pre-wrangler).
 routes = [
-  { pattern = "links.fendifrost.com/*", zone_name = "fendifrost.com" }
+  { pattern = "links.fendifrost.com/*", zone_name = "fendifrost.com" },
+  { pattern = "go.fendifrost.com/*", zone_name = "fendifrost.com" },
 ]
 
 # Origin the Worker fetches the SPA shell from (Lovable published app).

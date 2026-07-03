@@ -1,4 +1,8 @@
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  gatherCandidateUrls,
+  resolveArtwork,
+} from "../_shared/artwork.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -31,6 +35,61 @@ async function resolveImageUrl(
   return data.signedUrl;
 }
 
+function extFor(contentType: string): string {
+  if (/png/i.test(contentType)) return "png";
+  if (/webp/i.test(contentType)) return "webp";
+  return "jpg";
+}
+
+// When image_url is missing, pull official DSP artwork and persist it so future
+// requests (and the SPA) reuse the same stored cover art.
+async function ensureStoredArtwork(
+  supabase: SupabaseClient,
+  link: {
+    id: string;
+    slug: string;
+    short_code: string | null;
+    image_url: string | null;
+    destination_url: string | null;
+    metadata: Record<string, unknown> | null;
+  },
+): Promise<string | null> {
+  const existing = await resolveImageUrl(supabase, link.image_url);
+  if (existing) return existing;
+
+  const candidates = gatherCandidateUrls(link);
+  if (candidates.length === 0) return null;
+
+  const art = await resolveArtwork(candidates);
+  if (!art) return null;
+
+  const imgRes = await fetch(art.imageUrl);
+  if (!imgRes.ok) return art.imageUrl;
+
+  const bytes = new Uint8Array(await imgRes.arrayBuffer());
+  const ext = extFor(art.contentType);
+  const path = `images/auto/${link.slug}-${link.short_code ?? link.id}.${ext}`;
+
+  const { error: upErr } = await supabase.storage
+    .from(STORAGE_BUCKET)
+    .upload(path, bytes, { contentType: art.contentType, upsert: true });
+  if (upErr) {
+    console.error("ensureStoredArtwork upload failed:", upErr);
+    return art.imageUrl;
+  }
+
+  const { error: updErr } = await supabase
+    .from("smart_links")
+    .update({ image_url: path })
+    .eq("id", link.id);
+  if (updErr) {
+    console.error("ensureStoredArtwork db update failed:", updErr);
+    return art.imageUrl;
+  }
+
+  return resolveImageUrl(supabase, path);
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -53,7 +112,9 @@ Deno.serve(async (req: Request) => {
 
     const { data, error } = await supabase
       .from("smart_links")
-      .select("title, headline, subheadline, description, image_url, slug, theme_preset, og_image_url")
+      .select(
+        "id, title, headline, subheadline, description, image_url, slug, short_code, destination_url, metadata, theme_preset, og_image_url",
+      )
       .or(`slug.eq.${slug},short_code.eq.${slug}`)
       .eq("is_active", true)
       .maybeSingle();
@@ -82,13 +143,11 @@ Deno.serve(async (req: Request) => {
     const title = data.headline || data.title;
     const description = data.subheadline || data.description || "";
 
-    // Resolve this link's own album artwork (image_url) to an absolute URL.
-    const albumArt = await resolveImageUrl(supabase, data.image_url);
+    // Resolve stored artwork, auto-fetching from DSP URLs when image_url is empty.
+    const albumArt = await ensureStoredArtwork(supabase, data);
 
-    // OG/social image priority: explicit og_image_url > album artwork > generic default.
-    const ogImage = data.og_image_url || albumArt || DEFAULT_OG_IMAGE;
-    // Favicon priority: album artwork (square-ish) > og image > generic default.
-    // Never inherit the generic Runway default when this link has its own art.
+    // OG/social + favicon: per-link album art first; legacy og_image_url is fallback only.
+    const ogImage = albumArt || data.og_image_url || DEFAULT_OG_IMAGE;
     const icon = albumArt || data.og_image_url || DEFAULT_FAVICON;
     const canonicalUrl = `${LINKS_DOMAIN}/${data.slug}`;
 

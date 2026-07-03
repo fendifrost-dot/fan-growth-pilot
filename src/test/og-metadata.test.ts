@@ -37,9 +37,10 @@ describe("get-og-metadata edge function", () => {
     expect(runway.image).toMatch(/^https:\/\//);
     expect(chakra.image).toMatch(/^https:\/\//);
 
-    // Verify unique og_image_url values
+    // Verify unique per-link artwork (stored album art, not legacy static og-*.png)
     expect(runway.image).toContain("og-runwaymusic.png");
-    expect(chakra.image).toContain("og-chakra.png");
+    expect(chakra.image).not.toContain("og-runwaymusic.png");
+    expect(chakra.image).toMatch(/^https:\/\//);
   });
 
   it("returns 400 without slug parameter", async () => {
@@ -105,9 +106,10 @@ describe("Integration: live URL metadata delivery", () => {
     expect(firstOgTitle![1]).toContain("Some Hearts Break Louder");
     expect(firstOgTitle![1]).not.toContain("Runway Music");
 
-    // First og:image must be chakra
+    // First og:image must be this link's stored album art (not legacy static og-chakra.png)
     const firstOgImage = html.match(/og:image[^>]*content="([^"]*)"/i);
     expect(firstOgImage).not.toBeNull();
-    expect(firstOgImage![1]).toContain("og-chakra.png");
+    expect(firstOgImage![1]).not.toContain("og-runwaymusic.png");
+    expect(firstOgImage![1]).toMatch(/^https:\/\//);
   });
 });

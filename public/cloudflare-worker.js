@@ -22,6 +22,11 @@
  */
 
 const OG_METADATA_URL = "https://vsemrziqxrrfcquxfnwd.supabase.co/functions/v1/get-og-metadata";
+const DEFAULT_OG_IMAGE = "https://links.fendifrost.com/og-runwaymusic.png";
+const SUPABASE_URL = "https://vsemrziqxrrfcquxfnwd.supabase.co";
+// Public anon key (same as the published SPA bundle) — read-only smart_links access.
+const SUPABASE_ANON =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZzZW1yemlxeHJyZmNxdXhmbndkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE5MjgyMDYsImV4cCI6MjA3NzUwNDIwNn0.YBf-HcObtQGlyjbXeXe0SErkRSnmBy6BNWUbjcgus94";
 
 export default {
   async fetch(request, env) {
@@ -51,6 +56,7 @@ export default {
       });
       if (metaRes.ok) {
         metadata = await metaRes.json();
+        metadata = await maybeUpgradeDefaultArtwork(slug, metadata);
       }
     } catch (e) {
       console.error("Failed to fetch OG metadata:", e);
@@ -122,6 +128,83 @@ export default {
     });
   },
 };
+
+/** When the edge fn still returns the generic Runway default, resolve DSP artwork. */
+async function maybeUpgradeDefaultArtwork(slug, metadata) {
+  if (!metadata || slug === "runwaymusic") return metadata;
+
+  // Favicon already uses stored album art but og:image still points at a legacy static og-*.png.
+  if (
+    metadata.icon &&
+    metadata.icon.includes("supabase.co/storage") &&
+    metadata.image?.includes("links.fendifrost.com/og-")
+  ) {
+    return { ...metadata, image: metadata.icon };
+  }
+
+  if (metadata.image !== DEFAULT_OG_IMAGE && metadata.icon !== "https://links.fendifrost.com/favicon.png") {
+    return metadata;
+  }
+
+  const art = await resolveDspArtwork(slug);
+  if (!art) return metadata;
+  return { ...metadata, image: art, icon: art };
+}
+
+async function resolveDspArtwork(slug) {
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/smart_links?slug=eq.${encodeURIComponent(slug)}&is_active=eq.true&select=metadata,destination_url`,
+      {
+        headers: {
+          apikey: SUPABASE_ANON,
+          Authorization: `Bearer ${SUPABASE_ANON}`,
+        },
+      },
+    );
+    if (!res.ok) return null;
+    const rows = await res.json();
+    const link = rows?.[0];
+    if (!link) return null;
+
+    const md = link.metadata || {};
+    const urls = [
+      md.apple_music_url,
+      md.spotify_url,
+      ...(Array.isArray(md.platforms) ? md.platforms.map((p) => p?.url) : []),
+      link.destination_url,
+    ].filter((u) => typeof u === "string" && u.startsWith("http"));
+
+    for (const url of [...new Set(urls)]) {
+      const apple = await artworkFromApple(url);
+      if (apple) return apple;
+      const spotify = await artworkFromSpotify(url);
+      if (spotify) return spotify;
+    }
+  } catch (e) {
+    console.error("resolveDspArtwork failed:", e);
+  }
+  return null;
+}
+
+async function artworkFromApple(url) {
+  const id = url.match(/[?&]i=(\d{3,})/)?.[1] ?? url.match(/music\.apple\.com\/[^?#]*?\/(\d{3,})(?:[/?#]|$)/i)?.[1];
+  if (!id) return null;
+  const data = await fetch(`https://itunes.apple.com/lookup?id=${id}`).then((r) => r.json());
+  const raw = data?.results?.[0]?.artworkUrl100 ?? data?.results?.[0]?.artworkUrl60;
+  if (!raw) return null;
+  return raw.replace(/\/\d+x\d+bb\.(jpg|png)/i, "/1000x1000bb.$1");
+}
+
+async function artworkFromSpotify(url) {
+  if (!/open\.spotify\.com\/(?:intl-[a-z-]+\/)?(?:album|track|playlist)\//i.test(url)) return null;
+  const data = await fetch(
+    `https://open.spotify.com/oembed?url=${encodeURIComponent(url)}`,
+  ).then((r) => (r.ok ? r.json() : null));
+  const thumb = data?.thumbnail_url;
+  if (!thumb) return null;
+  return thumb.replace(/ab67616d0000[0-9a-f]{4}/i, "ab67616d0000b273");
+}
 
 function escapeHtml(str) {
   if (!str) return "";

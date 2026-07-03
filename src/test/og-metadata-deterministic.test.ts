@@ -29,8 +29,9 @@ describe("get-og-metadata: deterministic per-slug validation", () => {
     expect(data.title).toBe("Some Hearts Break Louder");
     expect(data.canonical).toBe("https://links.fendifrost.com/heartchakra");
     expect(data.url).toBe("https://links.fendifrost.com/heartchakra");
-    expect(data.image).toContain("og-chakra.png");
+    expect(data.image).not.toContain("og-runwaymusic.png");
     expect(data.image).toMatch(/^https:\/\//);
+    expect(data.icon).toMatch(/^https:\/\//);
   });
 
   it("two slugs return DIFFERENT og:image values", async () => {
@@ -87,9 +88,9 @@ describe("HTML injection simulation: og:image per slug", () => {
     expect(runwayHtml).toContain("og-runwaymusic.png");
     expect(runwayHtml).not.toContain("og-chakra.png");
 
-    // Chakra HTML has chakra-specific image
-    expect(chakraHtml).toContain("og-chakra.png");
+    // Chakra HTML uses stored album art, not legacy static og-chakra.png
     expect(chakraHtml).not.toContain("og-runwaymusic.png");
+    expect(chakraHtml).toMatch(/supabase\.co\/storage|mzstatic\.com/);
 
     // Canonical URLs are slug-specific
     expect(runwayHtml).toContain("https://links.fendifrost.com/runwaymusic");

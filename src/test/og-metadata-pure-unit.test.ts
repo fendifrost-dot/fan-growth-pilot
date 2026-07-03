@@ -8,7 +8,15 @@ import { describe, it, expect } from "vitest";
 
 // ── Pure function: resolve metadata from DB row ──
 function resolveMetadata(
-  data: { headline?: string; title: string; subheadline?: string; description?: string; og_image_url?: string | null; slug: string } | null,
+  data: {
+    headline?: string;
+    title: string;
+    subheadline?: string;
+    description?: string;
+    image_url?: string | null;
+    og_image_url?: string | null;
+    slug: string;
+  } | null,
   defaultOgImage: string,
   linksDomain: string,
 ) {
@@ -17,7 +25,7 @@ function resolveMetadata(
   }
   const title = data.headline || data.title;
   const description = data.subheadline || data.description || "";
-  const ogImage = data.og_image_url || defaultOgImage;
+  const ogImage = data.image_url || data.og_image_url || defaultOgImage;
   const canonicalUrl = `${linksDomain}/${data.slug}`;
   return { title, description, image: ogImage, url: canonicalUrl, canonical: canonicalUrl };
 }
@@ -51,6 +59,7 @@ const CHAKRA_ROW = {
   headline: "Some Hearts Break Louder",
   subheadline: "This Is What It Sounds Like.",
   description: "HEART CHAKRA...",
+  image_url: "https://vsemrziqxrrfcquxfnwd.supabase.co/storage/v1/object/sign/smart-links/images/chakra.jpg",
   og_image_url: "https://links.fendifrost.com/og-chakra.png",
   slug: "heartchakra",
 };
@@ -72,8 +81,15 @@ describe("resolveMetadata: pure unit tests (no network)", () => {
     expect(meta.description).toBe("This Is What It Sounds Like.");
   });
 
-  it("returns og_image_url when set", () => {
+  it("prefers image_url over legacy og_image_url when set", () => {
     const meta = resolveMetadata(CHAKRA_ROW, DEFAULT_OG_IMAGE, LINKS_DOMAIN)!;
+    expect(meta.image).toContain("supabase.co/storage");
+    expect(meta.image).not.toContain("og-chakra.png");
+  });
+
+  it("falls back to og_image_url when image_url is null", () => {
+    const row = { ...CHAKRA_ROW, image_url: null };
+    const meta = resolveMetadata(row, DEFAULT_OG_IMAGE, LINKS_DOMAIN)!;
     expect(meta.image).toBe("https://links.fendifrost.com/og-chakra.png");
   });
 
@@ -116,13 +132,13 @@ describe("buildOgTags: pure unit tests (no network)", () => {
     const rHtml = buildOgTags(resolveMetadata(RUNWAY_ROW, DEFAULT_OG_IMAGE, LINKS_DOMAIN)!);
     const cHtml = buildOgTags(resolveMetadata(CHAKRA_ROW, DEFAULT_OG_IMAGE, LINKS_DOMAIN)!);
     expect(rHtml).toContain("og-runwaymusic.png");
-    expect(rHtml).not.toContain("og-chakra.png");
-    expect(cHtml).toContain("og-chakra.png");
+    expect(rHtml).not.toContain("supabase.co/storage");
+    expect(cHtml).toContain("supabase.co/storage");
     expect(cHtml).not.toContain("og-runwaymusic.png");
   });
 
-  it("fallback image appears in OG tags when og_image_url is null", () => {
-    const row = { ...CHAKRA_ROW, og_image_url: null };
+  it("fallback image appears in OG tags when no artwork is set", () => {
+    const row = { ...CHAKRA_ROW, image_url: null, og_image_url: null };
     const html = buildOgTags(resolveMetadata(row, DEFAULT_OG_IMAGE, LINKS_DOMAIN)!);
     expect(html).toContain("og-runwaymusic.png"); // fallback
     expect(html).not.toContain("og-chakra.png");

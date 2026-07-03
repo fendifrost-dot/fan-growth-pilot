@@ -50,7 +50,7 @@ describe("get-og-metadata: deterministic per-slug validation", () => {
     expect(res.status).toBe(404);
 
     const data = await res.json();
-    expect(data.image).toContain("og-runwaymusic.png"); // branded default fallback
+    expect(data.image).toContain("placeholder.svg");
     expect(data.title).toBe("Page Not Found");
   });
 

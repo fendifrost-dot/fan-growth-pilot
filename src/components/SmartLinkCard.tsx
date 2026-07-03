@@ -2,7 +2,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ExternalLink, Copy, Edit, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { getCanonicalUrl, DEFAULT_OG_IMAGE } from "@/lib/constants";
+import { getCanonicalUrl, isRunwaySlug, NEUTRAL_OG_IMAGE, RUNWAY_OG_IMAGE } from "@/lib/constants";
 
 interface SmartLinkCardProps {
   title: string;
@@ -19,7 +19,8 @@ interface SmartLinkCardProps {
 
 export const SmartLinkCard = ({ title, slug, ogImageUrl, clicks, ctaClicks, conversions, onRemove, onEdit }: SmartLinkCardProps) => {
   const canonicalUrl = getCanonicalUrl(slug);
-  const thumbnailSrc = ogImageUrl || DEFAULT_OG_IMAGE;
+  const thumbnailSrc =
+    ogImageUrl || (isRunwaySlug(slug) ? RUNWAY_OG_IMAGE : NEUTRAL_OG_IMAGE);
 
   const copyToClipboard = () => {
     navigator.clipboard.writeText(canonicalUrl);

@@ -22,7 +22,9 @@
  */
 
 const OG_METADATA_URL = "https://vsemrziqxrrfcquxfnwd.supabase.co/functions/v1/get-og-metadata";
-const DEFAULT_OG_IMAGE = "https://links.fendifrost.com/og-runwaymusic.png";
+const RUNWAY_OG_IMAGE = "https://links.fendifrost.com/og-runwaymusic.png";
+const NEUTRAL_OG_IMAGE = "https://links.fendifrost.com/placeholder.svg";
+const NEUTRAL_FAVICON = "https://links.fendifrost.com/favicon.png";
 const SUPABASE_URL = "https://vsemrziqxrrfcquxfnwd.supabase.co";
 // Public anon key (same as the published SPA bundle) — read-only smart_links access.
 const SUPABASE_ANON =
@@ -57,6 +59,7 @@ export default {
       if (metaRes.ok) {
         metadata = await metaRes.json();
         metadata = await maybeUpgradeDefaultArtwork(slug, metadata);
+        metadata = finalizeMetadata(slug, metadata);
       }
     } catch (e) {
       console.error("Failed to fetch OG metadata:", e);
@@ -131,7 +134,7 @@ export default {
 
 /** When the edge fn still returns the generic Runway default, resolve DSP artwork. */
 async function maybeUpgradeDefaultArtwork(slug, metadata) {
-  if (!metadata || slug === "runwaymusic") return metadata;
+  if (!metadata || isRunwaySlug(slug)) return metadata;
 
   // Favicon already uses stored album art but og:image still points at a legacy static og-*.png.
   if (
@@ -142,13 +145,31 @@ async function maybeUpgradeDefaultArtwork(slug, metadata) {
     return { ...metadata, image: metadata.icon };
   }
 
-  if (metadata.image !== DEFAULT_OG_IMAGE && metadata.icon !== "https://links.fendifrost.com/favicon.png") {
+  if (!isRunwayArt(metadata.image) && metadata.icon !== NEUTRAL_FAVICON) {
     return metadata;
   }
 
   const art = await resolveDspArtwork(slug);
   if (!art) return metadata;
   return { ...metadata, image: art, icon: art };
+}
+
+/** Never serve Runway album art on non-Runway links. */
+function finalizeMetadata(slug, metadata) {
+  if (!metadata || isRunwaySlug(slug)) return metadata;
+  let image = metadata.image;
+  let icon = metadata.icon || metadata.image;
+  if (isRunwayArt(image)) image = NEUTRAL_OG_IMAGE;
+  if (isRunwayArt(icon)) icon = NEUTRAL_FAVICON;
+  return { ...metadata, image, icon };
+}
+
+function isRunwaySlug(slug) {
+  return slug.toLowerCase() === "runwaymusic";
+}
+
+function isRunwayArt(url) {
+  return typeof url === "string" && url.includes("og-runwaymusic.png");
 }
 
 async function resolveDspArtwork(slug) {

@@ -6,7 +6,31 @@ import { describe, it, expect } from "vitest";
  * extracted from the edge function and Cloudflare Worker.
  */
 
-// ── Pure function: resolve metadata from DB row ──
+// ── Pure function: resolve metadata from DB row (mirrors get-og-metadata) ──
+const RUNWAY_OG_IMAGE = "https://links.fendifrost.com/og-runwaymusic.png";
+const NEUTRAL_OG_IMAGE = "https://links.fendifrost.com/placeholder.svg";
+
+function isRunwaySlug(slug: string): boolean {
+  return slug.toLowerCase() === "runwaymusic";
+}
+
+function sanitizeLegacyOgUrl(slug: string, url: string | null | undefined): string | null {
+  if (!url) return null;
+  if (!isRunwaySlug(slug) && url.includes("og-runwaymusic.png")) return null;
+  return url;
+}
+
+function resolveShareImage(
+  slug: string,
+  albumArt: string | null | undefined,
+  ogImageUrl: string | null | undefined,
+): string {
+  const legacy = sanitizeLegacyOgUrl(slug, ogImageUrl);
+  if (albumArt) return albumArt;
+  if (legacy) return legacy;
+  return isRunwaySlug(slug) ? RUNWAY_OG_IMAGE : NEUTRAL_OG_IMAGE;
+}
+
 function resolveMetadata(
   data: {
     headline?: string;
@@ -17,7 +41,6 @@ function resolveMetadata(
     og_image_url?: string | null;
     slug: string;
   } | null,
-  defaultOgImage: string,
   linksDomain: string,
 ) {
   if (!data) {
@@ -25,7 +48,7 @@ function resolveMetadata(
   }
   const title = data.headline || data.title;
   const description = data.subheadline || data.description || "";
-  const ogImage = data.image_url || data.og_image_url || defaultOgImage;
+  const ogImage = resolveShareImage(data.slug, data.image_url, data.og_image_url);
   const canonicalUrl = `${linksDomain}/${data.slug}`;
   return { title, description, image: ogImage, url: canonicalUrl, canonical: canonicalUrl };
 }
@@ -41,7 +64,6 @@ function buildOgTags(metadata: { title: string; description: string; image: stri
   ].join("\n");
 }
 
-const DEFAULT_OG_IMAGE = "https://links.fendifrost.com/og-runwaymusic.png";
 const LINKS_DOMAIN = "https://links.fendifrost.com";
 
 // ── Mock DB rows matching actual production data ──
@@ -66,62 +88,71 @@ const CHAKRA_ROW = {
 
 describe("resolveMetadata: pure unit tests (no network)", () => {
   it("uses headline over title when present", () => {
-    const meta = resolveMetadata(RUNWAY_ROW, DEFAULT_OG_IMAGE, LINKS_DOMAIN)!;
+    const meta = resolveMetadata(RUNWAY_ROW, LINKS_DOMAIN)!;
     expect(meta.title).toBe("Runway Music: The Sound of Style");
   });
 
   it("falls back to title when headline is empty", () => {
     const row = { ...RUNWAY_ROW, headline: undefined };
-    const meta = resolveMetadata(row, DEFAULT_OG_IMAGE, LINKS_DOMAIN)!;
+    const meta = resolveMetadata(row, LINKS_DOMAIN)!;
     expect(meta.title).toBe("Runway Music Even");
   });
 
   it("uses subheadline as description", () => {
-    const meta = resolveMetadata(CHAKRA_ROW, DEFAULT_OG_IMAGE, LINKS_DOMAIN)!;
+    const meta = resolveMetadata(CHAKRA_ROW, LINKS_DOMAIN)!;
     expect(meta.description).toBe("This Is What It Sounds Like.");
   });
 
   it("prefers image_url over legacy og_image_url when set", () => {
-    const meta = resolveMetadata(CHAKRA_ROW, DEFAULT_OG_IMAGE, LINKS_DOMAIN)!;
+    const meta = resolveMetadata(CHAKRA_ROW, LINKS_DOMAIN)!;
     expect(meta.image).toContain("supabase.co/storage");
     expect(meta.image).not.toContain("og-chakra.png");
   });
 
   it("falls back to og_image_url when image_url is null", () => {
     const row = { ...CHAKRA_ROW, image_url: null };
-    const meta = resolveMetadata(row, DEFAULT_OG_IMAGE, LINKS_DOMAIN)!;
+    const meta = resolveMetadata(row, LINKS_DOMAIN)!;
     expect(meta.image).toBe("https://links.fendifrost.com/og-chakra.png");
   });
 
   it("falls back to default image when og_image_url is null", () => {
     const row = { ...RUNWAY_ROW, og_image_url: null };
-    const meta = resolveMetadata(row, DEFAULT_OG_IMAGE, LINKS_DOMAIN)!;
-    expect(meta.image).toBe(DEFAULT_OG_IMAGE);
+    const meta = resolveMetadata(row, LINKS_DOMAIN)!;
+    expect(meta.image).toBe(RUNWAY_OG_IMAGE);
   });
 
   it("builds correct canonical URL from slug", () => {
-    const meta = resolveMetadata(RUNWAY_ROW, DEFAULT_OG_IMAGE, LINKS_DOMAIN)!;
+    const meta = resolveMetadata(RUNWAY_ROW, LINKS_DOMAIN)!;
     expect(meta.canonical).toBe("https://links.fendifrost.com/runwaymusic");
     expect(meta.url).toBe(meta.canonical);
   });
 
   it("returns null for null data (unknown slug)", () => {
-    const meta = resolveMetadata(null, DEFAULT_OG_IMAGE, LINKS_DOMAIN);
+    const meta = resolveMetadata(null, LINKS_DOMAIN);
     expect(meta).toBeNull();
   });
 
-  it("two different slugs produce different metadata", () => {
-    const r = resolveMetadata(RUNWAY_ROW, DEFAULT_OG_IMAGE, LINKS_DOMAIN)!;
-    const c = resolveMetadata(CHAKRA_ROW, DEFAULT_OG_IMAGE, LINKS_DOMAIN)!;
-    expect(r.title).not.toEqual(c.title);
-    expect(r.image).not.toEqual(c.image);
-    expect(r.canonical).not.toEqual(c.canonical);
+  it("never uses Runway art as fallback for non-Runway links", () => {
+    const row = { ...CHAKRA_ROW, image_url: null, og_image_url: null };
+    const meta = resolveMetadata(row, LINKS_DOMAIN)!;
+    expect(meta.image).toBe(NEUTRAL_OG_IMAGE);
+    expect(meta.image).not.toContain("og-runwaymusic.png");
+  });
+
+  it("strips Runway og_image_url mistakenly set on a non-Runway link", () => {
+    const row = {
+      ...CHAKRA_ROW,
+      image_url: null,
+      og_image_url: "https://links.fendifrost.com/og-runwaymusic.png",
+    };
+    const meta = resolveMetadata(row, LINKS_DOMAIN)!;
+    expect(meta.image).toBe(NEUTRAL_OG_IMAGE);
   });
 });
 
 describe("buildOgTags: pure unit tests (no network)", () => {
   it("produces correct OG tags for runway", () => {
-    const meta = resolveMetadata(RUNWAY_ROW, DEFAULT_OG_IMAGE, LINKS_DOMAIN)!;
+    const meta = resolveMetadata(RUNWAY_ROW, LINKS_DOMAIN)!;
     const html = buildOgTags(meta);
     expect(html).toContain('content="Runway Music: The Sound of Style"');
     expect(html).toContain('content="https://links.fendifrost.com/og-runwaymusic.png"');
@@ -129,18 +160,18 @@ describe("buildOgTags: pure unit tests (no network)", () => {
   });
 
   it("produces different og:image tags for two slugs", () => {
-    const rHtml = buildOgTags(resolveMetadata(RUNWAY_ROW, DEFAULT_OG_IMAGE, LINKS_DOMAIN)!);
-    const cHtml = buildOgTags(resolveMetadata(CHAKRA_ROW, DEFAULT_OG_IMAGE, LINKS_DOMAIN)!);
+    const rHtml = buildOgTags(resolveMetadata(RUNWAY_ROW, LINKS_DOMAIN)!);
+    const cHtml = buildOgTags(resolveMetadata(CHAKRA_ROW, LINKS_DOMAIN)!);
     expect(rHtml).toContain("og-runwaymusic.png");
     expect(rHtml).not.toContain("supabase.co/storage");
     expect(cHtml).toContain("supabase.co/storage");
     expect(cHtml).not.toContain("og-runwaymusic.png");
   });
 
-  it("fallback image appears in OG tags when no artwork is set", () => {
+  it("non-Runway links with no art use neutral placeholder, not Runway", () => {
     const row = { ...CHAKRA_ROW, image_url: null, og_image_url: null };
-    const html = buildOgTags(resolveMetadata(row, DEFAULT_OG_IMAGE, LINKS_DOMAIN)!);
-    expect(html).toContain("og-runwaymusic.png"); // fallback
-    expect(html).not.toContain("og-chakra.png");
+    const html = buildOgTags(resolveMetadata(row, LINKS_DOMAIN)!);
+    expect(html).toContain("placeholder.svg");
+    expect(html).not.toContain("og-runwaymusic.png");
   });
 });

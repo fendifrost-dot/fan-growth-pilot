@@ -11,8 +11,33 @@ const corsHeaders = {
 };
 
 const LINKS_DOMAIN = "https://links.fendifrost.com";
-const DEFAULT_OG_IMAGE = `${LINKS_DOMAIN}/og-runwaymusic.png`;
-const DEFAULT_FAVICON = `${LINKS_DOMAIN}/favicon.png`;
+const RUNWAY_OG_IMAGE = `${LINKS_DOMAIN}/og-runwaymusic.png`;
+const NEUTRAL_OG_IMAGE = `${LINKS_DOMAIN}/placeholder.svg`;
+const NEUTRAL_FAVICON = `${LINKS_DOMAIN}/favicon.png`;
+
+function isRunwaySlug(slug: string): boolean {
+  return slug.toLowerCase() === "runwaymusic";
+}
+
+function sanitizeLegacyOgUrl(slug: string, url: string | null | undefined): string | null {
+  if (!url) return null;
+  if (!isRunwaySlug(slug) && url.includes("og-runwaymusic.png")) return null;
+  return url;
+}
+
+function resolveShareImage(slug: string, albumArt: string | null, ogImageUrl: string | null): string {
+  const legacy = sanitizeLegacyOgUrl(slug, ogImageUrl);
+  if (albumArt) return albumArt;
+  if (legacy) return legacy;
+  return isRunwaySlug(slug) ? RUNWAY_OG_IMAGE : NEUTRAL_OG_IMAGE;
+}
+
+function resolveFavicon(slug: string, albumArt: string | null, ogImageUrl: string | null): string {
+  const legacy = sanitizeLegacyOgUrl(slug, ogImageUrl);
+  if (albumArt) return albumArt;
+  if (legacy) return legacy;
+  return NEUTRAL_FAVICON;
+}
 // Long-lived signed URLs so crawlers/browsers can fetch private-bucket artwork.
 const SIGN_EXPIRY_SECONDS = 60 * 60 * 24 * 365; // 1 year
 const STORAGE_BUCKET = "smart-links";
@@ -124,8 +149,8 @@ Deno.serve(async (req: Request) => {
         JSON.stringify({
           title: "Page Not Found",
           description: "",
-          image: DEFAULT_OG_IMAGE,
-          icon: DEFAULT_FAVICON,
+          image: isRunwaySlug(slug) ? RUNWAY_OG_IMAGE : NEUTRAL_OG_IMAGE,
+          icon: NEUTRAL_FAVICON,
           url: `${LINKS_DOMAIN}/${slug}`,
           canonical: `${LINKS_DOMAIN}/${slug}`,
         }),
@@ -146,9 +171,8 @@ Deno.serve(async (req: Request) => {
     // Resolve stored artwork, auto-fetching from DSP URLs when image_url is empty.
     const albumArt = await ensureStoredArtwork(supabase, data);
 
-    // OG/social + favicon: per-link album art first; legacy og_image_url is fallback only.
-    const ogImage = albumArt || data.og_image_url || DEFAULT_OG_IMAGE;
-    const icon = albumArt || data.og_image_url || DEFAULT_FAVICON;
+    const ogImage = resolveShareImage(data.slug, albumArt, data.og_image_url);
+    const icon = resolveFavicon(data.slug, albumArt, data.og_image_url);
     const canonicalUrl = `${LINKS_DOMAIN}/${data.slug}`;
 
     const metadata = {

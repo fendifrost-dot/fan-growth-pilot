@@ -39,12 +39,13 @@ describe("SmartLinkCard: canonical URL and per-link images", () => {
     expect(img1.src).not.toEqual(img2.src);
   });
 
-  it("uses default fallback image when ogImageUrl is null", () => {
+  it("uses neutral placeholder when ogImageUrl is null on a non-Runway link", () => {
     const { container } = render(
-      <SmartLinkCard title="No Image Link" url="https://example.com" slug="test" clicks={0} ctaClicks={0} conversions={0} ogImageUrl={null} />
+      <SmartLinkCard title="No Image Link" url="https://example.com" slug="nutrition" clicks={0} ctaClicks={0} conversions={0} ogImageUrl={null} />
     );
     const img = container.querySelector("img")!;
-    expect(img.src).toContain("og-runwaymusic.png");
+    expect(img.src).toContain("placeholder.svg");
+    expect(img.src).not.toContain("og-runwaymusic.png");
   });
 
   it("does not display short link section", () => {

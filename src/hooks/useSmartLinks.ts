@@ -120,15 +120,17 @@ export const useSmartLinks = () => {
 
       if (error) throw error;
 
-      // Auto-populate cover art from the streaming destination when the user
-      // didn't upload their own image. Best-effort: never block link creation.
-      if (data && !data.image_url) {
+      // Auto-populate cover art + the full multi-platform DSP link set from the
+      // one streaming destination. Runs even when the user uploaded their own
+      // image so the platform buttons still get filled. Best-effort: never
+      // block link creation.
+      if (data) {
         try {
           await supabase.functions.invoke("resolve-artwork", {
             body: { linkId: data.id },
           });
         } catch (e) {
-          console.warn("Artwork auto-fetch failed (non-fatal):", e);
+          console.warn("Artwork/platform auto-fetch failed (non-fatal):", e);
         }
       }
       return data;

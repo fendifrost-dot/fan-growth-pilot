@@ -1,9 +1,13 @@
 // resolve-artwork
 //
-// Auto-populates a smart link's cover art from the streaming page it points to
-// (Spotify / Apple Music / etc.), stores it in the smart-links bucket, and sets
-// image_url. Used to auto-fill artwork on link creation and to backfill links
-// that are missing art.
+// Auto-populates a smart link's cover art AND its full multi-platform DSP link
+// set from the one streaming page it points to. Two things happen per link:
+//   1. Cover art  — highest-res official artwork (Apple 1000 > Spotify 640 >
+//      og:image), stored in the smart-links bucket, written to image_url.
+//   2. Platform links — the hybrid resolver (Odesli ∪ iTunes ∪ Spotify) fills
+//      metadata.{spotify_url, apple_music_url, soundcloud_url, youtube_url,
+//      tidal_url}, which the landing page renders as per-DSP buttons.
+// Used to auto-fill on link creation and to backfill existing links.
 //
 // Auth: a valid Supabase user JWT (browser admin) OR the FANFUEL_HUB_KEY header
 // (server / cron / backfill).
@@ -20,6 +24,10 @@ import {
   gatherCandidateUrls,
   resolveArtwork,
 } from "../_shared/artwork.ts";
+import {
+  PLATFORM_METADATA_KEYS,
+  resolvePlatformLinks,
+} from "../_shared/platform-links.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -44,29 +52,76 @@ interface LinkRow {
   metadata: Record<string, unknown> | null;
 }
 
+// Resolve the full DSP link set from one pasted URL and merge the results into
+// the smart link's metadata as the individual *_url keys the landing page reads.
+// Runs independently of the artwork step so links that already have cover art
+// still get their platform buttons filled in. Best-effort: never throws.
+// Only fills keys that are empty, unless force re-resolves them.
+async function resolveAndStorePlatforms(
+  supabase: SupabaseClient,
+  link: LinkRow,
+  force: boolean,
+): Promise<string[]> {
+  try {
+    const candidates = gatherCandidateUrls(link);
+    if (candidates.length === 0) return [];
+    const resolved = await resolvePlatformLinks(candidates);
+    const existing = (link.metadata ?? {}) as Record<string, unknown>;
+    const merged = { ...existing };
+    const written: string[] = [];
+    for (const key of PLATFORM_METADATA_KEYS) {
+      const val = resolved[key];
+      const cur = existing[key];
+      const hasCur = typeof cur === "string" && cur.trim().length > 0;
+      if (val && (!hasCur || force)) {
+        merged[key] = val;
+        written.push(key);
+      }
+    }
+    if (written.length === 0) return [];
+    const { error } = await supabase
+      .from("smart_links")
+      .update({ metadata: merged })
+      .eq("id", link.id);
+    if (error) {
+      console.error(`[resolve-artwork] platform metadata update failed for ${link.slug}:`, error.message);
+      return [];
+    }
+    // Keep the in-memory row current so a subsequent artwork pass sees new URLs.
+    link.metadata = merged;
+    return written;
+  } catch (e) {
+    console.error(`[resolve-artwork] platform resolve failed for ${link.slug}:`, e instanceof Error ? e.message : e);
+    return [];
+  }
+}
+
 async function resolveAndStore(
   supabase: SupabaseClient,
   link: LinkRow,
   force: boolean,
-): Promise<{ slug: string; status: string; source?: string; image_url?: string; width?: number | null; detail?: string }> {
+): Promise<{ slug: string; status: string; source?: string; image_url?: string; width?: number | null; detail?: string; platforms?: string[] }> {
+  // Platform links first — independent of whether artwork already exists.
+  const platforms = await resolveAndStorePlatforms(supabase, link, force);
+
   if (link.image_url && !force) {
-    return { slug: link.slug, status: "skipped", detail: "already has artwork" };
+    return { slug: link.slug, status: "skipped", detail: "already has artwork", platforms };
   }
 
   const candidates = gatherCandidateUrls(link);
   if (candidates.length === 0) {
-    return { slug: link.slug, status: "no_candidates", detail: "no streaming URLs found" };
+    return { slug: link.slug, status: "no_candidates", detail: "no streaming URLs found", platforms };
   }
 
   const art: ArtworkResult | null = await resolveArtwork(candidates);
   if (!art) {
-    return { slug: link.slug, status: "not_found", detail: "no high-res artwork resolved" };
+    return { slug: link.slug, status: "not_found", detail: "no high-res artwork resolved", platforms };
   }
 
   // Download the verified image and store it in our own bucket for permanence.
   const imgRes = await fetch(art.imageUrl);
   if (!imgRes.ok) {
-    return { slug: link.slug, status: "fetch_failed", detail: `download ${imgRes.status}` };
+    return { slug: link.slug, status: "fetch_failed", detail: `download ${imgRes.status}`, platforms };
   }
   const bytes = new Uint8Array(await imgRes.arrayBuffer());
   const ext = extFor(art.contentType);
@@ -76,7 +131,7 @@ async function resolveAndStore(
     .from(BUCKET)
     .upload(path, bytes, { contentType: art.contentType, upsert: true });
   if (upErr) {
-    return { slug: link.slug, status: "upload_failed", detail: upErr.message };
+    return { slug: link.slug, status: "upload_failed", detail: upErr.message, platforms };
   }
 
   const { error: updErr } = await supabase
@@ -84,12 +139,13 @@ async function resolveAndStore(
     .update({ image_url: path })
     .eq("id", link.id);
   if (updErr) {
-    return { slug: link.slug, status: "db_update_failed", detail: updErr.message };
+    return { slug: link.slug, status: "db_update_failed", detail: updErr.message, platforms };
   }
 
   return {
     slug: link.slug,
     status: "updated",
+    platforms,
     source: art.source,
     image_url: path,
     width: art.width,

@@ -121,15 +121,56 @@ async function fromOdesli(seedUrl: string): Promise<OdesliResult | null> {
 }
 
 // ── 2. iTunes Search → Apple Music album URL (public, no key) ────────────────
-async function appleFromItunes(query: string): Promise<string | undefined> {
-  if (!query.trim()) return undefined;
-  const api = `https://itunes.apple.com/search?term=${encodeURIComponent(
-    query,
-  )}&media=music&entity=album&limit=1&country=US`;
-  const data = await fetchJson(api);
-  const r = data?.results?.[0];
-  // collectionViewUrl is the Apple Music album page; trackViewUrl for a single.
-  return (r?.collectionViewUrl as string) || (r?.trackViewUrl as string) || undefined;
+// Strip the affiliate `?uo=4` (and any other query) off an Apple album URL.
+function cleanAppleUrl(u: string): string {
+  return u.split("?")[0];
+}
+
+// iTunes keyword search is unreliable for indie/new releases (returns nothing
+// even when the release exists on Apple Music). The robust path: find the
+// artist, list their albums via lookup, and match by title. Falls back to a
+// plain keyword search when the artist/title lookup can't pin it down.
+async function appleFromItunes(
+  title: string,
+  artist: string,
+): Promise<string | undefined> {
+  const t = title.trim().toLowerCase();
+
+  // Primary: artist → albums → title match.
+  if (artist.trim()) {
+    const a = await fetchJson(
+      `https://itunes.apple.com/search?term=${encodeURIComponent(
+        artist,
+      )}&media=music&entity=musicArtist&limit=1&country=US`,
+    );
+    const artistId = a?.results?.[0]?.artistId;
+    if (artistId && t) {
+      const look = await fetchJson(
+        `https://itunes.apple.com/lookup?id=${artistId}&entity=album&limit=200&country=US`,
+      );
+      const albums = (look?.results ?? []).filter(
+        (x: Record<string, unknown>) =>
+          x.wrapperType === "collection" && typeof x.collectionViewUrl === "string",
+      );
+      const match = albums.find((x: Record<string, unknown>) => {
+        const n = String(x.collectionName ?? "").toLowerCase();
+        return n === t || n.includes(t) || (t.length > 4 && t.includes(n));
+      });
+      if (match) return cleanAppleUrl(String(match.collectionViewUrl));
+    }
+  }
+
+  // Fallback: keyword search (album, then any music entity).
+  const q = [artist, title].filter(Boolean).join(" ").trim();
+  if (!q) return undefined;
+  const s = await fetchJson(
+    `https://itunes.apple.com/search?term=${encodeURIComponent(
+      q,
+    )}&media=music&entity=album&limit=1&country=US`,
+  );
+  const r = s?.results?.[0];
+  const url = (r?.collectionViewUrl as string) || (r?.trackViewUrl as string);
+  return url ? cleanAppleUrl(url) : undefined;
 }
 
 // ── 3. Spotify Web API search (client-credentials) ───────────────────────────
@@ -200,8 +241,8 @@ export async function resolvePlatformLinks(candidateUrls: string[]): Promise<Pla
   const query = [artist, title].filter(Boolean).join(" ").trim();
 
   // 3. Supplement the two big DSPs independently when Odesli missed them.
-  if (!out.apple_music_url && query) {
-    const apple = await appleFromItunes(query);
+  if (!out.apple_music_url && (title || artist)) {
+    const apple = await appleFromItunes(title, artist);
     if (apple) out.apple_music_url = apple;
   }
   if (!out.spotify_url && query) {

@@ -34,6 +34,26 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname;
+    const originUrl = env.ORIGIN_URL || "https://fan-growth-pilot.lovable.app";
+
+    // ONLY document navigations to bare page routes (/ and /{slug}) get OG
+    // injection. EVERYTHING else must pass straight through to origin untouched,
+    // preserving the origin's status + content-type: /assets/*, *.js, *.mjs,
+    // *.css, images, fonts, source maps, /__l5e/*, favicons, etc.
+    //
+    // Injecting HTML into (or returning HTML for) an asset request is what broke
+    // the site — a JS/CSS bundle came back as text/html, so the browser threw
+    // "Unexpected token '<'" and the SPA never booted (blank page). The previous
+    // guard only looked for a "." in the FIRST path segment, so /assets/x-*.js
+    // (dot lives in a later segment) slipped through and got HTML-ified.
+    const lastSegment = path.split("/").pop() || "";
+    const hasFileExtension = lastSegment.includes(".");
+    const isAssetPath = hasFileExtension || /^\/(assets|__l5e)\//i.test(path);
+
+    if (isAssetPath) {
+      // Pure pass-through — origin Response (status + content-type) untouched.
+      return fetch(`${originUrl}${path}${url.search}`, request);
+    }
 
     // Root returns 404 (protect dashboard privacy)
     if (path === "/" || path === "") {
@@ -43,11 +63,9 @@ export default {
     // Extract slug (first path segment, ignore deeper paths)
     const slug = path.replace(/^\//, "").split("/")[0];
 
-    // Skip non-slug paths (assets, etc.)
-    if (slug.includes(".") || !slug) {
-      // Pass through to origin for static assets
-      const originUrl = env.ORIGIN_URL || "https://fan-growth-pilot.lovable.app";
-      return fetch(`${originUrl}${path}`, request);
+    // Defensive: no slug left → pass through rather than inject.
+    if (!slug) {
+      return fetch(`${originUrl}${path}${url.search}`, request);
     }
 
     // Fetch OG metadata from edge function
@@ -66,7 +84,6 @@ export default {
     }
 
     // Fetch origin HTML
-    const originUrl = env.ORIGIN_URL || "https://fan-growth-pilot.lovable.app";
     const originRes = await fetch(`${originUrl}/${slug}`, {
       headers: {
         "User-Agent": request.headers.get("User-Agent") || "",

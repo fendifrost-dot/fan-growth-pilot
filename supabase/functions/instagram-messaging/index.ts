@@ -1,8 +1,12 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import {
+  processInstagramWebhook,
+  verifyMetaWebhookSignature,
+} from "../_shared/ig-autoreply-run.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version, x-hub-signature-256',
 };
 
 const GRAPH_API_VERSION = 'v21.0';
@@ -11,6 +15,17 @@ const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_API_VERSION}`;
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
+  }
+
+  const url = new URL(req.url);
+
+  // Meta webhook verify handshake (no Instagram token required)
+  if (req.method === 'GET' && url.searchParams.get('hub.mode') === 'subscribe') {
+    const verifyToken = Deno.env.get('IG_WEBHOOK_VERIFY_TOKEN');
+    if (verifyToken && url.searchParams.get('hub.verify_token') === verifyToken) {
+      return new Response(url.searchParams.get('hub.challenge') ?? '', { status: 200 });
+    }
+    return new Response('forbidden', { status: 403 });
   }
 
   const accessToken = Deno.env.get('INSTAGRAM_MESSAGING_API_TOKEN');
@@ -23,10 +38,8 @@ serve(async (req) => {
   }
 
   try {
-    const url = new URL(req.url);
     const action = url.searchParams.get('action') || 'status';
 
-    // GET: Check token validity and account info
     if (req.method === 'GET') {
       if (action === 'status') {
         return await checkTokenStatus(accessToken);
@@ -47,16 +60,48 @@ serve(async (req) => {
       return jsonResponse({ error: `Unknown action: ${action}` }, 400);
     }
 
-    // POST: Send a message
     if (req.method === 'POST') {
-      const body = await req.json();
-      const { recipient_id, message } = body;
-
-      if (!recipient_id || !message) {
-        return jsonResponse({ error: 'recipient_id and message are required' }, 400);
+      const rawBody = await req.text();
+      let body: Record<string, unknown>;
+      try {
+        body = rawBody ? JSON.parse(rawBody) as Record<string, unknown> : {};
+      } catch {
+        return jsonResponse({ error: 'Invalid JSON body' }, 400);
       }
 
-      return await sendMessage(accessToken, recipient_id, message);
+      // Instagram webhook delivery (reply-only auto-reply lane)
+      if (body.object === 'instagram') {
+        const appSecret = Deno.env.get('META_APP_SECRET');
+        if (!appSecret) {
+          console.error('META_APP_SECRET not configured for webhook verification');
+          return new Response('configuration error', { status: 500 });
+        }
+
+        const signature = req.headers.get('X-Hub-Signature-256');
+        const valid = await verifyMetaWebhookSignature(rawBody, signature, appSecret);
+        if (!valid) {
+          console.error('Instagram webhook signature mismatch');
+          return new Response('forbidden', { status: 403 });
+        }
+
+        const result = await processInstagramWebhook(body);
+        console.log('Instagram webhook processed:', JSON.stringify(result));
+        return new Response('EVENT_RECEIVED', { status: 200 });
+      }
+
+      const { recipient_id, comment_id, message } = body as {
+        recipient_id?: string;
+        comment_id?: string;
+        message?: string;
+      };
+      if ((!recipient_id && !comment_id) || !message) {
+        return jsonResponse(
+          { error: 'message and one of recipient_id or comment_id are required' },
+          400,
+        );
+      }
+
+      return await sendMessage(accessToken, { recipientId: recipient_id, commentId: comment_id }, message);
     }
 
     return jsonResponse({ error: 'Method not allowed' }, 405);
@@ -181,7 +226,11 @@ async function getMessages(accessToken: string, conversationId: string) {
 }
 
 // Send a message to a user via Instagram
-async function sendMessage(accessToken: string, recipientId: string, message: string) {
+async function sendMessage(
+  accessToken: string,
+  target: { recipientId?: string; commentId?: string },
+  message: string,
+) {
   const accountsRes = await fetch(
     `${GRAPH_BASE}/me/accounts?fields=id,instagram_business_account&access_token=${accessToken}`
   );
@@ -204,7 +253,8 @@ async function sendMessage(accessToken: string, recipientId: string, message: st
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        recipient: { id: recipientId },
+        // Private reply to a comment uses comment_id; DM/story reply uses user id.
+        recipient: target.commentId ? { comment_id: target.commentId } : { id: target.recipientId },
         message: { text: message },
         access_token: pageToken,
       }),

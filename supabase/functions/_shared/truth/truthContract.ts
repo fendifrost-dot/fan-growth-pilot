@@ -9,6 +9,8 @@ export const CANONICAL_EVENT_TYPES = [
   "purchase",
   "telegram_signup_initiated",
   "telegram_signup_completed",
+  "ig_engagement_received",
+  "ig_autoreply_sent",
 ] as const;
 
 export function isAllowedEventType(eventType: string): boolean {

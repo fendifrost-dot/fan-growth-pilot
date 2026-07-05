@@ -1570,6 +1570,374 @@ export type Database = {
         }
         Relationships: []
       }
+      relationship_history: {
+        Row: {
+          catalog_placements: number | null
+          created_at: string
+          dj: string | null
+          event_type: Database["public"]["Enums"]["relationship_event_type"]
+          frequency: string | null
+          id: string
+          lifetime_value: number | null
+          num_additions: number | null
+          num_removals: number | null
+          occurred_at: string
+          payload: Json | null
+          playlist_id: string | null
+          playlist_name: string | null
+          relationship_id: string
+          show: string | null
+          song: string | null
+          songs_added: Json | null
+          source: string
+          source_id: string | null
+          spins: number | null
+          station_id: string | null
+          territory: string | null
+        }
+        Insert: {
+          catalog_placements?: number | null
+          created_at?: string
+          dj?: string | null
+          event_type: Database["public"]["Enums"]["relationship_event_type"]
+          frequency?: string | null
+          id?: string
+          lifetime_value?: number | null
+          num_additions?: number | null
+          num_removals?: number | null
+          occurred_at?: string
+          payload?: Json | null
+          playlist_id?: string | null
+          playlist_name?: string | null
+          relationship_id: string
+          show?: string | null
+          song?: string | null
+          songs_added?: Json | null
+          source: string
+          source_id?: string | null
+          spins?: number | null
+          station_id?: string | null
+          territory?: string | null
+        }
+        Update: {
+          catalog_placements?: number | null
+          created_at?: string
+          dj?: string | null
+          event_type?: Database["public"]["Enums"]["relationship_event_type"]
+          frequency?: string | null
+          id?: string
+          lifetime_value?: number | null
+          num_additions?: number | null
+          num_removals?: number | null
+          occurred_at?: string
+          payload?: Json | null
+          playlist_id?: string | null
+          playlist_name?: string | null
+          relationship_id?: string
+          show?: string | null
+          song?: string | null
+          songs_added?: Json | null
+          source?: string
+          source_id?: string | null
+          spins?: number | null
+          station_id?: string | null
+          territory?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "relationship_history_relationship_id_fkey"
+            columns: ["relationship_id"]
+            isOneToOne: false
+            referencedRelation: "relationships"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "relationship_history_relationship_id_fkey"
+            columns: ["relationship_id"]
+            isOneToOne: false
+            referencedRelation: "v_relationship_summary"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      relationship_playlists: {
+        Row: {
+          created_at: string
+          first_discovered: string | null
+          follower_count: number | null
+          genre: string | null
+          id: string
+          is_active: boolean
+          last_seen: string | null
+          playlist_id: string
+          playlist_name: string | null
+          relationship_id: string
+        }
+        Insert: {
+          created_at?: string
+          first_discovered?: string | null
+          follower_count?: number | null
+          genre?: string | null
+          id?: string
+          is_active?: boolean
+          last_seen?: string | null
+          playlist_id: string
+          playlist_name?: string | null
+          relationship_id: string
+        }
+        Update: {
+          created_at?: string
+          first_discovered?: string | null
+          follower_count?: number | null
+          genre?: string | null
+          id?: string
+          is_active?: boolean
+          last_seen?: string | null
+          playlist_id?: string
+          playlist_name?: string | null
+          relationship_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "relationship_playlists_playlist_id_fkey"
+            columns: ["playlist_id"]
+            isOneToOne: true
+            referencedRelation: "playlist_targets"
+            referencedColumns: ["playlist_id"]
+          },
+          {
+            foreignKeyName: "relationship_playlists_relationship_id_fkey"
+            columns: ["relationship_id"]
+            isOneToOne: false
+            referencedRelation: "relationships"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "relationship_playlists_relationship_id_fkey"
+            columns: ["relationship_id"]
+            isOneToOne: false
+            referencedRelation: "v_relationship_summary"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      relationship_shows: {
+        Row: {
+          created_at: string
+          dj_name: string | null
+          id: string
+          relationship_id: string
+          schedule: string | null
+          show_name: string | null
+          station_ref: string | null
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          dj_name?: string | null
+          id?: string
+          relationship_id: string
+          schedule?: string | null
+          show_name?: string | null
+          station_ref?: string | null
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          dj_name?: string | null
+          id?: string
+          relationship_id?: string
+          schedule?: string | null
+          show_name?: string | null
+          station_ref?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "relationship_shows_relationship_id_fkey"
+            columns: ["relationship_id"]
+            isOneToOne: false
+            referencedRelation: "relationships"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "relationship_shows_relationship_id_fkey"
+            columns: ["relationship_id"]
+            isOneToOne: false
+            referencedRelation: "v_relationship_summary"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "relationship_shows_station_ref_fkey"
+            columns: ["station_ref"]
+            isOneToOne: false
+            referencedRelation: "relationship_stations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      relationship_stations: {
+        Row: {
+          area_name: string | null
+          band: string | null
+          call_sign: string | null
+          city: string | null
+          country_code: string | null
+          created_at: string
+          frequency: string | null
+          id: string
+          is_active: boolean
+          relationship_id: string
+          station_id: string | null
+          station_type: string | null
+          timezone: string | null
+          total_spins: number | null
+          updated_at: string
+        }
+        Insert: {
+          area_name?: string | null
+          band?: string | null
+          call_sign?: string | null
+          city?: string | null
+          country_code?: string | null
+          created_at?: string
+          frequency?: string | null
+          id?: string
+          is_active?: boolean
+          relationship_id: string
+          station_id?: string | null
+          station_type?: string | null
+          timezone?: string | null
+          total_spins?: number | null
+          updated_at?: string
+        }
+        Update: {
+          area_name?: string | null
+          band?: string | null
+          call_sign?: string | null
+          city?: string | null
+          country_code?: string | null
+          created_at?: string
+          frequency?: string | null
+          id?: string
+          is_active?: boolean
+          relationship_id?: string
+          station_id?: string | null
+          station_type?: string | null
+          timezone?: string | null
+          total_spins?: number | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "relationship_stations_relationship_id_fkey"
+            columns: ["relationship_id"]
+            isOneToOne: false
+            referencedRelation: "relationships"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "relationship_stations_relationship_id_fkey"
+            columns: ["relationship_id"]
+            isOneToOne: false
+            referencedRelation: "v_relationship_summary"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      relationships: {
+        Row: {
+          audience_size: number | null
+          confidence_score: number | null
+          contact_form: string | null
+          created_at: string
+          dedupe_key: string
+          email: string | null
+          facebook: string | null
+          genres: string[] | null
+          id: string
+          instagram: string | null
+          is_supporter: boolean
+          last_active: string | null
+          last_contact: string | null
+          last_reply: string | null
+          linkedin: string | null
+          name: string | null
+          notes: string | null
+          organization: string | null
+          outreach_status: string
+          platform: string | null
+          relationship_score: number
+          relationship_type: Database["public"]["Enums"]["relationship_type"]
+          spotify_owner_id: string | null
+          territory: string | null
+          tiktok: string | null
+          updated_at: string
+          website: string | null
+          youtube: string | null
+        }
+        Insert: {
+          audience_size?: number | null
+          confidence_score?: number | null
+          contact_form?: string | null
+          created_at?: string
+          dedupe_key: string
+          email?: string | null
+          facebook?: string | null
+          genres?: string[] | null
+          id?: string
+          instagram?: string | null
+          is_supporter?: boolean
+          last_active?: string | null
+          last_contact?: string | null
+          last_reply?: string | null
+          linkedin?: string | null
+          name?: string | null
+          notes?: string | null
+          organization?: string | null
+          outreach_status?: string
+          platform?: string | null
+          relationship_score?: number
+          relationship_type?: Database["public"]["Enums"]["relationship_type"]
+          spotify_owner_id?: string | null
+          territory?: string | null
+          tiktok?: string | null
+          updated_at?: string
+          website?: string | null
+          youtube?: string | null
+        }
+        Update: {
+          audience_size?: number | null
+          confidence_score?: number | null
+          contact_form?: string | null
+          created_at?: string
+          dedupe_key?: string
+          email?: string | null
+          facebook?: string | null
+          genres?: string[] | null
+          id?: string
+          instagram?: string | null
+          is_supporter?: boolean
+          last_active?: string | null
+          last_contact?: string | null
+          last_reply?: string | null
+          linkedin?: string | null
+          name?: string | null
+          notes?: string | null
+          organization?: string | null
+          outreach_status?: string
+          platform?: string | null
+          relationship_score?: number
+          relationship_type?: Database["public"]["Enums"]["relationship_type"]
+          spotify_owner_id?: string | null
+          territory?: string | null
+          tiktok?: string | null
+          updated_at?: string
+          website?: string | null
+          youtube?: string | null
+        }
+        Relationships: []
+      }
       smart_link_leads: {
         Row: {
           album_purchased: boolean | null
@@ -2214,6 +2582,87 @@ export type Database = {
         }
         Relationships: []
       }
+      v_relationship_summary: {
+        Row: {
+          audience_size: number | null
+          confidence_score: number | null
+          created_at: string | null
+          email: string | null
+          genres: string[] | null
+          id: string | null
+          instagram: string | null
+          is_supporter: boolean | null
+          last_active: string | null
+          last_contact: string | null
+          last_reply: string | null
+          name: string | null
+          organization: string | null
+          outreach_status: string | null
+          placement_count: number | null
+          platform: string | null
+          playlist_count: number | null
+          relationship_score: number | null
+          relationship_type:
+            | Database["public"]["Enums"]["relationship_type"]
+            | null
+          territory: string | null
+          updated_at: string | null
+          website: string | null
+        }
+        Insert: {
+          audience_size?: number | null
+          confidence_score?: number | null
+          created_at?: string | null
+          email?: string | null
+          genres?: string[] | null
+          id?: string | null
+          instagram?: string | null
+          is_supporter?: boolean | null
+          last_active?: string | null
+          last_contact?: string | null
+          last_reply?: string | null
+          name?: string | null
+          organization?: string | null
+          outreach_status?: string | null
+          placement_count?: never
+          platform?: string | null
+          playlist_count?: never
+          relationship_score?: number | null
+          relationship_type?:
+            | Database["public"]["Enums"]["relationship_type"]
+            | null
+          territory?: string | null
+          updated_at?: string | null
+          website?: string | null
+        }
+        Update: {
+          audience_size?: number | null
+          confidence_score?: number | null
+          created_at?: string | null
+          email?: string | null
+          genres?: string[] | null
+          id?: string | null
+          instagram?: string | null
+          is_supporter?: boolean | null
+          last_active?: string | null
+          last_contact?: string | null
+          last_reply?: string | null
+          name?: string | null
+          organization?: string | null
+          outreach_status?: string | null
+          placement_count?: never
+          platform?: string | null
+          playlist_count?: never
+          relationship_score?: number | null
+          relationship_type?:
+            | Database["public"]["Enums"]["relationship_type"]
+            | null
+          territory?: string | null
+          updated_at?: string | null
+          website?: string | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
       bridge_upsert_email_contact: {
@@ -2236,6 +2685,19 @@ export type Database = {
       increment_email_submit: { Args: { link_id: string }; Returns: undefined }
       increment_link_clicks: { Args: { link_id: string }; Returns: undefined }
       increment_video_play: { Args: { link_id: string }; Returns: undefined }
+      rie_recompute_scores: { Args: never; Returns: number }
+      rie_relationship_score: {
+        Args: {
+          p_audience: number
+          p_confidence: number
+          p_genre_match: number
+          p_last_active: string
+          p_placements: number
+          p_replies: number
+          p_retention: number
+        }
+        Returns: number
+      }
       unsubscribe_by_token: {
         Args: { p_token: string }
         Returns: {
@@ -2254,7 +2716,31 @@ export type Database = {
       }
     }
     Enums: {
-      [_ in never]: never
+      relationship_event_type:
+        | "discovered"
+        | "playlist_add"
+        | "playlist_remove"
+        | "pitch_sent"
+        | "reply"
+        | "placement"
+        | "spin"
+        | "follower_snapshot"
+        | "mention"
+      relationship_type:
+        | "spotify_curator"
+        | "apple_radio_station"
+        | "radio_dj"
+        | "college_radio"
+        | "terrestrial_radio"
+        | "internet_radio"
+        | "blog"
+        | "press"
+        | "youtube"
+        | "tiktok"
+        | "instagram"
+        | "twitch"
+        | "podcast"
+        | "other"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -2381,6 +2867,34 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      relationship_event_type: [
+        "discovered",
+        "playlist_add",
+        "playlist_remove",
+        "pitch_sent",
+        "reply",
+        "placement",
+        "spin",
+        "follower_snapshot",
+        "mention",
+      ],
+      relationship_type: [
+        "spotify_curator",
+        "apple_radio_station",
+        "radio_dj",
+        "college_radio",
+        "terrestrial_radio",
+        "internet_radio",
+        "blog",
+        "press",
+        "youtube",
+        "tiktok",
+        "instagram",
+        "twitch",
+        "podcast",
+        "other",
+      ],
+    },
   },
 } as const

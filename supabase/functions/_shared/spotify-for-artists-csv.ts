@@ -228,12 +228,26 @@ export async function importSpotifyForArtistsCsv(
       featuring_tracks: ["(from Spotify for Artists playlist report)"],
     };
 
+    // Fetch existing enrichment BEFORE upsert so a metadata-only CSV refresh
+    // (which carries no URL, no vibe/curator data) never null-clobbers richer
+    // data written by earlier research/enrichment passes.
+    const { data: existing } = await sb.from("playlist_targets")
+      .select("playlist_id, submission_url, curator_name, follower_count, vibe_tags, similar_artists, research_context")
+      .eq("playlist_id", playlistId)
+      .maybeSingle();
+
+    const existingRc = (existing?.research_context as Record<string, unknown> | null) ?? null;
+    const existingVibeTags = (existing?.vibe_tags as string[] | null) ?? null;
+    const existingSimilar = (existing?.similar_artists as string[] | null) ?? null;
+
     const dbRow = {
       playlist_id: playlistId,
       platform: "spotify",
       playlist_name: row.title,
-      curator_name: curator,
-      follower_count: row.listeners,
+      // Preserve a real curator name if the CSV row has none for this author.
+      curator_name: curator ?? existing?.curator_name ?? null,
+      // CSV listeners can be 0 (parse fallback); don't wipe a real follower count.
+      follower_count: row.listeners > 0 ? row.listeners : (existing?.follower_count ?? 0),
       track_count: 0,
       overlap_score: Math.min(95, 50 + Math.min(row.streams, 40)),
       fraud_score: 15,
@@ -241,20 +255,19 @@ export async function importSpotifyForArtistsCsv(
       pitch_status: "not_pitched",
       tier: 1,
       whitelist_status: false,
-      vibe_tags: [] as string[],
-      similar_artists: references.slice(0, 8),
+      // The SFA CSV carries no vibe tags / similar artists — keep existing ones.
+      vibe_tags: existingVibeTags && existingVibeTags.length ? existingVibeTags : ([] as string[]),
+      similar_artists: references.length ? references.slice(0, 8) : (existingSimilar ?? []),
       submission_method: "instagram_dm",
-      submission_url: submissionUrl,
+      // CONFIRMED BUG FIX: the SFA CSV has no URL column, so submissionUrl is
+      // usually null — never overwrite a previously-resolved real playlist URL.
+      submission_url: submissionUrl ?? existing?.submission_url ?? null,
       is_active: true,
       why_it_fits: `Spotify for Artists: ${row.streams} streams · ${row.listeners} listeners in report period.`,
-      research_context: researchContext,
+      // Merge over existing research_context so enrichment keys aren't erased.
+      research_context: existingRc ? { ...existingRc, ...researchContext } : researchContext,
       ...(lane ? { lane } : {}),
     };
-
-    const { data: existing } = await sb.from("playlist_targets")
-      .select("playlist_id, research_context")
-      .eq("playlist_id", playlistId)
-      .maybeSingle();
 
     const { error } = await sb.from("playlist_targets").upsert(dbRow, { onConflict: "playlist_id" });
     if (error) {

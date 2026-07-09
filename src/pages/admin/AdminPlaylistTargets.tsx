@@ -27,6 +27,7 @@ type PlaylistRow = {
   pitch_status: string | null;
   follower_count: number | null;
   why_it_fits: string | null;
+  created_at?: string | null;
   research_context?: {
     source?: string;
     featuring_tracks?: string[];
@@ -105,6 +106,15 @@ function CostCell({ row }: { row: PlaylistRow }) {
     return <span className="text-[10px] uppercase rounded bg-amber-500/15 text-amber-600 px-1.5 py-0.5" title="Tip appreciated, not required">Tip</span>;
   }
   return <span className="text-muted-foreground">—</span>;
+}
+
+/** A target is "new" if it was first discovered in the last 24h — lets the admin
+ * verify a run actually surfaced fresh curators rather than recycling the set. */
+function isNew(createdAt: string | null | undefined): boolean {
+  if (!createdAt) return false;
+  const t = new Date(createdAt).getTime();
+  if (Number.isNaN(t)) return false;
+  return Date.now() - t < 24 * 60 * 60 * 1000;
 }
 
 const TRACK_DEFAULT = "Designed For Me (Control)";
@@ -296,6 +306,7 @@ const AdminPlaylistTargets: React.FC = () => {
     try {
       const res = await callHubFn<{
         live_api_ingested?: number;
+        new_this_run?: number;
         discovery_skips?: Record<string, number>;
       }>("run_playlist_research", {
         track_name: trackName,
@@ -306,6 +317,7 @@ const AdminPlaylistTargets: React.FC = () => {
           "Chicago deep-house influenced melodic rap, late-night luxury, Kaytranada / Channel Tres adjacent.",
       });
       const n = res.live_api_ingested ?? 0;
+      const fresh = res.new_this_run ?? 0;
       const sk = res.discovery_skips;
       const skipParts = sk
         ? Object.entries(sk)
@@ -313,10 +325,11 @@ const AdminPlaylistTargets: React.FC = () => {
             .map(([k, v]) => `${k.replace(/_/g, " ")} ${v}`)
             .join(" · ")
         : "";
+      const freshPart = ` · ${fresh} brand new`;
       toast.success(
         quick
-          ? `Quick research: ${n} ingested${skipParts ? ` · skipped: ${skipParts}` : ""}`
-          : `Research: ${n} ingested${skipParts ? ` · skipped: ${skipParts}` : ""}. Enrich or Set email, then Draft.`,
+          ? `Quick research: ${n} ingested${freshPart}${skipParts ? ` · skipped: ${skipParts}` : ""}`
+          : `Research: ${n} ingested${freshPart}${skipParts ? ` · skipped: ${skipParts}` : ""}. Enrich or Set email, then Draft.`,
       );
       await fetchRows();
     } catch (e) {
@@ -632,7 +645,22 @@ const AdminPlaylistTargets: React.FC = () => {
               filtered.map((r) => (
                 <tr key={r.playlist_id} className="border-t">
                   <td className="p-2">
-                    <div className="font-medium">{r.playlist_name}</div>
+                    <div className="font-medium flex items-center gap-1.5">
+                      {r.playlist_name}
+                      {isNew(r.created_at) && (
+                        <span
+                          className="text-[10px] uppercase rounded bg-blue-500/15 text-blue-600 px-1.5 py-0.5"
+                          title={r.created_at ? `Discovered ${new Date(r.created_at).toLocaleString()}` : undefined}
+                        >
+                          New
+                        </span>
+                      )}
+                    </div>
+                    {r.created_at && (
+                      <div className="text-[10px] text-muted-foreground">
+                        Discovered {new Date(r.created_at).toLocaleDateString()}
+                      </div>
+                    )}
                     <div className="text-xs text-muted-foreground truncate max-w-[200px]">{r.why_it_fits}</div>
                     {(r.research_context?.source === "spotify_placement" ||
                       r.research_context?.source === "spotify_for_artists_csv") && (

@@ -1483,7 +1483,7 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
   const action = String(body.action ?? "").trim();
   if (action === "list_targets") {
     let q = sb.from("playlist_targets").select(
-      "playlist_id, playlist_name, curator_name, curator_email, curator_instagram, curator_linktree, curator_submission_url, curator_submission_dm, curator_submission_note, lane, tier, authenticity_score, fraud_verdict, contact_confidence, pitch_status, follower_count, is_active, why_it_fits, recommended_pitch_angle, submission_url, submission_method, submission_cost, is_paid, verification_status, last_enriched_at, research_context",
+      "playlist_id, playlist_name, curator_name, curator_email, curator_instagram, curator_linktree, curator_submission_url, curator_submission_dm, curator_submission_note, lane, tier, authenticity_score, fraud_verdict, contact_confidence, pitch_status, follower_count, is_active, why_it_fits, recommended_pitch_angle, submission_url, submission_method, submission_cost, is_paid, verification_status, last_enriched_at, created_at, research_context",
     ).order("follower_count", { ascending: false, nullsFirst: false }).limit(200);
     // is_active: default true (preserve historical behavior); allow explicit override.
     if (body.is_active !== undefined) {

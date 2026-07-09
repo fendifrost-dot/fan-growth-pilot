@@ -22,8 +22,14 @@ import {
   scrapeSpotifyPlaylistDetail,
   scrapeSpotifySearchPlaylists,
   scrapeSpotifyUserProfile,
-  sleep,
+  type SpotifyUserProfile,
 } from "../_shared/spotify-scrape.ts";
+import {
+  buildDiscoveryQueries,
+  computeRotation,
+  dedupeStubs,
+  mapPool,
+} from "../_shared/discovery-utils.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -33,23 +39,30 @@ const corsHeaders = {
 
 const MAX_RESULTS = 20;
 // Scrape budget measured from the start of mergeCatalogAndLive, NOT 55s. The edge
-// wall is ~55s; we stop all scraping at 45s so the post-discovery DB work (upserts,
+// wall is ~55s; we stop all scraping at 40s so the post-discovery DB work (upserts,
 // re-query, merge, lane patches) finishes and we return partial-but-FRESH results
 // before the wall instead of being killed mid-flight and returning the stale set.
-const SCRAPE_BUDGET_MS = 45_000;
+// Tightened from 45s → 40s: the scrapes now run concurrently (see SCRAPE_CONCURRENCY),
+// so the work finishes well inside this ceiling and the deadline is a safety net.
+const SCRAPE_BUDGET_MS = 40_000;
+// How many Firecrawl scrapes run in flight at once. Each scrape is independent
+// network I/O, so fanning them out instead of awaiting one-at-a-time is the main
+// speed win. Kept modest so we don't trip Firecrawl's per-plan rate limits.
+const SCRAPE_CONCURRENCY = 6;
 // Capped discovery breadth: enough seed queries for variety, small enough that the
 // deadline guard isn't the only thing keeping us under budget. The per-request
 // Firecrawl timeout (see firecrawl.ts) bounds any single hung scrape.
-const SEARCH_REF_CAP_FULL = 12;
+const SEARCH_REF_CAP_FULL = 14;
 const STUBS_PER_REF_FULL = 10;
 const DETAIL_CAP_FULL = 18;
 const SEARCH_REF_CAP_QUICK = 6;
 const STUBS_PER_REF_QUICK = 8;
 const DETAIL_CAP_QUICK = 12;
-// Politeness pauses between scrapes — trimmed so more useful work fits the budget.
-const SLEEP_SEARCH_MS = 500;
-const SLEEP_DETAIL_MS = 400;
-const SLEEP_PROFILE_MS = 300;
+// Penalty applied in the final merge to playlists pitched in the last 90 days, so a
+// run surfaces NEW curators at the top instead of re-returning the exhausted set.
+// Large enough to sink any pitched row below every un-pitched one (they still appear
+// further down if there aren't enough fresh results to fill MAX_RESULTS).
+const RECENTLY_PITCHED_PENALTY = 1000;
 type DiscoverySkips = {
   disclaim_brand: number;
   casual_user: number;
@@ -150,6 +163,7 @@ function scoreRow(
   vibeTokens: Set<string>,
   trackTokens: Set<string>,
   extraLaneScore = 0,
+  recentlyPitchedPenalty = 0,
 ): number {
   const tags = new Set([...normalizeTags(row.vibe_tags), ...normalizeTags(row.similar_artists)]);
   let s = 0;
@@ -166,7 +180,7 @@ function scoreRow(
   if (row.whitelist_status) s += 15;
   if (row.tier === 1) s += 10;
   else if (row.tier === 2) s += 5;
-  return s + extraLaneScore - curatorQualityPenalty(row);
+  return s + extraLaneScore - curatorQualityPenalty(row) - recentlyPitchedPenalty;
 }
 
 function inferVibeTags(trackArtists: string[], references: string[]): string[] {
@@ -234,55 +248,18 @@ export async function findPlaylistOpportunities(
   return scored.slice(0, MAX_RESULTS);
 }
 
-// Modifier templates appended to the lane label. Rotated per-run so successive
-// discoveries probe different facets of Spotify search instead of the same 2 queries.
-const LANE_MODIFIERS = [
-  "playlist", "curator", "best", "fresh", "new", "2025", "weekly", "underground",
-  "indie", "submissions", "mix", "radio", "vibes", "essentials", "rising", "hidden gems",
-];
-// Templates applied to each reference artist (e.g. "Kaytranada type playlist").
-const REF_MODIFIERS = ["type playlist", "radio", "mix", "similar artists playlist", "essentials"];
-
-/**
- * Build a broad, varied query set. Combines the lane label with many genre/keyword
- * modifiers and each reference artist with several templates, then rotates the
- * modifier order by `rotation` so re-runs surface different playlists.
- */
-function buildDiscoveryQueries(
-  references: string[],
-  lane: string,
-  cap: number,
-  rotation: number,
-): string[] {
-  const laneLabel = lane ? lane.replace(/_/g, " ") : "";
-  const rotate = <T,>(arr: T[]): T[] =>
-    arr.length ? [...arr.slice(rotation % arr.length), ...arr.slice(0, rotation % arr.length)] : arr;
-
-  const out: string[] = [];
-  if (laneLabel) {
-    for (const m of rotate(LANE_MODIFIERS)) out.push(`${laneLabel} ${m}`);
-  }
-  const refs = references.map((r) => r.split(/[—–-]/)[0].trim()).filter(Boolean);
-  for (const ref of refs) {
-    for (const m of rotate(REF_MODIFIERS)) out.push(`${ref} ${m}`);
-  }
-  // Interleave lane + ref queries so a low cap still gets a mix of both.
-  return [...new Set(out)].slice(0, cap);
-}
-
 async function discoverViaSpotifyWeb(
   references: string[],
   lane: string,
   quick = false,
   excludeIds: Set<string> = new Set(),
   deadline: number = Date.now() + SCRAPE_BUDGET_MS,
+  rotation: number = Math.floor(Date.now() / 86_400_000),
 ): Promise<DiscoveredPlaylist[]> {
   const refCap = quick ? SEARCH_REF_CAP_QUICK : SEARCH_REF_CAP_FULL;
   const stubsPerRef = quick ? STUBS_PER_REF_QUICK : STUBS_PER_REF_FULL;
   const detailCap = quick ? DETAIL_CAP_QUICK : DETAIL_CAP_FULL;
 
-  // Rotate seeds by day so two runs on the same lane don't repeat the same queries.
-  const rotation = Math.floor(Date.now() / 86_400_000);
   const queries = buildDiscoveryQueries(references, lane, refCap, rotation);
 
   if (!queries.length) {
@@ -300,55 +277,71 @@ async function discoverViaSpotifyWeb(
   const log: { query: string; count: number; ok: boolean }[] = [];
   let skippedRecent = 0;
 
-  for (const query of queries) {
-    if (Date.now() > deadline) break;
-    try {
-      const stubs = await scrapeSpotifySearchPlaylists(query);
-      let added = 0;
-      for (const s of stubs.slice(0, stubsPerRef)) {
-        if (!s.playlist_id) continue;
-        const pid = `spotify:${s.playlist_id}`;
-        if (seen.has(pid)) continue;
-        // Dedupe against the 90-day pitch log so we surface genuinely new
-        // playlists each run instead of re-discovering recently-pitched ones.
-        if (excludeIds.has(pid)) { skippedRecent++; continue; }
-        seen.add(pid);
-        added++;
-        out.push({
-          id: s.playlist_id,
-          playlist_id: pid,
-          name: s.name,
-          followers: null,
-          owner: s.owner_name ?? null,
-          owner_id: s.owner_id,
-        });
+  // Search phase — fan the query scrapes out `SCRAPE_CONCURRENCY`-at-a-time
+  // instead of sequential awaits + politeness sleeps. mapPool preserves order so
+  // the dedupe below stays deterministic.
+  const stubLists = await mapPool(
+    queries,
+    SCRAPE_CONCURRENCY,
+    async (query) => {
+      try {
+        const stubs = await scrapeSpotifySearchPlaylists(query);
+        return { query, stubs, ok: true };
+      } catch (e) {
+        console.error(`[discover] search "${query}" failed:`, e instanceof Error ? e.message : String(e));
+        return { query, stubs: [], ok: false };
       }
-      log.push({ query, count: added, ok: true });
-      await sleep(SLEEP_SEARCH_MS);
-    } catch (e) {
-      log.push({ query, count: 0, ok: false });
-      console.error(`[discover] search "${query}" failed:`, e instanceof Error ? e.message : String(e));
+    },
+    () => Date.now() > deadline,
+  );
+
+  for (const res of stubLists) {
+    if (!res) continue;
+    const { freshIds, skippedRecent: skipped } = dedupeStubs(
+      res.stubs.slice(0, stubsPerRef),
+      seen,
+      excludeIds,
+    );
+    skippedRecent += skipped;
+    const stubById = new Map(res.stubs.map((s) => [`spotify:${s.playlist_id}`, s]));
+    for (const pid of freshIds) {
+      const s = stubById.get(pid)!;
+      out.push({
+        id: s.playlist_id,
+        playlist_id: pid,
+        name: s.name,
+        followers: null,
+        owner: s.owner_name ?? null,
+        owner_id: s.owner_id,
+      });
     }
+    log.push({ query: res.query, count: freshIds.length, ok: res.ok });
   }
 
+  // Detail phase — also concurrent. Each callback mutates its own DiscoveredPlaylist
+  // in place, so there are no cross-task races.
   const toDetail = out.slice(0, detailCap);
-  for (const pl of toDetail) {
-    if (Date.now() > deadline) break;
-    try {
-      const detail = await scrapeSpotifyPlaylistDetail(pl.id);
-      if (detail) {
-        if (detail.name) pl.name = detail.name;
-        pl.description = detail.description;
-        pl.followers = detail.follower_count ?? pl.followers;
-        pl.owner = detail.owner_name ?? pl.owner;
-        pl.owner_id = detail.owner_id ?? pl.owner_id;
-        pl._track_artists = detail.track_artists ?? [];
+  await mapPool(
+    toDetail,
+    SCRAPE_CONCURRENCY,
+    async (pl) => {
+      try {
+        const detail = await scrapeSpotifyPlaylistDetail(pl.id);
+        if (detail) {
+          if (detail.name) pl.name = detail.name;
+          pl.description = detail.description;
+          pl.followers = detail.follower_count ?? pl.followers;
+          pl.owner = detail.owner_name ?? pl.owner;
+          pl.owner_id = detail.owner_id ?? pl.owner_id;
+          pl._track_artists = detail.track_artists ?? [];
+        }
+      } catch (e) {
+        console.error(`[discover] detail ${pl.id} failed:`, e instanceof Error ? e.message : String(e));
       }
-      await sleep(SLEEP_DETAIL_MS);
-    } catch (e) {
-      console.error(`[discover] detail ${pl.id} failed:`, e instanceof Error ? e.message : String(e));
-    }
-  }
+      return null;
+    },
+    () => Date.now() > deadline,
+  );
 
   out.sort((a, b) => (b.followers ?? 0) - (a.followers ?? 0));
   console.log(
@@ -356,6 +349,26 @@ async function discoverViaSpotifyWeb(
     "total:", out.length, "skipped_recent:", skippedRecent,
   );
   return out;
+}
+
+/** Count of web-discovered playlists already in this lane — used as a rotation seed
+ * so each run that adds rows shifts the discovery query window forward. */
+async function countLaneDiscovered(supabase: SupabaseClient, lane: string): Promise<number> {
+  if (!lane) return 0;
+  try {
+    const { count, error } = await supabase
+      .from("playlist_targets")
+      .select("playlist_id", { count: "exact", head: true })
+      .eq("research_context->>discovery_lane", lane);
+    if (error) {
+      console.error("[playlist-research] countLaneDiscovered:", error.message);
+      return 0;
+    }
+    return count ?? 0;
+  } catch (e) {
+    console.error("[playlist-research] countLaneDiscovered failed:", e instanceof Error ? e.message : e);
+    return 0;
+  }
 }
 
 /** Playlist IDs pitched in the last 90 days (any track) — excluded from discovery. */
@@ -391,8 +404,9 @@ async function filterDiscoveryCandidates(
     artist_as_curator: 0,
     spotify_owned: 0,
   };
-  const kept: DiscoveredPlaylist[] = [];
-
+  // Phase 1 — cheap synchronous filters (no network). Survivors that still need
+  // the casual-user profile check are collected for a single batched scrape pass.
+  const provisional: DiscoveredPlaylist[] = [];
   for (const pl of items) {
     if (isSpotifyOwnedCurator(pl.owner, pl.name, pl.playlist_id)) {
       console.log("[discover] spotify-owned skip:", pl.playlist_id, pl.name, pl.owner);
@@ -415,24 +429,46 @@ async function filterDiscoveryCandidates(
       skips.micro_playlist++;
       continue;
     }
-    // The casual-user check requires an extra profile scrape per candidate. Skip it
-    // once we're past the scrape budget so a slow run still returns its kept items
-    // before the wall instead of grinding through unbounded network work.
-    if (!quick && pl.owner_id && Date.now() < deadline) {
-      try {
-        const profile = await scrapeSpotifyUserProfile(pl.owner_id);
-        const fc = profile?.follower_count;
-        const fg = profile?.following_count;
-        if (fc != null && fg != null && fc < 1000 && fc < fg) {
-          console.log("[discover] casual-user skip:", pl.playlist_id, pl.owner, fc, "<", fg);
-          skips.casual_user++;
-          await sleep(SLEEP_PROFILE_MS);
-          continue;
-        }
-      } catch (e) {
-        console.error("[discover] profile scrape failed:", pl.owner_id, e instanceof Error ? e.message : e);
+    provisional.push(pl);
+  }
+
+  // Phase 2 — scrape each *distinct* curator profile ONCE, concurrently. Discovery
+  // commonly surfaces several playlists from the same owner; the old code re-scraped
+  // that owner's profile once per playlist. Dedupe by owner_id + cache so each
+  // curator costs a single scrape, run in parallel instead of sequentially.
+  const profileCache = new Map<string, SpotifyUserProfile | null>();
+  if (!quick) {
+    const ownerIds = [...new Set(provisional.map((p) => p.owner_id).filter((x): x is string => Boolean(x)))];
+    if (ownerIds.length && Date.now() < deadline) {
+      const profiles = await mapPool(
+        ownerIds,
+        SCRAPE_CONCURRENCY,
+        async (oid) => {
+          try {
+            return await scrapeSpotifyUserProfile(oid);
+          } catch (e) {
+            console.error("[discover] profile scrape failed:", oid, e instanceof Error ? e.message : e);
+            return null;
+          }
+        },
+        () => Date.now() > deadline,
+      );
+      ownerIds.forEach((oid, i) => profileCache.set(oid, profiles[i] ?? null));
+    }
+  }
+
+  // Phase 3 — apply the casual-user verdict from the cached profiles.
+  const kept: DiscoveredPlaylist[] = [];
+  for (const pl of provisional) {
+    const profile = pl.owner_id ? profileCache.get(pl.owner_id) : undefined;
+    if (profile) {
+      const fc = profile.follower_count;
+      const fg = profile.following_count;
+      if (fc != null && fg != null && fc < 1000 && fc < fg) {
+        console.log("[discover] casual-user skip:", pl.playlist_id, pl.owner, fc, "<", fg);
+        skips.casual_user++;
+        continue;
       }
-      await sleep(SLEEP_PROFILE_MS);
     }
     kept.push(pl);
   }
@@ -446,8 +482,24 @@ async function upsertLiveResults(
   lane: string,
   references: string[],
   laneRe: RegExp | null,
-): Promise<void> {
-  for (const pl of items) {
+): Promise<{ newIds: string[] }> {
+  // Net-new detection: which of these playlist_ids are not already rows? This is
+  // the verifiable "new this run" signal — computed once, before the upserts that
+  // would otherwise make every id look pre-existing.
+  const ids = items.map((p) => p.playlist_id);
+  const existingSet = new Set<string>();
+  if (ids.length) {
+    const { data: existing } = await supabase
+      .from("playlist_targets")
+      .select("playlist_id")
+      .in("playlist_id", ids);
+    for (const r of existing ?? []) existingSet.add((r as { playlist_id: string }).playlist_id);
+  }
+  const newIds = ids.filter((id) => !existingSet.has(id));
+
+  // Per-row upsert (preserves the conditional-lane semantics — a batch upsert
+  // would null out `lane` on re-discovered rows), but run concurrently.
+  await mapPool(items, SCRAPE_CONCURRENCY, async (pl) => {
     const vibe_tags = inferVibeTags(pl._track_artists ?? [], references);
     const stub: PlaylistRow = {
       playlist_id: pl.playlist_id,
@@ -502,7 +554,10 @@ async function upsertLiveResults(
       onConflict: "playlist_id",
     });
     if (error) console.error("upsert live", pl.playlist_id, error.message);
-  }
+    return null;
+  });
+
+  return { newIds };
 }
 
 export async function mergeCatalogAndLive(
@@ -510,13 +565,9 @@ export async function mergeCatalogAndLive(
   trackName: string,
   userVibe: string,
   opts?: { lane?: string; references?: string[]; quick?: boolean },
-): Promise<{ results: PlaylistRow[]; live_count: number; discovery_skips: DiscoverySkips }> {
-  await findPlaylistOpportunities(supabase, trackName, userVibe);
+): Promise<{ results: PlaylistRow[]; live_count: number; new_count: number; discovery_skips: DiscoverySkips }> {
   const lane = (opts?.lane ?? "").trim();
   const references = opts?.references ?? [];
-  const lanesConfig = await loadLanesConfig(supabase);
-  const laneRe = lane ? laneRegexBoost(lanesConfig, lane) : null;
-  const pitchAngle = lane ? (lanesConfig[lane]?.pitch_angle ?? "") : "";
 
   const start = Date.now();
   // One shared scrape deadline for the whole request: discovery + candidate
@@ -524,8 +575,25 @@ export async function mergeCatalogAndLive(
   // the DB upserts/merge/patches below to complete before the ~55s edge wall.
   const scrapeDeadline = start + SCRAPE_BUDGET_MS;
   const quick = Boolean(opts?.quick);
-  const excludeIds = await recentlyPitchedIds(supabase);
-  const discovered = await discoverViaSpotifyWeb(references, lane, quick, excludeIds, scrapeDeadline);
+
+  // Independent prep — fan out the lanes config, the 90-day exclusion set, and the
+  // per-lane discovered count (rotation seed) instead of awaiting them in series.
+  // The old `findPlaylistOpportunities(...)` pre-query here was discarded entirely
+  // (its results are recomputed by the merge query below), so it's dropped.
+  const [lanesConfig, excludeIds, laneDiscoveredCount] = await Promise.all([
+    loadLanesConfig(supabase),
+    recentlyPitchedIds(supabase),
+    countLaneDiscovered(supabase, lane),
+  ]);
+  const laneRe = lane ? laneRegexBoost(lanesConfig, lane) : null;
+  const pitchAngle = lane ? (lanesConfig[lane]?.pitch_angle ?? "") : "";
+
+  // Rotation advances with how many playlists this lane has already yielded, so a
+  // second run the same day shifts the seed window forward and finds fresh curators
+  // instead of repeating the (already-deduped) query set.
+  const rotation = computeRotation(start, laneDiscoveredCount);
+
+  const discovered = await discoverViaSpotifyWeb(references, lane, quick, excludeIds, scrapeDeadline, rotation);
   const discovery_skips: DiscoverySkips = {
     disclaim_brand: 0,
     casual_user: 0,
@@ -534,6 +602,7 @@ export async function mergeCatalogAndLive(
     spotify_owned: 0,
   };
   let live: DiscoveredPlaylist[] = [];
+  let newIds: string[] = [];
   if (discovered.length) {
     const filtered = await filterDiscoveryCandidates(discovered, references, quick, scrapeDeadline);
     discovery_skips.disclaim_brand = filtered.skips.disclaim_brand;
@@ -543,9 +612,10 @@ export async function mergeCatalogAndLive(
     discovery_skips.spotify_owned = filtered.skips.spotify_owned;
     live = filtered.items;
     if (live.length) {
-      await upsertLiveResults(supabase, live, lane, references, laneRe);
+      ({ newIds } = await upsertLiveResults(supabase, live, lane, references, laneRe));
     }
   }
+  const newIdSet = new Set(newIds);
   console.log(
     `[playlist-research] web discovery: ${discovered.length} found, ${live.length} ingested, skips:`,
     JSON.stringify(discovery_skips),
@@ -555,25 +625,27 @@ export async function mergeCatalogAndLive(
   const vibeTokens = tokenizeVibe(userVibe);
   const trackTokens = tokenizeVibe(trackName);
 
-  const { data: mergedRows } = await supabase
-    .from("playlist_targets")
-    .select(
-      "playlist_id, platform, playlist_name, curator_name, follower_count, track_count, overlap_score, fraud_score, fraud_verdict, pitch_status, research_context, tier, whitelist_status, vibe_tags, similar_artists, submission_method, submission_url, curator_email, is_active",
-    )
-    .eq("is_active", true)
-    .in("tier", [1, 2])
-    .eq("fraud_verdict", "safe");
-
-  const { data: cooling } = await supabase
-    .from("pitch_log")
-    .select("playlist_id")
-    .eq("track_name", trackName)
-    .gt("cooldown_until", new Date().toISOString());
+  // Independent reads — run concurrently.
+  const [{ data: mergedRows }, { data: cooling }] = await Promise.all([
+    supabase
+      .from("playlist_targets")
+      .select(
+        "playlist_id, platform, playlist_name, curator_name, follower_count, track_count, overlap_score, fraud_score, fraud_verdict, pitch_status, research_context, tier, whitelist_status, vibe_tags, similar_artists, submission_method, submission_url, curator_email, is_active, created_at",
+      )
+      .eq("is_active", true)
+      .in("tier", [1, 2])
+      .eq("fraud_verdict", "safe"),
+    supabase
+      .from("pitch_log")
+      .select("playlist_id")
+      .eq("track_name", trackName)
+      .gt("cooldown_until", new Date().toISOString()),
+  ]);
 
   const excluded = new Set((cooling ?? []).map((r: { playlist_id: string }) => r.playlist_id));
   const merged = (mergedRows ?? [])
     .filter((r: { playlist_id: string }) => !excluded.has(r.playlist_id))
-    .map((r: PlaylistRow & { research_context?: Record<string, unknown> | null }) => {
+    .map((r: PlaylistRow & { research_context?: Record<string, unknown> | null; created_at?: string | null }) => {
       const rc = r.research_context as Record<string, unknown> | null;
       const source = isWebDiscovered(rc) ? "live" : "catalog";
       const laneScore = scoreLaneBoost(r, laneRe, references);
@@ -581,12 +653,20 @@ export async function mergeCatalogAndLive(
       const why_it_fits = matchesLane
         ? sanitizeWhyItFits(buildWhyItFits(r, lane, references, laneRe))
         : null;
+      // Deprioritize playlists pitched in the last 90 days so the returned set is
+      // led by NEW curators instead of recycling the exhausted (already-pitched)
+      // ones — they still appear lower down if there aren't enough fresh results.
+      const pitchedPenalty = excludeIds.has(r.playlist_id) ? RECENTLY_PITCHED_PENALTY : 0;
       return {
         ...r,
-        match_score: scoreRow(r, vibeTokens, trackTokens, laneScore),
+        match_score: scoreRow(r, vibeTokens, trackTokens, laneScore, pitchedPenalty),
         source: source as "catalog" | "live",
         lane: matchesLane ? lane : ((r as { lane?: string }).lane ?? null),
         why_it_fits,
+        // Freshness signals surfaced to the admin UI: brand-new this run + when it
+        // was first discovered (created_at is set on insert and never overwritten).
+        new_this_run: newIdSet.has(r.playlist_id),
+        discovered_at: r.created_at ?? null,
         recommended_pitch_angle: matchesLane
           ? (pitchAngle || (r as { recommended_pitch_angle?: string }).recommended_pitch_angle || null)
           : ((r as { recommended_pitch_angle?: string }).recommended_pitch_angle ?? null),
@@ -600,7 +680,8 @@ export async function mergeCatalogAndLive(
   });
 
   const results = merged.slice(0, MAX_RESULTS);
-  for (const r of results) {
+  // Lane patches are independent per-row writes — run them concurrently.
+  await mapPool(results, SCRAPE_CONCURRENCY, async (r) => {
     const patch: Record<string, unknown> = {};
     const matchesLane = rowMatchesLane(r, lane, laneRe, references);
     if (matchesLane) {
@@ -610,14 +691,16 @@ export async function mergeCatalogAndLive(
       const angle = (r as { recommended_pitch_angle?: string | null }).recommended_pitch_angle;
       if (angle) patch.recommended_pitch_angle = angle;
     }
-    if (Object.keys(patch).length === 0) continue;
+    if (Object.keys(patch).length === 0) return null;
     const { error } = await supabase.from("playlist_targets").update(patch).eq("playlist_id", r.playlist_id);
     if (error) console.error("lane patch", r.playlist_id, error.message);
-  }
+    return null;
+  });
 
   return {
     results,
     live_count: live.length,
+    new_count: newIds.length,
     discovery_skips,
   };
 }
@@ -652,7 +735,7 @@ Deno.serve(async (req) => {
     }
 
     const quick = Boolean(body.quick);
-    const { results, live_count, discovery_skips } = await mergeCatalogAndLive(supabase, track_name, user_vibe, {
+    const { results, live_count, new_count, discovery_skips } = await mergeCatalogAndLive(supabase, track_name, user_vibe, {
       lane,
       references,
       quick,
@@ -677,6 +760,7 @@ Deno.serve(async (req) => {
       references,
       count: results.length,
       live_api_ingested: live_count,
+      new_this_run: new_count,
       discovery_skips,
       quick,
       playlists,

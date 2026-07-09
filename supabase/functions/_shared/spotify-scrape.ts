@@ -150,10 +150,13 @@ function parseMetricCount(md: string): number | undefined {
   return Math.round(n);
 }
 
-export async function scrapeSpotifySearchPlaylists(query: string): Promise<SpotifyPlaylistStub[]> {
+export async function scrapeSpotifySearchPlaylists(
+  query: string,
+  opts?: { timeoutMs?: number },
+): Promise<SpotifyPlaylistStub[]> {
   const url = `https://open.spotify.com/search/${encodeURIComponent(query)}/playlists`;
   try {
-    const { markdown, extract } = await firecrawlScrape(url, { schema: SEARCH_SCHEMA, waitFor: 2000 });
+    const { markdown, extract } = await firecrawlScrape(url, { schema: SEARCH_SCHEMA, waitFor: 2000, timeoutMs: opts?.timeoutMs });
     const fromExtract = (extract?.playlists as SpotifyPlaylistStub[] | undefined) ?? [];
     if (fromExtract.length) {
       return fromExtract
@@ -172,11 +175,14 @@ export async function scrapeSpotifySearchPlaylists(query: string): Promise<Spoti
   }
 }
 
-export async function scrapeSpotifyPlaylistDetail(playlistId: string): Promise<SpotifyPlaylistDetail | null> {
+export async function scrapeSpotifyPlaylistDetail(
+  playlistId: string,
+  opts?: { timeoutMs?: number },
+): Promise<SpotifyPlaylistDetail | null> {
   const id = normalizePlaylistId(playlistId);
   const url = `https://open.spotify.com/playlist/${id}`;
   try {
-    const { markdown, extract } = await firecrawlScrape(url, { schema: PLAYLIST_SCHEMA, waitFor: 2000 });
+    const { markdown, extract } = await firecrawlScrape(url, { schema: PLAYLIST_SCHEMA, waitFor: 2000, timeoutMs: opts?.timeoutMs });
     if (extract && typeof extract === "object" && extract.name) {
       const d = extract as SpotifyPlaylistDetail;
       if (!d.owner_id && markdown) d.owner_id = parseUserIdFromMarkdown(markdown) ?? undefined;
@@ -198,10 +204,13 @@ export async function scrapeSpotifyPlaylistDetail(playlistId: string): Promise<S
   }
 }
 
-export async function scrapeSpotifyUserProfile(userId: string): Promise<SpotifyUserProfile | null> {
+export async function scrapeSpotifyUserProfile(
+  userId: string,
+  opts?: { timeoutMs?: number },
+): Promise<SpotifyUserProfile | null> {
   const url = `https://open.spotify.com/user/${userId}`;
   try {
-    const { markdown, extract } = await firecrawlScrape(url, { schema: USER_SCHEMA, waitFor: 2000 });
+    const { markdown, extract } = await firecrawlScrape(url, { schema: USER_SCHEMA, waitFor: 2000, timeoutMs: opts?.timeoutMs });
     if (extract && typeof extract === "object") {
       const profile = extract as SpotifyUserProfile;
       // Do not copy social_links → bio_links (chrome links must not masquerade as bio_links).
@@ -221,4 +230,39 @@ export async function scrapeSpotifyUserProfile(userId: string): Promise<SpotifyU
 
 export function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Run `fn` over `items` with bounded concurrency, preserving input order in the
+ * result. A pool of `concurrency` workers pulls from a shared cursor, so at most
+ * `concurrency` scrapes are in flight at once — this replaces the old
+ * sequential-await + fixed-sleep pacing (much faster wall-clock, same external
+ * load ceiling). `shouldContinue` is checked before each item is started; once it
+ * returns false, no further items are launched and their slots stay `undefined`
+ * (callers filter those out). A throwing `fn` yields `undefined` for that slot
+ * rather than rejecting the whole pool.
+ */
+export async function mapPool<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>,
+  shouldContinue: () => boolean = () => true,
+): Promise<(R | undefined)[]> {
+  const results: (R | undefined)[] = new Array(items.length).fill(undefined);
+  let cursor = 0;
+  const workers = Math.max(1, Math.min(concurrency, items.length || 1));
+  async function worker(): Promise<void> {
+    while (true) {
+      const i = cursor++;
+      if (i >= items.length) return;
+      if (!shouldContinue()) return;
+      try {
+        results[i] = await fn(items[i], i);
+      } catch {
+        results[i] = undefined;
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: workers }, () => worker()));
+  return results;
 }

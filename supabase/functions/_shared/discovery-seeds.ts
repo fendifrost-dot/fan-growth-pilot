@@ -6,6 +6,12 @@
  */
 import type { SpotifyPlaylistStub } from "./spotify-scrape.ts";
 
+// Query-seed helpers (modifier tables + query builder) have a single canonical
+// home in discovery-utils.ts — the module that playlist-research/index.ts imports
+// and that discovery-utils.test.ts covers. Re-exported here so seed-related code
+// can resolve them from either module without a divergent second copy.
+export { buildDiscoveryQueries, LANE_MODIFIERS, REF_MODIFIERS } from "./discovery-utils.ts";
+
 export type DiscoveredPlaylist = {
   id: string;
   playlist_id: string;
@@ -16,51 +22,6 @@ export type DiscoveredPlaylist = {
   owner_id?: string;
   _track_artists?: string[];
 };
-
-// Modifier templates appended to the lane label. Rotated per-run so successive
-// discoveries probe different facets of Spotify search instead of the same queries.
-// Broadened (was 16) so deeper pagination per run surfaces new curators rather
-// than recycling the exhausted head of the list.
-export const LANE_MODIFIERS = [
-  "playlist", "curator", "best", "fresh", "new", "2025", "2026", "weekly",
-  "underground", "indie", "submissions", "submit", "mix", "radio", "vibes",
-  "essentials", "rising", "hidden gems", "discover", "deep cuts", "rotation",
-  "monthly", "selects", "favourites",
-];
-// Templates applied to each reference artist (e.g. "Kaytranada type playlist").
-export const REF_MODIFIERS = [
-  "type playlist", "radio", "mix", "similar artists playlist", "essentials",
-  "fans also like", "adjacent",
-];
-
-/**
- * Build a broad, varied query set. Combines the lane label with many genre/keyword
- * modifiers and each reference artist with several templates, then rotates the
- * modifier order by `rotation` so re-runs surface different playlists. `rotation`
- * is supplied by the caller (a per-run time bucket) — pass distinct values to get
- * distinct query windows.
- */
-export function buildDiscoveryQueries(
-  references: string[],
-  lane: string,
-  cap: number,
-  rotation: number,
-): string[] {
-  const laneLabel = lane ? lane.replace(/_/g, " ") : "";
-  const rotate = <T,>(arr: T[]): T[] =>
-    arr.length ? [...arr.slice(rotation % arr.length), ...arr.slice(0, rotation % arr.length)] : arr;
-
-  const out: string[] = [];
-  if (laneLabel) {
-    for (const m of rotate(LANE_MODIFIERS)) out.push(`${laneLabel} ${m}`);
-  }
-  const refs = references.map((r) => r.split(/[—–-]/)[0].trim()).filter(Boolean);
-  for (const ref of refs) {
-    for (const m of rotate(REF_MODIFIERS)) out.push(`${ref} ${m}`);
-  }
-  // Interleave lane + ref queries so a low cap still gets a mix of both.
-  return [...new Set(out)].slice(0, cap);
-}
 
 /**
  * Reduce raw search stubs into fresh, unseen, pitch-deduped DiscoveredPlaylists.

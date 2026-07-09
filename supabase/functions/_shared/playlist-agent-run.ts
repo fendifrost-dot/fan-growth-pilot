@@ -39,7 +39,7 @@ import {
   scrapeSpotifyUserProfile,
 } from "./spotify-scrape.ts";
 import { discoverSpotifyPlacements } from "./spotify-placements.ts";
-import { importSpotifyForArtistsCsv } from "./spotify-for-artists-csv.ts";
+import { importSpotifyForArtistsCsv, warmPlacementSourceOrFilter } from "./spotify-for-artists-csv.ts";
 import { isWarmPlacementSource } from "./placement-sources.ts";
 import {
   buildIgQueueInsert,
@@ -2088,10 +2088,20 @@ export async function runCatalogueAdmin(body: Record<string, unknown>, sb: Supab
     if (track.soundcloud_url) availablePlatforms.push("soundcloud");
     if (availablePlatforms.length === 0) return { status: 400, data: { error: "Track has no streaming URL on any platform" } };
 
+    // Warm = a scraped placement on the target itself OR a pitched-and-placed
+    // pitch_log row. Fendi's real placements were SCRAPED (research_context.source
+    // = spotify_placement / spotify_for_artists_csv), never pitched, so the old
+    // pitch_log-only predicate returned []. warmPlacementSourceOrFilter() is the
+    // canonical scraped-placement filter shared with the SFA CSV importer.
     const { data: placedLog } = await sb.from("pitch_log")
       .select("playlist_id, track_name")
       .or("placed.eq.true,placement_status.eq.placed");
-    const warmPids = new Set((placedLog ?? []).map((r: { playlist_id: string }) => r.playlist_id));
+    const { data: scrapedWarm } = await sb.from("playlist_targets")
+      .select("playlist_id")
+      .or(warmPlacementSourceOrFilter());
+    const warmPids = new Set<string>();
+    for (const r of (placedLog ?? []) as { playlist_id: string }[]) warmPids.add(r.playlist_id);
+    for (const r of (scrapedWarm ?? []) as { playlist_id: string }[]) warmPids.add(r.playlist_id);
 
     const { data: targets } = await sb.from("playlist_targets")
       .select("*, playlist_categories(category_id)")

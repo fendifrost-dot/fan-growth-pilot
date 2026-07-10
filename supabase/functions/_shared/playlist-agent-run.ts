@@ -41,6 +41,7 @@ import {
 import { discoverSpotifyPlacements } from "./spotify-placements.ts";
 import { importSpotifyForArtistsCsv, warmPlacementSourceOrFilter } from "./spotify-for-artists-csv.ts";
 import { isWarmPlacementSource } from "./placement-sources.ts";
+import { placementMatch, compareTargets } from "./placement-match.ts";
 import {
   buildIgQueueInsert,
   queueIgDm,
@@ -2110,14 +2111,31 @@ export async function runCatalogueAdmin(body: Record<string, unknown>, sb: Supab
       .limit(500);
     const rows = targets ?? [];
 
-    type Scored = { row: Record<string, unknown>; overlap: number; warm: boolean; tier: number; followers: number };
+    const trackName = String(track.name ?? "");
+
+    type Scored = {
+      row: Record<string, unknown>;
+      overlap: number;
+      warm: boolean;
+      placement: boolean;
+      placementTrack: string | null;
+      tier: number;
+      followers: number;
+    };
     const scored: Scored[] = rows.map((r: Record<string, unknown>) => {
       const pcs = (r.playlist_categories ?? []) as { category_id: string }[];
       const overlap = pcs.filter((pc) => trackCatIds.includes(pc.category_id)).length;
+      // PRIMARY warm signal: this playlist already features THIS track. Matched
+      // case- and whitespace-insensitively against research_context.featuring_tracks,
+      // ignoring the SFA CSV placeholder. This is what makes the recommender
+      // actually per-track ("reach the curators who already supported it first").
+      const pm = placementMatch(r, trackName);
       return {
         row: r,
         overlap,
         warm: warmPids.has(r.playlist_id as string),
+        placement: pm.matched,
+        placementTrack: pm.matchedName,
         tier: Number(r.tier ?? 99),
         followers: Number(r.follower_count ?? 0),
       };
@@ -2125,7 +2143,9 @@ export async function runCatalogueAdmin(body: Record<string, unknown>, sb: Supab
 
     let filtered: Scored[];
     if (mode === "warm_aligned") {
-      filtered = scored.filter((s) => s.warm && s.overlap > 0);
+      // A direct placement qualifies a row on its own — no longer hard-require
+      // category overlap (warm placements carry empty playlist_categories).
+      filtered = scored.filter((s) => s.warm && (s.placement || s.overlap > 0));
     } else if (mode === "new_cold") {
       // Exclude already-pitched rows and inactive rows
       filtered = scored.filter((s) =>
@@ -2139,15 +2159,23 @@ export async function runCatalogueAdmin(body: Record<string, unknown>, sb: Supab
       return { status: 400, data: { error: "mode must be warm_aligned | new_cold | all_warm" } };
     }
 
-    filtered.sort((a, b) => (b.overlap - a.overlap) || (a.tier - b.tier) || (b.followers - a.followers));
+    // Rank: direct placement → category overlap → tier → follower_count.
+    filtered.sort((a, b) => compareTargets(a, b));
     return {
       status: 200,
       data: {
         ok: true,
         mode,
         track_id: trackId,
+        track_name: trackName,
         available_platforms: availablePlatforms,
-        rows: filtered.slice(0, limit).map((s) => ({ ...s.row, _overlap: s.overlap, _warm: s.warm })),
+        rows: filtered.slice(0, limit).map((s) => ({
+          ...s.row,
+          _overlap: s.overlap,
+          _warm: s.warm,
+          _placement_match: s.placement,
+          _placement_track: s.placementTrack,
+        })),
       },
     };
   }

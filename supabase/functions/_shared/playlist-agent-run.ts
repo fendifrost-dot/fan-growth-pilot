@@ -1859,6 +1859,27 @@ export async function runPlaylistResearchProxy(
   return proxyToEdgeFunction("playlist-research", body, hubKey);
 }
 
+/**
+ * Fire the mass rap+house sweep (commit d37b3d9) server-side.
+ *
+ * The sweep lives in `playlist-research` behind `x-api-key: FANFUEL_HUB_KEY`,
+ * a server-only secret. Routing it through control-center-api lets the admin UI
+ * trigger it via the already-authenticated `callHubFn` path — the key is read
+ * from the edge-function environment and never reaches the client.
+ *
+ * Forwards only `sweep:true` plus the optional `quick` / `lane` knobs; the raw
+ * playlist-research response (incl. `new_this_run`) passes straight back.
+ */
+export async function runPlaylistSweepProxy(
+  body: Record<string, unknown>,
+  hubKey: string,
+): Promise<RunResult> {
+  const sweepBody: Record<string, unknown> = { sweep: true };
+  if (body.quick !== undefined) sweepBody.quick = Boolean(body.quick);
+  if (typeof body.lane === "string" && body.lane.trim()) sweepBody.lane = body.lane.trim();
+  return proxyToEdgeFunction("playlist-research", sweepBody, hubKey);
+}
+
 export async function runSendCampaignProxy(
   body: Record<string, unknown>,
   hubKey: string,
@@ -1952,7 +1973,7 @@ const PLAYLIST_AGENT_ACTIONS = new Set([
   "draft_pitch", "approve_draft", "enrich_curator_contacts", "schedule_follow_up",
   "list_targets", "list_drafts", "update_draft", "delete_draft", "deactivate_target", "activate_target", "patch_target", "log_platform_pitch", "get_pitch_log",
   "verify_targets", "list_unverified_targets", "review_target",
-  "run_playlist_research", "send_campaign", "send_telegram_campaign",
+  "run_playlist_research", "run_playlist_sweep", "send_campaign", "send_telegram_campaign",
   "connect_spotify_init", "connect_spotify_status",
   "queue_instagram_pitch",
   "reconcile_lane_targets",
@@ -2298,6 +2319,8 @@ export async function runPlaylistAgentAction(
       return runPlaylistAdmin({ ...body, action }, sb);
     case "run_playlist_research":
       return runPlaylistResearchProxy(body, hubKey);
+    case "run_playlist_sweep":
+      return runPlaylistSweepProxy(body, hubKey);
     case "send_campaign":
       return runSendCampaignProxy(body, hubKey);
     case "send_telegram_campaign":

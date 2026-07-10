@@ -134,6 +134,7 @@ const AdminPlaylistTargets: React.FC = () => {
   const [spotifyStatus, setSpotifyStatus] = useState<{ connected: boolean; reason?: string } | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [researching, setResearching] = useState(false);
+  const [sweeping, setSweeping] = useState(false);
   const [discoveringPlacements, setDiscoveringPlacements] = useState(false);
   const [placementOnly, setPlacementOnly] = useState(false);
   const [importingSfa, setImportingSfa] = useState(false);
@@ -336,6 +337,38 @@ const AdminPlaylistTargets: React.FC = () => {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
       setResearching(false);
+    }
+  };
+
+  /** Mass rap+house sweep — genre-seeded, wide discovery. Runs server-side via
+   * control-center-api, which holds the hub key; no API key touches the browser.
+   * ~40s scrape budget, so it can take the better part of a minute. */
+  const runSweep = async () => {
+    setSweeping(true);
+    try {
+      const res = await callHubFn<{
+        count?: number;
+        live_api_ingested?: number;
+        new_this_run?: number;
+        discovery_skips?: Record<string, number>;
+      }>("run_playlist_sweep", {});
+      const fresh = res.new_this_run ?? 0;
+      const ingested = res.live_api_ingested ?? 0;
+      const sk = res.discovery_skips;
+      const skipParts = sk
+        ? Object.entries(sk)
+            .filter(([, v]) => (v ?? 0) > 0)
+            .map(([k, v]) => `${k.replace(/_/g, " ")} ${v}`)
+            .join(" · ")
+        : "";
+      toast.success(
+        `Sweep: ${fresh} new playlist${fresh === 1 ? "" : "s"} added · ${ingested} ingested${skipParts ? ` · skipped: ${skipParts}` : ""}`,
+      );
+      await fetchRows();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSweeping(false);
     }
   };
 
@@ -561,6 +594,15 @@ const AdminPlaylistTargets: React.FC = () => {
               title="Find Spotify playlists that already feature your music"
             >
               {discoveringPlacements ? "Scanning…" : "Find playlists with my music"}
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={sweeping}
+              onClick={runSweep}
+              title="Genre-seeded mass discovery across rap + house — takes ~a minute"
+            >
+              {sweeping ? "Sweeping…" : "Run rap/house sweep"}
             </Button>
           </div>
         </div>

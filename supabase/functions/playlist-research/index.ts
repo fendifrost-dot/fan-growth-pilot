@@ -101,6 +101,13 @@ const REENRICH_CAP_SWEEP = 16;
 // leans on this web-search channel (same one placement-discovery uses) to surface
 // playlist ids from third-party pages.
 const SEARCH_HITS_PER_QUERY = 8;
+// Channel A — the direct scrape of open.spotify.com/search/<q>/playlists — returns 0
+// on EVERY run (it's a client-rendered SPA with no crawlable playlist anchors), so it
+// is disabled by default and discovery leans entirely on the web-search channel. Not
+// deleted: set DISCOVERY_ENABLE_SEARCH_SCRAPE=true to revive it if Spotify ever
+// server-renders the search page again. Left behind a flag rather than removed silently.
+const ENABLE_SEARCH_PAGE_SCRAPE =
+  (Deno.env.get("DISCOVERY_ENABLE_SEARCH_SCRAPE") ?? "").toLowerCase() === "true";
 type DiscoverySkips = {
   disclaim_brand: number;
   casual_user: number;
@@ -124,6 +131,9 @@ type DiscoveryFunnel = {
 type SweepFunnel = DiscoveryFunnel & {
   enriched_ok: number;
   enrich_failed: number;
+  /** reason → count for every row that did NOT enrich, so a future failure is
+   * legible from the response body alone (e.g. {no_metadata: 3, not_attempted: 2}). */
+  enrich_failed_reasons: Record<string, number>;
 };
 
 function sanitizeWhyItFits(raw: string | null): string | null {
@@ -183,6 +193,9 @@ type DiscoveredPlaylist = {
   bot_risk?: number | null;
   category?: string;
   category_confidence?: number;
+  // Transient: why enrichment did not produce a real name this run (for the funnel's
+  // enrich_failed_reasons). Not persisted.
+  _enrich_reason?: string;
 };
 
 function getServiceClient(): SupabaseClient {
@@ -378,14 +391,18 @@ async function discoverViaSpotifyWeb(
     async (query) => {
       const stubs: SpotifyPlaylistStub[] = [];
       let ok = false;
-      // Channel A — scrape Spotify's own search page.
-      try {
-        const scraped = await scrapeSpotifySearchPlaylists(query);
-        rawScrape += scraped.length;
-        stubs.push(...scraped);
-        ok = true;
-      } catch (e) {
-        console.error(`[discover] search-scrape "${query}" failed:`, e instanceof Error ? e.message : String(e));
+      // Channel A — scrape Spotify's own search page. Disabled by default (returns 0
+      // every run; see ENABLE_SEARCH_PAGE_SCRAPE) so the wasted scrape budget goes to
+      // Channel B / enrichment instead.
+      if (ENABLE_SEARCH_PAGE_SCRAPE) {
+        try {
+          const scraped = await scrapeSpotifySearchPlaylists(query);
+          rawScrape += scraped.length;
+          stubs.push(...scraped);
+          ok = true;
+        } catch (e) {
+          console.error(`[discover] search-scrape "${query}" failed:`, e instanceof Error ? e.message : String(e));
+        }
       }
       // Channel B — web search → harvest playlist ids. Names/owners are backfilled
       // by the detail phase below, so a placeholder name here is fine.
@@ -464,18 +481,18 @@ function isPlaceholderName(name: string | null | undefined): boolean {
 async function enrichPlaylists(
   items: DiscoveredPlaylist[],
   deadline: number,
-): Promise<{ enriched_ok: number; enrich_failed: number }> {
+): Promise<{ enriched_ok: number; enrich_failed: number; enrich_failed_reasons: Record<string, number> }> {
   await mapPool(
     items,
     SCRAPE_CONCURRENCY,
     async (pl) => {
       try {
         const detail = await scrapeSpotifyPlaylistDetail(pl.id);
-        const gotReal = !!detail && (
-          (!!detail.name && !isPlaceholderName(detail.name)) ||
-          typeof detail.follower_count === "number" ||
-          (detail.track_artists?.length ?? 0) > 0
-        );
+        // A row is enriched ONLY if we recovered a real playlist name (not the
+        // "Playlist <id>" stub). Follower count is intentionally NOT sufficient:
+        // the embed page never carries it, so followers stay null and must never
+        // flip a row to "enriched" (and never default to 0 → no phantom bot_risk).
+        const gotRealName = !!detail?.name && !isPlaceholderName(detail.name);
         if (detail) {
           if (detail.name && !isPlaceholderName(detail.name)) pl.name = detail.name;
           if (detail.description != null) pl.description = detail.description;
@@ -485,9 +502,11 @@ async function enrichPlaylists(
           if (detail.owner_id) pl.owner_id = detail.owner_id;
           if (detail.track_artists) pl._track_artists = detail.track_artists;
         }
-        pl.enriched = gotReal;
+        pl.enriched = gotRealName;
+        pl._enrich_reason = gotRealName ? undefined : detail ? "no_name" : "no_metadata";
       } catch (e) {
         pl.enriched = false;
+        pl._enrich_reason = "exception";
         console.error(`[discover] detail ${pl.id} failed:`, e instanceof Error ? e.message : String(e));
       }
       return null;
@@ -497,7 +516,15 @@ async function enrichPlaylists(
 
   items.sort((a, b) => (b.followers ?? 0) - (a.followers ?? 0));
   const enriched_ok = items.filter((p) => p.enriched === true).length;
-  return { enriched_ok, enrich_failed: items.length - enriched_ok };
+  // Tally why each unenriched row failed. Rows the budget never reached were never
+  // assigned a reason → "not_attempted" (they persist as stubs for the next run).
+  const enrich_failed_reasons: Record<string, number> = {};
+  for (const pl of items) {
+    if (pl.enriched === true) continue;
+    const reason = pl._enrich_reason ?? "not_attempted";
+    enrich_failed_reasons[reason] = (enrich_failed_reasons[reason] ?? 0) + 1;
+  }
+  return { enriched_ok, enrich_failed: items.length - enriched_ok, enrich_failed_reasons };
 }
 
 /**
@@ -763,8 +790,12 @@ async function upsertLiveResults(
       platform: "spotify",
       playlist_name: pl.name,
       curator_name: pl.owner,
-      follower_count: pl.followers ?? 0,
-      track_count: pl.track_count ?? 0,
+      // Leave NULL when unknown — never default to 0. A 0 here reads as a real
+      // "zero followers/tracks" signal and would (a) mislead ranking and (b) let
+      // the bot scorer fire follower/track-ratio flags on data we never obtained.
+      // The embed page carries no follower count, so this is null for most rows.
+      follower_count: pl.followers,
+      track_count: pl.track_count,
       overlap_score: 0,
       fraud_score: 50,
       fraud_verdict: "safe",
@@ -879,9 +910,9 @@ export async function mergeCatalogAndLive(
   // ENRICHMENT phase — detail scrape fills name/curator/followers/track_count/
   // description before any scoring. Rows the budget never reached stay
   // `enriched:false` and are persisted (below) for the next run to finish.
-  const { enriched_ok, enrich_failed } = batch.length
+  const { enriched_ok, enrich_failed, enrich_failed_reasons } = batch.length
     ? await enrichPlaylists(batch, scrapeDeadline)
-    : { enriched_ok: 0, enrich_failed: 0 };
+    : { enriched_ok: 0, enrich_failed: 0, enrich_failed_reasons: {} as Record<string, number> };
 
   const discovery_skips: DiscoverySkips = {
     disclaim_brand: 0,
@@ -911,7 +942,7 @@ export async function mergeCatalogAndLive(
     }
   }
   const newIdSet = new Set(newIds);
-  const funnel: SweepFunnel = { ...discoveryFunnel, enriched_ok, enrich_failed };
+  const funnel: SweepFunnel = { ...discoveryFunnel, enriched_ok, enrich_failed, enrich_failed_reasons };
   console.log(
     `[playlist-research] web discovery: ${freshStubs.length} found, ${reenrich.length} re-enrich, ${live.length} ingested, funnel:`,
     JSON.stringify(funnel),

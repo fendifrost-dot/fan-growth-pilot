@@ -52,29 +52,6 @@ const SEARCH_SCHEMA = {
   },
 };
 
-const PLAYLIST_SCHEMA = {
-  type: "object",
-  properties: {
-    name: { type: "string" },
-    description: { type: "string" },
-    follower_count: {
-      type: "number",
-      description: "Playlist save count or follower count shown on the page (e.g. 1033 saves)",
-    },
-    track_count: {
-      type: "number",
-      description: "Total number of songs/tracks in the playlist (e.g. 87 songs)",
-    },
-    owner_name: { type: "string" },
-    owner_id: { type: "string" },
-    track_artists: {
-      type: "array",
-      items: { type: "string" },
-      description: "Artist names from visible tracks",
-    },
-  },
-};
-
 const USER_SCHEMA = {
   type: "object",
   properties: {
@@ -140,11 +117,6 @@ function parsePlaylistsFromMarkdown(md: string): SpotifyPlaylistStub[] {
   return out;
 }
 
-function parseUserIdFromMarkdown(md: string): string | null {
-  const m = md.match(/open\.spotify\.com\/user\/([a-zA-Z0-9]+)/);
-  return m ? m[1] : null;
-}
-
 function parseMetricCount(md: string): number | undefined {
   const m = md.match(/([\d,.]+)\s*([KkMm])?\s*(?:saves|followers|likes)/i);
   if (!m) return undefined;
@@ -180,33 +152,203 @@ export async function scrapeSpotifySearchPlaylists(
   }
 }
 
+// The public /playlist/<id> page is a client-rendered SPA — Firecrawl gets an empty
+// shell with no name/curator/followers, so enrichment failed on 100% of rows. These
+// two endpoints are SERVER-rendered and need no auth or API key:
+//   • the EMBED page carries a __NEXT_DATA__ JSON blob (name, owner, description, tracks)
+//   • oEmbed returns at least the title
+const EMBED_TIMEOUT_MS = 8_000;
+const OEMBED_TIMEOUT_MS = 6_000;
+const SPOTIFY_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+/** Bare GET with a browser UA + hard timeout. Returns the body text, or null on any
+ * error / non-2xx (so callers fall through to the next channel). */
+async function fetchText(url: string, timeoutMs: number): Promise<string | null> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": SPOTIFY_UA, "Accept": "text/html,application/json,*/*" },
+      signal: ctrl.signal,
+    });
+    if (!res.ok) return null;
+    return await res.text();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function pickString(v: unknown): string | undefined {
+  if (typeof v !== "string") return undefined;
+  const t = v.trim();
+  return t ? t : undefined;
+}
+
+function stripHtml(s: string | undefined): string | undefined {
+  if (!s) return undefined;
+  const t = s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  return t ? t : undefined;
+}
+
+/** Pull the JSON out of the embed page's `<script id="__NEXT_DATA__">` blob (or the
+ * older `id="resource"` variant). Returns the parsed object, or null if absent/malformed. */
+function extractNextDataJson(html: string): unknown | null {
+  if (!html) return null;
+  const candidates = [
+    /<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i,
+    /<script[^>]*id=["'](?:resource|initial-state|session)["'][^>]*>([\s\S]*?)<\/script>/i,
+  ];
+  for (const re of candidates) {
+    const m = html.match(re);
+    if (!m) continue;
+    try {
+      return JSON.parse(m[1].trim());
+    } catch {
+      // try the next candidate
+    }
+  }
+  return null;
+}
+
+/** Depth-first search for the playlist entity inside the __NEXT_DATA__ tree. Prefers
+ * an object that carries a `trackList` (the fully-hydrated entity); falls back to any
+ * playlist-typed object with a name. Guards against cycles. */
+function findPlaylistEntity(root: unknown): Record<string, unknown> | null {
+  const seen = new Set<unknown>();
+  const stack: unknown[] = [root];
+  let fallback: Record<string, unknown> | null = null;
+  while (stack.length) {
+    const cur = stack.pop();
+    if (!cur || typeof cur !== "object") continue;
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+    if (Array.isArray(cur)) {
+      for (const v of cur) stack.push(v);
+      continue;
+    }
+    const obj = cur as Record<string, unknown>;
+    const hasName = typeof obj.name === "string" || typeof obj.title === "string";
+    if (Array.isArray(obj.trackList) && hasName) return obj;
+    if (!fallback && obj.type === "playlist" && hasName) fallback = obj;
+    for (const k in obj) stack.push(obj[k]);
+  }
+  return fallback;
+}
+
+/** Best-effort owner/curator name. Embed entities expose it inconsistently
+ * (`subtitle`, an `owner` object, `ownerName`, …), so probe the known shapes. */
+function ownerFromEntity(entity: Record<string, unknown>): string | undefined {
+  const owner = entity.owner;
+  if (owner && typeof owner === "object") {
+    const o = owner as Record<string, unknown>;
+    const n = pickString(o.name) ?? pickString(o.display_name) ?? pickString(o.displayName);
+    if (n) return n;
+  }
+  return (
+    pickString(entity.subtitle) ??
+    pickString(entity.ownerName) ??
+    pickString((entity as { owner_name?: unknown }).owner_name) ??
+    pickString(typeof owner === "string" ? owner : undefined)
+  );
+}
+
+/** Split a track's "Artist A, Artist B feat. C" subtitle into individual artist names.
+ * Splits on separators and collab words, then trims stray punctuation (e.g. the "."
+ * left behind by "feat.") off each piece. */
+function splitArtists(subtitle: string): string[] {
+  return subtitle
+    .split(/,|;|&|·|\/|\bfeat\b|\bft\b|\bfeaturing\b|\bwith\b/i)
+    .map((s) => s.replace(/^[\s.,&·/-]+|[\s.,&·/-]+$/g, "").trim())
+    .filter((s) => s.length > 0);
+}
+
+/**
+ * Parse a Spotify EMBED page's HTML into playlist metadata. Pure and dependency-free
+ * so it unit-tests without any network. Returns null when the page has no usable
+ * __NEXT_DATA__ / entity / name. Follower count is NOT present on the embed page, so
+ * it is intentionally left undefined (never 0).
+ */
+export function parseEmbedNextData(html: string): SpotifyPlaylistDetail | null {
+  const json = extractNextDataJson(html);
+  if (!json) return null;
+  const entity = findPlaylistEntity(json);
+  if (!entity) return null;
+  const name = pickString(entity.name) ?? pickString(entity.title);
+  if (!name) return null;
+
+  const detail: SpotifyPlaylistDetail = { name };
+
+  const description = pickString(entity.description) ??
+    stripHtml(pickString((entity as { htmlDescription?: unknown }).htmlDescription));
+  if (description) detail.description = description;
+
+  const owner = ownerFromEntity(entity);
+  if (owner) detail.owner_name = owner;
+  const ownerId = pickString((entity.owner as { id?: unknown })?.id) ??
+    pickString((entity as { ownerId?: unknown }).ownerId);
+  if (ownerId) detail.owner_id = ownerId;
+
+  if (Array.isArray(entity.trackList)) {
+    detail.track_count = entity.trackList.length;
+    const artists: string[] = [];
+    for (const t of entity.trackList) {
+      const sub = pickString((t as { subtitle?: unknown })?.subtitle);
+      if (sub) artists.push(...splitArtists(sub));
+    }
+    detail.track_artists = [...new Set(artists)].slice(0, 40);
+  }
+  return detail;
+}
+
+/** Parse Spotify oEmbed JSON. Only the title is reliably present (no auth needed). */
+export function parseOEmbedTitle(jsonText: string): string | null {
+  try {
+    const o = JSON.parse(jsonText) as { title?: unknown };
+    return pickString(o.title) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function scrapeSpotifyPlaylistDetail(
   playlistId: string,
   opts?: { timeoutMs?: number },
 ): Promise<SpotifyPlaylistDetail | null> {
   const id = normalizePlaylistId(playlistId);
-  const url = `https://open.spotify.com/playlist/${id}`;
-  try {
-    const { markdown, extract } = await firecrawlScrape(url, { schema: PLAYLIST_SCHEMA, waitFor: 2000, timeoutMs: opts?.timeoutMs });
-    if (extract && typeof extract === "object" && extract.name) {
-      const d = extract as SpotifyPlaylistDetail;
-      if (!d.owner_id && markdown) d.owner_id = parseUserIdFromMarkdown(markdown) ?? undefined;
-      if (d.follower_count == null && markdown) d.follower_count = parseMetricCount(markdown);
-      return d;
+
+  // Channel 1 (primary) — the server-rendered EMBED page. Try a direct fetch first
+  // (fast, free, no Firecrawl budget); if that's blocked or returns a shell with no
+  // __NEXT_DATA__, fall back to Firecrawl's rawHtml of the same URL.
+  const embedUrl = `https://open.spotify.com/embed/playlist/${id}`;
+  let html = await fetchText(embedUrl, opts?.timeoutMs ?? EMBED_TIMEOUT_MS);
+  if (!html || !html.includes("__NEXT_DATA__")) {
+    try {
+      const { rawHtml, html: cleaned } = await firecrawlScrape(embedUrl, {
+        formats: ["rawHtml"],
+        waitFor: 0,
+        timeoutMs: opts?.timeoutMs,
+      });
+      html = rawHtml || cleaned || html || "";
+    } catch (e) {
+      console.error("[spotify-scrape] embed firecrawl failed:", id, e instanceof Error ? e.message : e);
     }
-    const owner_id = parseUserIdFromMarkdown(markdown);
-    const follower_count = parseMetricCount(markdown);
-    if (!markdown && !owner_id) return null;
-    return {
-      name: `Playlist ${id.slice(0, 8)}`,
-      owner_id: owner_id ?? undefined,
-      follower_count,
-      track_artists: [],
-    };
-  } catch (e) {
-    console.error("[spotify-scrape] playlist detail failed:", id, e instanceof Error ? e.message : e);
-    return null;
   }
+  const fromEmbed = html ? parseEmbedNextData(html) : null;
+  if (fromEmbed?.name) return fromEmbed;
+
+  // Channel 2 (fallback) — oEmbed, which returns at least the title so we can still
+  // populate a real playlist_name and clear the placeholder stub.
+  const oembedUrl =
+    `https://open.spotify.com/oembed?url=${encodeURIComponent(`https://open.spotify.com/playlist/${id}`)}`;
+  const oeText = await fetchText(oembedUrl, opts?.timeoutMs ?? OEMBED_TIMEOUT_MS);
+  const title = oeText ? parseOEmbedTitle(oeText) : null;
+  if (title) return { name: title };
+
+  console.error("[spotify-scrape] playlist detail: no server-rendered metadata for", id);
+  return null;
 }
 
 export async function scrapeSpotifyUserProfile(

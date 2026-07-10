@@ -3,6 +3,10 @@ const FIRECRAWL_URL = "https://api.firecrawl.dev/v1/scrape";
 export type FirecrawlScrapeResult = {
   markdown: string;
   html: string;
+  /** Unprocessed page HTML (includes <script> tags). Populated only when the
+   * caller requests the "rawHtml" format — needed to read server-rendered JSON
+   * blobs (e.g. Spotify embed `__NEXT_DATA__`) that the cleaned `html` strips. */
+  rawHtml: string;
   extract: Record<string, unknown> | null;
 };
 
@@ -68,15 +72,17 @@ export async function firecrawlScrape(
   }
 
   const data = (json as {
-    data?: { markdown?: string; html?: string; extract?: Record<string, unknown> };
+    data?: { markdown?: string; html?: string; rawHtml?: string; extract?: Record<string, unknown> };
     markdown?: string;
     html?: string;
+    rawHtml?: string;
     extract?: Record<string, unknown>;
   }).data ?? json;
 
   return {
     markdown: data?.markdown ?? "",
     html: data?.html ?? "",
+    rawHtml: data?.rawHtml ?? "",
     extract: (data?.extract as Record<string, unknown>) ?? null,
   };
 }

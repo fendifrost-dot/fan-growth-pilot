@@ -22,13 +22,16 @@ import {
   scrapeSpotifyPlaylistDetail,
   scrapeSpotifySearchPlaylists,
   scrapeSpotifyUserProfile,
+  type SpotifyPlaylistStub,
   type SpotifyUserProfile,
 } from "../_shared/spotify-scrape.ts";
+import { firecrawlSearch } from "../_shared/firecrawl.ts";
 import {
   buildDiscoveryQueries,
   buildSweepQueries,
   computeRotation,
   dedupeStubs,
+  extractPlaylistIdsFromText,
   HOUSE_SUBGENRES,
   mapPool,
   RAP_SUBGENRES,
@@ -80,6 +83,11 @@ const RECENTLY_PITCHED_PENALTY = 1000;
 // tripping Firecrawl rate limits — widen only if you also raise the budget.
 const SWEEP_QUERY_CAP = 24;
 const DETAIL_CAP_SWEEP = 24;
+// Web-search hits fetched per discovery query. The Spotify search *page* scrape is
+// a client-rendered SPA that returns no crawlable playlist anchors, so discovery
+// leans on this web-search channel (same one placement-discovery uses) to surface
+// playlist ids from third-party pages.
+const SEARCH_HITS_PER_QUERY = 8;
 type DiscoverySkips = {
   disclaim_brand: number;
   casual_user: number;
@@ -303,21 +311,47 @@ async function discoverViaSpotifyWeb(
   const out: DiscoveredPlaylist[] = [];
   const log: { query: string; count: number; ok: boolean }[] = [];
   let skippedRecent = 0;
+  // Funnel counters — raw stub yield per channel BEFORE dedupe. Emitted below so a
+  // zero-result run is diagnosable instead of silently falling through to catalog.
+  let rawScrape = 0;
+  let rawWebSearch = 0;
 
-  // Search phase — fan the query scrapes out `SCRAPE_CONCURRENCY`-at-a-time
-  // instead of sequential awaits + politeness sleeps. mapPool preserves order so
-  // the dedupe below stays deterministic.
+  // Search phase — fan the queries out `SCRAPE_CONCURRENCY`-at-a-time. Each query
+  // pulls from TWO channels: the Spotify search-page scrape (Channel A) AND a
+  // Firecrawl web search that harvests playlist ids from third-party pages
+  // (Channel B). Channel A alone returns nothing for broad genre sweeps — the
+  // search page is a client-rendered SPA with no crawlable playlist anchors — so
+  // Channel B is what actually surfaces playlists (it's the channel that already
+  // works in placement-discovery). mapPool preserves order so dedupe stays
+  // deterministic.
   const stubLists = await mapPool(
     queries,
     SCRAPE_CONCURRENCY,
     async (query) => {
+      const stubs: SpotifyPlaylistStub[] = [];
+      let ok = false;
+      // Channel A — scrape Spotify's own search page.
       try {
-        const stubs = await scrapeSpotifySearchPlaylists(query);
-        return { query, stubs, ok: true };
+        const scraped = await scrapeSpotifySearchPlaylists(query);
+        rawScrape += scraped.length;
+        stubs.push(...scraped);
+        ok = true;
       } catch (e) {
-        console.error(`[discover] search "${query}" failed:`, e instanceof Error ? e.message : String(e));
-        return { query, stubs: [], ok: false };
+        console.error(`[discover] search-scrape "${query}" failed:`, e instanceof Error ? e.message : String(e));
       }
+      // Channel B — web search → harvest playlist ids. Names/owners are backfilled
+      // by the detail phase below, so a placeholder name here is fine.
+      try {
+        const hits = await firecrawlSearch(query, SEARCH_HITS_PER_QUERY);
+        const blob = hits.map((h) => `${h.url}\n${h.title ?? ""}\n${h.description ?? ""}`).join("\n");
+        const ids = extractPlaylistIdsFromText(blob);
+        rawWebSearch += ids.length;
+        for (const id of ids) stubs.push({ playlist_id: id, name: `Playlist ${id.slice(0, 6)}…` });
+        ok = true;
+      } catch (e) {
+        console.error(`[discover] web-search "${query}" failed:`, e instanceof Error ? e.message : String(e));
+      }
+      return { query, stubs, ok };
     },
     () => Date.now() > deadline,
   );
@@ -372,8 +406,15 @@ async function discoverViaSpotifyWeb(
 
   out.sort((a, b) => (b.followers ?? 0) - (a.followers ?? 0));
   console.log(
-    "[playlist-research] web discover log:", JSON.stringify(log),
-    "total:", out.length, "skipped_recent:", skippedRecent,
+    "[playlist-research] web discover funnel:",
+    JSON.stringify({
+      queries: queries.length,
+      raw_scrape: rawScrape,
+      raw_websearch: rawWebSearch,
+      unique_after_dedupe: out.length,
+      skipped_recent: skippedRecent,
+    }),
+    "per_query:", JSON.stringify(log),
   );
   return out;
 }

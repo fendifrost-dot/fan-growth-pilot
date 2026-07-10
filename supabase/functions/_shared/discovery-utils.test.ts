@@ -3,6 +3,7 @@ import {
   buildDiscoveryQueries,
   computeRotation,
   dedupeStubs,
+  extractPlaylistIdsFromText,
   mapPool,
 } from "./discovery-utils.ts";
 
@@ -102,6 +103,24 @@ Deno.test("buildDiscoveryQueries respects cap and rotates seeds", () => {
   assertEquals(q0[0] !== q1[0], true, "rotation did not change the query set");
   // No duplicates within a set.
   assertEquals(new Set(q0).size, q0.length);
+});
+
+Deno.test("extractPlaylistIdsFromText harvests ids, dedupes, drops editorial", () => {
+  const blob = [
+    "https://open.spotify.com/playlist/37i9dQZF1DX0XUsuxWHRQd editorial — dropped",
+    "Check out https://open.spotify.com/playlist/3cEYpjA9oz9GiPac4AsH4n now",
+    "dup https://open.spotify.com/playlist/3cEYpjA9oz9GiPac4AsH4n again",
+    "and open.spotify.com/playlist/2v3iNvzV7yBmnUN6D8ftgg?si=abc trailing query",
+    "not a playlist https://open.spotify.com/track/1abcAABBCCDDEEFFGGHHIIz",
+  ].join("\n");
+  assertEquals(extractPlaylistIdsFromText(blob), [
+    "3cEYpjA9oz9GiPac4AsH4n",
+    "2v3iNvzV7yBmnUN6D8ftgg",
+  ]);
+});
+
+Deno.test("extractPlaylistIdsFromText returns empty for text with no playlists", () => {
+  assertEquals(extractPlaylistIdsFromText("nothing to see here"), []);
 });
 
 Deno.test("buildDiscoveryQueries works with only a lane (no references)", () => {

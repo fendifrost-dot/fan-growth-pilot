@@ -145,6 +145,32 @@ export function buildDiscoveryQueries(
   return [...new Set(out)].slice(0, cap);
 }
 
+/** Matches every Spotify playlist URL in a blob of text; capture group is the id. */
+const PLAYLIST_URL_RE = /open\.spotify\.com\/playlist\/([a-zA-Z0-9]{22})/g;
+
+/**
+ * Harvest Spotify playlist ids from arbitrary text (web-search hit urls/titles/
+ * descriptions). This is the discovery channel that actually yields playlists for
+ * broad genre queries — Spotify's own search page is a client-rendered SPA that
+ * returns no crawlable playlist anchors, so scraping it alone finds nothing.
+ * Editorial ids (37i9dQZF…) are dropped — algorithmic, nobody to pitch — and the
+ * result is deduped in first-seen order.
+ */
+export function extractPlaylistIdsFromText(blob: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const re = new RegExp(PLAYLIST_URL_RE.source, "g");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(blob)) !== null) {
+    const id = m[1];
+    if (id.startsWith("37i9dQZF")) continue;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
 export type StubLike = { playlist_id?: string | null };
 
 /**

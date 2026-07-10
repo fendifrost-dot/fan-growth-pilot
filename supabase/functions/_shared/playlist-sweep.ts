@@ -27,6 +27,14 @@ export type PlaylistSignal = {
   followers?: number | null;
   /** Track count, when the detail scrape surfaced it (often null). */
   track_count?: number | null;
+  /**
+   * Whether the detail scrape actually populated this row's metadata.
+   * `false` means enrichment was never attempted or failed (SPA didn't render,
+   * budget expired, scrape errored) — the name/owner/description are ABSENT, not
+   * evidence of a bot. `true` means we have real data to score. `undefined`
+   * (legacy callers that always pass real data) is treated as enriched.
+   */
+  enriched?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -92,7 +100,17 @@ function isEditorialId(playlistId: string | null | undefined): boolean {
  * verdict is explainable in logs and the admin UI. Never throws on partial data
  * — heuristics whose inputs are missing simply contribute nothing.
  */
-export function computeBotRisk(pl: PlaylistSignal): { bot_risk: number; reasons: string[] } {
+export function computeBotRisk(pl: PlaylistSignal): { bot_risk: number | null; reasons: string[] } {
+  // Enrichment never happened → we have no metadata to judge. Scoring here would
+  // fire missing_identity + empty_description (and any follower/track-ratio check)
+  // on EVERY un-enriched row — a false ~35 that isn't a bot signal, it's the
+  // absence of data. Defer: bot_risk is pending until a later run enriches the row.
+  // (`enriched === false` is explicit; `undefined` keeps legacy scoring for callers
+  // that only ever pass real data.)
+  if (pl.enriched === false) {
+    return { bot_risk: null, reasons: ["enrichment_pending"] };
+  }
+
   const reasons: string[] = [];
   let score = 0;
   const add = (pts: number, reason: string) => {

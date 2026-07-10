@@ -83,6 +83,19 @@ const RECENTLY_PITCHED_PENALTY = 1000;
 // tripping Firecrawl rate limits — widen only if you also raise the budget.
 const SWEEP_QUERY_CAP = 24;
 const DETAIL_CAP_SWEEP = 24;
+// Fraction of SCRAPE_BUDGET_MS reserved for the SEARCH phase; the remainder is
+// guaranteed to the ENRICHMENT (detail-scrape) phase. Without this split a wide
+// sweep's 24-query × 2-channel search consumed the whole window, so the detail
+// phase's deadline guard tripped immediately and NOTHING got enriched — rows
+// landed with placeholder names, 0 followers, and a false bot_risk. Half-and-half
+// leaves ~20s for ~24 detail scrapes at SCRAPE_CONCURRENCY (≈4 rounds).
+const SEARCH_BUDGET_FRACTION = 0.5;
+// How many previously-un-enriched sweep rows a run pulls back from the DB to retry
+// enrichment on. Bounded so re-enrichment + fresh discovery together stay inside
+// DETAIL_CAP_SWEEP and the scrape budget. Draining this backlog is what makes the
+// sweep idempotent: rows left `enriched:false` by an earlier run get completed
+// later instead of remaining empty stubs forever.
+const REENRICH_CAP_SWEEP = 16;
 // Web-search hits fetched per discovery query. The Spotify search *page* scrape is
 // a client-rendered SPA that returns no crawlable playlist anchors, so discovery
 // leans on this web-search channel (same one placement-discovery uses) to surface
@@ -95,6 +108,22 @@ type DiscoverySkips = {
   artist_as_curator: number;
   spotify_owned: number;
   high_bot_risk: number;
+};
+
+/** Search-phase funnel counters, surfaced in the response so a zero/empty run is
+ * diagnosable without log access. */
+type DiscoveryFunnel = {
+  queries: number;
+  raw_scrape: number;
+  raw_websearch: number;
+  unique_after_dedupe: number;
+  skipped_recent: number;
+};
+
+/** Full funnel = discovery + enrichment outcome, returned in the response body. */
+type SweepFunnel = DiscoveryFunnel & {
+  enriched_ok: number;
+  enrich_failed: number;
 };
 
 function sanitizeWhyItFits(raw: string | null): string | null {
@@ -142,10 +171,16 @@ type DiscoveredPlaylist = {
   followers: number | null;
   owner: string | null;
   owner_id?: string;
+  track_count?: number | null;
   _track_artists?: string[];
+  // Whether the detail scrape populated this row. `false` until enrichment
+  // succeeds; drives bot-risk deferral (no false penalties on absent fields) and
+  // the idempotent re-enrichment backlog.
+  enriched?: boolean;
   // De-bot + feel signals, computed in filterDiscoveryCandidates and persisted to
-  // research_context by upsertLiveResults.
-  bot_risk?: number;
+  // research_context by upsertLiveResults. `bot_risk` is null while enrichment is
+  // pending (never a fabricated score from missing data).
+  bot_risk?: number | null;
   category?: string;
   category_confidence?: number;
 };
@@ -279,6 +314,21 @@ export async function findPlaylistOpportunities(
   return scored.slice(0, MAX_RESULTS);
 }
 
+const EMPTY_FUNNEL: DiscoveryFunnel = {
+  queries: 0,
+  raw_scrape: 0,
+  raw_websearch: 0,
+  unique_after_dedupe: 0,
+  skipped_recent: 0,
+};
+
+/**
+ * Search phase only — harvest playlist stubs from the two discovery channels and
+ * dedupe them. Enrichment (the detail scrape that fills name/curator/followers/
+ * track_count/description) is a SEPARATE step (`enrichPlaylists`) with its own
+ * reserved slice of the scrape budget, so a wide sweep's search can't starve it.
+ * Returned stubs carry `enriched: false` until that step runs.
+ */
 async function discoverViaSpotifyWeb(
   references: string[],
   lane: string,
@@ -287,11 +337,9 @@ async function discoverViaSpotifyWeb(
   deadline: number = Date.now() + SCRAPE_BUDGET_MS,
   rotation: number = Math.floor(Date.now() / 86_400_000),
   queryOverride?: string[],
-): Promise<DiscoveredPlaylist[]> {
+): Promise<{ items: DiscoveredPlaylist[]; funnel: DiscoveryFunnel }> {
   const refCap = quick ? SEARCH_REF_CAP_QUICK : SEARCH_REF_CAP_FULL;
   const stubsPerRef = quick ? STUBS_PER_REF_QUICK : STUBS_PER_REF_FULL;
-  // Sweep mode fans out over many genre queries, so give it a wider detail budget.
-  const detailCap = queryOverride ? DETAIL_CAP_SWEEP : quick ? DETAIL_CAP_QUICK : DETAIL_CAP_FULL;
 
   // Sweep mode supplies a pre-built genre × modifier query set; otherwise build the
   // usual lane + reference-artist queries.
@@ -299,12 +347,12 @@ async function discoverViaSpotifyWeb(
 
   if (!queries.length) {
     console.warn("[playlist-research] no references or lane for web discovery");
-    return [];
+    return { items: [], funnel: { ...EMPTY_FUNNEL } };
   }
 
   if (!Deno.env.get("FIRECRAWL_API_KEY")) {
     console.error("[playlist-research] FIRECRAWL_API_KEY not set — skipping web discovery");
-    return [];
+    return { items: [], funnel: { ...EMPTY_FUNNEL, queries: queries.length } };
   }
 
   const seen = new Set<string>();
@@ -374,29 +422,72 @@ async function discoverViaSpotifyWeb(
         followers: null,
         owner: s.owner_name ?? null,
         owner_id: s.owner_id,
+        track_count: null,
+        // Stubs are unenriched by definition — the detail scrape hasn't run yet.
+        enriched: false,
       });
     }
     log.push({ query: res.query, count: freshIds.length, ok: res.ok });
   }
 
-  // Detail phase — also concurrent. Each callback mutates its own DiscoveredPlaylist
-  // in place, so there are no cross-task races.
-  const toDetail = out.slice(0, detailCap);
+  const funnel: DiscoveryFunnel = {
+    queries: queries.length,
+    raw_scrape: rawScrape,
+    raw_websearch: rawWebSearch,
+    unique_after_dedupe: out.length,
+    skipped_recent: skippedRecent,
+  };
+  console.log(
+    "[playlist-research] web discover funnel:",
+    JSON.stringify(funnel),
+    "per_query:", JSON.stringify(log),
+  );
+  return { items: out, funnel };
+}
+
+/** True when a name is one of the placeholder stubs we mint from a playlist id
+ * ("Playlist 0KLdaP…" / "Playlist 0KLdaP12") — i.e. NOT real curated metadata. */
+function isPlaceholderName(name: string | null | undefined): boolean {
+  return /^Playlist\s+[a-zA-Z0-9]{4,8}(…|\.{3})?$/.test((name ?? "").trim());
+}
+
+/**
+ * Enrichment phase — run the detail scrape over `items` (in place), filling real
+ * name/curator/followers/track_count/description. Concurrency- and budget-bounded:
+ * `mapPool` stops launching scrapes once `deadline` passes, so items it never
+ * reached keep `enriched: false` and are persisted for a later run to finish
+ * (idempotent — same playlist_id, no duplicate row). Sets `pl.enriched = true`
+ * ONLY when the scrape returned genuine metadata (a real name, a follower count,
+ * or track artists) — a placeholder-only fallback stays `enriched: false` so the
+ * bot scorer doesn't fabricate a score from it.
+ */
+async function enrichPlaylists(
+  items: DiscoveredPlaylist[],
+  deadline: number,
+): Promise<{ enriched_ok: number; enrich_failed: number }> {
   await mapPool(
-    toDetail,
+    items,
     SCRAPE_CONCURRENCY,
     async (pl) => {
       try {
         const detail = await scrapeSpotifyPlaylistDetail(pl.id);
+        const gotReal = !!detail && (
+          (!!detail.name && !isPlaceholderName(detail.name)) ||
+          typeof detail.follower_count === "number" ||
+          (detail.track_artists?.length ?? 0) > 0
+        );
         if (detail) {
-          if (detail.name) pl.name = detail.name;
-          pl.description = detail.description;
-          pl.followers = detail.follower_count ?? pl.followers;
-          pl.owner = detail.owner_name ?? pl.owner;
-          pl.owner_id = detail.owner_id ?? pl.owner_id;
-          pl._track_artists = detail.track_artists ?? [];
+          if (detail.name && !isPlaceholderName(detail.name)) pl.name = detail.name;
+          if (detail.description != null) pl.description = detail.description;
+          if (detail.follower_count != null) pl.followers = detail.follower_count;
+          if (detail.track_count != null) pl.track_count = detail.track_count;
+          if (detail.owner_name) pl.owner = detail.owner_name;
+          if (detail.owner_id) pl.owner_id = detail.owner_id;
+          if (detail.track_artists) pl._track_artists = detail.track_artists;
         }
+        pl.enriched = gotReal;
       } catch (e) {
+        pl.enriched = false;
         console.error(`[discover] detail ${pl.id} failed:`, e instanceof Error ? e.message : String(e));
       }
       return null;
@@ -404,19 +495,57 @@ async function discoverViaSpotifyWeb(
     () => Date.now() > deadline,
   );
 
-  out.sort((a, b) => (b.followers ?? 0) - (a.followers ?? 0));
-  console.log(
-    "[playlist-research] web discover funnel:",
-    JSON.stringify({
-      queries: queries.length,
-      raw_scrape: rawScrape,
-      raw_websearch: rawWebSearch,
-      unique_after_dedupe: out.length,
-      skipped_recent: skippedRecent,
-    }),
-    "per_query:", JSON.stringify(log),
-  );
-  return out;
+  items.sort((a, b) => (b.followers ?? 0) - (a.followers ?? 0));
+  const enriched_ok = items.filter((p) => p.enriched === true).length;
+  return { enriched_ok, enrich_failed: items.length - enriched_ok };
+}
+
+/**
+ * Load previously-discovered sweep rows still flagged `enriched:false` so this run
+ * can retry their detail scrape. This is what makes the sweep idempotent: a run
+ * whose budget expired mid-enrichment leaves rows pending, and a later run drains
+ * them here — re-scraped, re-scored, re-classified, and re-upserted on the same
+ * playlist_id (no duplicate). Returns them as DiscoveredPlaylist stubs.
+ */
+async function loadUnenrichedSweepRows(
+  supabase: SupabaseClient,
+  cap: number,
+): Promise<DiscoveredPlaylist[]> {
+  try {
+    const { data, error } = await supabase
+      .from("playlist_targets")
+      .select("playlist_id, playlist_name, curator_name, follower_count, research_context")
+      .eq("research_context->>source", SWEEP_SOURCE)
+      .eq("research_context->>enriched", "false")
+      .limit(cap);
+    if (error) {
+      console.error("[playlist-research] loadUnenrichedSweepRows:", error.message);
+      return [];
+    }
+    return (data ?? []).map((r: {
+      playlist_id: string;
+      playlist_name: string | null;
+      curator_name: string | null;
+      follower_count: number | null;
+      research_context: Record<string, unknown> | null;
+    }) => {
+      const rc = r.research_context ?? {};
+      const rawId = String(r.playlist_id).replace(/^spotify:/, "");
+      return {
+        id: rawId,
+        playlist_id: r.playlist_id,
+        name: r.playlist_name ?? `Playlist ${rawId.slice(0, 6)}…`,
+        followers: r.follower_count ?? null,
+        owner: r.curator_name ?? null,
+        owner_id: (rc.spotify_owner_id as string | undefined) ?? undefined,
+        track_count: null,
+        enriched: false,
+      } as DiscoveredPlaylist;
+    });
+  } catch (e) {
+    console.error("[playlist-research] loadUnenrichedSweepRows failed:", e instanceof Error ? e.message : e);
+    return [];
+  }
 }
 
 /** Count of web-discovered playlists already in this lane — used as a rotation seed
@@ -542,6 +671,9 @@ async function filterDiscoveryCandidates(
       }
     }
 
+    // Score de-bot risk ONLY on real data. For un-enriched rows computeBotRisk
+    // returns null ("pending") instead of firing missing_identity/empty_description
+    // on fields that are merely absent — that false ~35 poisoned the threshold.
     const { bot_risk, reasons } = computeBotRisk({
       playlist_id: pl.playlist_id,
       name: pl.name,
@@ -549,13 +681,25 @@ async function filterDiscoveryCandidates(
       owner: pl.owner,
       owner_id: pl.owner_id,
       followers: pl.followers,
+      track_count: pl.track_count,
+      enriched: pl.enriched,
     });
     pl.bot_risk = bot_risk;
-    const feel = classifyFeel(pl.name, pl.description, pl._track_artists ?? []);
-    pl.category = feel.category;
-    pl.category_confidence = feel.confidence;
+    // Feel is classified from real name + description, so only commit a category
+    // for enriched rows; pending rows stay uncategorized until a later run enriches
+    // them (then this reclassifies from the real metadata).
+    if (pl.enriched !== false) {
+      const feel = classifyFeel(pl.name, pl.description, pl._track_artists ?? []);
+      pl.category = feel.category;
+      pl.category_confidence = feel.confidence;
+    } else {
+      pl.category = "uncategorized";
+      pl.category_confidence = 0;
+    }
 
-    if (bot_risk >= BOT_RISK_THRESHOLD) {
+    // Only enriched rows can be excluded as high-risk; a pending (null) score never
+    // clears the threshold, so un-enriched rows are kept and persisted for retry.
+    if (bot_risk != null && bot_risk >= BOT_RISK_THRESHOLD) {
       console.log("[discover] high-bot-risk skip:", pl.playlist_id, pl.name, bot_risk, reasons.join(","));
       skips.high_bot_risk++;
       continue;
@@ -620,7 +764,7 @@ async function upsertLiveResults(
       playlist_name: pl.name,
       curator_name: pl.owner,
       follower_count: pl.followers ?? 0,
-      track_count: 0,
+      track_count: pl.track_count ?? 0,
       overlap_score: 0,
       fraud_score: 50,
       fraud_verdict: "safe",
@@ -631,8 +775,14 @@ async function upsertLiveResults(
         spotify_owner_id: pl.owner_id ?? null,
         discovery_lane: lane || null,
         references: references.slice(0, 8),
-        // De-bot + feel signals — persisted, never silently dropped.
+        // Enrichment state drives idempotent retry: `enriched:false` rows are
+        // picked up by loadUnenrichedSweepRows on a later run. Stored as the string
+        // the ->> JSON operator compares against.
+        enriched: pl.enriched === true,
+        // De-bot + feel signals — persisted, never silently dropped. bot_risk is
+        // null while enrichment is pending (a real value only once we have data).
         bot_risk: pl.bot_risk ?? null,
+        bot_risk_pending: pl.bot_risk == null,
         category: pl.category ?? "uncategorized",
         category_confidence: pl.category_confidence ?? 0,
       },
@@ -660,16 +810,20 @@ export async function mergeCatalogAndLive(
   trackName: string,
   userVibe: string,
   opts?: { lane?: string; references?: string[]; quick?: boolean; sweep?: boolean },
-): Promise<{ results: PlaylistRow[]; live_count: number; new_count: number; discovery_skips: DiscoverySkips }> {
+): Promise<{ results: PlaylistRow[]; live_count: number; new_count: number; discovery_skips: DiscoverySkips; funnel: SweepFunnel }> {
   const lane = (opts?.lane ?? "").trim();
   const references = opts?.references ?? [];
   const sweep = Boolean(opts?.sweep);
 
   const start = Date.now();
-  // One shared scrape deadline for the whole request: discovery + candidate
-  // filtering must both finish by `start + SCRAPE_BUDGET_MS`, leaving headroom for
-  // the DB upserts/merge/patches below to complete before the ~55s edge wall.
+  // Two staged deadlines carved from one budget. The SEARCH phase stops at
+  // `searchDeadline` so it can't consume the whole window; ENRICHMENT + candidate
+  // filtering then run until `scrapeDeadline`. This reservation is the fix for
+  // rows landing un-enriched — previously a wide sweep's search ate the entire
+  // budget and the detail scrape never ran. Both finish before the ~55s edge wall,
+  // leaving headroom for the DB upserts/merge/patches below.
   const scrapeDeadline = start + SCRAPE_BUDGET_MS;
+  const searchDeadline = start + Math.floor(SCRAPE_BUDGET_MS * SEARCH_BUDGET_FRACTION);
   const quick = Boolean(opts?.quick);
 
   // Independent prep — fan out the lanes config, the 90-day exclusion set, and the
@@ -701,9 +855,34 @@ export async function mergeCatalogAndLive(
     )
     : undefined;
 
-  const discovered = await discoverViaSpotifyWeb(
-    references, lane, quick, excludeIds, scrapeDeadline, rotation, sweepQueries,
+  // SEARCH phase — harvest fresh stubs (bounded by searchDeadline, not the full
+  // budget, so enrichment is guaranteed its own window below).
+  const { items: freshStubs, funnel: discoveryFunnel } = await discoverViaSpotifyWeb(
+    references, lane, quick, excludeIds, searchDeadline, rotation, sweepQueries,
   );
+
+  // Idempotent re-enrichment: a sweep also drains rows an earlier run left pending
+  // (`enriched:false`) so they finally get real metadata instead of staying empty
+  // stubs. Backlog first (guarantees forward progress), then fresh stubs not already
+  // in the backlog; the whole batch is capped so enrichment stays inside budget.
+  const reenrich = sweep ? await loadUnenrichedSweepRows(supabase, REENRICH_CAP_SWEEP) : [];
+  const detailCap = sweep ? DETAIL_CAP_SWEEP : quick ? DETAIL_CAP_QUICK : DETAIL_CAP_FULL;
+  const seenBatch = new Set(reenrich.map((p) => p.playlist_id));
+  const batch = [...reenrich];
+  for (const s of freshStubs) {
+    if (batch.length >= detailCap) break;
+    if (seenBatch.has(s.playlist_id)) continue;
+    seenBatch.add(s.playlist_id);
+    batch.push(s);
+  }
+
+  // ENRICHMENT phase — detail scrape fills name/curator/followers/track_count/
+  // description before any scoring. Rows the budget never reached stay
+  // `enriched:false` and are persisted (below) for the next run to finish.
+  const { enriched_ok, enrich_failed } = batch.length
+    ? await enrichPlaylists(batch, scrapeDeadline)
+    : { enriched_ok: 0, enrich_failed: 0 };
+
   const discovery_skips: DiscoverySkips = {
     disclaim_brand: 0,
     casual_user: 0,
@@ -714,8 +893,10 @@ export async function mergeCatalogAndLive(
   };
   let live: DiscoveredPlaylist[] = [];
   let newIds: string[] = [];
-  if (discovered.length) {
-    const filtered = await filterDiscoveryCandidates(discovered, references, quick, scrapeDeadline);
+  if (batch.length) {
+    // Filtering + bot-risk + feel run AFTER enrichment, so they see real metadata
+    // (pending rows score null / stay uncategorized rather than accruing false flags).
+    const filtered = await filterDiscoveryCandidates(batch, references, quick, scrapeDeadline);
     discovery_skips.disclaim_brand = filtered.skips.disclaim_brand;
     discovery_skips.casual_user = filtered.skips.casual_user;
     discovery_skips.micro_playlist = filtered.skips.micro_playlist;
@@ -730,9 +911,11 @@ export async function mergeCatalogAndLive(
     }
   }
   const newIdSet = new Set(newIds);
+  const funnel: SweepFunnel = { ...discoveryFunnel, enriched_ok, enrich_failed };
   console.log(
-    `[playlist-research] web discovery: ${discovered.length} found, ${live.length} ingested, skips:`,
-    JSON.stringify(discovery_skips),
+    `[playlist-research] web discovery: ${freshStubs.length} found, ${reenrich.length} re-enrich, ${live.length} ingested, funnel:`,
+    JSON.stringify(funnel),
+    "skips:", JSON.stringify(discovery_skips),
     `${Date.now() - start}ms`,
   );
 
@@ -816,6 +999,7 @@ export async function mergeCatalogAndLive(
     live_count: live.length,
     new_count: newIds.length,
     discovery_skips,
+    funnel,
   };
 }
 
@@ -854,7 +1038,7 @@ Deno.serve(async (req) => {
     const effectiveTrack = track_name || (sweep ? "mass sweep rap house" : "");
 
     const quick = Boolean(body.quick);
-    const { results, live_count, new_count, discovery_skips } = await mergeCatalogAndLive(supabase, effectiveTrack, user_vibe, {
+    const { results, live_count, new_count, discovery_skips, funnel } = await mergeCatalogAndLive(supabase, effectiveTrack, user_vibe, {
       lane,
       references,
       quick,
@@ -884,6 +1068,9 @@ Deno.serve(async (req) => {
       live_api_ingested: live_count,
       new_this_run: new_count,
       discovery_skips,
+      // Full discovery→enrichment funnel, surfaced so a zero/empty run is
+      // diagnosable from the response body alone (no log access needed).
+      funnel,
       quick,
       playlists,
     });

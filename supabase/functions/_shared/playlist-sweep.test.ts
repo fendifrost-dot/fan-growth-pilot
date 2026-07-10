@@ -18,7 +18,7 @@ Deno.test("computeBotRisk flags a Spotify editorial playlist as high-risk", () =
     followers: 15_000_000,
     track_count: 50,
   });
-  assertEquals(bot_risk >= BOT_RISK_THRESHOLD, true, `editorial should exceed threshold, got ${bot_risk}`);
+  assertEquals(bot_risk! >= BOT_RISK_THRESHOLD, true, `editorial should exceed threshold, got ${bot_risk}`);
   assertEquals(reasons.includes("editorial_prefix"), true);
 });
 
@@ -33,7 +33,7 @@ Deno.test("computeBotRisk flags a nameless, ownerless, empty playlist", () => {
     track_count: 0,
   });
   // missing_identity(25) + generic_name(20) + empty_description(10) + followers_without_tracks(15) = 70
-  assertEquals(bot_risk >= BOT_RISK_THRESHOLD, true, `got ${bot_risk}`);
+  assertEquals(bot_risk! >= BOT_RISK_THRESHOLD, true, `got ${bot_risk}`);
   assertEquals(reasons.includes("missing_identity"), true);
   assertEquals(reasons.includes("generic_name"), true);
   assertEquals(reasons.includes("followers_without_tracks"), true);
@@ -64,12 +64,67 @@ Deno.test("computeBotRisk keeps a real independent curator low-risk", () => {
     followers: 12_000,
     track_count: 90,
   });
-  assertEquals(bot_risk < BOT_RISK_THRESHOLD, true, `real curator should be low-risk, got ${bot_risk}`);
+  assertEquals(bot_risk! < BOT_RISK_THRESHOLD, true, `real curator should be low-risk, got ${bot_risk}`);
 });
 
 Deno.test("computeBotRisk never exceeds 100 and never throws on partial data", () => {
   const { bot_risk } = computeBotRisk({});
-  assertEquals(bot_risk >= 0 && bot_risk <= 100, true);
+  assertEquals(bot_risk !== null && bot_risk >= 0 && bot_risk <= 100, true);
+});
+
+// --- bot_risk: un-enriched rows must NOT accrue missing-data penalties ------
+
+Deno.test("computeBotRisk defers scoring for an un-enriched row (no false penalties)", () => {
+  // This is the exact shape of a web-search stub that was persisted before the
+  // detail scrape ran: placeholder name, no owner, no description, followers 0.
+  // Before the fix this scored 35 (missing_identity 25 + empty_description 10) —
+  // a false bot signal. It must now defer to a pending (null) score instead.
+  const { bot_risk, reasons } = computeBotRisk({
+    playlist_id: "spotify:0KLdaPa1b2c3d4e5f6g7h8",
+    name: "Playlist 0KLdaP…",
+    description: "",
+    owner: "",
+    owner_id: "",
+    followers: null,
+    track_count: null,
+    enriched: false,
+  });
+  assertEquals(bot_risk, null, "un-enriched row must have a pending (null) bot_risk");
+  assertEquals(reasons.includes("missing_identity"), false);
+  assertEquals(reasons.includes("empty_or_boilerplate_description"), false);
+  assertEquals(reasons.includes("generic_name"), false);
+  assertEquals(reasons.includes("followers_without_tracks"), false);
+});
+
+Deno.test("computeBotRisk scores the SAME row normally once it is enriched", () => {
+  // Same id, now enriched with real metadata: a legitimate independent curator.
+  const { bot_risk } = computeBotRisk({
+    playlist_id: "spotify:0KLdaPa1b2c3d4e5f6g7h8",
+    name: "Late Night Boom Bap",
+    description: "Handpicked lyrical cuts, updated every Friday.",
+    owner: "cratedigger",
+    owner_id: "cratedigger",
+    followers: 8_000,
+    track_count: 70,
+    enriched: true,
+  });
+  assertEquals(bot_risk !== null && bot_risk < BOT_RISK_THRESHOLD, true, `got ${bot_risk}`);
+});
+
+Deno.test("computeBotRisk still fires empty_description for an ENRICHED row that truly has none", () => {
+  // Enriched (we have real name + owner) but the curator left no description —
+  // that IS a (weak) real signal and must still fire, unlike the un-enriched case.
+  const { reasons } = computeBotRisk({
+    playlist_id: "spotify:realbutbare000000000",
+    name: "Trap Heat",
+    description: "",
+    owner: "plugmusic",
+    owner_id: "plugmusic",
+    followers: 4_000,
+    track_count: 40,
+    enriched: true,
+  });
+  assertEquals(reasons.includes("empty_or_boilerplate_description"), true);
 });
 
 // --- feel classifier: known-good buckets -----------------------------------

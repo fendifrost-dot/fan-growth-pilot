@@ -12,6 +12,7 @@ export type SpotifyPlaylistDetail = {
   name: string;
   description?: string;
   follower_count?: number;
+  track_count?: number;
   owner_name?: string;
   owner_id?: string;
   track_artists?: string[];
@@ -59,6 +60,10 @@ const PLAYLIST_SCHEMA = {
     follower_count: {
       type: "number",
       description: "Playlist save count or follower count shown on the page (e.g. 1033 saves)",
+    },
+    track_count: {
+      type: "number",
+      description: "Total number of songs/tracks in the playlist (e.g. 87 songs)",
     },
     owner_name: { type: "string" },
     owner_id: { type: "string" },

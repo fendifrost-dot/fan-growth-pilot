@@ -39,16 +39,71 @@ export async function mapPool<T, R>(
 
 // Modifier templates appended to the lane label. Rotated per-run so successive
 // discoveries probe different facets of Spotify search instead of the same 2 queries.
+// Folds back the broader terms orphaned when discovery-seeds.ts was reduced to a
+// re-export ("2026", "submit", "discover", "deep cuts", "rotation", "monthly",
+// "selects", "favourites") so the modifier surface is as wide as it was pre-dedupe.
 export const LANE_MODIFIERS = [
-  "playlist", "curator", "best", "fresh", "new", "2025", "weekly", "underground",
-  "indie", "submissions", "mix", "radio", "vibes", "essentials", "rising", "hidden gems",
-  "playlist 2024", "spotify playlist", "top", "chill",
+  "playlist", "curator", "best", "fresh", "new", "2025", "2026", "weekly", "underground",
+  "indie", "submissions", "submit", "mix", "radio", "vibes", "essentials", "rising",
+  "hidden gems", "playlist 2024", "spotify playlist", "top", "chill", "discover",
+  "deep cuts", "rotation", "monthly", "selects", "favourites",
 ];
 // Templates applied to each reference artist (e.g. "Kaytranada type playlist").
 export const REF_MODIFIERS = [
   "type playlist", "radio", "mix", "similar artists playlist", "essentials",
-  "fans playlist", "inspired playlist",
+  "fans playlist", "inspired playlist", "fans also like", "adjacent",
 ];
+
+// ---------------------------------------------------------------------------
+// Mass rap + house sweep seeds
+// ---------------------------------------------------------------------------
+// Plain arrays × modifiers so the net is trivially extensible: add a subgenre or
+// a modifier and the cross-product widens. Kept genre-only (no artist refs) so a
+// sweep spans the whole space instead of orbiting one lane's reference set.
+
+/** Rap subgenres — the full spread the sweep should cover. */
+export const RAP_SUBGENRES = [
+  "trap", "drill", "boom bap", "melodic rap", "rage rap", "west coast rap",
+  "southern hip hop", "underground hip hop", "lofi rap", "conscious rap",
+  "hip hop", "rap",
+];
+
+/** House subgenres — the full spread the sweep should cover. */
+export const HOUSE_SUBGENRES = [
+  "deep house", "tech house", "afro house", "soulful house", "bass house",
+  "progressive house", "house",
+];
+
+/** Curator/freshness modifiers for the genre sweep (distinct from lane modifiers,
+ * tuned to surface human-curated, pitchable, current playlists). */
+export const SWEEP_MODIFIERS = [
+  "playlist", "curator", "submissions", "submit", "best", "fresh", "new",
+  "2025", "2026", "weekly", "monthly", "underground", "indie", "rising",
+  "hidden gems", "top", "mix", "essentials", "rotation",
+];
+
+/**
+ * Build the genre × modifier query set for a mass sweep. Rotates both the
+ * subgenre order and the modifier order by `rotation` so successive runs probe
+ * different facets instead of recycling the same queries, then dedupes and caps.
+ */
+export function buildSweepQueries(
+  subgenres: string[],
+  modifiers: string[],
+  cap: number,
+  rotation: number,
+): string[] {
+  const rotate = <T,>(arr: T[]): T[] =>
+    arr.length
+      ? [...arr.slice(rotation % arr.length), ...arr.slice(0, rotation % arr.length)]
+      : arr;
+
+  const out: string[] = [];
+  for (const g of rotate(subgenres)) {
+    for (const m of rotate(modifiers)) out.push(`${g} ${m}`);
+  }
+  return [...new Set(out)].slice(0, cap);
+}
 
 /**
  * Per-run rotation index. Daily rotation alone repeats every query for re-runs

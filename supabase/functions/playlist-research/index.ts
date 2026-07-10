@@ -26,10 +26,20 @@ import {
 } from "../_shared/spotify-scrape.ts";
 import {
   buildDiscoveryQueries,
+  buildSweepQueries,
   computeRotation,
   dedupeStubs,
+  HOUSE_SUBGENRES,
   mapPool,
+  RAP_SUBGENRES,
+  SWEEP_MODIFIERS,
 } from "../_shared/discovery-utils.ts";
+import {
+  BOT_RISK_THRESHOLD,
+  classifyFeel,
+  computeBotRisk,
+  SWEEP_SOURCE,
+} from "../_shared/playlist-sweep.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -63,12 +73,20 @@ const DETAIL_CAP_QUICK = 12;
 // Large enough to sink any pitched row below every un-pitched one (they still appear
 // further down if there aren't enough fresh results to fill MAX_RESULTS).
 const RECENTLY_PITCHED_PENALTY = 1000;
+// Mass-sweep breadth. The genre × modifier cross-product is large; SWEEP_QUERY_CAP
+// bounds how many of those queries a single run actually issues (rotated per run so
+// successive sweeps cover the rest). DETAIL_CAP_SWEEP bounds the follow-up detail
+// scrapes. Both sized to stay inside SCRAPE_BUDGET_MS at SCRAPE_CONCURRENCY without
+// tripping Firecrawl rate limits — widen only if you also raise the budget.
+const SWEEP_QUERY_CAP = 24;
+const DETAIL_CAP_SWEEP = 24;
 type DiscoverySkips = {
   disclaim_brand: number;
   casual_user: number;
   micro_playlist: number;
   artist_as_curator: number;
   spotify_owned: number;
+  high_bot_risk: number;
 };
 
 function sanitizeWhyItFits(raw: string | null): string | null {
@@ -117,6 +135,11 @@ type DiscoveredPlaylist = {
   owner: string | null;
   owner_id?: string;
   _track_artists?: string[];
+  // De-bot + feel signals, computed in filterDiscoveryCandidates and persisted to
+  // research_context by upsertLiveResults.
+  bot_risk?: number;
+  category?: string;
+  category_confidence?: number;
 };
 
 function getServiceClient(): SupabaseClient {
@@ -144,7 +167,7 @@ function tokenizeVibe(vibe: string): Set<string> {
 
 function isWebDiscovered(rc: Record<string, unknown> | null): boolean {
   const src = rc?.source;
-  return src === "spotify_web" || src === "live_api";
+  return src === "spotify_web" || src === "live_api" || src === SWEEP_SOURCE;
 }
 
 /** Penalize micro-playlists and placeholder names so pitchable curators rank higher. */
@@ -255,12 +278,16 @@ async function discoverViaSpotifyWeb(
   excludeIds: Set<string> = new Set(),
   deadline: number = Date.now() + SCRAPE_BUDGET_MS,
   rotation: number = Math.floor(Date.now() / 86_400_000),
+  queryOverride?: string[],
 ): Promise<DiscoveredPlaylist[]> {
   const refCap = quick ? SEARCH_REF_CAP_QUICK : SEARCH_REF_CAP_FULL;
   const stubsPerRef = quick ? STUBS_PER_REF_QUICK : STUBS_PER_REF_FULL;
-  const detailCap = quick ? DETAIL_CAP_QUICK : DETAIL_CAP_FULL;
+  // Sweep mode fans out over many genre queries, so give it a wider detail budget.
+  const detailCap = queryOverride ? DETAIL_CAP_SWEEP : quick ? DETAIL_CAP_QUICK : DETAIL_CAP_FULL;
 
-  const queries = buildDiscoveryQueries(references, lane, refCap, rotation);
+  // Sweep mode supplies a pre-built genre × modifier query set; otherwise build the
+  // usual lane + reference-artist queries.
+  const queries = queryOverride ?? buildDiscoveryQueries(references, lane, refCap, rotation);
 
   if (!queries.length) {
     console.warn("[playlist-research] no references or lane for web discovery");
@@ -403,6 +430,7 @@ async function filterDiscoveryCandidates(
     micro_playlist: 0,
     artist_as_curator: 0,
     spotify_owned: 0,
+    high_bot_risk: 0,
   };
   // Phase 1 — cheap synchronous filters (no network). Survivors that still need
   // the casual-user profile check are collected for a single batched scrape pass.
@@ -457,7 +485,9 @@ async function filterDiscoveryCandidates(
     }
   }
 
-  // Phase 3 — apply the casual-user verdict from the cached profiles.
+  // Phase 3 — apply the casual-user verdict, then de-bot score + feel-classify
+  // every survivor. bot_risk is always computed and carried forward (persisted to
+  // research_context); rows at/above BOT_RISK_THRESHOLD are excluded by default.
   const kept: DiscoveredPlaylist[] = [];
   for (const pl of provisional) {
     const profile = pl.owner_id ? profileCache.get(pl.owner_id) : undefined;
@@ -469,6 +499,25 @@ async function filterDiscoveryCandidates(
         skips.casual_user++;
         continue;
       }
+    }
+
+    const { bot_risk, reasons } = computeBotRisk({
+      playlist_id: pl.playlist_id,
+      name: pl.name,
+      description: pl.description,
+      owner: pl.owner,
+      owner_id: pl.owner_id,
+      followers: pl.followers,
+    });
+    pl.bot_risk = bot_risk;
+    const feel = classifyFeel(pl.name, pl.description, pl._track_artists ?? []);
+    pl.category = feel.category;
+    pl.category_confidence = feel.confidence;
+
+    if (bot_risk >= BOT_RISK_THRESHOLD) {
+      console.log("[discover] high-bot-risk skip:", pl.playlist_id, pl.name, bot_risk, reasons.join(","));
+      skips.high_bot_risk++;
+      continue;
     }
     kept.push(pl);
   }
@@ -482,6 +531,7 @@ async function upsertLiveResults(
   lane: string,
   references: string[],
   laneRe: RegExp | null,
+  source = "spotify_web",
 ): Promise<{ newIds: string[] }> {
   // Net-new detection: which of these playlist_ids are not already rows? This is
   // the verifiable "new this run" signal — computed once, before the upserts that
@@ -535,11 +585,15 @@ async function upsertLiveResults(
       fraud_verdict: "safe",
       pitch_status: "not_pitched",
       research_context: {
-        source: "spotify_web",
+        source,
         fetched_at: new Date().toISOString(),
         spotify_owner_id: pl.owner_id ?? null,
         discovery_lane: lane || null,
         references: references.slice(0, 8),
+        // De-bot + feel signals — persisted, never silently dropped.
+        bot_risk: pl.bot_risk ?? null,
+        category: pl.category ?? "uncategorized",
+        category_confidence: pl.category_confidence ?? 0,
       },
       tier: 2,
       whitelist_status: false,
@@ -564,10 +618,11 @@ export async function mergeCatalogAndLive(
   supabase: SupabaseClient,
   trackName: string,
   userVibe: string,
-  opts?: { lane?: string; references?: string[]; quick?: boolean },
+  opts?: { lane?: string; references?: string[]; quick?: boolean; sweep?: boolean },
 ): Promise<{ results: PlaylistRow[]; live_count: number; new_count: number; discovery_skips: DiscoverySkips }> {
   const lane = (opts?.lane ?? "").trim();
   const references = opts?.references ?? [];
+  const sweep = Boolean(opts?.sweep);
 
   const start = Date.now();
   // One shared scrape deadline for the whole request: discovery + candidate
@@ -593,13 +648,28 @@ export async function mergeCatalogAndLive(
   // instead of repeating the (already-deduped) query set.
   const rotation = computeRotation(start, laneDiscoveredCount);
 
-  const discovered = await discoverViaSpotifyWeb(references, lane, quick, excludeIds, scrapeDeadline, rotation);
+  // Mass sweep: replace lane/reference queries with the full rap + house genre ×
+  // modifier cross-product (rotated per run). All other machinery — filtering,
+  // de-bot scoring, dedupe, upsert — is shared with normal discovery.
+  const sweepQueries = sweep
+    ? buildSweepQueries(
+      [...RAP_SUBGENRES, ...HOUSE_SUBGENRES],
+      SWEEP_MODIFIERS,
+      SWEEP_QUERY_CAP,
+      rotation,
+    )
+    : undefined;
+
+  const discovered = await discoverViaSpotifyWeb(
+    references, lane, quick, excludeIds, scrapeDeadline, rotation, sweepQueries,
+  );
   const discovery_skips: DiscoverySkips = {
     disclaim_brand: 0,
     casual_user: 0,
     micro_playlist: 0,
     artist_as_curator: 0,
     spotify_owned: 0,
+    high_bot_risk: 0,
   };
   let live: DiscoveredPlaylist[] = [];
   let newIds: string[] = [];
@@ -610,9 +680,12 @@ export async function mergeCatalogAndLive(
     discovery_skips.micro_playlist = filtered.skips.micro_playlist;
     discovery_skips.artist_as_curator = filtered.skips.artist_as_curator;
     discovery_skips.spotify_owned = filtered.skips.spotify_owned;
+    discovery_skips.high_bot_risk = filtered.skips.high_bot_risk;
     live = filtered.items;
     if (live.length) {
-      ({ newIds } = await upsertLiveResults(supabase, live, lane, references, laneRe));
+      ({ newIds } = await upsertLiveResults(
+        supabase, live, lane, references, laneRe, sweep ? SWEEP_SOURCE : "spotify_web",
+      ));
     }
   }
   const newIdSet = new Set(newIds);
@@ -729,16 +802,22 @@ Deno.serve(async (req) => {
     const user_vibe = String(body.user_vibe ?? body.userVibe ?? body.vibe ?? "").trim();
     const references = Array.isArray(body.references) ? body.references.map(String) : [];
     const lane = String(body.lane ?? "").trim();
+    // Mass rap + house sweep. Accepts `sweep: true` or `mode: "mass_sweep_rap_house"`.
+    const sweep = Boolean(body.sweep) || String(body.mode ?? "") === SWEEP_SOURCE;
 
-    if (!track_name) {
+    // track_name drives catalog ranking; the sweep is genre-seeded and doesn't need
+    // one, so default it to the sweep label rather than 400-ing.
+    if (!track_name && !sweep) {
       return json({ error: "track_name required" }, 400);
     }
+    const effectiveTrack = track_name || (sweep ? "mass sweep rap house" : "");
 
     const quick = Boolean(body.quick);
-    const { results, live_count, new_count, discovery_skips } = await mergeCatalogAndLive(supabase, track_name, user_vibe, {
+    const { results, live_count, new_count, discovery_skips } = await mergeCatalogAndLive(supabase, effectiveTrack, user_vibe, {
       lane,
       references,
       quick,
+      sweep,
     });
 
     const playlists = results.map((r) => ({
@@ -754,7 +833,9 @@ Deno.serve(async (req) => {
 
     return json({
       ok: true,
-      track_name,
+      track_name: effectiveTrack,
+      sweep,
+      source: sweep ? SWEEP_SOURCE : "spotify_web",
       user_vibe: user_vibe,
       lane: lane || null,
       references,

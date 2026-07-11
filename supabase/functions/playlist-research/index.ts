@@ -134,6 +134,14 @@ type SweepFunnel = DiscoveryFunnel & {
   /** reason → count for every row that did NOT enrich, so a future failure is
    * legible from the response body alone (e.g. {no_metadata: 3, not_attempted: 2}). */
   enrich_failed_reasons: Record<string, number>;
+  /** Idempotent back-fill of PRIOR runs' `enriched:false` stubs (a subset of the
+   * enrichment batch). `considered` = how many stubs this run pulled from the DB
+   * backlog; ok/failed = how many of those the detail scrape completed vs. attempted
+   * but failed. Leftovers (never reached before the budget expired) are neither and
+   * get retried next run. */
+  backfill_considered: number;
+  backfilled_ok: number;
+  backfill_failed: number;
 };
 
 function sanitizeWhyItFits(raw: string | null): string | null {
@@ -183,6 +191,7 @@ type DiscoveredPlaylist = {
   owner_id?: string;
   track_count?: number | null;
   _track_artists?: string[];
+  _track_titles?: string[];
   // Whether the detail scrape populated this row. `false` until enrichment
   // succeeds; drives bot-risk deferral (no false penalties on absent fields) and
   // the idempotent re-enrichment backlog.
@@ -193,6 +202,9 @@ type DiscoveredPlaylist = {
   bot_risk?: number | null;
   category?: string;
   category_confidence?: number;
+  // Short note on what matched (or why it stayed neutral/uncategorized) — persisted
+  // to research_context so a misclassification is debuggable from the row alone.
+  category_reason?: string;
   // Transient: why enrichment did not produce a real name this run (for the funnel's
   // enrich_failed_reasons). Not persisted.
   _enrich_reason?: string;
@@ -501,6 +513,7 @@ async function enrichPlaylists(
           if (detail.owner_name) pl.owner = detail.owner_name;
           if (detail.owner_id) pl.owner_id = detail.owner_id;
           if (detail.track_artists) pl._track_artists = detail.track_artists;
+          if (detail.track_titles) pl._track_titles = detail.track_titles;
         }
         pl.enriched = gotRealName;
         pl._enrich_reason = gotRealName ? undefined : detail ? "no_name" : "no_metadata";
@@ -543,7 +556,12 @@ async function loadUnenrichedSweepRows(
       .from("playlist_targets")
       .select("playlist_id, playlist_name, curator_name, follower_count, research_context")
       .eq("research_context->>source", SWEEP_SOURCE)
-      .eq("research_context->>enriched", "false")
+      // A row is un-enriched when the flag is explicitly "false" OR absent entirely.
+      // The absent case is the bug this fixes: the 5 pre-existing stubs were written
+      // by a build that never set research_context.enriched, so `->>enriched` is NULL
+      // for them and the old `.eq(..., "false")` filter matched zero of them, leaving
+      // them stranded as "Playlist 0KLdaP…" stubs forever. `is.null` catches those.
+      .or("research_context->>enriched.eq.false,research_context->>enriched.is.null")
       .limit(cap);
     if (error) {
       console.error("[playlist-research] loadUnenrichedSweepRows:", error.message);
@@ -716,12 +734,18 @@ async function filterDiscoveryCandidates(
     // for enriched rows; pending rows stay uncategorized until a later run enriches
     // them (then this reclassifies from the real metadata).
     if (pl.enriched !== false) {
-      const feel = classifyFeel(pl.name, pl.description, pl._track_artists ?? []);
+      // Classify from every signal: name + description + track artists + track
+      // titles. Genre/subgenre + artist cues let rap/house playlists that name no
+      // mood still get a sensible bucket (or a neutral rap_general/house_general)
+      // instead of whiffing to uncategorized or a wrong mood.
+      const feel = classifyFeel(pl.name, pl.description, pl._track_artists ?? [], pl._track_titles ?? []);
       pl.category = feel.category;
       pl.category_confidence = feel.confidence;
+      pl.category_reason = feel.reason;
     } else {
       pl.category = "uncategorized";
       pl.category_confidence = 0;
+      pl.category_reason = "enrichment pending";
     }
 
     // Only enriched rows can be excluded as high-risk; a pending (null) score never
@@ -816,6 +840,7 @@ async function upsertLiveResults(
         bot_risk_pending: pl.bot_risk == null,
         category: pl.category ?? "uncategorized",
         category_confidence: pl.category_confidence ?? 0,
+        category_reason: pl.category_reason ?? null,
       },
       tier: 2,
       whitelist_status: false,
@@ -914,6 +939,14 @@ export async function mergeCatalogAndLive(
     ? await enrichPlaylists(batch, scrapeDeadline)
     : { enriched_ok: 0, enrich_failed: 0, enrich_failed_reasons: {} as Record<string, number> };
 
+  // Back-fill outcome — a subset of the enrichment batch. `reenrich` holds the same
+  // object references enrichPlaylists mutated in place, so we can read each stub's
+  // result directly. ok = got real metadata; failed = attempted (has a failure
+  // reason) but still no name; the rest were never reached before the budget expired
+  // and are neither (they persist as stubs and get retried next run).
+  const backfilled_ok = reenrich.filter((p) => p.enriched === true).length;
+  const backfill_failed = reenrich.filter((p) => p.enriched !== true && p._enrich_reason).length;
+
   const discovery_skips: DiscoverySkips = {
     disclaim_brand: 0,
     casual_user: 0,
@@ -942,7 +975,15 @@ export async function mergeCatalogAndLive(
     }
   }
   const newIdSet = new Set(newIds);
-  const funnel: SweepFunnel = { ...discoveryFunnel, enriched_ok, enrich_failed, enrich_failed_reasons };
+  const funnel: SweepFunnel = {
+    ...discoveryFunnel,
+    enriched_ok,
+    enrich_failed,
+    enrich_failed_reasons,
+    backfill_considered: reenrich.length,
+    backfilled_ok,
+    backfill_failed,
+  };
   console.log(
     `[playlist-research] web discovery: ${freshStubs.length} found, ${reenrich.length} re-enrich, ${live.length} ingested, funnel:`,
     JSON.stringify(funnel),

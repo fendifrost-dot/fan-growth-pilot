@@ -16,6 +16,9 @@ export type SpotifyPlaylistDetail = {
   owner_name?: string;
   owner_id?: string;
   track_artists?: string[];
+  /** Individual track TITLES from the embed trackList — a second feel signal
+   * alongside track_artists (e.g. "Gym Anthem", "After Hours", "Trap House"). */
+  track_titles?: string[];
 };
 
 export type SpotifyUserProfile = {
@@ -294,11 +297,16 @@ export function parseEmbedNextData(html: string): SpotifyPlaylistDetail | null {
   if (Array.isArray(entity.trackList)) {
     detail.track_count = entity.trackList.length;
     const artists: string[] = [];
+    const titles: string[] = [];
     for (const t of entity.trackList) {
       const sub = pickString((t as { subtitle?: unknown })?.subtitle);
       if (sub) artists.push(...splitArtists(sub));
+      const title = pickString((t as { title?: unknown })?.title) ??
+        pickString((t as { name?: unknown })?.name);
+      if (title) titles.push(title);
     }
     detail.track_artists = [...new Set(artists)].slice(0, 40);
+    if (titles.length) detail.track_titles = [...new Set(titles)].slice(0, 40);
   }
   return detail;
 }

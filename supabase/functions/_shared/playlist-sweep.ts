@@ -5,7 +5,11 @@
  * Two independent concerns, both dependency-light so they unit-test without
  * booting the edge function:
  *   1. `computeBotRisk` — 0-100 de-botting score from named-constant heuristics.
- *   2. `classifyFeel`   — mood/feel bucket from name + description + genre terms.
+ *   2. `classifyFeel`   — mood/feel bucket from name + description + track artists
+ *      + track titles. Genre/subgenre + artist cues let it label rap/house
+ *      playlists whose NAME announces no mood, falling back to a neutral
+ *      `rap_general`/`house_general` (never a mood the data doesn't evidence) and
+ *      only to `uncategorized` when there's truly no signal.
  *
  * NOTE (reuse): there is no pre-existing computed fraud/legitimacy scorer in the
  * codebase — every `fraud_score`/`fraud_verdict` write elsewhere is a hardcoded
@@ -162,7 +166,8 @@ export function computeBotRisk(pl: PlaylistSignal): { bot_risk: number | null; r
 // Feel classifier
 // ---------------------------------------------------------------------------
 
-/** Ordered so ties resolve deterministically toward the more specific mood. */
+/** The six evidenced MOOD buckets. Ordered so ties resolve deterministically
+ * toward the earlier (more specific) mood. */
 export const FEEL_CATEGORIES = [
   "hype",
   "gym_workout",
@@ -172,86 +177,247 @@ export const FEEL_CATEGORIES = [
   "feel_good",
 ] as const;
 
-export type FeelCategory = (typeof FEEL_CATEGORIES)[number] | "uncategorized";
+/**
+ * Neutral genre buckets. Chosen when a playlist is clearly rap (or house) but the
+ * data doesn't evidence any one mood — a deliberate "this is rap, mood unknown"
+ * rather than forcing a wrong mood (the bug where a generic "Hip Hop: Essentials"
+ * landed in `late_night_chill`). Better than `uncategorized`, which is reserved
+ * for playlists with no usable signal at all.
+ */
+export const NEUTRAL_CATEGORIES = ["rap_general", "house_general"] as const;
 
-// Keyword → category. Matched as word-ish substrings against a lowercased
-// haystack of name + description + genre terms. Kept as plain arrays so new
-// vocabulary is a one-line edit.
-const FEEL_KEYWORDS: Record<(typeof FEEL_CATEGORIES)[number], string[]> = {
-  hype: [
-    "hype", "turnt", "turn up", "banger", "bangers", "rage", "mosh", "aggressive",
-    "gym rap", "rap hits", "trap nation", "adrenaline", "energy", "hard", "savage",
-    "drill", "opp", "beast mode",
-  ],
-  gym_workout: [
-    "gym", "workout", "training", "run", "running", "cardio", "lift", "lifting",
-    "pump", "pre workout", "pre-workout", "hiit", "fitness", "sweat", "power",
-  ],
-  party_house: [
-    "party", "club", "dance", "dancefloor", "rave", "festival", "bass house",
-    "tech house", "afro house", "peak time", "warehouse", "friday", "weekend",
-    "bangers only", "night out", "edm",
-  ],
-  late_night_chill: [
-    "chill", "late night", "lofi", "lo-fi", "lo fi", "night drive", "midnight",
-    "relax", "mellow", "smooth", "slow", "vibe", "vibes", "downtempo", "deep house",
-    "soulful", "after hours", "unwind", "lounge", "sunset",
-  ],
-  introspective: [
-    "introspective", "conscious", "deep", "thoughtful", "reflect", "reflective",
-    "sad", "melancholy", "emo", "in my feelings", "alone", "rainy", "storytelling",
-    "boom bap", "lyrical", "poetry", "soul searching",
-  ],
-  feel_good: [
-    "feel good", "feelgood", "happy", "good vibes", "positive", "uplifting",
-    "sunshine", "summer", "groove", "groovy", "soul", "funky", "warm", "bright",
-    "smile", "wholesome",
-  ],
+export type MoodCategory = (typeof FEEL_CATEGORIES)[number];
+export type FeelCategory =
+  | MoodCategory
+  | (typeof NEUTRAL_CATEGORIES)[number]
+  | "uncategorized";
+
+export type FeelResult = {
+  category: FeelCategory;
+  confidence: number;
+  /** Short, human-readable note on what matched — for debugging misclassifications
+   * from the response body / row without re-running the classifier. */
+  reason: string;
 };
 
-/** Minimum share of matched weight required to commit to a category. */
+// Mood vocabulary, split by strength. `strong` cues are genre/subgenre or
+// mood-defining terms (trap, drill, deep house, after hours) that are worth
+// double weight; `soft` cues are weaker mood words. Matched as whole words
+// (see `hasTerm`) against name / description / track text. Plain arrays so new
+// vocabulary is a one-line edit.
+const FEEL_LEXICON: Record<MoodCategory, { strong: string[]; soft: string[] }> = {
+  hype: {
+    strong: [
+      "trap", "drill", "phonk", "rage", "plugg", "crunk", "hyphy", "mosh",
+      "beast mode", "turnt", "trap nation", "gym rap", "rap hits",
+    ],
+    soft: [
+      "hype", "turn up", "banger", "bangers", "aggressive", "adrenaline",
+      "energy", "hard", "savage", "opp", "opps", "808", "hype rap",
+    ],
+  },
+  gym_workout: {
+    strong: ["gym", "workout", "pre workout", "pre-workout", "hiit", "cardio"],
+    soft: [
+      "training", "run", "running", "lift", "lifting", "pump", "fitness",
+      "sweat", "grind", "motivation",
+    ],
+  },
+  party_house: {
+    strong: [
+      "tech house", "bass house", "afro house", "big room", "peak time", "rave",
+      "festival", "edm", "future house", "electro house",
+    ],
+    soft: [
+      "party", "club", "dance", "dancefloor", "warehouse", "night out",
+      "bangers only", "friday", "weekend", "twerk",
+    ],
+  },
+  late_night_chill: {
+    strong: [
+      "deep house", "lofi", "lo-fi", "lo fi", "downtempo", "after hours",
+      "late night", "chillhop", "soulful house",
+    ],
+    soft: [
+      "chill", "night drive", "midnight", "relax", "mellow", "smooth", "slow",
+      "vibe", "vibes", "unwind", "lounge", "sunset", "cruise",
+    ],
+  },
+  introspective: {
+    strong: [
+      "boom bap", "boom-bap", "conscious", "lyrical", "storytelling",
+      "cloud rap", "emo rap", "real hip hop",
+    ],
+    soft: [
+      "introspective", "thoughtful", "reflect", "reflective", "sad", "melancholy",
+      "emo", "in my feelings", "alone", "rainy", "poetry", "soul searching",
+    ],
+  },
+  feel_good: {
+    strong: ["feel good", "feelgood", "good vibes", "afrobeat", "afrobeats", "amapiano"],
+    soft: [
+      "happy", "positive", "uplifting", "sunshine", "summer", "groove", "groovy",
+      "funky", "warm", "bright", "smile", "wholesome",
+    ],
+  },
+};
+
+// Genre cues — used only for the neutral rap_general / house_general fallback when
+// no mood clears the bar. Deliberately broad (they overlap the mood lexicon; that's
+// fine — genre detection is a separate pass from mood scoring).
+const RAP_GENRE_CUES = [
+  "rap", "hip hop", "hip-hop", "hiphop", "trap", "drill", "boom bap", "boom-bap",
+  "phonk", "plugg", "grime", "gangsta", "gangster", "crunk", "cypher", "freestyle",
+  "g-funk", "g funk", "west coast", "east coast", "dirty south", "underground rap",
+  "rap music", "rappers",
+];
+const HOUSE_GENRE_CUES = [
+  "house", "techno", "edm", "electronic", "disco", "garage", "rave", "amapiano",
+  "afro house", "tech house", "deep house", "bass house", "big room",
+];
+
+// Well-known artist → mood cue. A single match is a modest nudge (track-zone
+// weight); several trap names together push a "Hip Hop Rotation" to `hype`, several
+// lyricists push it to `introspective`. Curated + distinctive to avoid false hits.
+const ARTIST_FEEL: Array<[string, MoodCategory]> = [
+  ["playboi carti", "hype"], ["travis scott", "hype"], ["lil uzi vert", "hype"],
+  ["ski mask", "hype"], ["chief keef", "hype"], ["pop smoke", "hype"],
+  ["21 savage", "hype"], ["gunna", "hype"], ["lil baby", "hype"],
+  ["megan thee stallion", "hype"], ["trippie redd", "hype"], ["ken carson", "hype"],
+  ["destroy lonely", "hype"], ["yeat", "hype"], ["sheck wes", "hype"],
+  ["kendrick lamar", "introspective"], ["j. cole", "introspective"],
+  ["joey bada", "introspective"], ["mac miller", "introspective"],
+  ["isaiah rashad", "introspective"], ["earl sweatshirt", "introspective"],
+  ["mick jenkins", "introspective"], ["little simz", "introspective"],
+  ["fisher", "party_house"], ["john summit", "party_house"], ["chris lake", "party_house"],
+  ["dom dolla", "party_house"], ["disclosure", "party_house"], ["black coffee", "late_night_chill"],
+];
+
+/** Per-zone weight: the name is the strongest evidence, then description, then the
+ * (noisier) track artist/title text. */
+const ZONE_WEIGHTS = { name: 3, description: 2, tracks: 1 } as const;
+const STRONG_W = 2;
+const SOFT_W = 1;
+
+/** Minimum share of matched weight required to commit to a mood category. */
 export const FEEL_MIN_CONFIDENCE = 0.34;
+/** Absolute weighted-score floor to commit to a mood — a lone weak word (a single
+ * soft cue in the description = 2) stays below this, so it can't hijack the label
+ * (this is the guard against "one stray word → wrong mood"). A name cue (3), a
+ * strong cue (≥4), or two hits clear it. */
+const MIN_MOOD_SCORE = 3;
+/** Confidence reported for a neutral genre bucket — deliberately low: we're
+ * confident about the genre, not about a mood. */
+const NEUTRAL_CONFIDENCE = 0.25;
+
+/** Whole-word-ish match: `term` (already lowercased) bounded by non-alphanumerics.
+ * Guards against short cues like "808"/"run" matching inside longer tokens, and
+ * handles multi-word/hyphenated cues ("deep house", "lo-fi"). */
+function hasTerm(haystack: string, term: string): boolean {
+  if (!haystack || !term) return false;
+  const esc = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^a-z0-9])${esc}([^a-z0-9]|$)`, "i").test(haystack);
+}
 
 /**
- * Bucket a playlist into a mood/feel category from its name, description and any
- * genre terms. Returns the winning category with a confidence in [0, 1]. Falls
- * back to `uncategorized` (confidence 0) rather than guessing when nothing
- * meaningful matches or the leader is too weak to trust.
+ * Bucket a playlist into a mood/feel category from every signal we have: its name,
+ * description, and the embed-derived track artists + track titles. Rap/house
+ * playlists rarely announce a mood in the name, so the classifier also reads
+ * genre/subgenre cues and known artist names.
+ *
+ * Resolution order (conservative by design):
+ *   1. A MOOD wins only if its weighted score clears both an absolute floor
+ *      (`MIN_MOOD_SCORE`) and a dominance share (`FEEL_MIN_CONFIDENCE`) — so a lone
+ *      stray word can't force a mood the data doesn't support.
+ *   2. Else, if the text is clearly rap or house, return the neutral
+ *      `rap_general` / `house_general` bucket (NOT a guessed mood).
+ *   3. Else `uncategorized`.
+ *
+ * `artists`/`titles` default to `[]` so the legacy 3-arg call site (and tests)
+ * that passed only genre terms as the 3rd arg keep working.
  */
 export function classifyFeel(
   name: string | null | undefined,
   description: string | null | undefined,
-  genreTerms: string[] = [],
-): { category: FeelCategory; confidence: number } {
-  const haystack = [name ?? "", description ?? "", ...genreTerms]
-    .join(" ")
-    .toLowerCase();
-  if (!haystack.trim()) return { category: "uncategorized", confidence: 0 };
+  artists: string[] = [],
+  titles: string[] = [],
+): FeelResult {
+  const nameText = (name ?? "").toLowerCase();
+  const descText = (description ?? "").toLowerCase();
+  const artistText = artists.join(" ").toLowerCase();
+  const trackText = [...artists, ...titles].join(" ").toLowerCase();
+  const zones = [
+    { text: nameText, w: ZONE_WEIGHTS.name },
+    { text: descText, w: ZONE_WEIGHTS.description },
+    { text: trackText, w: ZONE_WEIGHTS.tracks },
+  ];
+  const allText = `${nameText} ${descText} ${trackText}`;
+  if (!allText.trim()) return { category: "uncategorized", confidence: 0, reason: "no signal" };
 
-  const scores: Record<string, number> = {};
-  let total = 0;
+  const scores: Record<MoodCategory, number> = {
+    hype: 0, gym_workout: 0, party_house: 0, late_night_chill: 0, introspective: 0, feel_good: 0,
+  };
+  const matched: Record<MoodCategory, Set<string>> = {
+    hype: new Set(), gym_workout: new Set(), party_house: new Set(),
+    late_night_chill: new Set(), introspective: new Set(), feel_good: new Set(),
+  };
+
   for (const cat of FEEL_CATEGORIES) {
-    let hits = 0;
-    for (const kw of FEEL_KEYWORDS[cat]) {
-      if (haystack.includes(kw)) hits++;
+    for (const zone of zones) {
+      if (!zone.text) continue;
+      for (const kw of FEEL_LEXICON[cat].strong) {
+        if (hasTerm(zone.text, kw)) { scores[cat] += zone.w * STRONG_W; matched[cat].add(kw); }
+      }
+      for (const kw of FEEL_LEXICON[cat].soft) {
+        if (hasTerm(zone.text, kw)) { scores[cat] += zone.w * SOFT_W; matched[cat].add(kw); }
+      }
     }
-    scores[cat] = hits;
-    total += hits;
   }
 
-  if (total === 0) return { category: "uncategorized", confidence: 0 };
+  // Artist-name cues (track-zone weight, strong): matched as substrings of the
+  // artist list only (never titles) to keep famous common-word names in check.
+  for (const [needle, cat] of ARTIST_FEEL) {
+    if (artistText.includes(needle)) {
+      scores[cat] += ZONE_WEIGHTS.tracks * STRONG_W;
+      matched[cat].add(`@${needle}`);
+    }
+  }
 
-  // FEEL_CATEGORIES order breaks ties toward the earlier (more specific) mood.
-  let best: (typeof FEEL_CATEGORIES)[number] = FEEL_CATEGORIES[0];
+  let total = 0;
+  for (const cat of FEEL_CATEGORIES) total += scores[cat];
+  let best: MoodCategory = FEEL_CATEGORIES[0];
   for (const cat of FEEL_CATEGORIES) {
     if (scores[cat] > scores[best]) best = cat;
   }
+  const bestScore = scores[best];
+  const share = total > 0 ? bestScore / total : 0;
 
-  const confidence = scores[best] / total;
-  if (confidence < FEEL_MIN_CONFIDENCE) {
-    return { category: "uncategorized", confidence: Number(confidence.toFixed(3)) };
+  // 1) Commit to a mood only when it's both strong enough and dominant enough.
+  if (bestScore >= MIN_MOOD_SCORE && share >= FEEL_MIN_CONFIDENCE) {
+    const terms = [...matched[best]].slice(0, 4).join(", ");
+    return { category: best, confidence: Number(share.toFixed(3)), reason: `${best}: ${terms}` };
   }
-  return { category: best, confidence: Number(confidence.toFixed(3)) };
+
+  // 2) No evidenced mood, but the genre is clear → neutral bucket, not a guess.
+  const isRap = RAP_GENRE_CUES.some((c) => hasTerm(allText, c));
+  const isHouse = HOUSE_GENRE_CUES.some((c) => hasTerm(allText, c));
+  if (isRap || isHouse) {
+    // Sweep is rap-led; on a tie (or rap-only) default to rap_general.
+    const rap = isRap || !isHouse;
+    const category: FeelCategory = rap ? "rap_general" : "house_general";
+    const weak = bestScore > 0 ? ` (weak ${best} ${bestScore})` : "";
+    return {
+      category,
+      confidence: NEUTRAL_CONFIDENCE,
+      reason: `${rap ? "rap" : "house"} genre, no strong mood${weak}`,
+    };
+  }
+
+  // 3) Genuinely no usable signal (or only sub-threshold noise with no genre).
+  if (bestScore > 0) {
+    return { category: "uncategorized", confidence: Number(share.toFixed(3)), reason: "weak, mixed signal" };
+  }
+  return { category: "uncategorized", confidence: 0, reason: "no signal" };
 }
 
 /** research_context.source tag for rows ingested by this sweep. */

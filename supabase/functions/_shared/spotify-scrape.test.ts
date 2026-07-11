@@ -40,6 +40,20 @@ Deno.test("parseEmbedNextData pulls name/description/curator/tracks from a full 
   assertEquals(d?.track_artists?.includes("Third Artist"), true);
   // "Some Rapper" appears in two tracks but must not be duplicated.
   assertEquals(d?.track_artists?.filter((a) => a === "Some Rapper").length, 1);
+  // Track TITLES are a second feel signal, extracted alongside the artists.
+  assertEquals(d?.track_titles?.includes("Trenches"), true);
+  assertEquals(d?.track_titles?.includes("Night Shift"), true);
+  assertEquals(d?.track_titles?.includes("No Hook"), true);
+});
+
+Deno.test("parseEmbedNextData leaves track_titles undefined when tracks have no titles", () => {
+  const d = parseEmbedNextData(embedHtml({
+    type: "playlist",
+    name: "No Titles",
+    trackList: [{ uri: "spotify:track:z", subtitle: "Anon" }],
+  }));
+  assertEquals(d?.track_titles, undefined);
+  assertEquals(d?.track_artists?.includes("Anon"), true);
 });
 
 Deno.test("parseEmbedNextData reads an `owner` object when subtitle is absent", () => {

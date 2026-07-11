@@ -175,3 +175,63 @@ Deno.test("classifyFeel falls back to uncategorized when the leader is too weak"
   assertEquals(res.category, "uncategorized");
   assertEquals(res.confidence < FEEL_MIN_CONFIDENCE, true);
 });
+
+// --- enriched classifier: rap/house playlists that name no mood --------------
+
+Deno.test("classifyFeel: a rap-name-only playlist is NOT forced into a mood (regression)", () => {
+  // "Hip Hop: Essentials" / "Hip Hop Rotation" used to land in late_night_chill.
+  // With only "this is rap" as signal, it must fall to the neutral rap_general
+  // bucket — never a mood the data doesn't evidence.
+  for (const nm of ["Hip Hop: Essentials", "Hip Hop Rotation", "RAP MUSIC 2026"]) {
+    const res = classifyFeel(nm, "", [], []);
+    assertEquals(res.category !== "late_night_chill", true, `${nm} must not be late_night_chill`);
+    assertEquals(res.category, "rap_general", `${nm} should be rap_general, got ${res.category}`);
+  }
+});
+
+Deno.test("classifyFeel: an underground rap name resolves to rap_general, not uncategorized", () => {
+  const res = classifyFeel("Best Underground Rap 2026", "", [], []);
+  assertEquals(res.category, "rap_general");
+});
+
+Deno.test("classifyFeel: high-energy rap subgenre cues → hype", () => {
+  const res = classifyFeel("Trap Bangers 2026", "The hardest trap and drill to turn up to.", [], []);
+  assertEquals(res.category, "hype");
+});
+
+Deno.test("classifyFeel: known trap artist names push a neutral rap name to hype", () => {
+  const res = classifyFeel("Rap Rotation", "", ["Playboi Carti", "Ken Carson", "Yeat"], []);
+  assertEquals(res.category, "hype");
+});
+
+Deno.test("classifyFeel: a deep-house description lands in party_house or late_night_chill", () => {
+  const res = classifyFeel(
+    "Deep House Sessions",
+    "Soulful deep house grooves for late night and after hours.",
+    [],
+    [],
+  );
+  assertEquals(res.category === "party_house" || res.category === "late_night_chill", true, res.category);
+});
+
+Deno.test("classifyFeel: a house name with no mood resolves to house_general", () => {
+  const res = classifyFeel("Electronic House Selection", "", [], []);
+  assertEquals(res.category, "house_general");
+});
+
+Deno.test("classifyFeel: empty signal → uncategorized (confidence 0)", () => {
+  const res = classifyFeel("", "", [], []);
+  assertEquals(res.category, "uncategorized");
+  assertEquals(res.confidence, 0);
+});
+
+Deno.test("classifyFeel: always returns a non-empty reason string", () => {
+  for (const res of [
+    classifyFeel("Trap Bangers", "", [], []),
+    classifyFeel("Hip Hop Rotation", "", [], []),
+    classifyFeel("", "", [], []),
+  ]) {
+    assertEquals(typeof res.reason, "string");
+    assertEquals(res.reason.length > 0, true);
+  }
+});

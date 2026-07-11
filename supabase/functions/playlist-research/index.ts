@@ -40,7 +40,10 @@ import {
 import {
   BOT_RISK_THRESHOLD,
   classifyFeel,
+  CLASSIFIER_VERSION,
   computeBotRisk,
+  enrichmentOutcome,
+  isClassifierStale,
   SWEEP_SOURCE,
 } from "../_shared/playlist-sweep.ts";
 
@@ -96,6 +99,14 @@ const SEARCH_BUDGET_FRACTION = 0.5;
 // sweep idempotent: rows left `enriched:false` by an earlier run get completed
 // later instead of remaining empty stubs forever.
 const REENRICH_CAP_SWEEP = 16;
+// How many already-enriched sweep rows a run re-classifies when their stored
+// classifier_version is older than the current CLASSIFIER_VERSION (or their label
+// predates the classifier_version stamp entirely). This is pure DB work — no
+// scraping — so it's cheap and the cap can be generous; the rest catch up on the
+// next run. Idempotent: re-running with the same version is a no-op. Without this,
+// every classifier improvement freezes previously-labeled rows at their stale
+// label forever (the "compounding at scale" failure across 200+ playlists).
+const RECLASSIFY_CAP_SWEEP = 200;
 // Web-search hits fetched per discovery query. The Spotify search *page* scrape is
 // a client-rendered SPA that returns no crawlable playlist anchors, so discovery
 // leans on this web-search channel (same one placement-discovery uses) to surface
@@ -142,6 +153,18 @@ type SweepFunnel = DiscoveryFunnel & {
   backfill_considered: number;
   backfilled_ok: number;
   backfill_failed: number;
+  /** Back-fill rows whose embed returned NO entity (deleted/private/region-locked):
+   * counted honestly as `backfill_dead` instead of inflating `backfilled_ok`, and
+   * marked `enrich_status:'dead'` so they're excluded from future back-fill retries
+   * rather than re-attempted forever. */
+  backfill_dead: number;
+  /** Idempotent re-classification of ALREADY-enriched sweep rows whose stored
+   * classifier_version is stale (or absent). `reclassified_count` = rows considered
+   * this run; `reclassified_ok` = rows whose category/confidence/reason actually
+   * changed and were updated in place. This is what un-freezes labels applied by an
+   * older classifier build (root cause #1). */
+  reclassified_count: number;
+  reclassified_ok: number;
 };
 
 function sanitizeWhyItFits(raw: string | null): string | null {
@@ -208,6 +231,10 @@ type DiscoveredPlaylist = {
   // Transient: why enrichment did not produce a real name this run (for the funnel's
   // enrich_failed_reasons). Not persisted.
   _enrich_reason?: string;
+  // Terminal enrichment verdict, persisted to research_context. Set to "dead" when
+  // the embed returns NO entity (deleted/private/region-locked playlist) so the row
+  // is excluded from future back-fill retries instead of being re-scraped forever.
+  enrich_status?: "dead";
 };
 
 function getServiceClient(): SupabaseClient {
@@ -515,8 +542,14 @@ async function enrichPlaylists(
           if (detail.track_artists) pl._track_artists = detail.track_artists;
           if (detail.track_titles) pl._track_titles = detail.track_titles;
         }
-        pl.enriched = gotRealName;
-        pl._enrich_reason = gotRealName ? undefined : detail ? "no_name" : "no_metadata";
+        // Single source of truth for the verdict (pure + unit-tested): real name →
+        // enriched; entity-but-no-name → retryable; NO entity → terminally dead
+        // (deleted/private/region-locked), so loadUnenrichedSweepRows stops pulling it
+        // back every run.
+        const verdict = enrichmentOutcome(!!detail, gotRealName);
+        pl.enriched = verdict.enriched;
+        pl._enrich_reason = verdict.enriched ? undefined : verdict.reason;
+        if (verdict.dead) pl.enrich_status = "dead";
       } catch (e) {
         pl.enriched = false;
         pl._enrich_reason = "exception";
@@ -562,6 +595,13 @@ async function loadUnenrichedSweepRows(
       // for them and the old `.eq(..., "false")` filter matched zero of them, leaving
       // them stranded as "Playlist 0KLdaP…" stubs forever. `is.null` catches those.
       .or("research_context->>enriched.eq.false,research_context->>enriched.is.null")
+      // Exclude terminally-dead rows (embed returned no entity — deleted/private/
+      // region-locked). Their `enrich_status` is "dead"; keep everything whose
+      // status is absent OR anything other than "dead". Without the explicit
+      // `is.null` arm a bare `.neq(..., "dead")` would drop every row whose
+      // enrich_status is NULL (SQL: NULL <> 'dead' → NULL, not true) — i.e. all the
+      // still-retryable rows. This arm is what stops dead stubs being retried forever.
+      .or("research_context->>enrich_status.is.null,research_context->>enrich_status.neq.dead")
       .limit(cap);
     if (error) {
       console.error("[playlist-research] loadUnenrichedSweepRows:", error.message);
@@ -591,6 +631,100 @@ async function loadUnenrichedSweepRows(
     console.error("[playlist-research] loadUnenrichedSweepRows failed:", e instanceof Error ? e.message : e);
     return [];
   }
+}
+
+/**
+ * Root-cause-#1 fix — idempotent RE-CLASSIFICATION of already-enriched sweep rows.
+ *
+ * Previously, when the classifier improved, only NEW rows benefited: rows classified
+ * by an older build stayed frozen at their stale label forever (the `reason=None`
+ * mislabels: "Hip Hop: Essentials" → late_night_chill, "RAP MUSIC 2026" →
+ * uncategorized). At 200+ playlists that compounds — each row is stuck at whatever
+ * the classifier knew the day it landed.
+ *
+ * This pass pulls enriched sweep rows whose stored `classifier_version` is stale
+ * (older than CLASSIFIER_VERSION) or absent (never stamped — the pre-version rows),
+ * re-runs the CURRENT classifier over the already-stored name + description + track
+ * data, and updates category/category_confidence/category_reason + classifier_version
+ * IN PLACE on the same row. Budget-bounded by `cap` (the rest catch up next run) and
+ * by `deadline`. Fully idempotent: a row already at CLASSIFIER_VERSION is never
+ * selected, and re-running yields the same label.
+ */
+async function reclassifySweepRows(
+  supabase: SupabaseClient,
+  cap: number,
+  deadline: number,
+): Promise<{ reclassified_count: number; reclassified_ok: number }> {
+  const curV = String(CLASSIFIER_VERSION);
+  let rows: Array<{ playlist_id: string; playlist_name: string | null; research_context: Record<string, unknown> | null }> = [];
+  try {
+    const { data, error } = await supabase
+      .from("playlist_targets")
+      .select("playlist_id, playlist_name, research_context")
+      .eq("research_context->>source", SWEEP_SOURCE)
+      // Never re-classify a terminally-dead row (no real metadata to classify).
+      .or("research_context->>enrich_status.is.null,research_context->>enrich_status.neq.dead")
+      // Exclude still-PENDING stubs (enriched explicitly "false"): they have no real
+      // metadata yet and would otherwise consume the cap without producing a label.
+      // Keep rows where enriched is "true" OR absent (null) — old real rows written by
+      // a build that predates the `enriched` flag still have real names to classify.
+      .or("research_context->>enriched.is.null,research_context->>enriched.neq.false")
+      // Stale = never stamped (null — the old `reason=None` rows) OR a version other
+      // than the current one. Since the version only ever increases, `neq` current
+      // means "older build". This is the trigger that un-freezes stale labels.
+      .or(`research_context->>classifier_version.is.null,research_context->>classifier_version.neq.${curV}`)
+      .limit(cap);
+    if (error) {
+      console.error("[playlist-research] reclassifySweepRows query:", error.message);
+      return { reclassified_count: 0, reclassified_ok: 0 };
+    }
+    rows = data ?? [];
+  } catch (e) {
+    console.error("[playlist-research] reclassifySweepRows failed:", e instanceof Error ? e.message : e);
+    return { reclassified_count: 0, reclassified_ok: 0 };
+  }
+
+  let considered = 0;
+  let ok = 0;
+  await mapPool(
+    rows,
+    SCRAPE_CONCURRENCY,
+    async (r) => {
+      const rc = r.research_context ?? {};
+      const name = r.playlist_name ?? "";
+      // Skip placeholder stubs — they carry no real metadata to classify (and are
+      // handled by the enrichment back-fill, not here).
+      if (!name || isPlaceholderName(name)) return null;
+      // Belt-and-suspenders: only touch rows the shared staleness rule agrees are
+      // stale (guards against any query-filter quirk re-writing current-version rows).
+      if (!isClassifierStale(rc.classifier_version as number | string | null | undefined)) return null;
+      considered++;
+      const description = (rc.classifier_description as string | null) ?? null;
+      const artists = Array.isArray(rc.classifier_track_artists) ? (rc.classifier_track_artists as string[]) : [];
+      const titles = Array.isArray(rc.classifier_track_titles) ? (rc.classifier_track_titles as string[]) : [];
+      const feel = classifyFeel(name, description, artists, titles);
+      const nextRc = {
+        ...rc,
+        category: feel.category,
+        category_confidence: feel.confidence,
+        category_reason: feel.reason,
+        classifier_version: CLASSIFIER_VERSION,
+      };
+      const { error } = await supabase
+        .from("playlist_targets")
+        .update({ research_context: nextRc })
+        .eq("playlist_id", r.playlist_id);
+      if (error) {
+        console.error("[playlist-research] reclassify update", r.playlist_id, error.message);
+        return null;
+      }
+      ok++;
+      return null;
+    },
+    () => Date.now() > deadline,
+  );
+
+  return { reclassified_count: considered, reclassified_ok: ok };
 }
 
 /** Count of web-discovered playlists already in this lane — used as a rotation seed
@@ -841,6 +975,20 @@ async function upsertLiveResults(
         category: pl.category ?? "uncategorized",
         category_confidence: pl.category_confidence ?? 0,
         category_reason: pl.category_reason ?? null,
+        // Classifier version stamp — only for rows actually classified (enriched).
+        // Pending rows carry null so the re-classify pass recognizes them as needing
+        // classification once enriched. Stale (< CLASSIFIER_VERSION) or null on an
+        // enriched row is what triggers the idempotent re-classify pass next run.
+        classifier_version: pl.enriched === true ? CLASSIFIER_VERSION : null,
+        // Persist the classifier INPUTS so a later re-classify pass can re-run the
+        // current classifier without re-scraping. (The embed detail isn't stored
+        // anywhere else; without this, re-classification would only have the name.)
+        classifier_description: pl.description ?? null,
+        classifier_track_artists: pl._track_artists ?? [],
+        classifier_track_titles: pl._track_titles ?? [],
+        // Terminal enrichment verdict — "dead" rows are excluded from future
+        // back-fill retries (see loadUnenrichedSweepRows). Null unless proven dead.
+        enrich_status: pl.enrich_status ?? null,
       },
       tier: 2,
       whitelist_status: false,
@@ -944,8 +1092,17 @@ export async function mergeCatalogAndLive(
   // result directly. ok = got real metadata; failed = attempted (has a failure
   // reason) but still no name; the rest were never reached before the budget expired
   // and are neither (they persist as stubs and get retried next run).
+  // Honest back-fill accounting. `backfilled_ok` counts ONLY rows that recovered a
+  // REAL name — the old code reported ok:5 while 5 rows stayed nameless "Playlist
+  // 0KLdaP…" stubs. Rows whose embed returned no entity are counted as
+  // `backfill_dead` (and marked enrich_status:'dead' so they're never retried), NOT
+  // folded into ok. The remainder — attempted, no name, but not proven dead (a
+  // transient no_name/exception) — are `backfill_failed` and retried next run.
   const backfilled_ok = reenrich.filter((p) => p.enriched === true).length;
-  const backfill_failed = reenrich.filter((p) => p.enriched !== true && p._enrich_reason).length;
+  const backfill_dead = reenrich.filter((p) => p.enrich_status === "dead").length;
+  const backfill_failed = reenrich.filter(
+    (p) => p.enriched !== true && p.enrich_status !== "dead" && p._enrich_reason,
+  ).length;
 
   const discovery_skips: DiscoverySkips = {
     disclaim_brand: 0,
@@ -974,6 +1131,16 @@ export async function mergeCatalogAndLive(
       ));
     }
   }
+  // Root-cause-#1 — re-classify already-enriched sweep rows still on an older
+  // classifier_version (or never stamped). DB-only and idempotent, so it runs even
+  // when discovery found nothing. Given a slice of budget AFTER scraping (scraping is
+  // done); leftovers catch up next run. This is what corrects the stale `reason=None`
+  // mislabels ("Hip Hop: Essentials" → rap_general, "RAP MUSIC 2026" → hype, …).
+  const reclassifyDeadline = start + SCRAPE_BUDGET_MS + 6_000;
+  const { reclassified_count, reclassified_ok } = sweep
+    ? await reclassifySweepRows(supabase, RECLASSIFY_CAP_SWEEP, reclassifyDeadline)
+    : { reclassified_count: 0, reclassified_ok: 0 };
+
   const newIdSet = new Set(newIds);
   const funnel: SweepFunnel = {
     ...discoveryFunnel,
@@ -983,6 +1150,9 @@ export async function mergeCatalogAndLive(
     backfill_considered: reenrich.length,
     backfilled_ok,
     backfill_failed,
+    backfill_dead,
+    reclassified_count,
+    reclassified_ok,
   };
   console.log(
     `[playlist-research] web discovery: ${freshStubs.length} found, ${reenrich.length} re-enrich, ${live.length} ingested, funnel:`,

@@ -2,8 +2,11 @@ import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
   BOT_RISK_THRESHOLD,
   classifyFeel,
+  CLASSIFIER_VERSION,
   computeBotRisk,
+  enrichmentOutcome,
   FEEL_MIN_CONFIDENCE,
+  isClassifierStale,
 } from "./playlist-sweep.ts";
 
 // --- bot_risk: known-bot fixtures ------------------------------------------
@@ -234,4 +237,88 @@ Deno.test("classifyFeel: always returns a non-empty reason string", () => {
     assertEquals(typeof res.reason, "string");
     assertEquals(res.reason.length > 0, true);
   }
+});
+
+// --- RC2 regression: bare genre names must NOT map to a mood -------------------
+
+Deno.test("classifyFeel: 'Hip Hop: Essentials' (name only) → rap_general, never late_night_chill", () => {
+  const res = classifyFeel("Hip Hop: Essentials", "", [], []);
+  assertEquals(res.category, "rap_general");
+  assertEquals(res.category !== "late_night_chill", true);
+});
+
+Deno.test("classifyFeel: 'DEEP HOUSE - TOP 50' → house_general, never late_night_chill (bare genre is not a chill mood)", () => {
+  const res = classifyFeel("DEEP HOUSE - TOP 50", "", [], []);
+  assertEquals(res.category, "house_general", `got ${res.category} (${res.reason})`);
+  assertEquals(res.category !== "late_night_chill", true);
+});
+
+Deno.test("classifyFeel: bare 'Deep House 2026' does NOT become late_night_chill on a lone 'slow' token", () => {
+  // The only chill-ish token is the weak modifier "slow"; with "deep house" no longer
+  // a mood cue, this must resolve to the neutral house bucket, not chill@conf1.
+  const res = classifyFeel("Deep House 2026", "slow rolling grooves", [], []);
+  assertEquals(res.category !== "late_night_chill", true, `got ${res.category} (${res.reason})`);
+  assertEquals(res.category, "house_general");
+});
+
+Deno.test("classifyFeel: a genuine lofi/sleep description → late_night_chill", () => {
+  const res = classifyFeel(
+    "Overnight Study Room",
+    "Mellow lofi beats for sleep, study and rainy late night sessions.",
+    [],
+    [],
+  );
+  assertEquals(res.category, "late_night_chill", `got ${res.category} (${res.reason})`);
+});
+
+Deno.test("classifyFeel: 'RAP MUSIC 2026 Best Rap/Trap/Hits' → hype (trap), not uncategorized/chill", () => {
+  const res = classifyFeel("RAP MUSIC 2026 Best Rap/Trap/Hits", "", [], []);
+  assertEquals(res.category, "hype", `got ${res.category} (${res.reason})`);
+});
+
+Deno.test("classifyFeel: a lone weak modifier 'slow' in a name does not force a mood at conf 1", () => {
+  const res = classifyFeel("Slow", "", [], []);
+  // No defining cue, no genre → uncategorized (NOT late_night_chill@1).
+  assertEquals(res.category !== "late_night_chill", true, `got ${res.category} (${res.reason})`);
+});
+
+// --- RC1: stale-classifier detection (drives the re-classify pass) -------------
+
+Deno.test("isClassifierStale: a row stamped with an OLDER classifier_version is flagged stale", () => {
+  assertEquals(isClassifierStale(CLASSIFIER_VERSION - 1), true);
+  assertEquals(isClassifierStale(1), true, "v1 rows must be re-classified once version advanced");
+});
+
+Deno.test("isClassifierStale: a missing/absent version (the old reason=None rows) is stale", () => {
+  assertEquals(isClassifierStale(null), true);
+  assertEquals(isClassifierStale(undefined), true);
+  assertEquals(isClassifierStale(""), true);
+  assertEquals(isClassifierStale("not-a-number"), true);
+});
+
+Deno.test("isClassifierStale: a row already at the CURRENT version is NOT stale (idempotent no-op)", () => {
+  assertEquals(isClassifierStale(CLASSIFIER_VERSION), false);
+  assertEquals(isClassifierStale(String(CLASSIFIER_VERSION)), false);
+});
+
+// --- RC3: honest dead-playlist verdict ----------------------------------------
+
+Deno.test("enrichmentOutcome: no entity at all → dead, not enriched (never backfilled_ok)", () => {
+  const v = enrichmentOutcome(/* hasEntity */ false, /* hasRealName */ false);
+  assertEquals(v.dead, true);
+  assertEquals(v.enriched, false);
+  assertEquals(v.reason, "no_metadata");
+});
+
+Deno.test("enrichmentOutcome: entity rendered but no name → retryable, NOT dead", () => {
+  const v = enrichmentOutcome(true, false);
+  assertEquals(v.dead, false);
+  assertEquals(v.enriched, false);
+  assertEquals(v.reason, "no_name");
+});
+
+Deno.test("enrichmentOutcome: real name recovered → enriched, counts as backfilled_ok", () => {
+  const v = enrichmentOutcome(true, true);
+  assertEquals(v.enriched, true);
+  assertEquals(v.dead, false);
 });

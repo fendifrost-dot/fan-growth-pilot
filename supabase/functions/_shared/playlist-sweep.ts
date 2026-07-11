@@ -224,9 +224,14 @@ const FEEL_LEXICON: Record<MoodCategory, { strong: string[]; soft: string[] }> =
     ],
   },
   party_house: {
+    // Party/club CONTEXT cues only. Bare house SUBGENRES (tech house, bass house,
+    // afro house, future house, electro house, big room, edm) were removed — they
+    // are genre names, not a party mood, and were labeling genre-only house
+    // playlists party_house. They now feed the neutral house_general bucket
+    // (HOUSE_GENRE_CUES); a row commits to party_house only on an actual
+    // party/club/rave/festival cue.
     strong: [
-      "tech house", "bass house", "afro house", "big room", "peak time", "rave",
-      "festival", "edm", "future house", "electro house",
+      "peak time", "rave", "festival",
     ],
     soft: [
       "party", "club", "dance", "dancefloor", "warehouse", "night out",
@@ -234,13 +239,19 @@ const FEEL_LEXICON: Record<MoodCategory, { strong: string[]; soft: string[] }> =
     ],
   },
   late_night_chill: {
+    // Genuine chill signal ONLY — never house/genre names. "deep house" and
+    // "soulful house" were removed: they are GENRE tokens, not moods, and were
+    // forcing bare "DEEP HOUSE - TOP 50" / "Deep House 2026" into late_night_chill.
+    // Genre detection now routes those to house_general (see HOUSE_GENRE_CUES); a
+    // row lands here only on a real chill cue (lofi, sleep, study, mellow, rainy,
+    // lounge, "late night", "chill", …).
     strong: [
-      "deep house", "lofi", "lo-fi", "lo fi", "downtempo", "after hours",
-      "late night", "chillhop", "soulful house",
+      "lofi", "lo-fi", "lo fi", "downtempo", "after hours", "late night",
+      "chillhop", "sleep", "sleepy", "study", "study beats",
     ],
     soft: [
-      "chill", "night drive", "midnight", "relax", "mellow", "smooth", "slow",
-      "vibe", "vibes", "unwind", "lounge", "sunset", "cruise",
+      "chill", "night drive", "midnight", "relax", "mellow", "rainy", "unwind",
+      "lounge", "sunset", "smooth", "slow", "vibe", "vibes", "cruise",
     ],
   },
   introspective: {
@@ -272,8 +283,9 @@ const RAP_GENRE_CUES = [
   "rap music", "rappers",
 ];
 const HOUSE_GENRE_CUES = [
-  "house", "techno", "edm", "electronic", "disco", "garage", "rave", "amapiano",
+  "house", "techno", "edm", "electronic", "disco", "garage", "amapiano",
   "afro house", "tech house", "deep house", "bass house", "big room",
+  "future house", "electro house", "soulful house", "top 50",
 ];
 
 // Well-known artist → mood cue. A single match is a modest nudge (track-zone
@@ -309,6 +321,62 @@ const MIN_MOOD_SCORE = 3;
 /** Confidence reported for a neutral genre bucket — deliberately low: we're
  * confident about the genre, not about a mood. */
 const NEUTRAL_CONFIDENCE = 0.25;
+
+/**
+ * Cues too generic to DEFINE a mood on their own. They still contribute to a
+ * category's score, but a category whose matches are ALL weak modifiers won't
+ * commit — the guard against a lone "slow"/"vibe" in a name forcing
+ * late_night_chill at confidence 1 (e.g. "Deep House 2026" whose only chill token
+ * is "slow" must resolve to house_general, not late_night_chill).
+ */
+const WEAK_MOOD_CUES = new Set(["slow", "smooth", "vibe", "vibes", "cruise"]);
+
+/**
+ * Version stamp for the classifier's logic + lexicon. Persisted on each classified
+ * row so a later sweep can detect rows labeled by an OLDER build and re-run them
+ * (the fix for stale labels frozen at whatever the classifier knew the day the row
+ * was ingested). BUMP whenever classifyFeel's lexicon, weights, thresholds, weak-cue
+ * set, or resolution order changes — otherwise stale rows won't be recognized as
+ * stale and won't be re-classified.
+ *   v1 → original lexicon.
+ *   v2 → genre subtokens (deep/tech house, edm, …) removed from mood lexicons and
+ *        routed to house_general; weak-modifier guard added; "top 50" house cue.
+ */
+export const CLASSIFIER_VERSION = 2;
+
+/**
+ * True when a row's stored classifier version is older than — or missing versus —
+ * the current CLASSIFIER_VERSION, i.e. it was labeled by an older build and must be
+ * re-classified. A null/empty/non-numeric stamp is treated as stale: those are the
+ * pre-version rows (the `reason=None` mislabels) that never got a version at all.
+ * Pure + exported so the sweep's re-classify guard and its unit test share one rule.
+ */
+export function isClassifierStale(stored: number | string | null | undefined): boolean {
+  if (stored === null || stored === undefined || stored === "") return true;
+  const v = typeof stored === "number" ? stored : Number(stored);
+  if (!Number.isFinite(v)) return true;
+  return v < CLASSIFIER_VERSION;
+}
+
+/** Verdict for a single enrichment attempt. */
+export type EnrichVerdict = { enriched: boolean; dead: boolean; reason?: string };
+
+/**
+ * Pure verdict for one playlist enrichment attempt — shared by the edge function's
+ * detail-scrape handler and its unit tests, so "what counts as dead" is defined once.
+ *   - real name recovered      → enriched (counts as backfilled_ok)
+ *   - entity but no real name   → NOT enriched, retryable ("no_name") — a transient
+ *                                 render miss worth one more try, NOT dead
+ *   - no entity at all          → NOT enriched, DEAD ("no_metadata"): the embed +
+ *                                 oEmbed both returned nothing → the playlist is
+ *                                 deleted/private/region-locked. Never backfilled_ok;
+ *                                 excluded from future retries.
+ */
+export function enrichmentOutcome(hasEntity: boolean, hasRealName: boolean): EnrichVerdict {
+  if (hasRealName) return { enriched: true, dead: false };
+  if (hasEntity) return { enriched: false, dead: false, reason: "no_name" };
+  return { enriched: false, dead: true, reason: "no_metadata" };
+}
 
 /** Whole-word-ish match: `term` (already lowercased) bounded by non-alphanumerics.
  * Guards against short cues like "808"/"run" matching inside longer tokens, and
@@ -392,9 +460,13 @@ export function classifyFeel(
   const bestScore = scores[best];
   const share = total > 0 ? bestScore / total : 0;
 
-  // 1) Commit to a mood only when it's both strong enough and dominant enough.
-  if (bestScore >= MIN_MOOD_SCORE && share >= FEEL_MIN_CONFIDENCE) {
-    const terms = [...matched[best]].slice(0, 4).join(", ");
+  // 1) Commit to a mood only when it's strong enough, dominant enough, AND the
+  //    winning category matched at least one cue that isn't a bare weak modifier —
+  //    a lone "slow"/"vibe" can't force a mood the data doesn't really evidence.
+  const bestMatches = [...matched[best]];
+  const hasDefiningCue = bestMatches.some((t) => !WEAK_MOOD_CUES.has(t));
+  if (bestScore >= MIN_MOOD_SCORE && share >= FEEL_MIN_CONFIDENCE && hasDefiningCue) {
+    const terms = bestMatches.slice(0, 4).join(", ");
     return { category: best, confidence: Number(share.toFixed(3)), reason: `${best}: ${terms}` };
   }
 

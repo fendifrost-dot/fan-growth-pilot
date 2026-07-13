@@ -1675,6 +1675,73 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
       data: { ok: true, playlist_id: playlistId, pitch_log_id: logRow?.id ?? null },
     };
   }
+  // Minimal, idempotent "a pitch was sent" logger for the organic channels
+  // (email / instagram / form) driven by the daily submissions task. The
+  // sending happens outside the backend (Gmail connector); this only records
+  // it so the reply-tracking loop has a row to key off. Idempotent on
+  // (playlist_id, track_name): a re-run refreshes the existing row instead of
+  // inserting a duplicate — done via select-then-insert/update so it does not
+  // depend on a DB unique constraint.
+  if (action === "log_pitch_sent") {
+    const playlistId = String(body.playlist_id ?? body.target_id ?? "").trim();
+    if (!playlistId) return { status: 400, data: { error: "playlist_id (or target_id) required" } };
+    const channel = (String(body.channel ?? "email").trim().toLowerCase()) || "email";
+    const { data: target, error: targetErr } = await sb.from("playlist_targets")
+      .select("playlist_id, track_name, curator_email")
+      .eq("playlist_id", playlistId)
+      .maybeSingle();
+    if (targetErr) return { status: 500, data: { error: targetErr.message } };
+    if (!target) return { status: 404, data: { error: "playlist_not_found", playlist_id: playlistId } };
+    const trackName = String(body.track_name ?? target.track_name ?? "").trim();
+    if (!trackName) {
+      return { status: 400, data: { error: "track_name required (pass in body or set on playlist_targets)" } };
+    }
+    const now = new Date().toISOString();
+    const pitchedAt = body.sent_at ? String(body.sent_at) : now;
+    const curatorEmail = (target.curator_email as string | null)?.trim()
+      || `${channel}:${playlistId}@manual`;
+    const { data: existing, error: findErr } = await sb.from("pitch_log")
+      .select("id")
+      .eq("playlist_id", playlistId)
+      .eq("track_name", trackName)
+      .order("pitched_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (findErr) return { status: 500, data: { error: findErr.message } };
+    let pitchLogId: string | null = existing?.id ?? null;
+    let created = false;
+    if (existing?.id) {
+      const { error: updErr } = await sb.from("pitch_log").update({
+        method: channel,
+        status: "sent",
+        pitched_at: pitchedAt,
+        sent_at: pitchedAt,
+      }).eq("id", existing.id);
+      if (updErr) return { status: 500, data: { error: updErr.message } };
+    } else {
+      const { data: logRow, error: logErr } = await sb.from("pitch_log").insert({
+        playlist_id: playlistId,
+        track_name: trackName,
+        curator_email: curatorEmail,
+        method: channel,
+        status: "sent",
+        pitched_at: pitchedAt,
+        sent_at: pitchedAt,
+      }).select("id").single();
+      if (logErr) return { status: 500, data: { error: logErr.message } };
+      pitchLogId = logRow?.id ?? null;
+      created = true;
+    }
+    const { error: upErr } = await sb.from("playlist_targets").update({
+      pitch_status: "pitched",
+      last_pitched_at: now,
+    }).eq("playlist_id", playlistId);
+    if (upErr) return { status: 500, data: { error: upErr.message } };
+    return {
+      status: 200,
+      data: { ok: true, playlist_id: playlistId, track_name: trackName, channel, pitch_log_id: pitchLogId, created },
+    };
+  }
   if (action === "list_social_queue") {
     const limit = Math.min(50, Math.max(1, Number(body.limit) || 30));
     const status = String(body.status ?? "pending").trim() || "pending";
@@ -1971,7 +2038,7 @@ export async function runConnectSpotifyStatus(
 
 const PLAYLIST_AGENT_ACTIONS = new Set([
   "draft_pitch", "approve_draft", "enrich_curator_contacts", "schedule_follow_up",
-  "list_targets", "list_drafts", "update_draft", "delete_draft", "deactivate_target", "activate_target", "patch_target", "log_platform_pitch", "get_pitch_log",
+  "list_targets", "list_drafts", "update_draft", "delete_draft", "deactivate_target", "activate_target", "patch_target", "log_platform_pitch", "log_pitch_sent", "get_pitch_log",
   "verify_targets", "list_unverified_targets", "review_target",
   "run_playlist_research", "run_playlist_sweep", "send_campaign", "send_telegram_campaign",
   "connect_spotify_init", "connect_spotify_status",
@@ -2312,6 +2379,7 @@ export async function runPlaylistAgentAction(
     case "activate_target":
     case "patch_target":
     case "log_platform_pitch":
+    case "log_pitch_sent":
     case "get_pitch_log":
     case "verify_targets":
     case "list_unverified_targets":

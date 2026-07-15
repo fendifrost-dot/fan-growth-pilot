@@ -111,6 +111,9 @@ Deno.serve(async (req) => {
       case 'get_leads':
         return jsonResponse(await getLeads(supabase), corsHeaders);
 
+      case 'upsert_smart_link':
+        return jsonResponse(await upsertSmartLink(supabase, body), corsHeaders);
+
       case 'get_momentum_alerts':
         return jsonResponse(await getMomentumAlerts(supabase), corsHeaders);
 
@@ -444,6 +447,107 @@ async function getLeads(supabase: ReturnType<typeof createClient>) {
   };
 
   return { leads, segments };
+}
+
+/**
+ * Upsert one or more smart_links rows (service-role — bypasses RLS).
+ *
+ * The daily-submissions job treats a smart link as a per-song prerequisite and
+ * skips any song without one. This action lets an operator seed / refresh links
+ * without a manual SQL migration. It writes the FLAT metadata shape the live
+ * SmartLinkPage reads (metadata.spotify_url / artist_name / campaignName), the
+ * same shape as fillingavoid / modestmandeluxe.
+ *
+ * Body: either a single link at top level, or { links: [ ... ] }. Per link:
+ *   { slug (required), title, destination_url | spotify_url, artist_name,
+ *     campaignName, theme_preset?, is_active?, user_id? }
+ * Owner defaults to the existing catalogue owner (earliest smart_links row) so no
+ * profile UUID has to be supplied. Idempotent on slug: existing metadata is
+ * preserved and merged (so resolve-artwork DSP keys / artwork survive), then the
+ * seed keys are re-applied.
+ */
+async function upsertSmartLink(
+  supabase: ReturnType<typeof createClient>,
+  body: any,
+) {
+  const links = Array.isArray(body?.links) ? body.links : [body];
+
+  // Resolve a default owner once (earliest row), matching the migration.
+  let defaultOwner: string | null = null;
+  const needsOwner = links.some((l: any) => l && !l.user_id);
+  if (needsOwner) {
+    const { data: ownerRow, error: ownerErr } = await supabase
+      .from('smart_links')
+      .select('user_id')
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (ownerErr) throw ownerErr;
+    defaultOwner = (ownerRow as any)?.user_id ?? null;
+  }
+
+  const results: any[] = [];
+  for (const link of links) {
+    const slug = String(link?.slug ?? '').trim().toLowerCase();
+    if (!slug) {
+      results.push({ ok: false, error: 'slug required' });
+      continue;
+    }
+
+    const spotifyUrl = String(link?.spotify_url ?? '').trim();
+    const destinationUrl = String(link?.destination_url ?? spotifyUrl).trim();
+    if (!destinationUrl) {
+      results.push({ ok: false, slug, error: 'destination_url or spotify_url required' });
+      continue;
+    }
+
+    const userId = String(link?.user_id ?? '').trim() || defaultOwner;
+    if (!userId) {
+      results.push({ ok: false, slug, error: 'no owner: pass user_id (smart_links is empty)' });
+      continue;
+    }
+
+    // Merge onto any existing metadata so we don't drop resolved DSP keys / art.
+    const { data: existing } = await supabase
+      .from('smart_links')
+      .select('metadata')
+      .eq('slug', slug)
+      .maybeSingle();
+    const priorMeta = ((existing as any)?.metadata ?? {}) as Record<string, unknown>;
+
+    const seedMeta: Record<string, unknown> = { ...priorMeta };
+    if (spotifyUrl) seedMeta.spotify_url = spotifyUrl;
+    if (link?.artist_name) seedMeta.artist_name = String(link.artist_name);
+    if (link?.campaignName) seedMeta.campaignName = String(link.campaignName);
+
+    const row: Record<string, unknown> = {
+      user_id: userId,
+      title: String(link?.title ?? slug),
+      slug,
+      destination_url: destinationUrl,
+      theme_preset: String(link?.theme_preset ?? 'default'),
+      is_active: link?.is_active === false ? false : true,
+      metadata: seedMeta,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data, error } = await supabase
+      .from('smart_links')
+      .upsert(row, { onConflict: 'slug' })
+      .select('id, slug, title, destination_url, is_active, user_id, metadata')
+      .single();
+    if (error) {
+      results.push({ ok: false, slug, error: error.message });
+      continue;
+    }
+    results.push({ ok: true, slug, link: data });
+  }
+
+  return {
+    ok: results.every((r) => r.ok),
+    upserted: results.filter((r) => r.ok).length,
+    results,
+  };
 }
 
 async function getMomentumAlerts(supabase: ReturnType<typeof createClient>) {

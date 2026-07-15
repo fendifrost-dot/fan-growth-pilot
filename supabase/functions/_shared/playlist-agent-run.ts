@@ -2292,8 +2292,27 @@ export async function runCatalogueAdmin(body: Record<string, unknown>, sb: Supab
   }
 
   if (action === "mark_pitch_response") {
-    const id = String(body.pitch_log_id ?? body.id ?? "").trim();
-    if (!id) return { status: 400, data: { error: "pitch_log_id required" } };
+    let id = String(body.pitch_log_id ?? body.id ?? "").trim();
+    // Ergonomics: if no pitch_log UUID is supplied, resolve the most recent row for a
+    // (playlist_id [, track_name]) pair. Lets a curator reply / decline / placement be
+    // logged straight from the target without a prior get_pitch_log lookup.
+    // Recommended placement_status values: replied | declined | blocked | placed | no_response | unknown.
+    if (!id) {
+      const playlistId = String(body.playlist_id ?? body.target_id ?? "").trim();
+      if (!playlistId) {
+        return { status: 400, data: { error: "pitch_log_id (or playlist_id) required" } };
+      }
+      let lookup = sb.from("pitch_log").select("id").eq("playlist_id", playlistId);
+      const trackName = String(body.track_name ?? "").trim();
+      if (trackName) lookup = lookup.eq("track_name", trackName);
+      const { data: found, error: findErr } = await lookup
+        .order("pitched_at", { ascending: false }).limit(1).maybeSingle();
+      if (findErr) return { status: 500, data: { error: findErr.message } };
+      if (!found?.id) {
+        return { status: 404, data: { error: "no_pitch_log_row", playlist_id: playlistId, track_name: trackName || null } };
+      }
+      id = found.id as string;
+    }
     const patch: Record<string, unknown> = {};
     if (typeof body.reply_received === "boolean") patch.reply_received = body.reply_received;
     if (typeof body.placed === "boolean") patch.placed = body.placed;

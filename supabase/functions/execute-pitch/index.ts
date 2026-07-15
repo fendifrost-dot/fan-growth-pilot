@@ -71,9 +71,14 @@ function pitchLogRow(
     response_notes?: string;
     pitched_at?: string;
     resend_message_id?: string | null;
+    subject?: string | null;
+    email_body?: string | null;
+    sent_at?: string | null;
   } = {},
 ) {
-  return {
+  // Only attach subject/email_body/sent_at when explicitly provided so error rows keep
+  // the pitch_log column defaults (sent_at DEFAULT now()) instead of being nulled out.
+  const row: Record<string, unknown> = {
     playlist_id: playlistId,
     track_name: trackName,
     curator_email: curatorEmail,
@@ -84,6 +89,10 @@ function pitchLogRow(
     response_notes: extra.response_notes ?? null,
     resend_message_id: extra.resend_message_id ?? null,
   };
+  if (extra.subject !== undefined) row.subject = extra.subject;
+  if (extra.email_body !== undefined) row.email_body = extra.email_body;
+  if (extra.sent_at !== undefined) row.sent_at = extra.sent_at;
+  return row;
 }
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
@@ -259,6 +268,11 @@ async function handleEmailPitch(
     .insert(pitchLogRow(playlistId, trackName, email, method, "sent", {
       cooldown_until: cooldownIso,
       resend_message_id: resendMessageId,
+      // Record what actually went out — historically these were left NULL, so sent
+      // pitches had no recoverable subject/body for audit or reply-matching.
+      subject,
+      email_body: bodyHtml,
+      sent_at: new Date().toISOString(),
     }))
     .select("id")
     .single();

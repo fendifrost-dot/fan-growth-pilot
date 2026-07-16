@@ -13,6 +13,7 @@ import {
 } from "../_shared/curator-filters.ts";
 import {
   buildWhyItFits,
+  isSweepLane,
   laneRegexBoost,
   loadLanesConfig,
   rowMatchesLane,
@@ -27,8 +28,8 @@ import {
 } from "../_shared/spotify-scrape.ts";
 import { firecrawlSearch } from "../_shared/firecrawl.ts";
 import {
+  buildBalancedSweepQueries,
   buildDiscoveryQueries,
-  buildSweepQueries,
   computeRotation,
   dedupeStubs,
   extractPlaylistIdsFromText,
@@ -44,6 +45,8 @@ import {
   computeBotRisk,
   enrichmentOutcome,
   isClassifierStale,
+  laneForSweep,
+  type SweepGenre,
   SWEEP_SOURCE,
 } from "../_shared/playlist-sweep.ts";
 
@@ -84,8 +87,20 @@ const RECENTLY_PITCHED_PENALTY = 1000;
 // successive sweeps cover the rest). DETAIL_CAP_SWEEP bounds the follow-up detail
 // scrapes. Both sized to stay inside SCRAPE_BUDGET_MS at SCRAPE_CONCURRENCY without
 // tripping Firecrawl rate limits — widen only if you also raise the budget.
-const SWEEP_QUERY_CAP = 24;
+// Widened from 24 → 40. The balanced builder (buildBalancedSweepQueries) now packs
+// far more DISTINCT subgenres per run — one modifier pass covers every subgenre —
+// and splits the budget rap/house, so a bigger cap buys real breadth instead of a
+// deeper orbit of one subgenre. 40 queries × 1 web-search each stays inside the
+// SEARCH half of SCRAPE_BUDGET_MS at SCRAPE_CONCURRENCY; the deadline guard backstops.
+const SWEEP_QUERY_CAP = 40;
 const DETAIL_CAP_SWEEP = 24;
+// Extra fresh stubs a sweep persists as `enriched:false` pending rows BEYOND the
+// enrichment batch (DETAIL_CAP_SWEEP). Discovery now surfaces more ids than one run
+// can enrich; instead of dropping the overflow, we bank it so the library — the
+// BUFFER Fendi wants far larger than his daily sends — grows every run and the
+// backlog drains via loadUnenrichedSweepRows on later runs. Bounded so a single run
+// can't balloon the pending set.
+const PERSIST_STUB_CAP = 60;
 // Fraction of SCRAPE_BUDGET_MS reserved for the SEARCH phase; the remainder is
 // guaranteed to the ENRICHMENT (detail-scrape) phase. Without this split a wide
 // sweep's 24-query × 2-channel search consumed the whole window, so the detail
@@ -111,7 +126,7 @@ const RECLASSIFY_CAP_SWEEP = 200;
 // a client-rendered SPA that returns no crawlable playlist anchors, so discovery
 // leans on this web-search channel (same one placement-discovery uses) to surface
 // playlist ids from third-party pages.
-const SEARCH_HITS_PER_QUERY = 8;
+const SEARCH_HITS_PER_QUERY = 10;
 // Channel A — the direct scrape of open.spotify.com/search/<q>/playlists — returns 0
 // on EVERY run (it's a client-rendered SPA with no crawlable playlist anchors), so it
 // is disabled by default and discovery leans entirely on the web-search channel. Not
@@ -165,6 +180,14 @@ type SweepFunnel = DiscoveryFunnel & {
    * older classifier build (root cause #1). */
   reclassified_count: number;
   reclassified_ok: number;
+  /** Honest write accounting. `new_created` = rows that TRULY landed this run
+   * (reconciled against created_at), the number `new_this_run` reports. `upsert_errors`
+   * = per-row upsert failures (previously swallowed) — the gap between the pre-write
+   * candidate count and rows actually created. `stubs_persisted` = overflow fresh
+   * stubs banked as pending rows beyond the enrichment batch (buffer growth). */
+  new_created: number;
+  upsert_errors: number;
+  stubs_persisted: number;
 };
 
 function sanitizeWhyItFits(raw: string | null): string | null {
@@ -225,6 +248,9 @@ type DiscoveredPlaylist = {
   bot_risk?: number | null;
   category?: string;
   category_confidence?: number;
+  // Coarse rap/house genre from the classifier — drives the sweep-lane stamp
+  // (laneForSweep) so a sweep row lands in a countable rap/house lane.
+  category_genre?: SweepGenre;
   // Short note on what matched (or why it stayed neutral/uncategorized) — persisted
   // to research_context so a misclassification is debuggable from the row alone.
   category_reason?: string;
@@ -656,11 +682,11 @@ async function reclassifySweepRows(
   deadline: number,
 ): Promise<{ reclassified_count: number; reclassified_ok: number }> {
   const curV = String(CLASSIFIER_VERSION);
-  let rows: Array<{ playlist_id: string; playlist_name: string | null; research_context: Record<string, unknown> | null }> = [];
+  let rows: Array<{ playlist_id: string; playlist_name: string | null; lane: string | null; research_context: Record<string, unknown> | null }> = [];
   try {
     const { data, error } = await supabase
       .from("playlist_targets")
-      .select("playlist_id, playlist_name, research_context")
+      .select("playlist_id, playlist_name, lane, research_context")
       .eq("research_context->>source", SWEEP_SOURCE)
       // Never re-classify a terminally-dead row (no real metadata to classify).
       .or("research_context->>enrich_status.is.null,research_context->>enrich_status.neq.dead")
@@ -708,11 +734,22 @@ async function reclassifySweepRows(
         category: feel.category,
         category_confidence: feel.confidence,
         category_reason: feel.reason,
+        category_genre: feel.genre,
         classifier_version: CLASSIFIER_VERSION,
       };
+      // Back-fill the lane too: this is what turns the ~100 NULL-lane sweep rows
+      // (ingested before the sweep stamped lanes) into countable rap/house lanes.
+      // Only override the lane on sweep rows whose current lane is empty or is itself
+      // a sweep lane — never clobber a hand-set/config lane. Null genre → leave unlaned.
+      const derivedLane = laneForSweep(feel.category, feel.genre);
+      const curLane = String((r as { lane?: string | null }).lane ?? "").trim();
+      const update: Record<string, unknown> = { research_context: nextRc };
+      if (derivedLane && derivedLane !== curLane && (curLane === "" || isSweepLane(curLane))) {
+        update.lane = derivedLane;
+      }
       const { error } = await supabase
         .from("playlist_targets")
-        .update({ research_context: nextRc })
+        .update(update)
         .eq("playlist_id", r.playlist_id);
       if (error) {
         console.error("[playlist-research] reclassify update", r.playlist_id, error.message);
@@ -743,6 +780,27 @@ async function countLaneDiscovered(supabase: SupabaseClient, lane: string): Prom
     return count ?? 0;
   } catch (e) {
     console.error("[playlist-research] countLaneDiscovered failed:", e instanceof Error ? e.message : e);
+    return 0;
+  }
+}
+
+/** Count of rows already ingested by the mass sweep — used as the sweep's rotation
+ * seed (the sweep runs lane="", so countLaneDiscovered returns 0 and same-day re-runs
+ * would otherwise recycle the identical query set). As the library grows, the window
+ * advances and each run surfaces fresh curators. */
+async function countSweepDiscovered(supabase: SupabaseClient): Promise<number> {
+  try {
+    const { count, error } = await supabase
+      .from("playlist_targets")
+      .select("playlist_id", { count: "exact", head: true })
+      .eq("research_context->>source", SWEEP_SOURCE);
+    if (error) {
+      console.error("[playlist-research] countSweepDiscovered:", error.message);
+      return 0;
+    }
+    return count ?? 0;
+  } catch (e) {
+    console.error("[playlist-research] countSweepDiscovered failed:", e instanceof Error ? e.message : e);
     return 0;
   }
 }
@@ -876,10 +934,12 @@ async function filterDiscoveryCandidates(
       pl.category = feel.category;
       pl.category_confidence = feel.confidence;
       pl.category_reason = feel.reason;
+      pl.category_genre = feel.genre;
     } else {
       pl.category = "uncategorized";
       pl.category_confidence = 0;
       pl.category_reason = "enrichment pending";
+      pl.category_genre = null;
     }
 
     // Only enriched rows can be excluded as high-risk; a pending (null) score never
@@ -902,10 +962,14 @@ async function upsertLiveResults(
   references: string[],
   laneRe: RegExp | null,
   source = "spotify_web",
-): Promise<{ newIds: string[] }> {
-  // Net-new detection: which of these playlist_ids are not already rows? This is
-  // the verifiable "new this run" signal — computed once, before the upserts that
-  // would otherwise make every id look pre-existing.
+  runStartIso?: string,
+): Promise<{ newIds: string[]; insertedIds: string[]; upsertErrors: number }> {
+  const isSweep = source === SWEEP_SOURCE;
+  // Net-new detection: which of these playlist_ids are not already rows? Computed
+  // before the upserts (which would otherwise make every id look pre-existing). This
+  // is a CANDIDATE count — reconciled against actual inserts below so the reported
+  // "new this run" can never drift from the rows that truly landed (root-cause fix
+  // for the 7-reported-vs-4-created gap).
   const ids = items.map((p) => p.playlist_id);
   const existingSet = new Set<string>();
   if (ids.length) {
@@ -916,6 +980,7 @@ async function upsertLiveResults(
     for (const r of existing ?? []) existingSet.add((r as { playlist_id: string }).playlist_id);
   }
   const newIds = ids.filter((id) => !existingSet.has(id));
+  let upsertErrors = 0;
 
   // Per-row upsert (preserves the conditional-lane semantics — a batch upsert
   // would null out `lane` on re-discovered rows), but run concurrently.
@@ -943,6 +1008,14 @@ async function upsertLiveResults(
       is_active: null,
     };
     const tagLane = rowMatchesLane(stub, lane, laneRe, references);
+    // Sweep rows carry no run-lane (the sweep is genre-seeded, lane=""), so derive a
+    // working rap/house lane from the classifier's genre. This is what makes rap a
+    // real, countable lane instead of leaving every sweep row lane=NULL. Only stamp
+    // for genuinely-classified (enriched) rows — a pending stub has no genre yet.
+    const sweepLane = isSweep && pl.enriched === true
+      ? laneForSweep((pl.category ?? "uncategorized") as Parameters<typeof laneForSweep>[0], pl.category_genre ?? null)
+      : null;
+    const rowLane = (tagLane && lane) ? lane : sweepLane;
     const row = {
       playlist_id: pl.playlist_id,
       platform: "spotify",
@@ -975,6 +1048,9 @@ async function upsertLiveResults(
         category: pl.category ?? "uncategorized",
         category_confidence: pl.category_confidence ?? 0,
         category_reason: pl.category_reason ?? null,
+        // Coarse rap/house genre + the derived sweep lane — persisted so the lane is
+        // auditable and the re-classify pass can re-derive it without re-scraping.
+        category_genre: pl.category_genre ?? null,
         // Classifier version stamp — only for rows actually classified (enriched).
         // Pending rows carry null so the re-classify pass recognizes them as needing
         // classification once enriched. Stale (< CLASSIFIER_VERSION) or null on an
@@ -997,16 +1073,41 @@ async function upsertLiveResults(
       submission_method: "email",
       submission_url: `https://open.spotify.com/playlist/${pl.id}`,
       is_active: true,
-      ...(tagLane && lane ? { lane } : {}),
+      ...(rowLane ? { lane: rowLane } : {}),
     };
     const { error } = await supabase.from("playlist_targets").upsert(row, {
       onConflict: "playlist_id",
     });
-    if (error) console.error("upsert live", pl.playlist_id, error.message);
+    if (error) {
+      upsertErrors++;
+      console.error("upsert live", pl.playlist_id, error.message);
+    }
     return null;
   });
 
-  return { newIds };
+  // Reconcile the candidate `newIds` against what actually landed: re-read created_at
+  // for the candidates and keep only rows whose row was created during THIS run. A
+  // candidate that failed to upsert (error) or silently resolved to an UPDATE of a
+  // pre-existing row never gets a this-run created_at, so it's correctly excluded.
+  // Without a run start we fall back to the candidate list (legacy callers).
+  let insertedIds = newIds;
+  if (runStartIso && newIds.length) {
+    const { data: created } = await supabase
+      .from("playlist_targets")
+      .select("playlist_id, created_at")
+      .in("playlist_id", newIds);
+    const landed = new Set(
+      (created ?? [])
+        .filter((r) => {
+          const ts = (r as { created_at?: string | null }).created_at;
+          return typeof ts === "string" && ts >= runStartIso;
+        })
+        .map((r) => (r as { playlist_id: string }).playlist_id),
+    );
+    insertedIds = newIds.filter((id) => landed.has(id));
+  }
+
+  return { newIds, insertedIds, upsertErrors };
 }
 
 export async function mergeCatalogAndLive(
@@ -1034,25 +1135,31 @@ export async function mergeCatalogAndLive(
   // per-lane discovered count (rotation seed) instead of awaiting them in series.
   // The old `findPlaylistOpportunities(...)` pre-query here was discarded entirely
   // (its results are recomputed by the merge query below), so it's dropped.
-  const [lanesConfig, excludeIds, laneDiscoveredCount] = await Promise.all([
+  const [lanesConfig, excludeIds, laneDiscoveredCount, sweepDiscoveredCount] = await Promise.all([
     loadLanesConfig(supabase),
     recentlyPitchedIds(supabase),
     countLaneDiscovered(supabase, lane),
+    sweep ? countSweepDiscovered(supabase) : Promise.resolve(0),
   ]);
   const laneRe = lane ? laneRegexBoost(lanesConfig, lane) : null;
   const pitchAngle = lane ? (lanesConfig[lane]?.pitch_angle ?? "") : "";
+  const runStartIso = new Date(start).toISOString();
 
-  // Rotation advances with how many playlists this lane has already yielded, so a
-  // second run the same day shifts the seed window forward and finds fresh curators
-  // instead of repeating the (already-deduped) query set.
-  const rotation = computeRotation(start, laneDiscoveredCount);
+  // Rotation advances with how many playlists this lane/sweep has already yielded, so
+  // a second run the same day shifts the seed window forward and finds fresh curators
+  // instead of repeating the (already-deduped) query set. The sweep runs lane="", so
+  // it seeds off the total sweep-discovered count rather than a per-lane count.
+  const rotation = computeRotation(start, sweep ? sweepDiscoveredCount : laneDiscoveredCount);
 
-  // Mass sweep: replace lane/reference queries with the full rap + house genre ×
-  // modifier cross-product (rotated per run). All other machinery — filtering,
-  // de-bot scoring, dedupe, upsert — is shared with normal discovery.
+  // Mass sweep: replace lane/reference queries with a BALANCED rap+house genre ×
+  // modifier set. buildBalancedSweepQueries splits the budget rap-led and interleaves
+  // the two genres so every run covers rap AND house (no more house-only drift) and
+  // spans many subgenres per run (no more orbiting one). All other machinery —
+  // filtering, de-bot scoring, dedupe, upsert — is shared with normal discovery.
   const sweepQueries = sweep
-    ? buildSweepQueries(
-      [...RAP_SUBGENRES, ...HOUSE_SUBGENRES],
+    ? buildBalancedSweepQueries(
+      RAP_SUBGENRES,
+      HOUSE_SUBGENRES,
       SWEEP_MODIFIERS,
       SWEEP_QUERY_CAP,
       rotation,
@@ -1114,6 +1221,9 @@ export async function mergeCatalogAndLive(
   };
   let live: DiscoveredPlaylist[] = [];
   let newIds: string[] = [];
+  let insertedIds: string[] = [];
+  let upsertErrors = 0;
+  const ingestSource = sweep ? SWEEP_SOURCE : "spotify_web";
   if (batch.length) {
     // Filtering + bot-risk + feel run AFTER enrichment, so they see real metadata
     // (pending rows score null / stay uncategorized rather than accruing false flags).
@@ -1126,9 +1236,33 @@ export async function mergeCatalogAndLive(
     discovery_skips.high_bot_risk = filtered.skips.high_bot_risk;
     live = filtered.items;
     if (live.length) {
-      ({ newIds } = await upsertLiveResults(
-        supabase, live, lane, references, laneRe, sweep ? SWEEP_SOURCE : "spotify_web",
-      ));
+      const r = await upsertLiveResults(
+        supabase, live, lane, references, laneRe, ingestSource, runStartIso,
+      );
+      newIds = r.newIds;
+      insertedIds = r.insertedIds;
+      upsertErrors += r.upsertErrors;
+    }
+  }
+
+  // Buffer growth — bank the OVERFLOW fresh stubs discovery surfaced beyond the
+  // enrichment batch as `enriched:false` pending rows. Without this the run drops
+  // every stub past DETAIL_CAP_SWEEP, capping library growth at enrichment
+  // throughput; banking them lets the sweep find FAR more than a day's sends and
+  // drains the backlog on later runs (loadUnenrichedSweepRows). Quality gates are
+  // unaffected — these rows are scored/filtered when they enrich, not now.
+  let stubs_persisted = 0;
+  if (sweep) {
+    const overflow = freshStubs
+      .filter((s) => !seenBatch.has(s.playlist_id)) // not in the enrichment batch
+      .slice(0, PERSIST_STUB_CAP);
+    if (overflow.length) {
+      const r = await upsertLiveResults(
+        supabase, overflow, lane, references, laneRe, ingestSource, runStartIso,
+      );
+      stubs_persisted = r.insertedIds.length;
+      insertedIds = insertedIds.concat(r.insertedIds);
+      upsertErrors += r.upsertErrors;
     }
   }
   // Root-cause-#1 — re-classify already-enriched sweep rows still on an older
@@ -1141,7 +1275,10 @@ export async function mergeCatalogAndLive(
     ? await reclassifySweepRows(supabase, RECLASSIFY_CAP_SWEEP, reclassifyDeadline)
     : { reclassified_count: 0, reclassified_ok: 0 };
 
-  const newIdSet = new Set(newIds);
+  // `new_this_run` flags rows that TRULY landed this run (created_at reconciled),
+  // not the optimistic pre-write candidate set — the fix for reporting 7 when 4
+  // were created. `newIds` (candidates) is kept only for the error delta below.
+  const newIdSet = new Set(insertedIds);
   const funnel: SweepFunnel = {
     ...discoveryFunnel,
     enriched_ok,
@@ -1153,9 +1290,14 @@ export async function mergeCatalogAndLive(
     backfill_dead,
     reclassified_count,
     reclassified_ok,
+    new_created: insertedIds.length,
+    upsert_errors: upsertErrors,
+    stubs_persisted,
   };
   console.log(
-    `[playlist-research] web discovery: ${freshStubs.length} found, ${reenrich.length} re-enrich, ${live.length} ingested, funnel:`,
+    `[playlist-research] web discovery: ${freshStubs.length} found, ${reenrich.length} re-enrich, ` +
+      `${live.length} ingested, ${newIds.length} new-candidates → ${insertedIds.length} created ` +
+      `(${upsertErrors} upsert errors), funnel:`,
     JSON.stringify(funnel),
     "skips:", JSON.stringify(discovery_skips),
     `${Date.now() - start}ms`,
@@ -1239,7 +1381,9 @@ export async function mergeCatalogAndLive(
   return {
     results,
     live_count: live.length,
-    new_count: newIds.length,
+    // Honest: rows that truly landed this run (created_at reconciled), incl. banked
+    // overflow stubs — never the optimistic pre-write candidate count.
+    new_count: insertedIds.length,
     discovery_skips,
     funnel,
   };

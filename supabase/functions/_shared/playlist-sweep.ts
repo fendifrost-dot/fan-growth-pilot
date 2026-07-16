@@ -192,12 +192,19 @@ export type FeelCategory =
   | (typeof NEUTRAL_CATEGORIES)[number]
   | "uncategorized";
 
+export type SweepGenre = "rap" | "house" | null;
+
 export type FeelResult = {
   category: FeelCategory;
   confidence: number;
   /** Short, human-readable note on what matched — for debugging misclassifications
    * from the response body / row without re-running the classifier. */
   reason: string;
+  /** Coarse rap-vs-house genre, derived from genre cues + the committed mood +
+   * artist names. This is what distinguishes a rap record from a house one (the
+   * signal the `lane` field previously lacked) and what `laneForSweep` maps to a
+   * working rap/house lane. `null` only when there's genuinely no genre signal. */
+  genre: SweepGenre;
 };
 
 // Mood vocabulary, split by strength. `strong` cues are genre/subgenre or
@@ -341,8 +348,11 @@ const WEAK_MOOD_CUES = new Set(["slow", "smooth", "vibe", "vibes", "cruise"]);
  *   v1 → original lexicon.
  *   v2 → genre subtokens (deep/tech house, edm, …) removed from mood lexicons and
  *        routed to house_general; weak-modifier guard added; "top 50" house cue.
+ *   v3 → classifier now emits a coarse rap/house `genre` (see FeelResult.genre)
+ *        used to stamp a working lane on sweep rows (laneForSweep). Bumped so the
+ *        re-classify pass revisits every prior sweep row and back-fills its lane.
  */
-export const CLASSIFIER_VERSION = 2;
+export const CLASSIFIER_VERSION = 3;
 
 /**
  * True when a row's stored classifier version is older than — or missing versus —
@@ -420,7 +430,13 @@ export function classifyFeel(
     { text: trackText, w: ZONE_WEIGHTS.tracks },
   ];
   const allText = `${nameText} ${descText} ${trackText}`;
-  if (!allText.trim()) return { category: "uncategorized", confidence: 0, reason: "no signal" };
+  if (!allText.trim()) return { category: "uncategorized", confidence: 0, reason: "no signal", genre: null };
+
+  // Coarse genre cues, computed once and reused by every return path (and by the
+  // neutral-bucket branch below). This is the rap-vs-house signal the lane field
+  // was missing — see resolveSweepGenre + laneForSweep.
+  const isRapGenre = RAP_GENRE_CUES.some((c) => hasTerm(allText, c));
+  const isHouseGenre = HOUSE_GENRE_CUES.some((c) => hasTerm(allText, c));
 
   const scores: Record<MoodCategory, number> = {
     hype: 0, gym_workout: 0, party_house: 0, late_night_chill: 0, introspective: 0, feel_good: 0,
@@ -467,29 +483,86 @@ export function classifyFeel(
   const hasDefiningCue = bestMatches.some((t) => !WEAK_MOOD_CUES.has(t));
   if (bestScore >= MIN_MOOD_SCORE && share >= FEEL_MIN_CONFIDENCE && hasDefiningCue) {
     const terms = bestMatches.slice(0, 4).join(", ");
-    return { category: best, confidence: Number(share.toFixed(3)), reason: `${best}: ${terms}` };
+    return {
+      category: best,
+      confidence: Number(share.toFixed(3)),
+      reason: `${best}: ${terms}`,
+      genre: resolveSweepGenre(isRapGenre, isHouseGenre, best),
+    };
   }
 
   // 2) No evidenced mood, but the genre is clear → neutral bucket, not a guess.
-  const isRap = RAP_GENRE_CUES.some((c) => hasTerm(allText, c));
-  const isHouse = HOUSE_GENRE_CUES.some((c) => hasTerm(allText, c));
-  if (isRap || isHouse) {
+  if (isRapGenre || isHouseGenre) {
     // Sweep is rap-led; on a tie (or rap-only) default to rap_general.
-    const rap = isRap || !isHouse;
+    const rap = isRapGenre || !isHouseGenre;
     const category: FeelCategory = rap ? "rap_general" : "house_general";
     const weak = bestScore > 0 ? ` (weak ${best} ${bestScore})` : "";
     return {
       category,
       confidence: NEUTRAL_CONFIDENCE,
       reason: `${rap ? "rap" : "house"} genre, no strong mood${weak}`,
+      genre: rap ? "rap" : "house",
     };
   }
 
   // 3) Genuinely no usable signal (or only sub-threshold noise with no genre).
   if (bestScore > 0) {
-    return { category: "uncategorized", confidence: Number(share.toFixed(3)), reason: "weak, mixed signal" };
+    return {
+      category: "uncategorized",
+      confidence: Number(share.toFixed(3)),
+      reason: "weak, mixed signal",
+      genre: resolveSweepGenre(isRapGenre, isHouseGenre, best),
+    };
   }
-  return { category: "uncategorized", confidence: 0, reason: "no signal" };
+  return { category: "uncategorized", confidence: 0, reason: "no signal", genre: null };
+}
+
+/**
+ * Coarse rap-vs-house genre for a classified row. Combines explicit genre cues with
+ * the committed mood — several moods are genre-specific in this lexicon (hype =
+ * trap/drill/rage, introspective = boom-bap/conscious → rap; party_house → house) —
+ * so a row that named no genre token but landed on a rap mood still resolves to rap.
+ * Rap-led: an ambiguous row carrying BOTH signals defaults to rap. `null` only when
+ * there is no genre signal at all (a truly ambiguous mood like gym_workout with no
+ * genre cue), which `laneForSweep` leaves unlaned rather than guessing.
+ */
+export function resolveSweepGenre(
+  isRapCue: boolean,
+  isHouseCue: boolean,
+  category: FeelCategory,
+): SweepGenre {
+  const rapMood = category === "hype" || category === "introspective" || category === "rap_general";
+  const houseMood = category === "party_house" || category === "house_general";
+  const rap = isRapCue || rapMood;
+  const house = isHouseCue || houseMood;
+  if (rap && !house) return "rap";
+  if (house && !rap) return "house";
+  if (rap && house) return "rap"; // rap-led tiebreak
+  return null;
+}
+
+/**
+ * Canonical sweep-lane slug for a classified row, or null when the genre is
+ * unknown (leave it unlaned rather than guess). These slugs are the working rap and
+ * house lanes the mass sweep stamps so the library is COUNTABLE by lane even without
+ * an `artist_config.lanes` entry — the fix for "the lane field can't distinguish a
+ * rap record from a house one." Kept coarse but catalogue-aware: hype→trap/club rap,
+ * introspective→conscious rap, everything else rap→rap_general; house splits
+ * party→club vs the neutral house_general. `playlist-lanes.ts` (SWEEP_LANE_GENRE)
+ * teaches reconcile/rowMatchesLane about these slugs so they aren't mistaken for
+ * mis-laned rows.
+ */
+export function laneForSweep(category: FeelCategory, genre: SweepGenre): string | null {
+  if (genre === "rap") {
+    if (category === "hype") return "rap_trap_hype";
+    if (category === "introspective") return "rap_conscious";
+    return "rap_general";
+  }
+  if (genre === "house") {
+    if (category === "party_house") return "house_club";
+    return "house_general";
+  }
+  return null;
 }
 
 /** research_context.source tag for rows ingested by this sweep. */

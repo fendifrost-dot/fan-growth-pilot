@@ -48,6 +48,45 @@ export function scoreLaneBoost(
 
 export const MIN_LANE_BOOST_FOR_TAG = 8;
 
+// ---------------------------------------------------------------------------
+// Sweep lanes — genre-derived lanes the mass sweep stamps (see
+// playlist-sweep.ts `laneForSweep`). They intentionally live OUTSIDE
+// artist_config.lanes: the sweep runs with no lane param and no reference set, so
+// the config-driven matching below (regex_boost + references) can't recognize
+// them. Without this table, reconcile_lane_targets would see a sweep-laned row,
+// find no config match, and deactivate it as "lane_mismatch" — nuking the entire
+// rap/house buffer. These helpers give reconcile/rowMatchesLane a config-free way
+// to validate a sweep lane against the row's own genre signal instead.
+// ---------------------------------------------------------------------------
+export const SWEEP_LANE_GENRE: Record<string, "rap" | "house"> = {
+  rap_trap_hype: "rap",
+  rap_conscious: "rap",
+  rap_general: "rap",
+  house_club: "house",
+  house_general: "house",
+};
+
+export function isSweepLane(lane: string): boolean {
+  return Object.prototype.hasOwnProperty.call(SWEEP_LANE_GENRE, lane);
+}
+
+// Compact genre detectors for reconcile — read the row's own text, not config.
+const RAP_LANE_RE =
+  /\b(rap|hip ?hop|hiphop|trap|drill|boom ?bap|phonk|plugg|grime|g-?funk|gangsta|gangster|conscious|cypher|freestyle)\b/i;
+const HOUSE_LANE_RE =
+  /\b(house|techno|edm|electronic|disco|garage|amapiano|nu ?disco|balearic)\b/i;
+
+/** Rap/house genre of a text blob, or null when neither (or both) clearly present —
+ * "no contradiction" rather than a forced guess. Used only to validate an already
+ * assigned sweep lane, never to assign one. */
+export function sweepLaneTextGenre(text: string): "rap" | "house" | null {
+  const rap = RAP_LANE_RE.test(text);
+  const house = HOUSE_LANE_RE.test(text);
+  if (rap && !house) return "rap";
+  if (house && !rap) return "house";
+  return null;
+}
+
 function normalizeTags(raw: unknown): string[] {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw.map((t) => String(t).toLowerCase());
@@ -67,6 +106,14 @@ export function rowMatchesLane(
   references: string[],
 ): boolean {
   if (!lane) return false;
+  // Sweep lanes are validated by genre, not config refs/regex (which they lack).
+  // Match unless the row's own text clearly names the OPPOSITE genre.
+  if (isSweepLane(lane)) {
+    const want = SWEEP_LANE_GENRE[lane];
+    const text = `${row.playlist_name ?? ""} ${row.curator_name ?? ""} ${normalizeTags(row.vibe_tags).join(" ")}`;
+    const g = sweepLaneTextGenre(text);
+    return g === null || g === want;
+  }
   const laneScore = scoreLaneBoost(row, laneRe, references);
   const nameHay = `${row.playlist_name ?? ""} ${row.curator_name ?? ""}`;
   const refLower = references.map((s) => s.toLowerCase());
@@ -88,9 +135,18 @@ export function isLaneGenreMismatch(
   playlistName?: string | null,
   curatorName?: string | null,
 ): boolean {
+  const hay = `${playlistName ?? ""} ${curatorName ?? ""}`;
+  // Sweep lanes: a mismatch is a name/curator that clearly names the OTHER genre
+  // (e.g. a "house" title stamped rap_general). Ambiguous/no-signal is NOT a
+  // mismatch — the lane was assigned from richer evidence (tracks/description) at
+  // ingest, so don't second-guess it from the name alone.
+  if (isSweepLane(lane)) {
+    const g = sweepLaneTextGenre(hay);
+    return g !== null && g !== SWEEP_LANE_GENRE[lane];
+  }
   const re = LANE_GENRE_BLOCK[lane];
   if (!re) return false;
-  return re.test(`${playlistName ?? ""} ${curatorName ?? ""}`);
+  return re.test(hay);
 }
 
 export function buildWhyItFits(

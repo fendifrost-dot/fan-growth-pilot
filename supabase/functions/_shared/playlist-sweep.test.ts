@@ -7,6 +7,8 @@ import {
   enrichmentOutcome,
   FEEL_MIN_CONFIDENCE,
   isClassifierStale,
+  laneForSweep,
+  resolveSweepGenre,
 } from "./playlist-sweep.ts";
 
 // --- bot_risk: known-bot fixtures ------------------------------------------
@@ -321,4 +323,61 @@ Deno.test("enrichmentOutcome: real name recovered → enriched, counts as backfi
   const v = enrichmentOutcome(true, true);
   assertEquals(v.enriched, true);
   assertEquals(v.dead, false);
+});
+
+// --- genre + sweep-lane derivation (Problem 2: rap must be a real lane) -----
+
+Deno.test("classifyFeel: a rap record resolves genre=rap (not house)", () => {
+  const trap = classifyFeel("Trap Bangers 2026", "hardest trap and drill", [], []);
+  assertEquals(trap.genre, "rap");
+  const conscious = classifyFeel("Conscious Boom Bap", "lyrical real hip hop", [], []);
+  assertEquals(conscious.genre, "rap");
+});
+
+Deno.test("classifyFeel: a house record resolves genre=house (not rap)", () => {
+  const dh = classifyFeel("DEEP HOUSE - TOP 50", "", [], []);
+  assertEquals(dh.genre, "house");
+  const club = classifyFeel("Club House Party", "peak time rave dancefloor", [], []);
+  assertEquals(club.genre, "house");
+});
+
+Deno.test("classifyFeel: no genre signal → genre=null (left unlaned, never guessed)", () => {
+  assertEquals(classifyFeel("Playlist 42", "", [], []).genre, null);
+  // A pure gym mood with no genre token is genuinely ambiguous.
+  assertEquals(classifyFeel("Workout Pump", "cardio hiit sweat", [], []).genre, null);
+});
+
+Deno.test("resolveSweepGenre: rap-led tiebreak when both signals present", () => {
+  assertEquals(resolveSweepGenre(true, true, "uncategorized"), "rap");
+  assertEquals(resolveSweepGenre(false, false, "hype"), "rap"); // rap mood alone
+  assertEquals(resolveSweepGenre(false, false, "party_house"), "house"); // house mood alone
+  assertEquals(resolveSweepGenre(false, false, "gym_workout"), null); // ambiguous mood
+});
+
+Deno.test("laneForSweep: rap moods map to distinct, working rap lanes", () => {
+  assertEquals(laneForSweep("hype", "rap"), "rap_trap_hype");
+  assertEquals(laneForSweep("introspective", "rap"), "rap_conscious");
+  assertEquals(laneForSweep("rap_general", "rap"), "rap_general");
+  assertEquals(laneForSweep("feel_good", "rap"), "rap_general"); // any other rap → general
+});
+
+Deno.test("laneForSweep: house maps to house lanes; null genre stays unlaned", () => {
+  assertEquals(laneForSweep("party_house", "house"), "house_club");
+  assertEquals(laneForSweep("house_general", "house"), "house_general");
+  assertEquals(laneForSweep("late_night_chill", "house"), "house_general");
+  assertEquals(laneForSweep("gym_workout", null), null);
+});
+
+Deno.test("end-to-end: a rap playlist lands in a rap lane, a house one in a house lane", () => {
+  const rap = classifyFeel("RAP MUSIC 2026 Best Rap/Trap/Hits", "", [], []);
+  const rapLane = laneForSweep(rap.category, rap.genre);
+  assertEquals(rapLane?.startsWith("rap_"), true);
+
+  const house = classifyFeel("Soulful Deep House Grooves", "", [], []);
+  const houseLane = laneForSweep(house.category, house.genre);
+  assertEquals(houseLane?.startsWith("house_"), true);
+});
+
+Deno.test("CLASSIFIER_VERSION bumped to 3 (genre-aware) so prior sweep rows re-classify", () => {
+  assertEquals(CLASSIFIER_VERSION >= 3, true);
 });

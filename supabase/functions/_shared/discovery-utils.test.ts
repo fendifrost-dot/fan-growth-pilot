@@ -1,10 +1,14 @@
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
+  buildBalancedSweepQueries,
   buildDiscoveryQueries,
   computeRotation,
   dedupeStubs,
   extractPlaylistIdsFromText,
+  HOUSE_SUBGENRES,
   mapPool,
+  RAP_SUBGENRES,
+  SWEEP_MODIFIERS,
 } from "./discovery-utils.ts";
 
 Deno.test("mapPool preserves input order regardless of completion order", async () => {
@@ -127,4 +131,52 @@ Deno.test("buildDiscoveryQueries works with only a lane (no references)", () => 
   const q = buildDiscoveryQueries([], "indie_pop", 5, 0);
   assertEquals(q.length, 5);
   assertEquals(q.every((s) => s.startsWith("indie pop ")), true);
+});
+
+// --- buildBalancedSweepQueries (Problems 1 + 2: breadth + lane balance) -----
+
+const rapGenre = (q: string) =>
+  RAP_SUBGENRES.some((g) => q.startsWith(g + " "));
+const houseGenre = (q: string) =>
+  HOUSE_SUBGENRES.some((g) => q.startsWith(g + " "));
+
+Deno.test("buildBalancedSweepQueries respects the cap and dedupes", () => {
+  const qs = buildBalancedSweepQueries(RAP_SUBGENRES, HOUSE_SUBGENRES, SWEEP_MODIFIERS, 40, 0);
+  assertEquals(qs.length <= 40, true);
+  assertEquals(new Set(qs).size, qs.length, "no duplicate queries");
+});
+
+Deno.test("buildBalancedSweepQueries always covers BOTH rap and house (no genre collapse)", () => {
+  // Whatever the rotation, a run must never be single-genre — this is the fix for
+  // the sweep drifting house-heavy for three runs straight.
+  for (const rot of [0, 1, 3, 7, 12, 25]) {
+    const qs = buildBalancedSweepQueries(RAP_SUBGENRES, HOUSE_SUBGENRES, SWEEP_MODIFIERS, 40, rot);
+    assertEquals(qs.some(rapGenre), true, `rotation ${rot} has no rap queries`);
+    assertEquals(qs.some(houseGenre), true, `rotation ${rot} has no house queries`);
+  }
+});
+
+Deno.test("buildBalancedSweepQueries is rap-led (rap gets the larger share)", () => {
+  const qs = buildBalancedSweepQueries(RAP_SUBGENRES, HOUSE_SUBGENRES, SWEEP_MODIFIERS, 40, 0, 0.55);
+  const rap = qs.filter(rapGenre).length;
+  const house = qs.filter(houseGenre).length;
+  assertEquals(rap >= house, true, `expected rap-led, got rap=${rap} house=${house}`);
+});
+
+Deno.test("buildBalancedSweepQueries spans MANY subgenres per run (breadth, not one orbit)", () => {
+  // The old subgenre-outer builder reached ~1.3 subgenres at cap 24. The balanced
+  // builder must probe a wide spread so each run surfaces materially new ground.
+  const qs = buildBalancedSweepQueries(RAP_SUBGENRES, HOUSE_SUBGENRES, SWEEP_MODIFIERS, 40, 0);
+  const subgenres = new Set(qs.map((q) => q.split(" ").slice(0, -1).join(" ")));
+  // The first modifier pass alone covers every subgenre of each side; expect the
+  // run to touch far more than a couple of subgenres.
+  assertEquals(subgenres.size >= 10, true, `expected broad subgenre spread, got ${subgenres.size}`);
+});
+
+Deno.test("buildBalancedSweepQueries rotates the query set across runs", () => {
+  const a = buildBalancedSweepQueries(RAP_SUBGENRES, HOUSE_SUBGENRES, SWEEP_MODIFIERS, 40, 0);
+  const b = buildBalancedSweepQueries(RAP_SUBGENRES, HOUSE_SUBGENRES, SWEEP_MODIFIERS, 40, 5);
+  // Different rotation → a materially different query set (fresh ground next run).
+  const overlap = a.filter((q) => b.includes(q)).length;
+  assertEquals(overlap < a.length, true, "rotation must shift the query window");
 });

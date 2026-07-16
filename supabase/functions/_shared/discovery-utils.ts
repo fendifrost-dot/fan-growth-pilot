@@ -61,17 +61,21 @@ export const REF_MODIFIERS = [
 // a modifier and the cross-product widens. Kept genre-only (no artist refs) so a
 // sweep spans the whole space instead of orbiting one lane's reference set.
 
-/** Rap subgenres — the full spread the sweep should cover. */
+/** Rap subgenres — the full spread the sweep should cover. Deliberately broad and
+ * rap-led (Fendi's catalogue spans house rap, trap, conscious/hard rap, and club
+ * records) so the balanced sweep always has a deep rap bench to interleave from. */
 export const RAP_SUBGENRES = [
   "trap", "drill", "boom bap", "melodic rap", "rage rap", "west coast rap",
-  "southern hip hop", "underground hip hop", "lofi rap", "conscious rap",
-  "hip hop", "rap",
+  "east coast rap", "southern hip hop", "underground hip hop", "lofi rap",
+  "conscious rap", "hard rap", "club rap", "party rap", "gangsta rap", "g-funk",
+  "phonk", "plugg", "hip hop", "rap", "new rap", "hip hop 2026",
 ];
 
 /** House subgenres — the full spread the sweep should cover. */
 export const HOUSE_SUBGENRES = [
   "deep house", "tech house", "afro house", "soulful house", "bass house",
-  "progressive house", "house",
+  "progressive house", "melodic house", "organic house", "disco house",
+  "funky house", "vocal house", "amapiano", "house",
 ];
 
 /** Curator/freshness modifiers for the genre sweep (distinct from lane modifiers,
@@ -79,7 +83,9 @@ export const HOUSE_SUBGENRES = [
 export const SWEEP_MODIFIERS = [
   "playlist", "curator", "submissions", "submit", "best", "fresh", "new",
   "2025", "2026", "weekly", "monthly", "underground", "indie", "rising",
-  "hidden gems", "top", "mix", "essentials", "rotation",
+  "hidden gems", "top", "mix", "essentials", "rotation", "fresh finds",
+  "new music", "spotify playlist", "picks", "on repeat", "roundup", "heat",
+  "submissions open",
 ];
 
 /**
@@ -103,6 +109,71 @@ export function buildSweepQueries(
     for (const m of rotate(modifiers)) out.push(`${g} ${m}`);
   }
   return [...new Set(out)].slice(0, cap);
+}
+
+/**
+ * Build a BALANCED, breadth-first sweep query set.
+ *
+ * The old `buildSweepQueries` emitted the cross-product subgenre-outer
+ * (`for g: for m`) then sliced to `cap`. With ~19 modifiers a `cap` of 24 only
+ * reached ~1.3 subgenres per run, so a single sweep orbited one or two subgenres —
+ * and because the array is subgenre-ordered, whichever region the daily rotation
+ * landed in (house or rap) is ALL a run probed. That is exactly why recent runs
+ * drifted house-heavy and the rap lane went stale (root cause of Problem 2), and
+ * why so many results died at dedupe (the query set kept hitting the same ground —
+ * Problem 1).
+ *
+ * This builder fixes both:
+ *   1. **Modifier-outer, subgenre-inner** (`for m: for g`) so the first pass alone
+ *      probes EVERY subgenre before any modifier repeats — maximal genre spread
+ *      inside the cap instead of 1-2 subgenres.
+ *   2. **Explicit rap/house budget split** (`rapShare`, default rap-led 0.55) built
+ *      independently and then INTERLEAVED, so every run guarantees rap AND house
+ *      coverage — the sweep can no longer collapse into one genre.
+ *
+ * Both the subgenre order and modifier order rotate by `rotation` so successive
+ * runs surface different facets rather than recycling the (already-deduped) set.
+ */
+export function buildBalancedSweepQueries(
+  rapSubgenres: string[],
+  houseSubgenres: string[],
+  modifiers: string[],
+  cap: number,
+  rotation: number,
+  rapShare = 0.55,
+): string[] {
+  const rotate = <T,>(arr: T[]): T[] =>
+    arr.length
+      ? [...arr.slice(rotation % arr.length), ...arr.slice(0, rotation % arr.length)]
+      : arr;
+
+  const buildSide = (subs: string[], budget: number): string[] => {
+    const rs = rotate(subs);
+    const rm = rotate(modifiers);
+    const side: string[] = [];
+    // Modifier-outer / subgenre-inner: one full modifier pass covers all subgenres.
+    for (const m of rm) {
+      for (const g of rs) {
+        if (side.length >= budget) return side;
+        side.push(`${g} ${m}`);
+      }
+    }
+    return side;
+  };
+
+  const rapBudget = Math.max(1, Math.round(cap * rapShare));
+  const houseBudget = Math.max(1, cap - rapBudget);
+  const rapQ = buildSide(rapSubgenres, rapBudget);
+  const houseQ = buildSide(houseSubgenres, houseBudget);
+
+  // Interleave so a truncated run still carries both genres, not a rap-only prefix.
+  const merged: string[] = [];
+  const n = Math.max(rapQ.length, houseQ.length);
+  for (let i = 0; i < n; i++) {
+    if (i < rapQ.length) merged.push(rapQ[i]);
+    if (i < houseQ.length) merged.push(houseQ[i]);
+  }
+  return [...new Set(merged)].slice(0, cap);
 }
 
 /**

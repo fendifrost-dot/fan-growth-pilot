@@ -37,6 +37,19 @@ type PlaylistRow = {
   } | null;
 };
 
+/** The placeholder the SFA CSV importer used to write into featuring_tracks when the
+ * export didn't say which song was added. No longer written (the importer now records
+ * sfa_confirms_placement / sfa_song_name_known instead), but historical rows still
+ * carry it, so it must never be rendered as a song name.
+ * Mirrors SFA_PLACEHOLDER_TRACK in supabase/functions/_shared/placement-match.ts —
+ * duplicated because the edge-function modules are Deno-side and not importable here. */
+const SFA_PLACEHOLDER_TRACK = "(from Spotify for Artists playlist report)";
+
+/** First REAL featuring-track name, or null when we only have the legacy placeholder. */
+function realFeaturingTrack(tracks?: string[]): string | null {
+  return tracks?.find((t) => t?.trim() && t.trim() !== SFA_PLACEHOLDER_TRACK)?.trim() ?? null;
+}
+
 function ContactCell({ row }: { row: PlaylistRow }) {
   const conf = row.contact_confidence;
   const tip = row.last_enriched_at
@@ -711,9 +724,15 @@ const AdminPlaylistTargets: React.FC = () => {
                         {r.research_context.source === "spotify_for_artists_csv" &&
                           r.research_context.sfa_streams != null &&
                           ` · ${r.research_context.sfa_streams} streams`}
-                        {r.research_context.featuring_tracks?.[0] &&
-                          r.research_context.source !== "spotify_for_artists_csv" &&
-                          ` · ${r.research_context.featuring_tracks[0]}`}
+                        {/* Show the real song name whenever we have one — including on
+                            SFA rows, which can now carry a genuine name (imported with
+                            song_name) instead of the old placeholder. Filtered by VALUE
+                            rather than by source: the previous `source !== sfa` guard
+                            existed only to hide the placeholder, and it would now hide
+                            real names too. A row with no real name shows "✓ Placement"
+                            with no track — honestly saying "added, song unknown". */}
+                        {realFeaturingTrack(r.research_context.featuring_tracks) &&
+                          ` · ${realFeaturingTrack(r.research_context.featuring_tracks)}`}
                       </div>
                     )}
                   </td>

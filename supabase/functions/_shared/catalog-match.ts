@@ -1,5 +1,6 @@
 import { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import { loadLanesConfig } from "./playlist-lanes.ts";
+import { featuringTrackNames } from "./placement-match.ts";
 
 export type CatalogTrack = {
   name: string;
@@ -65,7 +66,9 @@ export function pickCatalogTrackForPlacement(
 ): { track: string; reason: string } {
   const list = catalog.length ? catalog : DEFAULT_TRACKS;
   const rc = row.research_context as Record<string, unknown> | null;
-  const featuring = Array.isArray(rc?.featuring_tracks) ? rc!.featuring_tracks.map(String) : [];
+  // Real song names only — the shared helper drops the legacy SFA placeholder, which is
+  // not a track and must never influence which song we pitch.
+  const featuring = featuringTrackNames(row);
   const lane = String(row.lane ?? rc?.discovery_lane ?? "").trim();
   const vibeTags = [
     ...tokenize(String(row.playlist_name ?? "")),

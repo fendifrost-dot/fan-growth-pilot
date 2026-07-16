@@ -8,14 +8,15 @@ import { loadLanesConfig } from "./playlist-lanes.ts";
 import { loadCatalogTracks, pickCatalogTrackForPlacement } from "./catalog-match.ts";
 import { requireMutualForQueue } from "./ig-roster.ts";
 import { buildIgOutreachPackage, nextDmRef } from "./outreach-templates.ts";
+import { featuringTrackNames } from "./placement-match.ts";
 
 export const IG_DM_DAILY_CAP = 10;
 
+/** Real featuring-track names for queue metadata. Delegates to the shared helper so the
+ * legacy SFA placeholder is stripped here too — it is not a song, and recording it as
+ * one makes queued-DM metadata claim a placement nobody can verify. */
 function featuringTracks(row: Record<string, unknown>): string[] {
-  const rc = row.research_context as Record<string, unknown> | null;
-  const raw = rc?.featuring_tracks;
-  if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
-  return [];
+  return featuringTrackNames(row);
 }
 
 /** @deprecated Use buildIgOutreachPackage — kept for callers not yet migrated */

@@ -1,4 +1,5 @@
 import type { IgRosterRow } from "./ig-roster.ts";
+import { featuringTrackNames } from "./placement-match.ts";
 
 export type OutreachIdentity = {
   ig_handle: string;
@@ -54,12 +55,11 @@ export function buildOutreachIdentity(
       mutualDetail = parts.join(" · ") || "Not mutual";
     }
   }
-  const featuring = (() => {
-    const rc = row.research_context as Record<string, unknown> | null;
-    const raw = rc?.featuring_tracks;
-    if (Array.isArray(raw) && raw[0]) return String(raw[0]);
-    return "your pick (see playlist)";
-  })();
+  // Real song names only. featuringTrackNames strips the legacy SFA placeholder, which
+  // would otherwise be interpolated into outreach copy verbatim and send a curator
+  // "featuring (from Spotify for Artists playlist report)". Unknown → the generic
+  // fallback, which is honest and reads fine.
+  const featuring = featuringTrackNames(row)[0] ?? "your pick (see playlist)";
 
   return {
     ig_handle: handle,

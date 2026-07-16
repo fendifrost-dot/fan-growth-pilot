@@ -41,7 +41,13 @@ import {
 import { discoverSpotifyPlacements } from "./spotify-placements.ts";
 import { importSpotifyForArtistsCsv, warmPlacementSourceOrFilter } from "./spotify-for-artists-csv.ts";
 import { isWarmPlacementSource } from "./placement-sources.ts";
-import { placementMatch, compareTargets } from "./placement-match.ts";
+import {
+  placementMatch,
+  compareTargets,
+  featuringTrackNames,
+  normalizeTrackName,
+  SFA_PLACEHOLDER_TRACK,
+} from "./placement-match.ts";
 import {
   buildIgQueueInsert,
   queueIgDm,
@@ -1657,6 +1663,82 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
       },
     };
   }
+  if (action === "backfill_sfa_placeholders") {
+    // One-shot cleanup of the legacy SFA placeholder in research_context.featuring_tracks.
+    //
+    // ~39 placement rows say they feature a track literally named "(from Spotify for
+    // Artists playlist report)". That was never a song: the SFA export confirms that
+    // SOME track of ours was added but not WHICH, and the importer wrote a placeholder
+    // into a field everything else treats as real song data. The importer no longer
+    // writes it (see spotify-for-artists-csv.ts) — this fixes the rows already stored.
+    //
+    // What it does per row: drop the placeholder from featuring_tracks (removing the key
+    // entirely if nothing real remains, so the row never claims "features nothing"), and
+    // stamp the honest flags the importer now writes. The row KEEPS source=
+    // spotify_for_artists_csv, so it still reads as a confirmed placement everywhere
+    // that keys off source (incl. the admin "✓ Placement" badge) — this removes a false
+    // song name, it does not remove a placement.
+    //
+    // It cannot recover the real names: they are not in the CSV. Rows left with no
+    // featuring_tracks are honestly "added, song unknown" — see the deliverable notes.
+    // Idempotent: a row with no placeholder is skipped, so re-running is a no-op.
+    // `dry_run: true` reports what WOULD change without writing.
+    const dryRun = Boolean(body.dry_run);
+    const { data, error } = await sb.from("playlist_targets")
+      .select("playlist_id, research_context")
+      .filter("research_context->>source", "eq", "spotify_for_artists_csv");
+    if (error) return { status: 500, data: { error: error.message } };
+
+    let scanned = 0;
+    let cleaned = 0;
+    let kept_real_name = 0;
+    const cleaned_ids: string[] = [];
+    for (const r of data ?? []) {
+      scanned++;
+      const rc = (r.research_context as Record<string, unknown> | null) ?? {};
+      const raw = Array.isArray(rc.featuring_tracks) ? rc.featuring_tracks : [];
+      const hasPlaceholder = raw.some((t) =>
+        normalizeTrackName(t) === normalizeTrackName(SFA_PLACEHOLDER_TRACK)
+      );
+      if (!hasPlaceholder) continue;
+      // featuringTrackNames is the shared filter — real names only, placeholder dropped.
+      const real = featuringTrackNames({ research_context: rc });
+      const nextRc: Record<string, unknown> = {
+        ...rc,
+        sfa_confirms_placement: true,
+        sfa_song_name_known: real.length > 0,
+      };
+      if (real.length) nextRc.featuring_tracks = real;
+      else delete nextRc.featuring_tracks;
+      if (real.length) kept_real_name++;
+      cleaned_ids.push(r.playlist_id as string);
+      if (!dryRun) {
+        const { error: upErr } = await sb.from("playlist_targets")
+          .update({ research_context: nextRc })
+          .eq("playlist_id", r.playlist_id);
+        if (upErr) {
+          console.error("[backfill-sfa] update", r.playlist_id, upErr.message);
+          continue;
+        }
+      }
+      cleaned++;
+    }
+    return {
+      status: 200,
+      data: {
+        ok: true,
+        dry_run: dryRun,
+        scanned,
+        // Rows carrying the placeholder that were (or would be) cleaned.
+        cleaned,
+        // Of those, how many also had a REAL name alongside the placeholder and so
+        // keep a usable song. The rest are "placement confirmed, song unknown".
+        kept_real_name,
+        song_unknown_after: cleaned - kept_real_name,
+        cleaned_ids,
+      },
+    };
+  }
   if (action === "deactivate_target") {
     const playlistId = String(body.playlist_id ?? "").trim();
     if (!playlistId) return { status: 400, data: { error: "playlist_id required" } };
@@ -1931,12 +2013,39 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
     return { status: 200, data: { ok: true } };
   }
   if (action === "get_pitch_log") {
-    const limit = Math.min(50, Math.max(1, Number(body.limit) || 10));
+    // Pagination, mirroring list_targets. The old handler hard-capped at 50 with no
+    // offset, so on a ~71-row log the oldest ~21 pitches were unreachable by ANY
+    // caller — a reply or placement recorded there simply could not be seen. Same
+    // contract as list_targets: limit/offset in, next_offset/has_more out.
+    //
+    // Default is 50 (was 10): the default page now covers a typical log in one call.
+    // Max 1000 matches list_targets (Supabase's own ceiling).
+    const rawLimit = Number(body.limit);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(1000, Math.floor(rawLimit)) : 50;
+    // `page` is a 1-indexed convenience alias; explicit `offset` always wins. page<=1
+    // and an absent page both mean the first page, so neither shifts the window.
+    const rawPage = Number(body.page);
+    const pageOffset = Number.isFinite(rawPage) && rawPage > 1 ? (Math.floor(rawPage) - 1) * limit : 0;
+    const offset = body.offset !== undefined ? Math.max(0, Number(body.offset) || 0) : pageOffset;
     const trackName = String(body.track_name ?? "").trim();
-    let q = sb.from("pitch_log").select("*").order("created_at", { ascending: false }).limit(limit);
+    // `since` filters on the same column the log is ordered by (created_at), so a
+    // caller polling for new rows gets a window consistent with the ordering.
+    const since = String(body.since ?? "").trim();
+
+    // Secondary `id` order makes paging stable: created_at alone is not unique, and
+    // ties reshuffling between calls would skip or duplicate rows across pages.
+    let q = sb.from("pitch_log").select("*", { count: "exact" })
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
+      .range(offset, offset + limit - 1);
     if (trackName) q = q.ilike("track_name", `%${trackName}%`);
-    const { data, error } = await q;
+    if (since) q = q.gte("created_at", since);
+    const { data, error, count } = await q;
     if (error) return { status: 500, data: { error: error.message } };
+    const rows = data ?? [];
+    const total = count ?? 0;
+    const nextOffset = offset + rows.length;
+
     const since24h = new Date(Date.now() - 86400000).toISOString();
     const { count: email24 } = await sb.from("pitch_log").select("*", { count: "exact", head: true })
       .gte("sent_at", since24h);
@@ -1944,7 +2053,16 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
       status: 200,
       data: {
         ok: true,
-        rows: data ?? [],
+        rows,
+        limit,
+        offset,
+        next_offset: nextOffset,
+        // Exact (the `count` is over all rows matching the filters, not just this
+        // page), so this is authoritative rather than a rows.length===limit guess.
+        has_more: nextOffset < total,
+        // Total matching the CURRENT filters — the honest denominator for "how much
+        // of the log am I actually looking at".
+        total,
         summary: { email_pitches_last_24h: email24 ?? 0 },
       },
     };
@@ -2185,7 +2303,7 @@ export async function runConnectSpotifyStatus(
 
 const PLAYLIST_AGENT_ACTIONS = new Set([
   "draft_pitch", "approve_draft", "enrich_curator_contacts", "schedule_follow_up",
-  "list_targets", "count_targets", "list_drafts", "update_draft", "delete_draft", "deactivate_target", "activate_target", "patch_target", "log_platform_pitch", "log_pitch_sent", "get_pitch_log",
+  "list_targets", "count_targets", "backfill_sfa_placeholders", "list_drafts", "update_draft", "delete_draft", "deactivate_target", "activate_target", "patch_target", "log_platform_pitch", "log_pitch_sent", "get_pitch_log",
   "verify_targets", "list_unverified_targets", "review_target",
   "run_playlist_research", "run_playlist_sweep", "send_campaign", "send_telegram_campaign",
   "connect_spotify_init", "connect_spotify_status",
@@ -2543,6 +2661,7 @@ export async function runPlaylistAgentAction(
     case "schedule_follow_up": return runScheduleFollowUp(body, sb, hubKey);
     case "list_targets":
     case "count_targets":
+    case "backfill_sfa_placeholders":
     case "list_drafts":
     case "update_draft":
     case "delete_draft":
@@ -2590,6 +2709,10 @@ export async function runPlaylistAgentAction(
           lane: String(body.lane ?? "").trim(),
           references: Array.isArray(body.references) ? body.references.map(String) : [],
           artist_name: String(body.artist_name ?? "").trim() || undefined,
+          // Which song this SFA report covers. The standard export has no song column,
+          // so without this the import can only record "a track of ours was added",
+          // never which one — pass it to get real, rankable placement data.
+          song_name: String(body.song_name ?? "").trim() || undefined,
           resolve_urls: Boolean(body.resolve_urls),
           resolve_limit: Number(body.resolve_limit) || 12,
           deactivate_missing: Boolean(body.deactivate_missing),

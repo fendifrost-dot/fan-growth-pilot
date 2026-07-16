@@ -1,6 +1,7 @@
 import { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import { isSpotifyOwnedCurator, isArtistAsCurator } from "./curator-filters.ts";
 import { isWarmPlacementSource } from "./placement-sources.ts";
+import { SFA_PLACEHOLDER_TRACK } from "./placement-match.ts";
 import { scrapeSpotifySearchPlaylists, sleep } from "./spotify-scrape.ts";
 
 export type SfaCsvRow = {
@@ -9,7 +10,22 @@ export type SfaCsvRow = {
   listeners: number;
   streams: number;
   date_added: string | null;
+  /** The SONG this playlist row is reporting a placement of — i.e. which of our tracks
+   * the curator added. NOT the playlist name (that's `title`).
+   *
+   * Usually null: the standard Spotify-for-Artists "playlists" export has only
+   * title/author/listeners/streams/date_added columns — the song is implicit in the
+   * export's context (you drill into ONE song, then export its playlists), so it never
+   * appears as a column. Populated only when the export variant does carry a song
+   * column; otherwise the caller must supply it via `opts.song_name`. */
+  song: string | null;
 };
+
+/** Header spellings seen across Spotify-for-Artists export variants for the song column.
+ * Checked in order; the first present column wins. Deliberately does NOT include
+ * "title" — in this export "title" is the PLAYLIST name, and treating it as the song
+ * is exactly the confusion that produced placement rows naming a playlist as a track. */
+const SFA_SONG_HEADERS = ["song", "track", "song name", "track name", "song_name", "track_name"];
 
 export type SfaImportResult = {
   parsed: number;
@@ -78,6 +94,8 @@ export function parseSpotifyForArtistsCsv(text: string): SfaCsvRow[] {
   const li = header.indexOf("listeners");
   const si = header.indexOf("streams");
   const di = header.indexOf("date_added");
+  // Optional — most SFA exports have no song column at all (see SfaCsvRow.song).
+  const gi = SFA_SONG_HEADERS.map((h) => header.indexOf(h)).find((i) => i >= 0) ?? -1;
   if (ti < 0 || ai < 0) {
     throw new Error("CSV must have title and author columns (Spotify for Artists export)");
   }
@@ -94,6 +112,7 @@ export function parseSpotifyForArtistsCsv(text: string): SfaCsvRow[] {
       listeners: li >= 0 ? parseIntSafe(cols[li]) : 0,
       streams: si >= 0 ? parseIntSafe(cols[si]) : 0,
       date_added: di >= 0 && cols[di] && cols[di] !== "n/a" ? cols[di].trim() : null,
+      song: gi >= 0 && cols[gi] && cols[gi] !== "n/a" ? cols[gi].trim() || null : null,
     });
   }
   return rows;
@@ -101,6 +120,28 @@ export function parseSpotifyForArtistsCsv(text: string): SfaCsvRow[] {
 
 function normalizeKey(s: string): string {
   return s.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Merge a CSV import's research_context over the row's existing one.
+ *
+ * Everything merges "existing loses to incoming, missing keys survive" — except
+ * `featuring_tracks`, where plain spreading is wrong in BOTH directions:
+ *   - incoming wins → a real song name found by another pass gets clobbered;
+ *   - existing survives → a legacy placeholder is inherited forever.
+ * So the caller resolves that key up front (union of real names, placeholder stripped)
+ * and passes the result here as the single source of truth: present when non-empty,
+ * explicitly DELETED otherwise so no placeholder can leak through from `existingRc`.
+ */
+export function mergeSfaResearchContext(
+  existingRc: Record<string, unknown> | null,
+  incomingRc: Record<string, unknown>,
+  mergedFeaturing: string[],
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = existingRc ? { ...existingRc, ...incomingRc } : { ...incomingRc };
+  if (mergedFeaturing.length) merged.featuring_tracks = mergedFeaturing;
+  else delete merged.featuring_tracks;
+  return merged;
 }
 
 export async function stableSfaPlaylistId(title: string, author: string): Promise<string> {
@@ -155,6 +196,14 @@ export async function importSpotifyForArtistsCsv(
     lane?: string;
     references?: string[];
     artist_name?: string;
+    /** Which SONG this report covers, when the CSV itself doesn't say (the usual case:
+     * the standard SFA playlists export has no song column — you drill into one song in
+     * the SFA UI, then export ITS playlists, so the song is context, not data).
+     *
+     * Supplying it is what lets an import record a REAL placement — "this curator added
+     * THIS track" — instead of only "a track of ours was added, unknown which". A CSV
+     * `song` column, where one exists, takes precedence over this per-row. */
+    song_name?: string;
     resolve_urls?: boolean;
     resolve_limit?: number;
     deactivate_missing?: boolean;
@@ -165,6 +214,7 @@ export async function importSpotifyForArtistsCsv(
   const lane = (opts.lane ?? "").trim();
   const references = opts.references ?? [];
   const artistName = (opts.artist_name ?? Deno.env.get("ARTIST_DISPLAY_NAME") ?? "Fendi Frost").trim();
+  const importSongName = (opts.song_name ?? "").trim() || null;
   const resolveUrls = Boolean(opts.resolve_urls);
   const resolveLimit = Math.min(25, Math.max(0, Number(opts.resolve_limit) || 12));
   const deactivateMissing = Boolean(opts.deactivate_missing);
@@ -216,7 +266,10 @@ export async function importSpotifyForArtistsCsv(
 
     importedIds.add(playlistId);
     const now = new Date().toISOString();
-    const researchContext = {
+    // The song this row reports a placement of: CSV column first (rare), then the
+    // caller-declared song_name for the whole report. Null when neither is available.
+    const songName = row.song ?? importSongName;
+    const researchContext: Record<string, unknown> = {
       source: "spotify_for_artists_csv",
       artist_name: artistName,
       sfa_listeners: row.listeners,
@@ -225,7 +278,17 @@ export async function importSpotifyForArtistsCsv(
       sfa_period_label: periodLabel,
       sfa_imported_at: now,
       engagement_recommended: "thank_and_pitch",
-      featuring_tracks: ["(from Spotify for Artists playlist report)"],
+      // An SFA row is proof that SOME track of ours was added — that's what the report
+      // means — but the export usually doesn't say WHICH. Record that as a flag, not as
+      // a fake track name: `featuring_tracks` is consumed as real song data (ranked on
+      // by placement-match, rendered in the admin UI, and interpolated into outreach
+      // copy as "featuring <x>"), so a placeholder there reads as data and, worse, ships
+      // to curators. When the song is unknown we now write NO featuring_tracks at all
+      // and let these two flags carry the honest, machine-readable truth.
+      sfa_confirms_placement: true,
+      // Set below, once this row's real names are resolved against what's already
+      // stored — the answer depends on the existing row, not just on this CSV.
+      sfa_song_name_known: false,
     };
 
     // Fetch existing enrichment BEFORE upsert so a metadata-only CSV refresh
@@ -239,6 +302,30 @@ export async function importSpotifyForArtistsCsv(
     const existingRc = (existing?.research_context as Record<string, unknown> | null) ?? null;
     const existingVibeTags = (existing?.vibe_tags as string[] | null) ?? null;
     const existingSimilar = (existing?.similar_artists as string[] | null) ?? null;
+
+    // featuring_tracks is UNION-merged, never clobbered — and the legacy placeholder is
+    // dropped on contact. Three things this gets right that a plain spread did not:
+    //   1. A real name found by another pass (placement discovery, the sweep's tracklist
+    //      bridge) SURVIVES a metadata-only CSV re-import. The old code always spread a
+    //      placeholder-bearing researchContext over the existing one, so every re-import
+    //      silently overwrote real song names with the placeholder — which is why an
+    //      earlier attempt to backfill these names did not stick.
+    //   2. Two reports for different songs on the same playlist accumulate both, rather
+    //      than the newer import erasing the older placement.
+    //   3. Historical placeholder values are stripped wherever they're encountered, so a
+    //      re-import doubles as the backfill for rows already carrying one.
+    // Empty result → the key is omitted entirely rather than written as [], so a row
+    // never asserts "features nothing".
+    const mergedFeaturing = (() => {
+      const prior = Array.isArray(existingRc?.featuring_tracks) ? existingRc.featuring_tracks : [];
+      const names = [...prior.map((t) => String(t ?? "").trim()), ...(songName ? [songName] : [])]
+        .filter((t) => t.length > 0 && normalizeKey(t) !== normalizeKey(SFA_PLACEHOLDER_TRACK));
+      return [...new Map(names.map((n) => [normalizeKey(n), n])).values()];
+    })();
+    // Reflect what the row actually ends up asserting, not just what this CSV carried:
+    // a row whose song name came from an earlier pass is still "known". The
+    // featuring_tracks key itself is applied by mergeSfaResearchContext below.
+    researchContext.sfa_song_name_known = mergedFeaturing.length > 0;
 
     const dbRow = {
       playlist_id: playlistId,
@@ -265,7 +352,9 @@ export async function importSpotifyForArtistsCsv(
       is_active: true,
       why_it_fits: `Spotify for Artists: ${row.streams} streams · ${row.listeners} listeners in report period.`,
       // Merge over existing research_context so enrichment keys aren't erased.
-      research_context: existingRc ? { ...existingRc, ...researchContext } : researchContext,
+      // mergeSfaResearchContext handles the one key where "don't erase" is the WRONG
+      // default: a legacy placeholder in existingRc must be dropped, not inherited.
+      research_context: mergeSfaResearchContext(existingRc, researchContext, mergedFeaturing),
       ...(lane ? { lane } : {}),
     };
 

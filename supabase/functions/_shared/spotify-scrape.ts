@@ -17,7 +17,15 @@ export type SpotifyPlaylistDetail = {
   owner_id?: string;
   track_artists?: string[];
   /** Individual track TITLES from the embed trackList — a second feel signal
-   * alongside track_artists (e.g. "Gym Anthem", "After Hours", "Trap House"). */
+   * alongside track_artists (e.g. "Gym Anthem", "After Hours", "Trap House"),
+   * and the source of research_context.featuring_tracks (placement detection).
+   *
+   * PARTIAL, NOT THE FULL TRACKLIST. The embed's `trackList` is a preview: Spotify
+   * returns only the first slice of a playlist (not all N tracks), and we further
+   * de-duplicate by title and cap at 40. So an ABSENT title does NOT prove the song
+   * is not on the playlist — it only means it wasn't in the preview. Present titles
+   * are trustworthy; absence is not evidence. Any consumer reasoning about "is this
+   * track on this playlist" must treat a miss as UNKNOWN, never as a confirmed no. */
   track_titles?: string[];
 };
 

@@ -122,6 +122,12 @@ const REENRICH_CAP_SWEEP = 16;
 // every classifier improvement freezes previously-labeled rows at their stale
 // label forever (the "compounding at scale" failure across 200+ playlists).
 const RECLASSIFY_CAP_SWEEP = 200;
+// How many already-enriched sweep rows a run re-scrapes to back-fill featuring_tracks
+// (the placement/silent-add signal). Unlike RECLASSIFY_CAP_SWEEP this is NOT pure DB
+// work — every row costs a live embed fetch — so the cap is small and in the same
+// ballpark as REENRICH_CAP_SWEEP. The backlog (~213 rows) drains over successive runs
+// rather than in one hammering burst; each row is attempted at most once.
+const BACKFILL_FEATURING_CAP_SWEEP = 12;
 // Web-search hits fetched per discovery query. The Spotify search *page* scrape is
 // a client-rendered SPA that returns no crawlable playlist anchors, so discovery
 // leans on this web-search channel (same one placement-discovery uses) to surface
@@ -180,6 +186,14 @@ type SweepFunnel = DiscoveryFunnel & {
    * older classifier build (root cause #1). */
   reclassified_count: number;
   reclassified_ok: number;
+  /** Bounded re-scrape back-fill of `featuring_tracks` (the placement/silent-add
+   * signal) onto already-enriched sweep rows that predate track-title capture.
+   * `featuring_backfill_considered` = rows attempted this run (each row is attempted
+   * at most once, ever); `featuring_backfill_ok` = rows where the re-scrape actually
+   * returned titles. The gap between them is rows whose embed yielded no tracklist —
+   * they are stamped and dropped from the backlog, NOT retried. */
+  featuring_backfill_considered: number;
+  featuring_backfill_ok: number;
   /** Honest write accounting. `new_created` = rows that TRULY landed this run
    * (reconciled against created_at), the number `new_this_run` reports. `upsert_errors`
    * = per-row upsert failures (previously swallowed) — the gap between the pre-write
@@ -764,6 +778,105 @@ async function reclassifySweepRows(
   return { reclassified_count: considered, reclassified_ok: ok };
 }
 
+/**
+ * Bounded back-fill of `featuring_tracks` onto ALREADY-ENRICHED sweep rows.
+ *
+ * The sweep now writes featuring_tracks from the scraped embed titles (see the upsert
+ * in enrichPlaylists), but rows swept BEFORE track titles were captured are enriched
+ * and carry an EMPTY classifier_track_titles — there is no stored copy of the titles
+ * to copy across. So this is a genuine RE-SCRAPE, not a key rename: without it those
+ * rows stay invisible to silent-add detection forever, because the retry path
+ * (loadUnenrichedSweepRows) only ever revisits `enriched:false` rows.
+ *
+ * Bounded and gentle by construction:
+ *  - `cap` rows per run (the backlog drains over subsequent runs), plus a `deadline`.
+ *  - Runs at SCRAPE_CONCURRENCY through mapPool, same as every other scrape phase.
+ *  - Each row is attempted AT MOST ONCE: `featuring_backfill_at` is stamped whether or
+ *    not titles came back, and the query skips any stamped row. A playlist whose embed
+ *    yields nothing is therefore never re-hit — that's what keeps this from hammering
+ *    Spotify on a permanently-empty backlog.
+ *
+ * Idempotent: rows that already have featuring_tracks, or that have been attempted,
+ * are not selected; re-running is a no-op once the backlog is drained.
+ */
+async function backfillFeaturingTracks(
+  supabase: SupabaseClient,
+  cap: number,
+  deadline: number,
+): Promise<{ featuring_backfill_considered: number; featuring_backfill_ok: number }> {
+  let rows: Array<{ playlist_id: string; research_context: Record<string, unknown> | null }> = [];
+  try {
+    const { data, error } = await supabase
+      .from("playlist_targets")
+      .select("playlist_id, research_context")
+      .eq("research_context->>source", SWEEP_SOURCE)
+      // Dead rows (no embed entity at all) can never yield a tracklist.
+      .or("research_context->>enrich_status.is.null,research_context->>enrich_status.neq.dead")
+      // Enriched rows only — a pending stub is the retry path's job, not ours, and it
+      // will pick up featuring_tracks through the normal upsert once it enriches.
+      .or("research_context->>enriched.is.null,research_context->>enriched.neq.false")
+      // Nothing to do if the bridge (or placement discovery) already populated it.
+      .is("research_context->>featuring_tracks", null)
+      // Attempt-once guard — see the doc comment.
+      .is("research_context->>featuring_backfill_at", null)
+      .limit(cap);
+    if (error) {
+      console.error("[playlist-research] backfillFeaturingTracks query:", error.message);
+      return { featuring_backfill_considered: 0, featuring_backfill_ok: 0 };
+    }
+    rows = data ?? [];
+  } catch (e) {
+    console.error("[playlist-research] backfillFeaturingTracks failed:", e instanceof Error ? e.message : e);
+    return { featuring_backfill_considered: 0, featuring_backfill_ok: 0 };
+  }
+
+  let considered = 0;
+  let ok = 0;
+  await mapPool(
+    rows,
+    SCRAPE_CONCURRENCY,
+    async (r) => {
+      considered++;
+      const rc = r.research_context ?? {};
+      const rawId = String(r.playlist_id).replace(/^spotify:/, "");
+      let titles: string[] = [];
+      try {
+        const detail = await scrapeSpotifyPlaylistDetail(rawId);
+        titles = detail?.track_titles ?? [];
+      } catch (e) {
+        console.error("[playlist-research] backfill scrape", r.playlist_id, e instanceof Error ? e.message : e);
+      }
+      // Stamp the attempt even when the scrape yielded nothing, so this row drops out
+      // of the backlog instead of being re-scraped every run.
+      const nextRc: Record<string, unknown> = {
+        ...rc,
+        featuring_backfill_at: new Date().toISOString(),
+      };
+      if (titles.length) {
+        // Same partial-preview caveat as the live path: deduped, capped at 40, so a
+        // missing title means UNKNOWN, never a confirmed absence.
+        nextRc.featuring_tracks = titles;
+        // Keep the classifier's copy in sync — these rows had it empty, which is why
+        // a re-scrape was needed at all. A later re-classify pass can now use it.
+        nextRc.classifier_track_titles = titles;
+      }
+      const { error } = await supabase
+        .from("playlist_targets")
+        .update({ research_context: nextRc })
+        .eq("playlist_id", r.playlist_id);
+      if (error) {
+        console.error("[playlist-research] backfill update", r.playlist_id, error.message);
+        return null;
+      }
+      if (titles.length) ok++;
+      return null;
+    },
+    () => Date.now() > deadline,
+  );
+
+  return { featuring_backfill_considered: considered, featuring_backfill_ok: ok };
+}
+
 /** Count of web-discovered playlists already in this lane — used as a rotation seed
  * so each run that adds rows shifts the discovery query window forward. */
 async function countLaneDiscovered(supabase: SupabaseClient, lane: string): Promise<number> {
@@ -1062,6 +1175,26 @@ async function upsertLiveResults(
         classifier_description: pl.description ?? null,
         classifier_track_artists: pl._track_artists ?? [],
         classifier_track_titles: pl._track_titles ?? [],
+        // The SAME scraped titles, under the key the placement/silent-add detector
+        // reads (_shared/placement-match.ts → featuringTrackNames, via
+        // recommend_targets_for_track). classifier_track_titles feeds the feel
+        // classifier; featuring_tracks feeds placement detection. Both are written
+        // from one scrape so a sweep row is silent-add detectable the moment it lands
+        // — without this bridge the detector saw nothing for every web-scraped target.
+        //
+        // Omitted (rather than written as []) when the scrape produced no titles, so a
+        // failed scrape doesn't assert "features nothing". NOTE: this object REPLACES
+        // research_context wholesale on upsert, so omission is not preservation — if a
+        // sweep ever re-touches a playlist_id that placement discovery had enriched,
+        // that row's real featuring_tracks are lost either way. Pre-existing behaviour
+        // for every rc key here, not specific to this one; fixing it needs a
+        // read-merge-write like the SFA importer's (see spotify-for-artists-csv.ts).
+        //
+        // PARTIAL COVERAGE — the embed trackList is a preview, deduped and capped at
+        // 40 (see SpotifyPlaylistDetail.track_titles). A track missing from this list
+        // is UNKNOWN, not a confirmed absence, so this bridge can only ever prove
+        // placements, never disprove them.
+        ...(pl._track_titles?.length ? { featuring_tracks: pl._track_titles } : {}),
         // Terminal enrichment verdict — "dead" rows are excluded from future
         // back-fill retries (see loadUnenrichedSweepRows). Null unless proven dead.
         enrich_status: pl.enrich_status ?? null,
@@ -1275,6 +1408,16 @@ export async function mergeCatalogAndLive(
     ? await reclassifySweepRows(supabase, RECLASSIFY_CAP_SWEEP, reclassifyDeadline)
     : { reclassified_count: 0, reclassified_ok: 0 };
 
+  // Back-fill featuring_tracks onto already-enriched rows swept before track titles
+  // were captured — a re-scrape (their stored titles are empty), so it gets its own
+  // slice of budget AFTER the DB-only re-classify pass. Bounded by
+  // BACKFILL_FEATURING_CAP_SWEEP and this deadline; each row is attempted once, so the
+  // ~213-row backlog drains across runs. Still inside the 150s edge ceiling.
+  const featuringBackfillDeadline = reclassifyDeadline + 25_000;
+  const { featuring_backfill_considered, featuring_backfill_ok } = sweep
+    ? await backfillFeaturingTracks(supabase, BACKFILL_FEATURING_CAP_SWEEP, featuringBackfillDeadline)
+    : { featuring_backfill_considered: 0, featuring_backfill_ok: 0 };
+
   // `new_this_run` flags rows that TRULY landed this run (created_at reconciled),
   // not the optimistic pre-write candidate set — the fix for reporting 7 when 4
   // were created. `newIds` (candidates) is kept only for the error delta below.
@@ -1290,6 +1433,8 @@ export async function mergeCatalogAndLive(
     backfill_dead,
     reclassified_count,
     reclassified_ok,
+    featuring_backfill_considered,
+    featuring_backfill_ok,
     new_created: insertedIds.length,
     upsert_errors: upsertErrors,
     stubs_persisted,

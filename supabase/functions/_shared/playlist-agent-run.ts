@@ -233,6 +233,13 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
     };
   }
 
+  // Outreach-policy gate: pay-to-play vendors and portal_only / declined /
+  // blocked / submitted targets are never composed by the automated pitcher.
+  // This is the single choke point every draft passes through, so it holds even
+  // if an upstream selector leaks a blocked target into the daily job.
+  const policyBlock = outreachPolicyBlock(row as Record<string, unknown>, pickChannel(row, channelOverride));
+  if (policyBlock) return policyBlock;
+
   if (trackId) {
     const { data: track, error: trackErr } = await sb.from("tracks")
       .select("*, track_categories(category_id, categories(id, slug, label, family))")
@@ -1461,13 +1468,83 @@ export async function runScheduleFollowUp(body: Record<string, unknown>, sb: Sup
   return { status: 200, data: { ok: true, pitch_log_id: pitchLogId, follow_up_at: followUpAt } };
 }
 
-const PATCH_PITCH_STATUS = ["not_pitched", "pitched", "no_contact", "no_response"] as const;
+const PATCH_PITCH_STATUS = [
+  // Outreach lifecycle. The first four are the original set; the rest were added
+  // so pay-to-play vendors, portal-only curators, replies, declines, manual
+  // submissions, and hard blocks are all representable via patch_target.
+  "not_pitched", "pitched", "no_contact", "no_response",
+  "pay_to_play", "portal_only", "replied", "declined", "submitted", "blocked",
+] as const;
 const PATCH_SUBMISSION_METHOD = [
   "email", "groover", "submithub", "one_submit", "soundplate", "manual_form", "none",
+  // real-world values already present in playlist_targets that the original
+  // allow-list omitted (patch_target would otherwise reject setting them):
+  "web_form", "form", "instagram_dm", "spotify_dm", "algorithmic",
 ] as const;
+// fraud_verdict is a trust/category verdict (column default 'safe'). "pay_to_play"
+// is a DISTINCT category — not fraud (Fendi may choose to pay) but a paid-placement
+// vendor that must never be reached by automated outreach. Kept on fraud_verdict
+// (not pitch_status) so the "never auto-pitch" fact survives a later status change,
+// e.g. Fendi hand-marking the row "submitted" after paying.
+const PATCH_FRAUD_VERDICT = ["safe", "suspicious", "fraud", "pay_to_play"] as const;
 const LOG_PLATFORM_NAMES = [
   "groover", "submithub", "soundplate", "one_submit", "submitlink", "dailyplaylists", "indiemono",
 ] as const;
+
+// --- Outreach-policy gate ---------------------------------------------------
+// pitch_status values whose targets must never be reached by the automated EMAIL
+// pitcher. portal_only = email dead, submit via their form; declined / blocked =
+// do not contact; submitted = already handled by hand; pay_to_play = paid vendor.
+// Fendi can still hand-set any of these via patch_target — that writes the DB
+// directly and never routes through the composer.
+const EMAIL_BLOCKED_PITCH_STATUS = new Set<string>([
+  "pay_to_play", "portal_only", "declined", "blocked", "submitted",
+]);
+// fraud_verdict values that bar a target from ANY automated channel, not just
+// email: reaching a paid vendor organically just invites another invoice.
+const OUTREACH_BLOCKED_VERDICT = new Set<string>(["pay_to_play"]);
+
+// True when a target must be kept out of every automated pitch and recommendation.
+function isAutomatedPitchBlocked(row: Record<string, unknown>): boolean {
+  const verdict = String(row.fraud_verdict ?? "").trim();
+  const status = String(row.pitch_status ?? "").trim();
+  return OUTREACH_BLOCKED_VERDICT.has(verdict) || EMAIL_BLOCKED_PITCH_STATUS.has(status);
+}
+
+// Returns a 422 RunResult if this target may not be pitched on `channel`, else
+// null. A pay_to_play verdict is blocked on every channel; the email-blocked
+// statuses are blocked only when the resolved channel is email.
+function outreachPolicyBlock(
+  row: Record<string, unknown>,
+  channel: string | null,
+): RunResult | null {
+  const verdict = String(row.fraud_verdict ?? "").trim();
+  const status = String(row.pitch_status ?? "").trim();
+  if (OUTREACH_BLOCKED_VERDICT.has(verdict)) {
+    return {
+      status: 422,
+      data: {
+        error:
+          `Target fraud_verdict="${verdict}" (pay-to-play vendor) — excluded from all ` +
+          `automated outreach. To use it, submit/pay manually and set ` +
+          `pitch_status="submitted" via patch_target.`,
+        policy: "pay_to_play",
+      },
+    };
+  }
+  if (channel === "email" && EMAIL_BLOCKED_PITCH_STATUS.has(status)) {
+    return {
+      status: 422,
+      data: {
+        error:
+          `Target pitch_status="${status}" — excluded from automated email pitching. ` +
+          `Use its portal / submission_url manually.`,
+        policy: status,
+      },
+    };
+  }
+  return null;
+}
 
 function invalidFieldValue(
   field: string,
@@ -1483,9 +1560,17 @@ function invalidFieldValue(
 export async function runPlaylistAdmin(body: Record<string, unknown>, sb: SupabaseClient): Promise<RunResult> {
   const action = String(body.action ?? "").trim();
   if (action === "list_targets") {
+    // Pagination: honor limit/offset so the library is fully walkable (the old hard
+    // 200-row cap made the buffer uncountable and, because null-follower sweep rows
+    // sort to the tail, invisible). Default 200 preserves legacy callers; max 1000
+    // per page (Supabase's own ceiling). `order` is stable (follower_count then
+    // playlist_id) so paging can't skip or repeat rows across pages.
+    const rawLimit = Number(body.limit);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(1000, Math.floor(rawLimit)) : 200;
+    const offset = Math.max(0, Number(body.offset) || 0);
     let q = sb.from("playlist_targets").select(
       "playlist_id, playlist_name, curator_name, curator_email, curator_instagram, curator_linktree, curator_submission_url, curator_submission_dm, curator_submission_note, lane, tier, authenticity_score, fraud_verdict, contact_confidence, pitch_status, follower_count, is_active, why_it_fits, recommended_pitch_angle, submission_url, submission_method, submission_cost, is_paid, verification_status, last_enriched_at, created_at, research_context",
-    ).order("follower_count", { ascending: false, nullsFirst: false }).limit(200);
+    ).order("follower_count", { ascending: false, nullsFirst: false }).order("playlist_id", { ascending: true }).range(offset, offset + limit - 1);
     // is_active: default true (preserve historical behavior); allow explicit override.
     if (body.is_active !== undefined) {
       q = q.eq("is_active", Boolean(body.is_active));
@@ -1515,7 +1600,62 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
     if (body.has_social) q = q.or("curator_instagram.not.is.null,curator_tiktok.not.is.null,curator_twitter.not.is.null");
     const { data, error } = await q;
     if (error) return { status: 500, data: { error: error.message } };
-    return { status: 200, data: { ok: true, rows: data ?? [] } };
+    const rows = data ?? [];
+    // Page metadata so a caller can walk the whole library: request the next page
+    // when `has_more` is true (rows.length === limit). Use count_targets for totals.
+    return {
+      status: 200,
+      data: { ok: true, rows, limit, offset, next_offset: offset + rows.length, has_more: rows.length === limit },
+    };
+  }
+  if (action === "count_targets") {
+    // True totals for the buffer — overall plus breakdowns by lane / source / tier /
+    // active. This is what makes the buffer MEASURABLE (list_targets pages the rows;
+    // this counts them). Aggregated in-function over lightweight rows, internally
+    // paginated so it isn't itself capped at 1000. Optional `is_active` filter mirrors
+    // list_targets (omit for the whole table incl. inactive).
+    const pageSize = 1000;
+    const SAFETY_MAX = 100_000; // hard stop; the table is ~hundreds/low-thousands
+    let from = 0;
+    let total = 0;
+    let active = 0;
+    let inactive = 0;
+    const byLane: Record<string, number> = {};
+    const bySource: Record<string, number> = {};
+    const byTier: Record<string, number> = {};
+    for (;;) {
+      let cq = sb.from("playlist_targets").select("lane, tier, is_active, research_context").range(from, from + pageSize - 1);
+      if (body.is_active !== undefined) cq = cq.eq("is_active", Boolean(body.is_active));
+      const { data, error } = await cq;
+      if (error) return { status: 500, data: { error: error.message } };
+      const page = data ?? [];
+      for (const r of page) {
+        total++;
+        if ((r as { is_active?: boolean | null }).is_active === false) inactive++;
+        else active++;
+        const lane = ((r as { lane?: string | null }).lane ?? "unlaned") || "unlaned";
+        byLane[lane] = (byLane[lane] ?? 0) + 1;
+        const rc = (r as { research_context?: Record<string, unknown> | null }).research_context;
+        const src = String((rc && typeof rc === "object" ? rc.source : null) ?? "unknown") || "unknown";
+        bySource[src] = (bySource[src] ?? 0) + 1;
+        const tier = String((r as { tier?: number | null }).tier ?? "none");
+        byTier[tier] = (byTier[tier] ?? 0) + 1;
+      }
+      if (page.length < pageSize) break;
+      from += pageSize;
+      if (from >= SAFETY_MAX) break;
+    }
+    return {
+      status: 200,
+      data: {
+        ok: true,
+        total,
+        by_active: { active, inactive },
+        by_lane: byLane,
+        by_source: bySource,
+        by_tier: byTier,
+      },
+    };
   }
   if (action === "deactivate_target") {
     const playlistId = String(body.playlist_id ?? "").trim();
@@ -1575,6 +1715,13 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
       }
       patch.pitch_status = v;
     }
+    if (body.fraud_verdict !== undefined) {
+      const v = String(body.fraud_verdict ?? "").trim();
+      if (!(PATCH_FRAUD_VERDICT as readonly string[]).includes(v)) {
+        return invalidFieldValue("fraud_verdict", body.fraud_verdict, PATCH_FRAUD_VERDICT);
+      }
+      patch.fraud_verdict = v;
+    }
     if (body.contact_confidence !== undefined) {
       const n = Number(body.contact_confidence);
       if (!Number.isInteger(n) || n < 1 || n > 10) {
@@ -1611,7 +1758,7 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
       return {
         status: 400,
         data: {
-          error: "Nothing to patch (curator_email, curator_instagram, lane, submission_url, pitch_status, contact_confidence, is_active, submission_method, last_pitched_at)",
+          error: "Nothing to patch (curator_email, curator_instagram, lane, submission_url, pitch_status, fraud_verdict, contact_confidence, is_active, submission_method, last_pitched_at)",
         },
       };
     }
@@ -2038,7 +2185,7 @@ export async function runConnectSpotifyStatus(
 
 const PLAYLIST_AGENT_ACTIONS = new Set([
   "draft_pitch", "approve_draft", "enrich_curator_contacts", "schedule_follow_up",
-  "list_targets", "list_drafts", "update_draft", "delete_draft", "deactivate_target", "activate_target", "patch_target", "log_platform_pitch", "log_pitch_sent", "get_pitch_log",
+  "list_targets", "count_targets", "list_drafts", "update_draft", "delete_draft", "deactivate_target", "activate_target", "patch_target", "log_platform_pitch", "log_pitch_sent", "get_pitch_log",
   "verify_targets", "list_unverified_targets", "review_target",
   "run_playlist_research", "run_playlist_sweep", "send_campaign", "send_telegram_campaign",
   "connect_spotify_init", "connect_spotify_status",
@@ -2229,20 +2376,24 @@ export async function runCatalogueAdmin(body: Record<string, unknown>, sb: Supab
       };
     });
 
+    // Never recommend a target that outreach policy bars from automated pitching
+    // (pay-to-play vendors + portal_only / declined / blocked / submitted rows).
+    const eligible = scored.filter((s) => !isAutomatedPitchBlocked(s.row));
+
     let filtered: Scored[];
     if (mode === "warm_aligned") {
       // A direct placement qualifies a row on its own — no longer hard-require
       // category overlap (warm placements carry empty playlist_categories).
-      filtered = scored.filter((s) => s.warm && (s.placement || s.overlap > 0));
+      filtered = eligible.filter((s) => s.warm && (s.placement || s.overlap > 0));
     } else if (mode === "new_cold") {
       // Exclude already-pitched rows and inactive rows
-      filtered = scored.filter((s) =>
+      filtered = eligible.filter((s) =>
         !s.warm && s.overlap > 0 &&
         (s.row.pitch_status !== "pitched") &&
         (s.row.is_active !== false)
       );
     } else if (mode === "all_warm") {
-      filtered = scored.filter((s) => s.warm);
+      filtered = eligible.filter((s) => s.warm);
     } else {
       return { status: 400, data: { error: "mode must be warm_aligned | new_cold | all_warm" } };
     }
@@ -2391,6 +2542,7 @@ export async function runPlaylistAgentAction(
     case "enrich_curator_contacts": return runEnrichCuratorContacts(body, sb);
     case "schedule_follow_up": return runScheduleFollowUp(body, sb, hubKey);
     case "list_targets":
+    case "count_targets":
     case "list_drafts":
     case "update_draft":
     case "delete_draft":

@@ -2,6 +2,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { isPlaylistAgentAction, runPlaylistAgentAction } from '../_shared/playlist-agent-run.ts';
 import { isRadioAction, runRadioAction } from '../_shared/radio-outreach.ts';
 import { isFanEngagementAction, runFanEngagementAction } from '../_shared/fan-engagement-run.ts';
+import { isPitchCampaignAction, runPitchCampaignAction } from '../_shared/pitch-campaigns.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -98,6 +99,14 @@ Deno.serve(async (req) => {
 
     if (isFanEngagementAction(String(action ?? ''))) {
       const result = await runFanEngagementAction(String(action), body, supabase);
+      return new Response(JSON.stringify(result.data), {
+        status: result.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isPitchCampaignAction(String(action ?? ''))) {
+      const result = await runPitchCampaignAction(String(action), body, supabase);
       return new Response(JSON.stringify(result.data), {
         status: result.status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },

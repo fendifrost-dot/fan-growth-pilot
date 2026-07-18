@@ -10,11 +10,24 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-api-key",
 };
 const NON_BULK_METHODS = new Set(["algorithmic", "distributor_pitch"]);
-const MAX_DAILY_PITCHES = 30; // raised from 10 on 2026-06-10 to clear queued batch-3 sends
+// PER-SONG daily email cap — the product limit. Each song gets its own independent 20;
+// this is keyed by track_name so one song's sends NEVER consume another's budget. There
+// is deliberately NO aggregate "N songs × 20" ceiling — N (songs pitched per day) grows
+// over time, and per-song budgets must add capacity, not split a fixed pool.
+const PER_SONG_DAILY_PITCHES = 20;
+// GLOBAL deliverability guardrail — NOT a product cap. Cold email from one sending domain
+// has a hard reputation ceiling regardless of per-song logic; this protects
+// playlists@fendifrost.com from a spike that torches deliverability. Sized to current
+// warmed-domain capacity and meant to RISE as the domain warms (or as sending is split
+// across subdomains/mailboxes). It must always stay comfortably above PER_SONG_DAILY_PITCHES
+// × (active song count) so it never becomes the per-song limiter in practice.
+const MAX_DAILY_PITCHES_GLOBAL = 200;
 
-// Curator-friendly send window: Mon–Fri, 10:00–16:00 America/Chicago (CT). Uses the
+// Curator-friendly send window: all 7 days, 10:00–16:00 America/Chicago (CT). Uses the
 // IANA zone so DST (CDT/CST) is handled automatically rather than a fixed offset.
-const SEND_WINDOW_DAYS = new Set(["Mon", "Tue", "Wed", "Thu", "Fri"]);
+// Weekends are intentionally included — curators clear submission queues on Sat/Sun and
+// holding approved pitches for two days was costing us sends. Trim days here to adjust.
+const SEND_WINDOW_DAYS = new Set(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]);
 const SEND_WINDOW_START_HOUR = 10; // inclusive
 const SEND_WINDOW_END_HOUR = 16; // exclusive (4p)
 function isWithinSendWindow(now: Date): boolean {
@@ -195,9 +208,9 @@ async function handleEmailPitch(
   }
   // test_mode bypasses send-window + cooldown + daily cap checks (QA sends should be unblocked).
   if (!testMode) {
-    // Real curator emails only go out Mon–Fri 10a–4p CT unless explicitly overridden.
+    // Real curator emails only go out 10a–4p CT (any day) unless explicitly overridden.
     if (!ignoreSendWindow && !isWithinSendWindow(new Date())) {
-      return jsonPitch({ ok:false, method_used:method, action_taken:"skipped", cooldown_until:null, message_to_user:"🕑 Outside send window for *" + playlistName + "*. Pitch emails go out *Mon–Fri 10a–4p CT*. Retry during the window (or pass ignore_send_window to force)." });
+      return jsonPitch({ ok:false, method_used:method, action_taken:"skipped", cooldown_until:null, message_to_user:"🕑 Outside send window for *" + playlistName + "*. Pitch emails go out *daily, 10a–4p CT*. Retry during the window (or pass ignore_send_window to force)." });
     }
     const { data: existing } = await sb.from("pitch_log").select("id, cooldown_until").eq("playlist_id", playlistId).eq("track_name", trackName).eq("status", "sent").gt("cooldown_until", new Date().toISOString()).maybeSingle();
     if (existing?.id) {
@@ -205,8 +218,15 @@ async function handleEmailPitch(
       return jsonPitch({ ok:false, method_used:method, action_taken:"skipped", cooldown_until:existing.cooldown_until as string, message_to_user:"⏳ Already pitched *" + playlistName + "* for *" + trackName + "*. Cooldown until *" + until + "*." });
     }
     if (!batchOverrideCap) {
-      const { count: capCount } = await sb.from("pitch_log").select("*", { count:"exact", head:true }).eq("method", "email").eq("status", "sent").gte("pitched_at", new Date(Date.now() - 86400000).toISOString());
-      if ((capCount ?? 0) >= MAX_DAILY_PITCHES) return jsonPitch({ ok:false, method_used:method, action_taken:"skipped", cooldown_until:null, message_to_user:`📧 Daily email pitch cap reached (${MAX_DAILY_PITCHES} per 24h). Try again tomorrow.` });
+      const since = new Date(Date.now() - 86400000).toISOString();
+      // PER-SONG cap (the product limit) — count only THIS song's sends in the last 24h.
+      // Independent per song: song A hitting 20 never blocks song B.
+      const { count: perSongCount } = await sb.from("pitch_log").select("*", { count:"exact", head:true }).eq("method", "email").eq("status", "sent").eq("track_name", trackName).gte("pitched_at", since);
+      if ((perSongCount ?? 0) >= PER_SONG_DAILY_PITCHES) return jsonPitch({ ok:false, method_used:method, action_taken:"skipped", cooldown_until:null, message_to_user:`📧 Daily cap reached for *${trackName}* (${PER_SONG_DAILY_PITCHES}/song/24h). Other songs are unaffected.` });
+      // GLOBAL deliverability guardrail — total email across all songs. Not a per-song
+      // limit; protects sender reputation. Should stay above 20 × active songs.
+      const { count: capCount } = await sb.from("pitch_log").select("*", { count:"exact", head:true }).eq("method", "email").eq("status", "sent").gte("pitched_at", since);
+      if ((capCount ?? 0) >= MAX_DAILY_PITCHES_GLOBAL) return jsonPitch({ ok:false, method_used:method, action_taken:"skipped", cooldown_until:null, message_to_user:`📮 Global send guardrail reached (${MAX_DAILY_PITCHES_GLOBAL}/24h, sender-reputation limit — not a per-song cap). Raise as the sending domain warms.` });
     }
   }
   const resendKey = Deno.env.get("RESEND_API_KEY");

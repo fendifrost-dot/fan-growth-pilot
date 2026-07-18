@@ -79,24 +79,13 @@ export const HOUSE_SUBGENRES = [
 ];
 
 /** Curator/freshness modifiers for the genre sweep (distinct from lane modifiers,
- * tuned to surface human-curated, pitchable, current playlists).
- *
- * The last block is SOURCE-oriented: terms that reliably return third-party
- * listicle / directory / roundup PAGES ("best … playlists 2026", blog round-ups,
- * submission directories). Those pages embed dozens of open.spotify.com/playlist
- * links — which the hit-page harvest (see selectHarvestUrls + harvestPlaylistIds
- * in playlist-research) scrapes in full. Breadth of SOURCE, not just count of
- * queries, is what breaks the dedupe-to-nothing collapse: one directory page can
- * yield 30-50 distinct playlists where a bare genre search yields ~1. */
+ * tuned to surface human-curated, pitchable, current playlists). */
 export const SWEEP_MODIFIERS = [
   "playlist", "curator", "submissions", "submit", "best", "fresh", "new",
   "2025", "2026", "weekly", "monthly", "underground", "indie", "rising",
   "hidden gems", "top", "mix", "essentials", "rotation", "fresh finds",
   "new music", "spotify playlist", "picks", "on repeat", "roundup", "heat",
   "submissions open",
-  // Source-oriented (listicle / directory / roundup pages, harvested in full):
-  "best playlists 2026", "playlist roundup", "playlists to submit to",
-  "curator list", "independent playlists", "playlist directory",
 ];
 
 /**
@@ -249,61 +238,6 @@ export function extractPlaylistIdsFromText(blob: string): string[] {
     if (seen.has(id)) continue;
     seen.add(id);
     out.push(id);
-  }
-  return out;
-}
-
-export type SearchHitLike = { url: string; title?: string; description?: string };
-
-/**
- * Choose which web-search hit PAGES are worth scraping in full to harvest embedded
- * playlist links. This is the fix for the discovery-volume collapse: the bare
- * web-search channel only sees playlist urls that happen to appear in a hit's
- * url/title/description (~1 id per query), but the hit PAGES themselves —
- * "best rap playlists 2026" listicles, curator directories, blog roundups — embed
- * dozens of open.spotify.com/playlist links in their body. Scraping the top few of
- * those pages (harvestPlaylistIds in playlist-research) multiplies distinct-id yield
- * by 10-30× without widening the query set.
- *
- * Selection rules (pure, so the wiring stays trivially testable):
- *   - Skip open.spotify.com hits — playlist/artist pages are client-rendered SPAs
- *     with no crawlable anchors (that's the whole premise of the web-search channel),
- *     and any playlist id in the hit url is already captured by extractPlaylistIdsFromText.
- *   - Skip obvious non-article hosts (youtube/apple/social) that won't carry a list
- *     of Spotify playlist links.
- *   - At most `perHost` pages per host, so one dominant blog can't eat the whole cap.
- *   - Preserve first-seen (search-rank) order and cap the total.
- */
-const HARVEST_SKIP_HOSTS = [
-  "open.spotify.com", "spotify.com", "youtube.com", "youtu.be", "music.apple.com",
-  "apple.com", "instagram.com", "facebook.com", "twitter.com", "x.com", "tiktok.com",
-];
-
-export function selectHarvestUrls(
-  hits: SearchHitLike[],
-  cap: number,
-  perHost = 1,
-): string[] {
-  const out: string[] = [];
-  const seenUrl = new Set<string>();
-  const hostCount = new Map<string, number>();
-  for (const h of hits) {
-    if (out.length >= cap) break;
-    const url = (h?.url ?? "").trim();
-    if (!url || !/^https?:\/\//i.test(url)) continue;
-    if (seenUrl.has(url)) continue;
-    let host: string;
-    try {
-      host = new URL(url).hostname.replace(/^www\./, "").toLowerCase();
-    } catch {
-      continue;
-    }
-    if (HARVEST_SKIP_HOSTS.some((skip) => host === skip || host.endsWith(`.${skip}`))) continue;
-    const used = hostCount.get(host) ?? 0;
-    if (used >= perHost) continue;
-    seenUrl.add(url);
-    hostCount.set(host, used + 1);
-    out.push(url);
   }
   return out;
 }

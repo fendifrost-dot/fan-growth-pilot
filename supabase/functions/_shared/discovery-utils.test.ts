@@ -8,7 +8,6 @@ import {
   HOUSE_SUBGENRES,
   mapPool,
   RAP_SUBGENRES,
-  selectHarvestUrls,
   SWEEP_MODIFIERS,
 } from "./discovery-utils.ts";
 
@@ -180,35 +179,4 @@ Deno.test("buildBalancedSweepQueries rotates the query set across runs", () => {
   // Different rotation → a materially different query set (fresh ground next run).
   const overlap = a.filter((q) => b.includes(q)).length;
   assertEquals(overlap < a.length, true, "rotation must shift the query window");
-});
-
-Deno.test("selectHarvestUrls skips Spotify + social hosts, keeps article pages", () => {
-  const hits = [
-    { url: "https://open.spotify.com/playlist/37i9dQZF1DX0XUsuxWHRQd" },
-    { url: "https://www.chosic.com/best-rap-playlists/" },
-    { url: "https://youtube.com/watch?v=abc" },
-    { url: "https://indiemono.com/submit" },
-    { url: "not-a-url" },
-  ];
-  const out = selectHarvestUrls(hits, 10);
-  assertEquals(out, [
-    "https://www.chosic.com/best-rap-playlists/",
-    "https://indiemono.com/submit",
-  ]);
-});
-
-Deno.test("selectHarvestUrls caps per-host and total, preserves rank order", () => {
-  const hits = [
-    { url: "https://blog.com/a" },
-    { url: "https://blog.com/b" }, // same host — dropped by perHost=1
-    { url: "https://other.com/x" },
-    { url: "https://third.com/y" },
-  ];
-  assertEquals(selectHarvestUrls(hits, 2), ["https://blog.com/a", "https://other.com/x"]);
-  assertEquals(selectHarvestUrls(hits, 10, 2), [
-    "https://blog.com/a",
-    "https://blog.com/b",
-    "https://other.com/x",
-    "https://third.com/y",
-  ]);
 });

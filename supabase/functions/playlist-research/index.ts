@@ -26,7 +26,7 @@ import {
   type SpotifyPlaylistStub,
   type SpotifyUserProfile,
 } from "../_shared/spotify-scrape.ts";
-import { firecrawlMarkdown, firecrawlSearch } from "../_shared/firecrawl.ts";
+import { firecrawlSearch } from "../_shared/firecrawl.ts";
 import {
   buildBalancedSweepQueries,
   buildDiscoveryQueries,
@@ -36,8 +36,6 @@ import {
   HOUSE_SUBGENRES,
   mapPool,
   RAP_SUBGENRES,
-  type SearchHitLike,
-  selectHarvestUrls,
   SWEEP_MODIFIERS,
 } from "../_shared/discovery-utils.ts";
 import {
@@ -94,24 +92,15 @@ const RECENTLY_PITCHED_PENALTY = 1000;
 // and splits the budget rap/house, so a bigger cap buys real breadth instead of a
 // deeper orbit of one subgenre. 40 queries × 1 web-search each stays inside the
 // SEARCH half of SCRAPE_BUDGET_MS at SCRAPE_CONCURRENCY; the deadline guard backstops.
-const SWEEP_QUERY_CAP = 60;
+const SWEEP_QUERY_CAP = 40;
 const DETAIL_CAP_SWEEP = 24;
-// Hit-page harvest — the discovery-VOLUME lever. The bare web-search channel only
-// sees playlist ids that appear in a hit's url/title/description (~1 id/query, which
-// is why 40 queries deduped to ~17). The listicle / directory / roundup PAGES those
-// searches return embed dozens of open.spotify.com/playlist links in their body.
-// After the search fan-out we scrape up to HARVEST_PAGE_CAP of the most promising
-// third-party pages (selectHarvestUrls) and extract ids from the full markdown —
-// 10-30× the distinct-id yield per query. Bounded + deadline-guarded so a slow
-// harvest degrades gracefully (returns what it got) and never blows the edge wall.
-const HARVEST_PAGE_CAP = 16;
 // Extra fresh stubs a sweep persists as `enriched:false` pending rows BEYOND the
 // enrichment batch (DETAIL_CAP_SWEEP). Discovery now surfaces more ids than one run
 // can enrich; instead of dropping the overflow, we bank it so the library — the
 // BUFFER Fendi wants far larger than his daily sends — grows every run and the
 // backlog drains via loadUnenrichedSweepRows on later runs. Bounded so a single run
 // can't balloon the pending set.
-const PERSIST_STUB_CAP = 250;
+const PERSIST_STUB_CAP = 60;
 // Fraction of SCRAPE_BUDGET_MS reserved for the SEARCH phase; the remainder is
 // guaranteed to the ENRICHMENT (detail-scrape) phase. Without this split a wide
 // sweep's 24-query × 2-channel search consumed the whole window, so the detail
@@ -143,7 +132,7 @@ const BACKFILL_FEATURING_CAP_SWEEP = 12;
 // a client-rendered SPA that returns no crawlable playlist anchors, so discovery
 // leans on this web-search channel (same one placement-discovery uses) to surface
 // playlist ids from third-party pages.
-const SEARCH_HITS_PER_QUERY = 20;
+const SEARCH_HITS_PER_QUERY = 10;
 // Channel A — the direct scrape of open.spotify.com/search/<q>/playlists — returns 0
 // on EVERY run (it's a client-rendered SPA with no crawlable playlist anchors), so it
 // is disabled by default and discovery leans entirely on the web-search channel. Not
@@ -166,11 +155,6 @@ type DiscoveryFunnel = {
   queries: number;
   raw_scrape: number;
   raw_websearch: number;
-  /** Playlist ids harvested from scraped hit PAGES (listicles/directories), the
-   * high-yield discovery channel layered on top of raw_websearch. */
-  raw_harvest: number;
-  /** How many hit pages the harvest pass actually scraped this run. */
-  harvest_pages: number;
   unique_after_dedupe: number;
   skipped_recent: number;
 };
@@ -426,8 +410,6 @@ const EMPTY_FUNNEL: DiscoveryFunnel = {
   queries: 0,
   raw_scrape: 0,
   raw_websearch: 0,
-  raw_harvest: 0,
-  harvest_pages: 0,
   unique_after_dedupe: 0,
   skipped_recent: 0,
 };
@@ -487,7 +469,6 @@ async function discoverViaSpotifyWeb(
     SCRAPE_CONCURRENCY,
     async (query) => {
       const stubs: SpotifyPlaylistStub[] = [];
-      let hits: SearchHitLike[] = [];
       let ok = false;
       // Channel A — scrape Spotify's own search page. Disabled by default (returns 0
       // every run; see ENABLE_SEARCH_PAGE_SCRAPE) so the wasted scrape budget goes to
@@ -503,11 +484,9 @@ async function discoverViaSpotifyWeb(
         }
       }
       // Channel B — web search → harvest playlist ids. Names/owners are backfilled
-      // by the detail phase below, so a placeholder name here is fine. The raw `hits`
-      // are also returned so the hit-page harvest below can scrape the article/directory
-      // pages (which embed far more playlist links than the hit metadata alone).
+      // by the detail phase below, so a placeholder name here is fine.
       try {
-        hits = await firecrawlSearch(query, SEARCH_HITS_PER_QUERY);
+        const hits = await firecrawlSearch(query, SEARCH_HITS_PER_QUERY);
         const blob = hits.map((h) => `${h.url}\n${h.title ?? ""}\n${h.description ?? ""}`).join("\n");
         const ids = extractPlaylistIdsFromText(blob);
         rawWebSearch += ids.length;
@@ -516,7 +495,7 @@ async function discoverViaSpotifyWeb(
       } catch (e) {
         console.error(`[discover] web-search "${query}" failed:`, e instanceof Error ? e.message : String(e));
       }
-      return { query, stubs, hits, ok };
+      return { query, stubs, ok };
     },
     () => Date.now() > deadline,
   );
@@ -547,68 +526,10 @@ async function discoverViaSpotifyWeb(
     log.push({ query: res.query, count: freshIds.length, ok: res.ok });
   }
 
-  // ── Hit-page harvest ──────────────────────────────────────────────────────
-  // The real discovery-VOLUME lever. Scrape the most promising third-party pages
-  // the searches surfaced (listicles / curator directories / roundups) and pull the
-  // many open.spotify.com/playlist links embedded in their bodies — 10-30× the
-  // distinct-id yield of reading hit metadata alone. Bounded by HARVEST_PAGE_CAP and
-  // the SEARCH deadline, failures swallowed, so worst case it adds nothing and never
-  // blows the wall.
-  let rawHarvest = 0;
-  let harvestPages = 0;
-  const allHits: SearchHitLike[] = [];
-  for (const res of stubLists) if (res) allHits.push(...res.hits);
-  const harvestUrls = selectHarvestUrls(allHits, HARVEST_PAGE_CAP);
-  if (harvestUrls.length && Date.now() < deadline) {
-    const harvestResults = await mapPool(
-      harvestUrls,
-      SCRAPE_CONCURRENCY,
-      async (url) => {
-        try {
-          const md = await firecrawlMarkdown(url);
-          return extractPlaylistIdsFromText(md);
-        } catch (e) {
-          console.error(`[discover] harvest "${url}" failed:`, e instanceof Error ? e.message : String(e));
-          return [] as string[];
-        }
-      },
-      () => Date.now() > deadline,
-    );
-    const harvestStubs: SpotifyPlaylistStub[] = [];
-    for (const ids of harvestResults) {
-      if (!ids) continue; // deadline-skipped slot
-      harvestPages++;
-      for (const id of ids) {
-        rawHarvest++;
-        harvestStubs.push({ playlist_id: id, name: `Playlist ${id.slice(0, 6)}…` });
-      }
-    }
-    // Dedupe harvested ids against everything already collected this run (mutates
-    // `seen`), then append the fresh ones as unenriched stubs — the detail phase
-    // backfills real name/curator/followers just like any other discovered stub.
-    const { freshIds } = dedupeStubs(harvestStubs, seen, excludeIds);
-    const byId = new Map(harvestStubs.map((s) => [`spotify:${s.playlist_id}`, s]));
-    for (const pid of freshIds) {
-      const s = byId.get(pid)!;
-      out.push({
-        id: s.playlist_id,
-        playlist_id: pid,
-        name: s.name,
-        followers: null,
-        owner: null,
-        track_count: null,
-        enriched: false,
-      });
-    }
-    console.log(`[playlist-research] harvest: ${harvestPages} pages → ${rawHarvest} raw ids → ${freshIds.length} fresh`);
-  }
-
   const funnel: DiscoveryFunnel = {
     queries: queries.length,
     raw_scrape: rawScrape,
     raw_websearch: rawWebSearch,
-    raw_harvest: rawHarvest,
-    harvest_pages: harvestPages,
     unique_after_dedupe: out.length,
     skipped_recent: skippedRecent,
   };
@@ -1208,21 +1129,6 @@ async function upsertLiveResults(
       ? laneForSweep((pl.category ?? "uncategorized") as Parameters<typeof laneForSweep>[0], pl.category_genre ?? null)
       : null;
     const rowLane = (tagLane && lane) ? lane : sweepLane;
-    // Fraud verdict must reflect what we actually EVALUATED — an unenriched stub has
-    // no metadata, so "safe" would read a never-inspected row as cleared (Fendi's bug:
-    // fraud_verdict='safe' + fraud_score=null on stubs). Derive both honestly:
-    //   • enriched → 'safe' (high-bot-risk rows are already dropped upstream, so an
-    //     enriched row that reaches here passed the de-bot gate) with a REAL legitimacy
-    //     score of 100 − bot_risk (higher = more legit, matching the ranking that reads
-    //     fraud_score higher-is-better); falls back to the neutral 50 only if bot_risk
-    //     is somehow absent.
-    //   • pending stub → 'pending' + null score, so it can never read as cleared and is
-    //     excluded from the `fraud_verdict='safe'` recommend/merge filter until enriched.
-    // (fraud_verdict is an unconstrained text column, so 'pending' is a safe new value.)
-    const isEnriched = pl.enriched === true;
-    const legitScore = typeof pl.bot_risk === "number"
-      ? Math.max(0, Math.min(100, 100 - pl.bot_risk))
-      : 50;
     const row = {
       playlist_id: pl.playlist_id,
       platform: "spotify",
@@ -1235,8 +1141,8 @@ async function upsertLiveResults(
       follower_count: pl.followers,
       track_count: pl.track_count,
       overlap_score: 0,
-      fraud_score: isEnriched ? legitScore : null,
-      fraud_verdict: isEnriched ? "safe" : "pending",
+      fraud_score: 50,
+      fraud_verdict: "safe",
       pitch_status: "not_pitched",
       research_context: {
         source,
@@ -1341,19 +1247,11 @@ export async function mergeCatalogAndLive(
   supabase: SupabaseClient,
   trackName: string,
   userVibe: string,
-  opts?: { lane?: string; references?: string[]; quick?: boolean; sweep?: boolean; limit?: number },
+  opts?: { lane?: string; references?: string[]; quick?: boolean; sweep?: boolean },
 ): Promise<{ results: PlaylistRow[]; live_count: number; new_count: number; discovery_skips: DiscoverySkips; funnel: SweepFunnel }> {
   const lane = (opts?.lane ?? "").trim();
   const references = opts?.references ?? [];
   const sweep = Boolean(opts?.sweep);
-  // Per-CALL recommendation cap. Defaults to MAX_RESULTS but is caller-overridable so
-  // nothing freezes the per-song return at 20 — the "20/song/day" target is a PER-SONG
-  // maximum with NO aggregate ceiling, and N (songs pitched/day) grows over time. Each
-  // song's research call is independent; this cap never sums across songs. Clamped to a
-  // sane page size.
-  const resultLimit = Number.isFinite(opts?.limit) && (opts?.limit ?? 0) > 0
-    ? Math.min(200, Math.floor(opts!.limit as number))
-    : MAX_RESULTS;
 
   const start = Date.now();
   // Two staged deadlines carved from one budget. The SEARCH phase stops at
@@ -1607,7 +1505,7 @@ export async function mergeCatalogAndLive(
     return (b.follower_count ?? 0) - (a.follower_count ?? 0);
   });
 
-  const results = merged.slice(0, resultLimit);
+  const results = merged.slice(0, MAX_RESULTS);
   // Lane patches are independent per-row writes — run them concurrently.
   await mapPool(results, SCRAPE_CONCURRENCY, async (r) => {
     const patch: Record<string, unknown> = {};
@@ -1671,15 +1569,11 @@ Deno.serve(async (req) => {
     const effectiveTrack = track_name || (sweep ? "mass sweep rap house" : "");
 
     const quick = Boolean(body.quick);
-    // Optional per-song recommendation cap. Omit → MAX_RESULTS. Never an aggregate cap:
-    // each song calls this independently and gets its own `limit` targets.
-    const limit = Number(body.limit) || undefined;
     const { results, live_count, new_count, discovery_skips, funnel } = await mergeCatalogAndLive(supabase, effectiveTrack, user_vibe, {
       lane,
       references,
       quick,
       sweep,
-      limit,
     });
 
     const playlists = results.map((r) => ({

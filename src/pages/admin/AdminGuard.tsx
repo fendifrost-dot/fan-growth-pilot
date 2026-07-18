@@ -12,6 +12,7 @@ const AdminGuard: React.FC = () => {
               <Link to="/admin" className="hover:underline font-medium">Hub</Link>
               <Link to="/admin/send" className="hover:underline font-medium text-primary">Send</Link>
               <span className="text-muted-foreground text-xs uppercase tracking-wide">Pitching</span>
+              <Link to="/admin/pitch-portal" className="hover:underline font-medium text-primary">Pitch Portal</Link>
               <Link to="/admin/catalogue" className="hover:underline">Catalogue</Link>
               <Link to="/admin/categories" className="hover:underline">Categories</Link>
               <Link to="/admin/pitch-composer" className="hover:underline">Pitch Composer</Link>

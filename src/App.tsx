@@ -29,6 +29,7 @@ import AdminRadioTargets from "./pages/admin/AdminRadioTargets";
 import AdminCatalogue from "./pages/admin/AdminCatalogue";
 import AdminCategories from "./pages/admin/AdminCategories";
 import AdminPitchComposer from "./pages/admin/AdminPitchComposer";
+import AdminPitchPortal from "./pages/admin/AdminPitchPortal";
 
 const queryClient = new QueryClient();
 
@@ -78,6 +79,7 @@ const App = () => {
             <Route path="catalogue" element={<AdminCatalogue />} />
             <Route path="categories" element={<AdminCategories />} />
             <Route path="pitch-composer" element={<AdminPitchComposer />} />
+            <Route path="pitch-portal" element={<AdminPitchPortal />} />
           </Route>
 
           {/* Public smart link pages (CATCH-ALL — must stay last among meaningful routes) */}

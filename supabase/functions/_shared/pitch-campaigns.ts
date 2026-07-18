@@ -273,21 +273,22 @@ type CampaignRow = Record<string, unknown> & {
 async function listCampaigns(sb: SupabaseClient, body: Record<string, unknown>): Promise<Result> {
   const statusFilter = String(body.status ?? '').trim();
 
-  let query = sb
+  if (statusFilter && statusFilter !== 'all' && !(CAMPAIGN_STATUSES as readonly string[]).includes(statusFilter)) {
+    return { status: 400, data: { error: `status must be one of ${CAMPAIGN_STATUSES.join(', ')} or 'all'` } };
+  }
+
+  // Filter before order: .order() returns a transform builder with no .eq().
+  let filter = sb
     .from('pitch_campaigns')
     .select(
       'id, track_id, smart_link_id, status, daily_target, notes, started_at, ended_at, created_at, updated_at, tracks(name, short_pitch), smart_links(slug, is_active)',
-    )
-    .order('created_at', { ascending: false });
+    );
 
   if (statusFilter && statusFilter !== 'all') {
-    if (!(CAMPAIGN_STATUSES as readonly string[]).includes(statusFilter)) {
-      return { status: 400, data: { error: `status must be one of ${CAMPAIGN_STATUSES.join(', ')} or 'all'` } };
-    }
-    query = query.eq('status', statusFilter);
+    filter = filter.eq('status', statusFilter);
   }
 
-  const { data, error } = await query;
+  const { data, error } = await filter.order('created_at', { ascending: false });
   if (error) throw error;
 
   const rows = (data ?? []) as CampaignRow[];

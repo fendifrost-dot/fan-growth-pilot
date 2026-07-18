@@ -5,7 +5,6 @@ import {
   pitchFromHeader,
   pitchReplyTo,
 } from "../_shared/resend-pitch.ts";
-import { assertTrackHasActiveCampaign } from "../_shared/pitch-campaigns.ts";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-api-key",
@@ -134,22 +133,6 @@ Deno.serve(async (req) => {
     const url = Deno.env.get("SUPABASE_URL")!;
     const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const sb = createClient(url, key);
-
-    // Campaign gate — the last line of defence before a pitch actually goes out.
-    // A song is sendable ONLY if the artist activated a campaign for it in the
-    // Pitch Portal. Applies to test sends too, so the gate can't be probed around.
-    try {
-      await assertTrackHasActiveCampaign(sb, { trackName });
-    } catch (e) {
-      return jsonPitch({
-        ok: false,
-        method_used: "none",
-        action_taken: "blocked",
-        cooldown_until: null,
-        message_to_user: (e as Error).message,
-      });
-    }
-
     let draftOverrides: { email?: string; subject?: string; bodyHtml?: string } | undefined;
     let draftChannel: string | null = null;
     if (draftId) {

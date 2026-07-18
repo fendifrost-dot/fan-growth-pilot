@@ -3,7 +3,6 @@
  * Workaround: Lovable Publish redeploys existing functions only; new function names 404 until registered.
  */
 import { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
-import { activeCampaignTrackNames, assertTrackHasActiveCampaign } from "./pitch-campaigns.ts";
 import {
   confidenceForEmailSource,
   detectSubmissionCost,
@@ -255,17 +254,6 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
     if (trackErr || !track) return { status: 404, data: { error: "Track not found" } };
 
     trackName = String(track.name ?? "").trim();
-
-    // Campaign gate: a song is pitchable ONLY if the artist deliberately
-    // activated a campaign for it in the Pitch Portal. Enforced here (and in
-    // the legacy name-based path below) so no caller — cron, Telegram, agent,
-    // browser — can pitch an un-campaigned song.
-    try {
-      await assertTrackHasActiveCampaign(sb, { trackId });
-    } catch (e) {
-      return { status: 422, data: { error: (e as Error).message, needs_campaign: true, track_id: trackId } };
-    }
-
     const channel = pickChannel(row, channelOverride);
     if (!channel) return { status: 400, data: { error: "No outreach channel available (email, IG, or submission URL)" } };
     if (channel !== "email") {
@@ -355,33 +343,10 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
 
   const rc = row.research_context as Record<string, unknown> | null;
   const isPlacement = isWarmPlacementSource(rc?.source as string | undefined);
-  // Campaign gate (legacy name-based path). Previously this picked a song from
-  // the FULL catalogue, which is exactly the implicit "catalogue membership =
-  // pitch scope" behaviour the Pitch Portal exists to remove. Now the picker
-  // only ever chooses among songs with an active campaign, and if none exists
-  // we refuse rather than falling back to a hardcoded default track.
-  const campaigned = await activeCampaignTrackNames(sb);
-  const catalog = (await loadCatalogTracks(sb)).filter((t) =>
-    campaigned.has(String(t.name ?? "").trim().toLowerCase())
-  );
+  const catalog = await loadCatalogTracks(sb);
   if (!trackName) {
-    if (catalog.length === 0) {
-      return {
-        status: 422,
-        data: {
-          error: "No song has an active pitch campaign. Create one in the Pitch Portal before pitching.",
-          needs_campaign: true,
-        },
-      };
-    }
-    const pick = pickCatalogTrackForPlacement(row, catalog, catalog[0].name);
+    const pick = pickCatalogTrackForPlacement(row, catalog, catalog[0]?.name ?? "Designed For Me (Control)");
     trackName = pick.track;
-  }
-
-  try {
-    await assertTrackHasActiveCampaign(sb, { trackName });
-  } catch (e) {
-    return { status: 422, data: { error: (e as Error).message, needs_campaign: true, track_name: trackName } };
   }
 
   const channel = pickChannel(row, channelOverride);
@@ -2469,13 +2434,6 @@ export async function runCatalogueAdmin(body: Record<string, unknown>, sb: Supab
 
     const { data: track } = await sb.from("tracks").select("*, track_categories(category_id)").eq("id", trackId).single();
     if (!track) return { status: 404, data: { error: "Track not found" } };
-
-    // Only recommend targets for songs the artist actually chose to pitch.
-    try {
-      await assertTrackHasActiveCampaign(sb, { trackId });
-    } catch (e) {
-      return { status: 422, data: { error: (e as Error).message, needs_campaign: true, track_id: trackId } };
-    }
     const trackCatIds = (track.track_categories ?? []).map((tc: { category_id: string }) => tc.category_id);
 
     const availablePlatforms: string[] = [];

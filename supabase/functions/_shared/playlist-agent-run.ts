@@ -44,6 +44,10 @@ import { isWarmPlacementSource } from "./placement-sources.ts";
 import {
   placementMatch,
   compareTargets,
+  categoryGate,
+  categoryOverlapCount,
+  trackGenre,
+  targetGenre,
   featuringTrackNames,
   normalizeTrackName,
   SFA_PLACEHOLDER_TRACK,
@@ -266,12 +270,26 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
       .map((tc) => tc.categories).filter(Boolean);
     const playlistCats = ((row.playlist_categories ?? []) as { categories: { id: string; slug: string; label: string } | null }[])
       .map((pc) => pc.categories).filter(Boolean);
-    const overlap = trackCatIds.filter((id) => playlistCatIds.includes(id));
-    if (overlap.length === 0 && !Boolean(body.override_category_check)) {
+    // Category/genre gate. An ABSENT category is missing information, not a
+    // disqualifier — only a positive genre contradiction rejects. See categoryGate
+    // for why (empty playlist_categories across the pool was zeroing out sends).
+    const gate = categoryGate({
+      trackCatIds,
+      targetCatIds: playlistCatIds,
+      trackGenre: trackGenre({
+        categories: trackCats as { slug?: string | null; label?: string | null }[],
+        name: track.name as string | null,
+        short_pitch: track.short_pitch as string | null,
+        pitch_angle: track.pitch_angle as string | null,
+      }),
+      targetGenre: targetGenre(row as Record<string, unknown>),
+    });
+    if (!gate.pass && !Boolean(body.override_category_check)) {
       return {
         status: 422,
         data: {
           error: "Category mismatch",
+          reason: gate.reason,
           track_categories: trackCats,
           playlist_categories: playlistCats,
         },
@@ -291,8 +309,22 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
       return { status: 422, data: { error: "Warm placement found but prior track name missing" } };
     }
 
-    const shortPitch = String(track.short_pitch ?? track.pitch_angle ?? "").trim()
-      || "Melodic rap with a deep-house groove — late-night luxury energy.";
+    // NEVER fabricate genre copy. The old fallback hardcoded "Melodic rap with a
+    // deep-house groove" for ANY track, which would have described the club record
+    // "Meditate" — and every future non-rap release — to curators as something it
+    // is not. Refuse to draft instead; authoring short_pitch is a one-field fix.
+    const shortPitch = String(track.short_pitch ?? track.pitch_angle ?? "").trim();
+    if (!shortPitch) {
+      return {
+        status: 422,
+        data: {
+          error:
+            `Track "${trackName}" has no short_pitch (or pitch_angle) — refusing to draft ` +
+            `rather than invent genre copy. Set tracks.short_pitch for this track and retry.`,
+          track_id: trackId,
+        },
+      };
+    }
     const rendered = renderPitchBody({
       curatorName: (row.curator_name as string | null)?.trim() || "there",
       playlistName: (row.playlist_name as string | null)?.trim() || "your playlist",
@@ -2432,9 +2464,19 @@ export async function runCatalogueAdmin(body: Record<string, unknown>, sb: Supab
     const mode = String(body.mode ?? "warm_aligned");
     const limit = Math.min(200, Math.max(1, Number(body.limit) || 50));
 
-    const { data: track } = await sb.from("tracks").select("*, track_categories(category_id)").eq("id", trackId).single();
+    const { data: track } = await sb.from("tracks")
+      .select("*, track_categories(category_id, categories(slug, label))").eq("id", trackId).single();
     if (!track) return { status: 404, data: { error: "Track not found" } };
     const trackCatIds = (track.track_categories ?? []).map((tc: { category_id: string }) => tc.category_id);
+    // Genre the TRACK declares — used as the fallback when category columns are
+    // empty, so an uncategorised pool no longer selects to nothing.
+    const tGenre = trackGenre({
+      categories: ((track.track_categories ?? []) as { categories: { slug?: string; label?: string } | null }[])
+        .map((tc) => tc.categories).filter(Boolean) as { slug?: string; label?: string }[],
+      name: track.name as string | null,
+      short_pitch: track.short_pitch as string | null,
+      pitch_angle: track.pitch_angle as string | null,
+    });
 
     const availablePlatforms: string[] = [];
     if (track.spotify_url) availablePlatforms.push("spotify");
@@ -2469,6 +2511,8 @@ export async function runCatalogueAdmin(body: Record<string, unknown>, sb: Supab
     type Scored = {
       row: Record<string, unknown>;
       overlap: number;
+      categoryOk: boolean;
+      gateReason: string;
       warm: boolean;
       placement: boolean;
       placementTrack: string | null;
@@ -2477,7 +2521,16 @@ export async function runCatalogueAdmin(body: Record<string, unknown>, sb: Supab
     };
     const scored: Scored[] = rows.map((r: Record<string, unknown>) => {
       const pcs = (r.playlist_categories ?? []) as { category_id: string }[];
-      const overlap = pcs.filter((pc) => trackCatIds.includes(pc.category_id)).length;
+      const targetCatIds = pcs.map((pc) => pc.category_id);
+      const overlap = categoryOverlapCount(trackCatIds, targetCatIds);
+      // Same gate the composer uses, so the recommender can't hand downstream a
+      // target that draft_pitch would then 422 on (and vice versa).
+      const gate = categoryGate({
+        trackCatIds,
+        targetCatIds,
+        trackGenre: tGenre,
+        targetGenre: targetGenre(r),
+      });
       // PRIMARY warm signal: this playlist already features THIS track. Matched
       // case- and whitespace-insensitively against research_context.featuring_tracks,
       // ignoring the SFA CSV placeholder. This is what makes the recommender
@@ -2486,6 +2539,8 @@ export async function runCatalogueAdmin(body: Record<string, unknown>, sb: Supab
       return {
         row: r,
         overlap,
+        categoryOk: gate.pass,
+        gateReason: gate.reason,
         warm: warmPids.has(r.playlist_id as string),
         placement: pm.matched,
         placementTrack: pm.matchedName,
@@ -2502,11 +2557,13 @@ export async function runCatalogueAdmin(body: Record<string, unknown>, sb: Supab
     if (mode === "warm_aligned") {
       // A direct placement qualifies a row on its own — no longer hard-require
       // category overlap (warm placements carry empty playlist_categories).
-      filtered = eligible.filter((s) => s.warm && (s.placement || s.overlap > 0));
+      filtered = eligible.filter((s) => s.warm && (s.placement || s.categoryOk));
     } else if (mode === "new_cold") {
-      // Exclude already-pitched rows and inactive rows
+      // Exclude already-pitched rows and inactive rows. Gated on categoryOk, NOT
+      // on `overlap > 0`: the verified pool carries empty playlist_categories, so
+      // requiring a positive overlap here selected zero cold targets.
       filtered = eligible.filter((s) =>
-        !s.warm && s.overlap > 0 &&
+        !s.warm && s.categoryOk &&
         (s.row.pitch_status !== "pitched") &&
         (s.row.is_active !== false)
       );
@@ -2529,6 +2586,7 @@ export async function runCatalogueAdmin(body: Record<string, unknown>, sb: Supab
         rows: filtered.slice(0, limit).map((s) => ({
           ...s.row,
           _overlap: s.overlap,
+          _category_gate: s.gateReason,
           _warm: s.warm,
           _placement_match: s.placement,
           _placement_track: s.placementTrack,

@@ -7,6 +7,10 @@ import {
   featuringTrackNames,
   placementMatch,
   compareTargets,
+  categoryGate,
+  categoryOverlapCount,
+  trackGenre,
+  targetGenre,
 } from "./placement-match.ts";
 
 const rowWith = (featuring: unknown) => ({ research_context: { featuring_tracks: featuring } });
@@ -80,4 +84,86 @@ Deno.test("compareTargets: within same placement/overlap, lower tier then higher
   const moreFollowers = { placement: false, overlap: 2, tier: 1, followers: 5000 };
   const fewerFollowers = { placement: false, overlap: 2, tier: 1, followers: 50 };
   assertEquals(compareTargets(moreFollowers, fewerFollowers) < 0, true);
+});
+
+// --- category gate --------------------------------------------------------
+// Regression cover for the live outage: an empty playlist_categories across the
+// verified pool rejected 27/31 deep-house targets for "Designed For Me (Control)"
+// and 100% of targets for "Meditate" with "Category mismatch".
+
+Deno.test("categoryGate: empty-vs-empty passes (the outage case)", () => {
+  const g = categoryGate({ trackCatIds: [], targetCatIds: [], trackGenre: null, targetGenre: null });
+  assertEquals(g.pass, true);
+  assertEquals(g.reason, "no_category_signal");
+});
+
+Deno.test("categoryGate: target with NO category still passes on genre agreement", () => {
+  // The 27 rejected DFM targets: genre-correct house rows, empty category column.
+  const g = categoryGate({
+    trackCatIds: ["cat-house"], targetCatIds: [], trackGenre: "house", targetGenre: "house",
+  });
+  assertEquals(g.pass, true);
+  assertEquals(g.reason, "genre_match");
+});
+
+Deno.test("categoryGate: track with no category at all passes (the Meditate case)", () => {
+  const g = categoryGate({
+    trackCatIds: [], targetCatIds: ["cat-house"], trackGenre: null, targetGenre: "house",
+  });
+  assertEquals(g.pass, true);
+  assertEquals(g.reason, "no_category_signal");
+});
+
+Deno.test("categoryGate: explicit overlap short-circuits to a pass", () => {
+  const g = categoryGate({
+    trackCatIds: ["a", "b"], targetCatIds: ["b"], trackGenre: "house", targetGenre: "rap",
+  });
+  assertEquals(g.pass, true);
+  assertEquals(g.reason, "category_overlap");
+});
+
+Deno.test("categoryGate: a REAL genre conflict is still rejected", () => {
+  const g = categoryGate({
+    trackCatIds: ["cat-rap"], targetCatIds: ["cat-house"], trackGenre: "rap", targetGenre: "house",
+  });
+  assertEquals(g.pass, false);
+  assertEquals(g.reason, "genre_conflict");
+});
+
+Deno.test("categoryGate: no overlap but agreeing genres passes", () => {
+  const g = categoryGate({
+    trackCatIds: ["deep-house"], targetCatIds: ["tech-house"], trackGenre: "house", targetGenre: "house",
+  });
+  assertEquals(g.pass, true);
+  assertEquals(g.reason, "genre_match");
+});
+
+Deno.test("categoryOverlapCount counts shared ids", () => {
+  assertEquals(categoryOverlapCount(["a", "b", "c"], ["b", "c", "d"]), 2);
+  assertEquals(categoryOverlapCount([], ["a"]), 0);
+});
+
+Deno.test("targetGenre reads the stamped sweep lane first", () => {
+  assertEquals(targetGenre({ lane: "house_club", playlist_name: "Untitled" }), "house");
+  assertEquals(targetGenre({ lane: "rap_trap_hype", playlist_name: "Untitled" }), "rap");
+});
+
+Deno.test("targetGenre falls back to the row's own text when lane is absent", () => {
+  assertEquals(targetGenre({ playlist_name: "Deep House Grooves" }), "house");
+  assertEquals(targetGenre({ playlist_name: "Trap Nation", curator_name: "" }), "rap");
+  // No signal must stay null, not become a guess.
+  assertEquals(targetGenre({ playlist_name: "Chill Vibes" }), null);
+});
+
+Deno.test("trackGenre: Meditate is a CLUB record despite the name", () => {
+  // Named like a meditation track; the category/copy is what decides.
+  assertEquals(
+    trackGenre({ name: "Meditate", categories: [{ slug: "house-club", label: "House / Club" }] }),
+    "house",
+  );
+});
+
+Deno.test("trackGenre falls back to short_pitch copy when uncategorised", () => {
+  assertEquals(trackGenre({ name: "Meditate", short_pitch: "A late-night house club cut." }), "house");
+  assertEquals(trackGenre({ name: "Some Song" }), null);
 });

@@ -14,7 +14,12 @@ const NON_BULK_METHODS = new Set(["algorithmic", "distributor_pitch"]);
 // this is keyed by track_name so one song's sends NEVER consume another's budget. There
 // is deliberately NO aggregate "N songs × 20" ceiling — N (songs pitched per day) grows
 // over time, and per-song budgets must add capacity, not split a fixed pool.
-const PER_SONG_DAILY_PITCHES = 20;
+// Raised 20 -> 35 to clear the backlog the category-matching bug created: 31 eligible
+// deep-house targets for "Designed For Me (Control)" were rejected rather than sent, and
+// all 31 are meant to go out in one catch-up run. This is a deliberate raise of the
+// PRODUCT cap, not a bypass — both this cap and MAX_DAILY_PITCHES_GLOBAL below are still
+// enforced on every send. Drop back to 20 once the backlog is clear.
+const PER_SONG_DAILY_PITCHES = 35;
 // GLOBAL deliverability guardrail — NOT a product cap. Cold email from one sending domain
 // has a hard reputation ceiling regardless of per-song logic; this protects
 // playlists@fendifrost.com from a spike that torches deliverability. Sized to current

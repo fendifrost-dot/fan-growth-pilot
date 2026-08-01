@@ -108,10 +108,33 @@ to end. Weight-tuning from outcomes is the Phase-6 learning step; the plumbing e
 - Phase 2 discovery connectors will translate the existing playlist/radio/fan
   pipelines into `growth_opportunities` rather than replacing them.
 
+## 4.5 Outreach model alignment (Organization → Contact → Conversation → Message → Outcome)
+
+The outreach / reply-tracking / contact-intelligence layer that Phases 2+ will build
+uses the model **Organization → Contact → Conversation → Message → Outcome** — which is
+the same entity/relationship/outcome model this engine already has. Phase 1 makes the
+schema **compatible** with it (migration §8.5) so that layer builds later **without a
+redesign**. Nothing here is populated by Phase 1 code; it is shape, not behavior.
+
+| Concept | Where it lives (Phase-1 shape) | Populated in Phase 1? |
+|---|---|---|
+| **Organization ↔ Contact** | `growth_entities.entity_type` gains `organization` + `contact`; `growth_entities.parent_entity_id` links a contact (email/handle/form) to its org. Outreach hangs off the **contact**, not the raw address. | Supported (API/seed can set it); a test asserts it |
+| **Conversation** | new `growth_conversations` (thread id, channel, subject, `external_thread_id`, status, `last_message_at`) | Table exists; unpopulated |
+| **Message** | `growth_relationship_events` made message-capable: `conversation_id`, `external_message_id`, `in_reply_to`, `subject`, `body_preview` (direction + channel already existed). A message is an event in a conversation. | Columns exist; unpopulated |
+| **Outcome "why"** | `opportunity_outcomes.outcome_category` (nullable, CHECK): `no_response, rejected, redirect, wrong_contact, needs_follow_up, interested, requested_future_music, playlist_added, radio, press, collaboration, fan, other` | Column exists; `outcome_type` remains the lifecycle marker |
+| **Contact intelligence** | new `growth_contact_intelligence` (one row per contact): status, confidence, `contact_quality_score`, preferred/secondary/alternative channel, `last_successful_reply_at`, `last_bounce_at`, `avg_response_days`, `redirect_history` | Table exists; **unpopulated (room, not build)** |
+
+**Explicit extension points (deliberately NOT built in Phase 1):** many-to-many entity
+membership (a freelance journalist across several publications) → a future
+`growth_entity_relationships('member_of')` edge table; conversation/message ingestion
+from email/IG/Telegram webhooks; and the contact-intelligence scoring job that fills
+`growth_contact_intelligence`. These are Phase 2+ and are marked NOT_STARTED, not faked.
+
 ## 5. Security / RLS
 
-All seven new tables use the repo's **backend-table pattern** (RLS on; service-role
-full access; anon and authenticated **denied** direct access). The browser cannot read
+All nine new tables (seven core + `growth_conversations` and
+`growth_contact_intelligence` from §4.5) use the repo's **backend-table pattern** (RLS
+on; service-role full access; anon and authenticated **denied** direct access). The browser cannot read
 or write them directly — only the JWT-gated edge function can, and it authorizes every
 request. No secrets are committed; `.env` remains untracked-by-intent and is never
 staged.

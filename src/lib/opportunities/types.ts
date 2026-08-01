@@ -6,6 +6,10 @@
 // truth for the deterministic logic, no drift.
 
 export const ENTITY_TYPES = [
+  // organization/contact anchor the Organization -> Contact hierarchy: a contact
+  // (email/handle/form) is a child of an organization (see migration §8.5).
+  "organization",
+  "contact",
   "playlist",
   "creator",
   "conversation",
@@ -107,6 +111,8 @@ export interface GrowthEntityInput {
   playlist_target_id?: string | null;
   radio_target_id?: string | null;
   relationship_id?: string | null;
+  /** Organization this entity belongs to (a contact's parent org). */
+  parent_entity_id?: string | null;
 }
 
 export interface GrowthOpportunityInput {

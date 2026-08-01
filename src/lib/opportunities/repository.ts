@@ -102,6 +102,7 @@ export function createOpportunityRepository(db: SupabaseLike) {
       playlist_target_id: input.playlist_target_id ?? null,
       radio_target_id: input.radio_target_id ?? null,
       relationship_id: input.relationship_id ?? null,
+      parent_entity_id: input.parent_entity_id ?? null,
     };
     const { data, error } = await db.from("growth_entities").insert(row).select("*").single();
     if (error) {

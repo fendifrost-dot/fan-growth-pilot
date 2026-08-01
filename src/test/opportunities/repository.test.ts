@@ -24,6 +24,23 @@ describe("repository — entity find-or-create (normalization + dedupe)", () => 
   });
 });
 
+describe("repository — Organization -> Contact hierarchy", () => {
+  it("a contact entity hangs off its parent organization", async () => {
+    const client = createStubClient();
+    const repo = createOpportunityRepository(client as never);
+    const org = await repo.findOrCreateEntity({ entity_type: "organization", name: "Anjuna" });
+    const contact = await repo.findOrCreateEntity({
+      entity_type: "contact",
+      name: "demos@anjunabeats.com",
+      platform: "email",
+      platform_external_id: "demos@anjunabeats.com",
+      parent_entity_id: org.entity.id,
+    });
+    expect(contact.entity.entity_type).toBe("contact");
+    expect(contact.entity.parent_entity_id).toBe(org.entity.id);
+  });
+});
+
 describe("repository — duplicate opportunity prevention", () => {
   it("a second create with the same entity/type/song is deduped, not duplicated", async () => {
     const { client, repo } = seededRepo();

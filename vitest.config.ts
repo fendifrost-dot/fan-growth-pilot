@@ -9,6 +9,9 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    // Keep vitest's defaults AND drop macOS AppleDouble sidecars ("._*") that
+    // appear when the repo lives on a non-HFS volume and fail to parse as tests.
+    exclude: ["**/node_modules/**", "**/dist/**", "**/._*"],
   },
   resolve: {
     alias: { "@": path.resolve(__dirname, "./src") },

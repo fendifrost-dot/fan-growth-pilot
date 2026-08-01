@@ -13,8 +13,8 @@ Run from the repo root.
 |---|---|---|
 | `npm run typecheck` | Frontend + service layer type-safe (`tsc -p tsconfig.app.json --noEmit`) | **PASS** (exit 0) |
 | `deno check supabase/functions/opportunities-api/index.ts` | The edge function + its cross-tree import of the shared service layer resolve and type-check under Deno | **PASS** (exit 0) |
-| `npm run test` | Full vitest suite | 142 passed, **51/51 Opportunity Engine tests pass**; 2 pre-existing failures unrelated to this work (see note) |
-| `npx vitest run src/test/opportunities` | Just the Opportunity Engine tests | **6 files, 51 tests, all pass** |
+| `npm run test` | Full vitest suite | 143 passed, **52/52 Opportunity Engine tests pass**; 2 pre-existing failures unrelated to this work (see note) |
+| `npx vitest run src/test/opportunities` | Just the Opportunity Engine tests | **7 files, 52 tests, all pass** — incl. the seeded end-to-end integration test |
 | `npm run lint:ci` | Opportunity Engine source lints clean | **PASS** (exit 0) |
 | `npm run build` | Production build compiles (inbox included) | **PASS** |
 
@@ -41,6 +41,43 @@ Run from the repo root.
 | Relationship aggregation | `src/test/opportunities/relationship-memory.test.ts` + `repository.test.ts` |
 | Outcome recording | `src/test/opportunities/outcomes.test.ts` + `repository.test.ts` |
 | RLS-sensitive route auth | `src/test/opportunities/access.test.ts` |
+| **Seeded end-to-end integration** | `src/test/opportunities/integration.test.ts` |
+
+---
+
+## A′. Integration proof (MANDATORY — the seeded loop that actually runs)
+
+Individual tests prove the pieces work; this proves they are **wired together**. Two
+artifacts, both real:
+
+1. **Automated integration test** — `src/test/opportunities/integration.test.ts`.
+   Runs today under `npx vitest run src/test/opportunities/integration.test.ts` (no
+   deploy). It drives ONE seeded workflow through the exact repository/service code
+   the edge function calls:
+
+   `song (tracks + song_intelligence_profiles + approved song_clips) → findOrCreateEntity
+   → createOpportunity (scored: audience_match 90, composite > 0) → listOpportunities
+   (the inbox's data source, with the entity embedded on the card) → generateAction
+   (draft references the real song + playlist) → transition approve → contacted
+   (audited in opportunity_actions) → recordOutcome responded → recordOutcome converted
+   → growth_relationship_events gains "replied" + "converted" rows → relationship memory
+   aggregates and feeds back into the opportunity's relationship_score (it rises from 0)
+   → status = converted → stats reflect the live row.`
+
+   Every arrow is an assertion. This is the closed loop: **outcome → relationship
+   history → memory → score**.
+
+2. **Live seed script** — `supabase/seed/opportunity_engine_demo_seed.sql`. Run it in
+   the Lovable SQL editor **after** the migration to place ONE real, coherent row in
+   the live inbox (`/admin/opportunities`) before Phase 2 discovery exists. Its score
+   components are the exact output of `scoring.ts` for the documented inputs (verified
+   via `deno eval`), not decorative numbers. Idempotent; not auto-applied (lives under
+   `supabase/seed/`, not `supabase/migrations/`); removable by `dedupe_key`.
+
+> **Live-data guarantee:** the inbox renders **database rows only** — there are no
+> hard-coded demo cards in `AdminOpportunities.tsx`. If a card is on screen, it came
+> from `growth_opportunities` via the authenticated API. Phase 1 populates that table
+> manually / via this seed / via the API; Phase 2 adds automated discovery.
 
 ---
 
@@ -63,6 +100,10 @@ truth (`supabase/migrations/20260801000000_opportunity_engine_phase1.sql`).
 3. **Regenerate `src/integrations/supabase/types.ts`** (Lovable) so the new tables are
    typed for any future direct client access. Phase 1 does **not** depend on this — the
    inbox talks to the edge function, not PostgREST directly.
+4. **(Optional) Seed one real row** for the live inbox: run
+   `supabase/seed/opportunity_engine_demo_seed.sql` in the Lovable SQL editor. Then open
+   `/admin/opportunities` and confirm the "Pitch Designed For Me to Deep House Vibes"
+   card appears with its component scores — proof of live data end to end.
 
 ---
 

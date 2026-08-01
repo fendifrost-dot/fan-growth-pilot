@@ -17,10 +17,8 @@ import {
   classifyRoute,
   createOpportunityRepository,
   decideAccess,
-  generateMessage,
   type OppActor,
   parseResource,
-  recommendAction,
 } from "../../../src/lib/opportunities/index.ts";
 
 const corsHeaders = {
@@ -167,38 +165,8 @@ Deno.serve(async (req) => {
           if (!body.outcome_type) return json({ error: "Missing outcome_type" }, 400);
           return json(await repo.recordOutcome(id, body, act));
         }
-        case "generate-action": {
-          const opp = await repo.getOpportunity(id);
-          if (!opp) return json({ error: "Not found" }, 404);
-          let songName: string | null = null;
-          if (opp.recommended_song_id) {
-            const { data: track } = await admin
-              .from("tracks")
-              .select("name")
-              .eq("id", opp.recommended_song_id)
-              .maybeSingle();
-            songName = track?.name ?? null;
-          }
-          const entity = opp.entity ?? {};
-          const recommended_action = recommendAction(opp.opportunity_type);
-          const { message } = generateMessage({
-            entityName: entity.name,
-            entityType: entity.entity_type,
-            songName,
-            clipStart: opp.recommended_start_seconds,
-            clipEnd: opp.recommended_end_seconds,
-            sourceUrl: opp.source_url,
-            whyDiscovered: opp.why_discovered,
-          });
-          const updated = await repo.patchOpportunity(id, {
-            recommended_action,
-            generated_message: message,
-          });
-          await repo.recordAction(id, "generate_message", act, {
-            detail: { recommended_action },
-          });
-          return json(updated);
-        }
+        case "generate-action":
+          return json(await repo.generateAction(id, act));
         default:
           return json({ error: `Unknown action: ${sub}` }, 404);
       }

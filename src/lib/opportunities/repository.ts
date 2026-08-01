@@ -20,8 +20,19 @@ import { compositeScore, computeScoreComponents, DEFAULT_WEIGHTS } from "./scori
 import { entityDedupeKey, normalizeExternalId, normalizePlatform, opportunityDedupeKey } from "./normalization.ts";
 import { aggregateRelationship, EVENT_WEIGHTS } from "./relationship-memory.ts";
 import { assertTransition, deriveOutcomeState, outcomeScoreSignals } from "./outcomes.ts";
+import { generateMessage, recommendAction } from "./messaging.ts";
 
 export const SCORE_VERSION = "det-v1";
+
+/** Which relationship event an opportunity outcome implies (drives memory). */
+const OUTCOME_TO_REL_EVENT: Record<string, string> = {
+  contacted: "contacted",
+  responded: "replied",
+  positive: "positive_reply",
+  negative: "negative_reply",
+  converted: "converted",
+  closed_won: "converted",
+};
 
 // Minimal structural surface of supabase-js we actually use. `any` on the builder
 // keeps the module portable (no URL import of the concrete PostgREST types).
@@ -230,6 +241,45 @@ export function createOpportunityRepository(db: SupabaseLike) {
     return data;
   }
 
+  /**
+   * Generate a recommended action + draft message for an opportunity and store
+   * them. Same code the API's generate-action route calls (keeps the edge
+   * function thin and this path unit-tested).
+   */
+  async function generateAction(id: string, actor: Actor) {
+    const opp = await getOpportunity(id);
+    if (!opp) throw new Error("Opportunity not found");
+
+    let songName: string | null = null;
+    if (opp.recommended_song_id) {
+      const { data: track } = await db
+        .from("tracks")
+        .select("name")
+        .eq("id", opp.recommended_song_id)
+        .maybeSingle();
+      songName = track?.name ?? null;
+    }
+
+    const entity = opp.entity ?? {};
+    const recommended_action = recommendAction(opp.opportunity_type);
+    const { message } = generateMessage({
+      entityName: entity.name,
+      entityType: entity.entity_type,
+      songName,
+      clipStart: opp.recommended_start_seconds,
+      clipEnd: opp.recommended_end_seconds,
+      sourceUrl: opp.source_url,
+      whyDiscovered: opp.why_discovered,
+    });
+
+    const updated = await patchOpportunity(id, {
+      recommended_action,
+      generated_message: message,
+    });
+    await recordAction(id, "generate_message", actor, { detail: { recommended_action } });
+    return updated;
+  }
+
   async function recordAction(
     id: string,
     action_type: string,
@@ -297,6 +347,22 @@ export function createOpportunityRepository(db: SupabaseLike) {
       detail: { outcome_id: inserted?.id },
     });
 
+    // An outcome updates RELATIONSHIP HISTORY: map it to a relationship event so
+    // the entity's memory (and thus its relationship_score on recalc) reflects
+    // what actually happened. Idempotent on (source, source_id, event_type).
+    const relEventType = OUTCOME_TO_REL_EVENT[outcome.outcome_type];
+    if (relEventType && current.entity_id) {
+      await recordRelationshipEvent(current.entity_id, {
+        event_type: relEventType,
+        opportunity_id: id,
+        relationship_id: current.entity?.relationship_id ?? undefined,
+        channel: (outcome as { channel?: string }).channel,
+        direction: "inbound",
+        source: "opportunity_outcome",
+        source_id: inserted?.id,
+      });
+    }
+
     // Advance status to the furthest realized point, if it's a legal move.
     const { data: outcomes } = await db
       .from("opportunity_outcomes")
@@ -329,12 +395,20 @@ export function createOpportunityRepository(db: SupabaseLike) {
       .eq("opportunity_id", id);
     const signals = outcomeScoreSignals((outcomes ?? []) as OutcomeRow[]);
 
+    // Pull the entity's live relationship memory into the relationship_score
+    // component, so accrued history (from outcomes/events) actually moves the
+    // composite. This is the closed loop: outcome -> event -> memory -> score.
+    const rel = current.entity_id
+      ? await aggregateRelationshipForEntity(current.entity_id)
+      : { score: current.relationship_score ?? 0 };
+
     // Recompute components from the ORIGINAL component values, layering realized
-    // outcome signals on top. We keep the original components as the base rather
-    // than re-deriving from scratch (we no longer hold the raw discovery signals).
+    // outcome signals + relationship memory on top. We keep the original
+    // components as the base rather than re-deriving from raw discovery signals
+    // (which we no longer hold).
     const base = {
       audience_match_score: current.audience_match_score ?? 50,
-      relationship_score: current.relationship_score ?? 0,
+      relationship_score: rel.score,
       reach_score: current.reach_score ?? 0,
       response_probability: signals.warmth != null ? signals.warmth * 100 : current.response_probability ?? 0,
       conversion_probability: signals.historicConversion != null
@@ -438,6 +512,7 @@ export function createOpportunityRepository(db: SupabaseLike) {
     getOpportunity,
     listOpportunities,
     patchOpportunity,
+    generateAction,
     recordAction,
     transition,
     recordOutcome,

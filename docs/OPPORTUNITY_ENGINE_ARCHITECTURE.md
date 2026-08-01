@@ -88,8 +88,14 @@ can see *why*. Weights are configurable (`DEFAULT_WEIGHTS`, sum 1.00, but the bl
 normalizes by the actual sum). `effort` and `risk` are "bad-is-high" and inverted in
 the blend. Absent signals fall back to documented neutrals — the engine never invents
 data. Human overrides pin a score (`score_overridden`/`manual_score`) while retaining
-the computed components. Outcomes feed `recalcScore` so the number tracks reality —
-the seed of the Phase-6 learning loop. There is **no** ML model and none is claimed.
+the computed components. There is **no** ML model and none is claimed.
+
+**The closed loop (wired, not aspirational).** Recording an outcome writes a
+`growth_relationship_event` mapped from the outcome type; `recalcScore` then
+aggregates the entity's relationship memory back into the `relationship_score`
+component, so the composite moves with real history: **outcome → relationship event →
+memory → score**. `src/test/opportunities/integration.test.ts` asserts this loop end
+to end. Weight-tuning from outcomes is the Phase-6 learning step; the plumbing exists now.
 
 ## 4. Reuse (not rebuild)
 

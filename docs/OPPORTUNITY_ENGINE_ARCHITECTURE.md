@@ -108,33 +108,59 @@ to end. Weight-tuning from outcomes is the Phase-6 learning step; the plumbing e
 - Phase 2 discovery connectors will translate the existing playlist/radio/fan
   pipelines into `growth_opportunities` rather than replacing them.
 
-## 4.5 Outreach model alignment (Organization → Contact → Conversation → Message → Outcome)
+## 4.5 Outreach model alignment (Organization → Conversation → Interaction → Outcome)
 
-The outreach / reply-tracking / contact-intelligence layer that Phases 2+ will build
-uses the model **Organization → Contact → Conversation → Message → Outcome** — which is
-the same entity/relationship/outcome model this engine already has. Phase 1 makes the
-schema **compatible** with it (migration §8.5) so that layer builds later **without a
-redesign**. Nothing here is populated by Phase 1 code; it is shape, not behavior.
+The outreach / reply-tracking / org-intelligence layer that Phases 2+ will build uses
+the refined model **Organization → Conversation → Interaction → Outcome**, with
+intelligence at the **organization** level. Phase 1 makes the schema **compatible**
+with it (migration §8.5) so that layer builds later **without a redesign**. Nothing
+here is populated by Phase 1 code; it is shape, not behavior. Key stances the schema
+now enforces:
+
+- **Interaction is polymorphic, not "message/email."** Email is one `interaction_type`
+  among `instagram_dm, telegram, web_form, reddit, youtube_comment, playlist_submission,
+  phone, in_person, event, note`. No column is email-shaped.
+- **Conversation ≠ thread.** A conversation is the *business relationship*, its own
+  entity with its own id; a Gmail thread id is a per-interaction detail
+  (`external_thread_ref`), never the conversation's identity. One conversation spans
+  email → redirect → web form → IG DM → acceptance.
+- **Intelligence is organization-level.** Each email/handle is one *observation*
+  feeding the org record, not an identity.
+- **Quality is decomposed, and scores decay.** Eight components are stored and the
+  score is computed from them; `last_computed_at` + input timestamps make decay
+  computable — no frozen number.
+- **Provenance + explainability everywhere.** Score records carry reason, confidence,
+  human-override, and a per-component +/- `score_contributions` breakdown.
+- **Terminal-vs-open outcomes + a universal 5-way match status** (`matched, partial,
+  unknown, needs_review, rejected`) so "not yet" is not treated as failure and
+  "unknown" is data.
 
 | Concept | Where it lives (Phase-1 shape) | Populated in Phase 1? |
 |---|---|---|
-| **Organization ↔ Contact** | `growth_entities.entity_type` gains `organization` + `contact`; `growth_entities.parent_entity_id` links a contact (email/handle/form) to its org. Outreach hangs off the **contact**, not the raw address. | Supported (API/seed can set it); a test asserts it |
-| **Conversation** | new `growth_conversations` (thread id, channel, subject, `external_thread_id`, status, `last_message_at`) | Table exists; unpopulated |
-| **Message** | `growth_relationship_events` made message-capable: `conversation_id`, `external_message_id`, `in_reply_to`, `subject`, `body_preview` (direction + channel already existed). A message is an event in a conversation. | Columns exist; unpopulated |
-| **Outcome "why"** | `opportunity_outcomes.outcome_category` (nullable, CHECK): `no_response, rejected, redirect, wrong_contact, needs_follow_up, interested, requested_future_music, playlist_added, radio, press, collaboration, fan, other` | Column exists; `outcome_type` remains the lifecycle marker |
-| **Contact intelligence** | new `growth_contact_intelligence` (one row per contact): status, confidence, `contact_quality_score`, preferred/secondary/alternative channel, `last_successful_reply_at`, `last_bounce_at`, `avg_response_days`, `redirect_history` | Table exists; **unpopulated (room, not build)** |
+| **Organization ↔ Contact** | `growth_entities.entity_type` gains `organization` + `contact`; `parent_entity_id` links a contact (an observation) to its org | Supported; a test asserts it |
+| **Conversation** (business relationship) | new `growth_conversations` (own id, `entity_id`=org, `subject`, `status`, `resolution_class`, `last_interaction_at`) — **no** channel/thread-id identity | Table exists; unpopulated |
+| **Interaction** (polymorphic) | new `growth_interactions` (`interaction_type` enum, `direction`, `external_thread_ref`, `external_message_id`, `in_reply_to`, `match_status`, `payload`) | Table exists; unpopulated |
+| **Outcome "why" + terminal-vs-open** | `opportunity_outcomes.outcome_category` (expanded CHECK, incl. open/deferred: `ignored, redirected, closed_submissions, paused, already_covered, interested_later, waiting_on_release, needs_follow_up`) + `resolution_class` (`terminal_negative/terminal_positive/open_deferred`) | Columns exist; `outcome_type` stays the lifecycle marker |
+| **Org intelligence (decomposed, decaying)** | new `growth_org_intelligence` (one per org): aliases, known contacts/forms, preferred channels/timing/formats, genres, blacklist, response history, **8 quality components** + computed `org_quality_score` + `score_contributions/confidence/reason` + `last_computed_at` & input timestamps | Table exists; **unpopulated (room, not build)** |
+| **Score provenance + match status** | `growth_opportunities`: `score_reason`, `score_confidence`, `score_contributions` (jsonb +/- breakdown), `match_status` (5-way); human-override already present | Columns exist/reserved; `score_contributions` populate is a trivial future step (scorer already emits components) |
 
 **Explicit extension points (deliberately NOT built in Phase 1):** many-to-many entity
-membership (a freelance journalist across several publications) → a future
-`growth_entity_relationships('member_of')` edge table; conversation/message ingestion
-from email/IG/Telegram webhooks; and the contact-intelligence scoring job that fills
-`growth_contact_intelligence`. These are Phase 2+ and are marked NOT_STARTED, not faked.
+membership (a freelance journalist across publications) → a future
+`growth_entity_relationships('member_of')` edge table; conversation/interaction
+ingestion from email/IG/Telegram/web-form webhooks; the org-intelligence scoring +
+decay job that fills `growth_org_intelligence`; and wiring `score_contributions` /
+`match_status` into the live scorer. These are Phase 2+ — marked NOT_STARTED, not faked.
+
+> **Supersedes the first alignment note:** the earlier `growth_contact_intelligence`
+> (contact-level) and the message-shaped columns on `growth_relationship_events` were
+> replaced, per review, by org-level `growth_org_intelligence` and the polymorphic
+> `growth_interactions` table before deploy — the migration is a single coherent file.
 
 ## 5. Security / RLS
 
-All nine new tables (seven core + `growth_conversations` and
-`growth_contact_intelligence` from §4.5) use the repo's **backend-table pattern** (RLS
-on; service-role full access; anon and authenticated **denied** direct access). The browser cannot read
+All ten new tables (seven core + `growth_conversations`, `growth_interactions`,
+`growth_org_intelligence` from §4.5) use the repo's **backend-table pattern** (RLS on;
+service-role full access; anon and authenticated **denied** direct access). The browser cannot read
 or write them directly — only the JWT-gated edge function can, and it authorizes every
 request. No secrets are committed; `.env` remains untracked-by-intent and is never
 staged.

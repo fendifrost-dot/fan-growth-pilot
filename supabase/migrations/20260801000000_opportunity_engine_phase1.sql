@@ -365,104 +365,190 @@ create trigger trg_opportunity_outcomes_updated_at
   for each row execute function public.growth_set_updated_at();
 
 -- ---------------------------------------------------------------------------
--- 8.5 Outreach-model alignment: Organization -> Contact -> Conversation ->
---     Message -> Outcome.
+-- 8.5 Outreach-model alignment: Organization -> Conversation -> Interaction ->
+--     Outcome, with ORGANIZATION-level intelligence.
 -- ---------------------------------------------------------------------------
--- SCOPE NOTE: this section makes the schema COMPATIBLE with the outreach /
--- reply-tracking / contact-intelligence layer that Phases 2+ will build, without
--- building that layer now. Everything here is additive and nullable; Phase 1 code
--- does not populate the contact-intelligence table or conversations. It exists so
--- that layer can be built later WITHOUT a redesign. All statements are idempotent.
+-- SCOPE NOTE: this section only SHAPES the schema so the outreach / reply-tracking
+-- / org-intelligence layer that Phases 2+ will build can populate it WITHOUT a
+-- redesign. It builds NONE of that behavior now — Phase 1 code does not write
+-- conversations, interactions, or org intelligence. Everything is additive,
+-- nullable, and idempotent.
+--
+-- Refined model (per review):
+--   Organization --< Contact/handle/form  (child entities; each is one OBSERVATION)
+--   Organization --< Conversation         (the BUSINESS relationship, NOT a mail thread)
+--   Conversation --< Interaction          (POLYMORPHIC: email is one interaction_type)
+--   Opportunity  --< Outcome              (with a terminal-vs-open resolution axis)
+--   Organization --1 Org intelligence     (decomposed, decaying, provenance-tracked)
 
--- (a) Organization <-> Contact hierarchy. A contact (an email/handle/form) is a
---     CHILD of an organization entity; outreach hangs off the contact, not the raw
---     address. parent_entity_id covers the common single-parent case. The extension
---     point for many-to-many membership (e.g. a freelance journalist writing for
---     several publications) is a future growth_entity_relationships('member_of')
---     edge table — deliberately NOT built in Phase 1.
+-- (a) Organization <-> Contact hierarchy. A contact (email/handle/form) is a CHILD
+--     of an organization entity and is one OBSERVATION feeding the org, not the
+--     identity. parent_entity_id covers the single-parent case; many-to-many
+--     membership (a freelance journalist across publications) is a future
+--     growth_entity_relationships('member_of') edge table — NOT built in Phase 1.
 alter table public.growth_entities
   add column if not exists parent_entity_id uuid references public.growth_entities(id) on delete set null;
 create index if not exists growth_entities_parent_idx on public.growth_entities (parent_entity_id);
 
--- (b) Conversations: a multi-message, multi-channel THREAD hangs off a conversation,
---     not an email address. Messages are growth_relationship_events carrying the
---     message columns added below and pointing at a conversation_id.
+-- (b) Conversation = the BUSINESS relationship with an org. It is its OWN entity,
+--     identified by its own id — NEVER by a Gmail thread id. ONE conversation can
+--     span an email thread -> a redirect -> a web-form submission -> an IG DM -> an
+--     acceptance. Channel and provider thread ids live on the INTERACTION, not here.
 create table if not exists public.growth_conversations (
   id uuid primary key default gen_random_uuid(),
-  entity_id uuid not null references public.growth_entities(id) on delete cascade,
+  entity_id uuid not null references public.growth_entities(id) on delete cascade,  -- the org (or contact)
   opportunity_id uuid references public.growth_opportunities(id) on delete set null,
-  channel text,                                  -- email | instagram | form | telegram | ...
-  subject text,
-  external_thread_id text,                       -- provider thread/conversation id
+  subject text,                                  -- business subject, not a mail subject
   status text not null default 'open'
-    check (status in ('open','awaiting_reply','replied','closed')),
-  last_message_at timestamptz,
+    check (status in ('open','awaiting_reply','replied','stalled','closed')),
+  resolution_class text
+    check (resolution_class is null or resolution_class in
+      ('terminal_negative','terminal_positive','open_deferred')),
+  last_interaction_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 create index if not exists growth_conversations_entity_idx on public.growth_conversations (entity_id);
 create index if not exists growth_conversations_opp_idx on public.growth_conversations (opportunity_id);
-create unique index if not exists growth_conversations_external_uniq
-  on public.growth_conversations (channel, external_thread_id)
-  where external_thread_id is not null;
 
 drop trigger if exists trg_growth_conversations_updated_at on public.growth_conversations;
 create trigger trg_growth_conversations_updated_at
   before update on public.growth_conversations
   for each row execute function public.growth_set_updated_at();
 
--- (c) Make relationship events MESSAGE-capable (a message is an event of type
---     'message' inside a conversation). direction + channel already exist above.
-alter table public.growth_relationship_events
-  add column if not exists conversation_id uuid references public.growth_conversations(id) on delete set null,
-  add column if not exists external_message_id text,   -- provider Message-ID
-  add column if not exists in_reply_to text,           -- email In-Reply-To / parent msg id
-  add column if not exists subject text,
-  add column if not exists body_preview text;
-create index if not exists growth_rel_events_conversation_idx
-  on public.growth_relationship_events (conversation_id);
+-- (c) Interaction = ONE POLYMORPHIC touch inside a conversation. Email is just one
+--     interaction_type — the table/columns are NOT email-shaped. Provider ids (e.g.
+--     a Gmail thread/message id) are stored HERE as opaque refs, never as the
+--     conversation's identity. This is the layer under Conversation.
+create table if not exists public.growth_interactions (
+  id uuid primary key default gen_random_uuid(),
+  conversation_id uuid references public.growth_conversations(id) on delete cascade,
+  entity_id uuid references public.growth_entities(id) on delete set null,       -- the contact observed
+  opportunity_id uuid references public.growth_opportunities(id) on delete set null,
+  interaction_type text not null check (interaction_type in (
+    'email','instagram_dm','telegram','web_form','reddit','youtube_comment',
+    'playlist_submission','phone','in_person','event','note'
+  )),
+  direction text not null default 'outbound'
+    check (direction in ('inbound','outbound','system')),
+  occurred_at timestamptz not null default now(),
+  subject text,
+  body_preview text,
+  external_thread_ref text,     -- provider thread id (e.g. Gmail thread) — a DETAIL, not identity
+  external_message_id text,     -- provider message id
+  in_reply_to text,             -- parent message id / In-Reply-To
+  match_status text not null default 'unknown'
+    check (match_status in ('matched','partial','unknown','needs_review','rejected')),
+  payload jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  constraint growth_interactions_provider_idem unique (interaction_type, external_message_id)
+);
+create index if not exists growth_interactions_conversation_idx on public.growth_interactions (conversation_id);
+create index if not exists growth_interactions_entity_idx on public.growth_interactions (entity_id);
+create index if not exists growth_interactions_type_idx on public.growth_interactions (interaction_type);
+create index if not exists growth_interactions_thread_idx on public.growth_interactions (external_thread_ref);
 
--- (d) Outcome taxonomy — answer "why didn't it work", not just "did it". Nullable
---     and additive: the existing outcome_type stays the lifecycle marker;
---     outcome_category is the reason taxonomy. Phase 1 may leave it null.
+-- (d) Outcome taxonomy WITH a terminal-vs-open axis, so "not yet" is not treated as
+--     failure. outcome_type stays the lifecycle marker; outcome_category is the
+--     reason; resolution_class separates terminal from open/deferred. Nullable;
+--     Phase 1 may leave them null.
 alter table public.opportunity_outcomes
-  add column if not exists outcome_category text;
+  add column if not exists outcome_category text,
+  add column if not exists resolution_class text;
 alter table public.opportunity_outcomes drop constraint if exists opportunity_outcomes_category_check;
 alter table public.opportunity_outcomes
   add constraint opportunity_outcomes_category_check
   check (outcome_category is null or outcome_category in (
-    'no_response','rejected','redirect','wrong_contact','needs_follow_up',
-    'interested','requested_future_music','playlist_added','radio','press',
+    -- open / deferred (NOT failure)
+    'no_response','ignored','redirected','closed_submissions','paused','already_covered',
+    'needs_follow_up','interested','interested_later','waiting_on_release',
+    -- terminal
+    'rejected','wrong_contact','requested_future_music','playlist_added','radio','press',
     'collaboration','fan','other'
   ));
+alter table public.opportunity_outcomes drop constraint if exists opportunity_outcomes_resolution_check;
+alter table public.opportunity_outcomes
+  add constraint opportunity_outcomes_resolution_check
+  check (resolution_class is null or resolution_class in
+    ('terminal_negative','terminal_positive','open_deferred'));
 
--- (e) Contact intelligence — ROOM, not a build. One row per contact entity, all
---     nullable, UNPOPULATED in Phase 1. This is where reply/redirect/bounce/quality
---     signals will live so we never redesign to add them.
-create table if not exists public.growth_contact_intelligence (
+-- (e) ORGANIZATION-level intelligence (SUPERSEDES the earlier contact-level idea).
+--     The primary record hangs off the ORGANIZATION; each email/handle is an
+--     OBSERVATION feeding it. Quality is DECOMPOSED into components (never a single
+--     opaque number) and org_quality_score is COMPUTED from them. Scores DECAY:
+--     last_computed_at + the input timestamps make decay computable later. All
+--     nullable and UNPOPULATED in Phase 1 — room, not a build.
+create table if not exists public.growth_org_intelligence (
   id uuid primary key default gen_random_uuid(),
-  contact_entity_id uuid not null references public.growth_entities(id) on delete cascade,
-  status text,                                   -- active | stale | bounced | redirected | do_not_contact | ...
-  confidence numeric check (confidence is null or confidence between 0 and 1),
-  contact_quality_score numeric check (contact_quality_score is null or contact_quality_score between 0 and 100),
-  preferred_channel text,
-  secondary_channel text,
-  alternative_channel text,
-  last_successful_reply_at timestamptz,
-  last_bounce_at timestamptz,
-  avg_response_days numeric,
-  redirect_history jsonb not null default '[]'::jsonb,
-  metadata jsonb not null default '{}'::jsonb,
+  organization_entity_id uuid not null references public.growth_entities(id) on delete cascade,
+  -- observations about the org (not identity)
+  aliases text[] not null default '{}',
+  known_contact_entity_ids uuid[] not null default '{}',
+  known_submission_forms jsonb not null default '[]'::jsonb,
+  preferred_channels text[] not null default '{}',
+  genres text[] not null default '{}',
+  preferred_timing jsonb not null default '{}'::jsonb,
+  preferred_formats text[] not null default '{}',
+  blacklist_status text,                         -- null | soft | hard
+  notes text,
+  response_history jsonb not null default '[]'::jsonb,
+  -- DECOMPOSED quality components (each 0..100, nullable until computed)
+  deliverability_score numeric,
+  genre_fit_score numeric,
+  activity_score numeric,
+  historical_response_score numeric,
+  playlist_activity_score numeric,
+  relationship_score numeric,
+  authority_score numeric,
+  submission_friendliness_score numeric,
+  -- COMPUTED from the components above (never hand-set) + its explainability
+  org_quality_score numeric,
+  score_contributions jsonb not null default '[]'::jsonb,  -- per-component +/- point breakdown
+  score_confidence numeric,
+  score_reason text,
+  -- DECAY inputs — recompute over time from these, don't freeze the score
+  last_computed_at timestamptz,
+  last_response_at timestamptz,
+  last_placement_at timestamptz,
+  last_activity_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  -- UNIQUE already provides the contact_entity_id index (one row per contact).
-  constraint growth_contact_intelligence_one_per_contact unique (contact_entity_id)
+  constraint growth_org_intel_one_per_org unique (organization_entity_id),
+  constraint growth_org_intel_component_ranges check (
+    (deliverability_score is null or deliverability_score between 0 and 100) and
+    (genre_fit_score is null or genre_fit_score between 0 and 100) and
+    (activity_score is null or activity_score between 0 and 100) and
+    (historical_response_score is null or historical_response_score between 0 and 100) and
+    (playlist_activity_score is null or playlist_activity_score between 0 and 100) and
+    (relationship_score is null or relationship_score between 0 and 100) and
+    (authority_score is null or authority_score between 0 and 100) and
+    (submission_friendliness_score is null or submission_friendliness_score between 0 and 100) and
+    (org_quality_score is null or org_quality_score between 0 and 100)
+  )
 );
 
-drop trigger if exists trg_growth_contact_intel_updated_at on public.growth_contact_intelligence;
-create trigger trg_growth_contact_intel_updated_at
-  before update on public.growth_contact_intelligence
+drop trigger if exists trg_growth_org_intel_updated_at on public.growth_org_intelligence;
+create trigger trg_growth_org_intel_updated_at
+  before update on public.growth_org_intelligence
   for each row execute function public.growth_set_updated_at();
+
+-- (f) Decision PROVENANCE + explainability on the OPPORTUNITY score. reason,
+--     confidence, per-component +/- contributions, and human_override — so a score
+--     of 83 can be shown as "+25 genre, +20 prior reply, +18 playlist active,
+--     -6 no reply in 2y", not just "83". (human_override already exists as
+--     score_overridden / manual_score / override_reason.) score_contributions is
+--     RESERVED: the deterministic scorer already emits the components, so populating
+--     it later is trivial; Phase 1 leaves it empty. match_status adds the universal
+--     5-way resolution enum (Unknown is data), a shared vocabulary across pipelines.
+alter table public.growth_opportunities
+  add column if not exists score_reason text,
+  add column if not exists score_confidence numeric,
+  add column if not exists score_contributions jsonb not null default '[]'::jsonb,
+  add column if not exists match_status text not null default 'unknown';
+alter table public.growth_opportunities drop constraint if exists growth_opportunities_match_status_check;
+alter table public.growth_opportunities
+  add constraint growth_opportunities_match_status_check
+  check (match_status in ('matched','partial','unknown','needs_review','rejected'));
 
 -- ---------------------------------------------------------------------------
 -- 9. RLS — backend-table pattern (all access via the service-role Edge Function)
@@ -484,7 +570,8 @@ begin
     'opportunity_actions',
     'opportunity_outcomes',
     'growth_conversations',
-    'growth_contact_intelligence'
+    'growth_interactions',
+    'growth_org_intelligence'
   ] loop
     execute format('alter table public.%I enable row level security', t);
 

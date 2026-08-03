@@ -1,10 +1,5 @@
-// Opportunity Engine service layer — public barrel.
-export * from "./types.ts";
-export * from "./scoring.ts";
-export * from "./normalization.ts";
-export * from "./relationship-memory.ts";
-export * from "./creative-match.ts";
-export * from "./outcomes.ts";
-export * from "./messaging.ts";
-export * from "./access.ts";
-export * from "./repository.ts";
+// Re-export shim. Single source of truth lives in
+// supabase/functions/_shared/opportunities/index.ts so the opportunities-api Edge
+// Function imports it IN-TREE (guaranteed to bundle on deploy). Vite/vitest reach
+// the same physical module through this shim — no divergent logic.
+export * from "../../../supabase/functions/_shared/opportunities/index.ts";

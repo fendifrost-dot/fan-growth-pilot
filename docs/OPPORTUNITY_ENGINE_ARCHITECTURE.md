@@ -32,7 +32,7 @@ are logged so the score can be recomputed from what actually happened.
                                     └──────────┬─────────────┘     │ song_clips            │
                                                │ imports           │ opportunity_actions   │
                               ┌────────────────▼───────────────┐   │ opportunity_outcomes  │
-                              │ src/lib/opportunities (shared) │   │ (+ tracks.duration)   │
+                              │ _shared/opportunities (shared) │   │ (+ tracks.duration)   │
                               │ types · scoring · normalization│   └──────────────────────┘
                               │ relationship-memory · outcomes │
                               │ creative-match · messaging     │
@@ -41,11 +41,15 @@ are logged so the score can be recomputed from what actually happened.
                               one source of truth: Vite · vitest · Deno
 ```
 
-### Service layer — `src/lib/opportunities/` (single source of truth)
-Runtime-agnostic, dependency-free pure logic imported by the frontend, the vitest
-suite, **and** the Deno edge function (verified with `deno check`). No module imports
-a concrete Supabase client — the repository takes an **injected** client — which is
-what lets the same code run in all three runtimes without drift.
+### Service layer — `supabase/functions/_shared/opportunities/` (single source of truth)
+Runtime-agnostic, dependency-free pure logic imported by the Deno edge function
+**in-tree** (`../_shared/opportunities/…`, so it is guaranteed to bundle on deploy),
+and by the frontend + vitest suite via thin re-export shims in
+`src/lib/opportunities/` (same physical modules — no divergent logic). No module
+imports a concrete Supabase client — the repository takes an **injected** client —
+which is what lets the same code run in all three runtimes without drift. (The
+physical home moved from `src/lib` to `_shared` specifically so Lovable's Edge
+Function bundler never has to follow an import outside `supabase/functions/`.)
 
 | Module | Responsibility |
 |---|---|

@@ -7,7 +7,8 @@
 // PostgREST access to these tables, so this function is the sole gate.
 //
 // The deterministic engine logic is REUSED from the shared service layer in
-// src/lib/opportunities (single source of truth across Vite / vitest / Deno).
+// supabase/functions/_shared/opportunities (single source of truth; src/lib/
+// opportunities re-exports the same physical modules for Vite / vitest).
 //
 // Deploy: redeploy via Lovable (standing rule). This file is the version-
 // controlled source of truth.
@@ -19,7 +20,7 @@ import {
   decideAccess,
   type OppActor,
   parseResource,
-} from "../../../src/lib/opportunities/index.ts";
+} from "../_shared/opportunities/index.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",

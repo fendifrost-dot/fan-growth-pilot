@@ -12,7 +12,7 @@ Run from the repo root.
 | Command | What it proves | Result on this branch |
 |---|---|---|
 | `npm run typecheck` | Frontend + service layer type-safe (`tsc -p tsconfig.app.json --noEmit`) | **PASS** (exit 0) |
-| `deno check supabase/functions/opportunities-api/index.ts` | The edge function + its cross-tree import of the shared service layer resolve and type-check under Deno | **PASS** (exit 0) |
+| `deno check supabase/functions/opportunities-api/index.ts` | The edge function + its in-tree `_shared/opportunities` import resolve and type-check under Deno (module graph has 0 out-of-tree refs) | **PASS** (exit 0) |
 | `npm run test` | Full vitest suite | 143 passed, **52/52 Opportunity Engine tests pass**; 2 pre-existing failures unrelated to this work (see note) |
 | `npx vitest run src/test/opportunities` | Just the Opportunity Engine tests | **7 files, 52 tests, all pass** — incl. the seeded end-to-end integration test |
 | `npm run lint:ci` | Opportunity Engine source lints clean | **PASS** (exit 0) |
@@ -91,12 +91,12 @@ truth (`supabase/migrations/20260801000000_opportunity_engine_phase1.sql`).
    the Lovable SQL editor and run. It is idempotent and additive (safe to re-run).
 2. **Redeploy the edge function** `opportunities-api` via Lovable. `config.toml`
    already declares it `verify_jwt = false` (auth is enforced in-code, stricter).
-   - **Deployment note / one risk to watch:** the function imports the shared service
-     layer from `../../../src/lib/opportunities`. `deno check` confirms the import
-     graph resolves, and Supabase's deploy uses the same Deno resolution. If Lovable's
-     bundler cannot follow an import outside `supabase/functions/`, the fallback is to
-     copy `src/lib/opportunities/*` into `supabase/functions/_shared/opportunities/`
-     and update the one import line — no logic changes.
+   - **Bundler-safe by construction:** the function imports the shared service layer
+     **in-tree** from `../_shared/opportunities/…`. `deno info` shows the module graph
+     no longer reaches outside `supabase/functions/` (0 `src/lib` refs), so Lovable's
+     bundler has nothing out-of-tree to follow. `src/lib/opportunities/*` are thin
+     re-export shims of those same physical modules for Vite/vitest — one source of
+     truth, no divergent logic.
 3. **Regenerate `src/integrations/supabase/types.ts`** (Lovable) so the new tables are
    typed for any future direct client access. Phase 1 does **not** depend on this — the
    inbox talks to the edge function, not PostgREST directly.

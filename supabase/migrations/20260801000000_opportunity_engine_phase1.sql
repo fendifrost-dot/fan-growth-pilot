@@ -89,7 +89,7 @@ create table if not exists public.growth_entities (
   playlist_target_id text references public.playlist_targets(playlist_id) on delete set null,
   radio_target_id uuid references public.radio_targets(id) on delete set null,
   relationship_id uuid references public.relationships(id) on delete set null,
-  created_by uuid references auth.users(id),
+  created_by uuid references auth.users(id) on delete set null,   -- M3: keep the entity if its creator is deleted
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   -- 'organization' and 'contact' anchor the Organization -> Contact hierarchy
@@ -130,7 +130,11 @@ create trigger trg_growth_entities_updated_at
 
 create table if not exists public.growth_opportunities (
   id uuid primary key default gen_random_uuid(),
-  entity_id uuid not null references public.growth_entities(id) on delete cascade,
+  -- RESTRICT (M3): an opportunity is an operational record that must NOT silently
+  -- vanish if its entity is deleted — force the entity's opportunities to be dealt
+  -- with explicitly first. (Deleting an opportunity then lets its audit survive; see
+  -- opportunity_actions / opportunity_outcomes below.)
+  entity_id uuid not null references public.growth_entities(id) on delete restrict,
   source_platform text,
   opportunity_type text not null,
   source_url text,
@@ -166,7 +170,7 @@ create table if not exists public.growth_opportunities (
 
   -- Lifecycle.
   status text not null default 'new',
-  assigned_to uuid references auth.users(id),
+  assigned_to uuid references auth.users(id) on delete set null,   -- M3: unassign, keep the opportunity
   discovered_at timestamptz not null default now(),
   snoozed_until timestamptz,
   acted_at timestamptz,
@@ -220,6 +224,63 @@ create trigger trg_growth_opportunities_updated_at
   for each row execute function public.growth_set_updated_at();
 
 -- ---------------------------------------------------------------------------
+-- 3.5 Transition guard (M2) — status integrity in the DB, not only the API.
+-- ---------------------------------------------------------------------------
+-- The lifecycle matrix lives in ONE documented function so admin SQL, imports, or
+-- other edge functions cannot bypass the app's validation.
+--
+-- >>> SINGLE SOURCE OF TRUTH: this matrix MUST stay identical to STATUS_TRANSITIONS
+--     in supabase/functions/_shared/opportunities/outcomes.ts (exhaustively unit-
+--     tested there). If you change one, change BOTH. <<<
+
+create or replace function public.growth_opportunity_transition_allowed(
+  old_status text, new_status text
+) returns boolean
+language sql
+immutable
+set search_path = public
+as $$
+  select case
+    when old_status = new_status  then true                                          -- idempotent no-op
+    when old_status = 'new'         then new_status in ('reviewing','approved','rejected','snoozed')
+    when old_status = 'reviewing'   then new_status in ('approved','rejected','snoozed')
+    when old_status = 'approved'    then new_status in ('in_progress','contacted','snoozed','rejected')
+    when old_status = 'snoozed'     then new_status in ('new','reviewing','approved','rejected')
+    when old_status = 'in_progress' then new_status in ('contacted','closed','rejected')
+    when old_status = 'contacted'   then new_status in ('responded','closed')
+    when old_status = 'responded'   then new_status in ('converted','closed')
+    when old_status = 'converted'   then new_status in ('closed')
+    when old_status = 'rejected'    then false                                        -- terminal
+    when old_status = 'closed'      then false                                        -- terminal
+    else false
+  end;
+$$;
+
+create or replace function public.growth_opportunity_guard_transition()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if new.status is distinct from old.status
+     and not public.growth_opportunity_transition_allowed(old.status, new.status) then
+    -- Message intentionally matches the API's client-error mapping (-> 409).
+    raise exception 'Illegal opportunity transition % -> % (opportunity %)',
+      old.status, new.status, old.id
+      using errcode = 'check_violation';
+  end if;
+  return new;
+end;
+$$;
+
+-- Fires only when status actually changes. Name sorts before the updated_at
+-- trigger, so an illegal change is rejected before any timestamp work.
+drop trigger if exists trg_growth_opportunities_guard_transition on public.growth_opportunities;
+create trigger trg_growth_opportunities_guard_transition
+  before update of status on public.growth_opportunities
+  for each row execute function public.growth_opportunity_guard_transition();
+
+-- ---------------------------------------------------------------------------
 -- 4. growth_relationship_events — the signal log that feeds relationship memory
 -- ---------------------------------------------------------------------------
 -- Complements (does not replace) the RIE's relationship_history. Bridges to an
@@ -227,7 +288,9 @@ create trigger trg_growth_opportunities_updated_at
 
 create table if not exists public.growth_relationship_events (
   id uuid primary key default gen_random_uuid(),
-  entity_id uuid not null references public.growth_entities(id) on delete cascade,
+  -- M3: relationship HISTORY survives deletion of its entity/opportunity/relationship
+  -- (all three SET NULL). The event row keeps its own signal (type, weight, occurred_at).
+  entity_id uuid references public.growth_entities(id) on delete set null,
   opportunity_id uuid references public.growth_opportunities(id) on delete set null,
   relationship_id uuid references public.relationships(id) on delete set null,
   event_type text not null,
@@ -303,9 +366,9 @@ create table if not exists public.song_clips (
   notes text,
   audio_url text,
   waveform_url text,
-  approved_by uuid references auth.users(id),
+  approved_by uuid references auth.users(id) on delete set null,   -- M3: keep the clip if the approver is deleted
   approved_at timestamptz,
-  created_by uuid references auth.users(id),
+  created_by uuid references auth.users(id) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint song_clips_window_check check (start_seconds >= 0 and end_seconds > start_seconds),
@@ -326,11 +389,13 @@ create trigger trg_song_clips_updated_at
 
 create table if not exists public.opportunity_actions (
   id uuid primary key default gen_random_uuid(),
-  opportunity_id uuid not null references public.growth_opportunities(id) on delete cascade,
+  -- M3: the action AUDIT survives deletion of its opportunity/actor (both SET NULL);
+  -- the row keeps action_type, from/to status, actor_kind, detail, created_at.
+  opportunity_id uuid references public.growth_opportunities(id) on delete set null,
   action_type text not null,         -- approve|reject|snooze|generate_message|edit_message|
                                       -- mark_contacted|mark_responded|mark_converted|open_source|
                                       -- assign|override_score|note
-  actor_user_id uuid references auth.users(id),
+  actor_user_id uuid references auth.users(id) on delete set null,
   actor_kind text not null default 'user' check (actor_kind in ('user','scheduler','service')),
   from_status text,
   to_status text,
@@ -349,7 +414,9 @@ create index if not exists opportunity_actions_opp_idx
 
 create table if not exists public.opportunity_outcomes (
   id uuid primary key default gen_random_uuid(),
-  opportunity_id uuid not null references public.growth_opportunities(id) on delete cascade,
+  -- M3: the outcome HISTORY survives deletion of its opportunity (SET NULL); the row
+  -- keeps outcome_type/category, conversion_value, resolution_class, timestamps.
+  opportunity_id uuid references public.growth_opportunities(id) on delete set null,
   outcome_type text not null,        -- contacted|responded|positive|negative|converted|
                                       -- no_response|closed_lost|closed_won
   succeeded boolean,                 -- null = not yet known
@@ -359,7 +426,7 @@ create table if not exists public.opportunity_outcomes (
   responded_at timestamptz,
   converted_at timestamptz,
   notes text,
-  recorded_by uuid references auth.users(id),
+  recorded_by uuid references auth.users(id) on delete set null,   -- M3: audit survives user deletion
   detail jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()

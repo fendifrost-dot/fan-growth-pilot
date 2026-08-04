@@ -88,7 +88,11 @@ via Lovable.** The migration is *also* committed as the version-controlled sourc
 truth (`supabase/migrations/20260801000000_opportunity_engine_phase1.sql`).
 
 1. **Apply the migration.** Paste `20260801000000_opportunity_engine_phase1.sql` into
-   the Lovable SQL editor and run. It is idempotent and additive (safe to re-run).
+   the Lovable SQL editor and run. It is idempotent and additive, and the whole file
+   runs inside **one `begin;`/`commit;` transaction** — a mid-apply failure rolls back
+   entirely (no partial schema). All statements are transactional DDL (no
+   `CONCURRENTLY`/enum-`ADD VALUE`/`VACUUM`). First confirm the editor honours the
+   transaction (see the tx-probe in the deployment runbook) before applying.
 2. **Redeploy the edge function** `opportunities-api` via Lovable. `config.toml`
    already declares it `verify_jwt = false` (auth is enforced in-code, stricter).
    - **Bundler-safe by construction:** the function imports the shared service layer
@@ -104,6 +108,16 @@ truth (`supabase/migrations/20260801000000_opportunity_engine_phase1.sql`).
    `supabase/seed/opportunity_engine_demo_seed.sql` in the Lovable SQL editor. Then open
    `/admin/opportunities` and confirm the "Pitch Designed For Me to Deep House Vibes"
    card appears with its component scores — proof of live data end to end.
+
+### Rollback / forward-fix — ⚠️ teardown caution
+Because the migration is atomic, a **failed initial apply** rolls back to nothing —
+just forward-fix the error and re-run. The full teardown (`drop table … cascade` of the
+`growth_*`/`song_*`/`opportunity_*` tables + `drop function` + `alter table tracks drop
+column`, in the deployment runbook) is **only** for backing out an immediately-failed
+initial deploy that holds **no meaningful data**. **Do NOT run the teardown as the default
+rollback once real opportunity data has accumulated** — it destroys opportunities, actions,
+outcomes, and relationship history. After data exists, use a **forward fix** (a new
+corrective migration) or a **targeted, record-preserving** rollback instead.
 
 ---
 
@@ -183,6 +197,44 @@ pins the score while retaining the computed components.
 - No JWT → `401 Sign-in required` on every route.
 - Signed-in non-admin → `GET` works; any mutation → `403 Admin role required`.
 - Direct PostgREST access to `growth_*` tables from the browser → denied by RLS.
+
+### DB-level transition guard (M2) — verify the trigger, not just the API
+The lifecycle matrix is enforced by a DB trigger (`growth_opportunity_guard_transition`)
+so admin SQL / imports / other functions can't bypass it. Verify directly in SQL
+(replace `{ID}` with a `new` opportunity):
+```sql
+-- ALLOWED: new -> approved  (succeeds)
+update public.growth_opportunities set status='approved' where id='{ID}';        -- OK
+-- FORBIDDEN: approved -> converted  (must RAISE, txn-safe)
+update public.growth_opportunities set status='converted' where id='{ID}';       -- ERROR: Illegal opportunity transition approved -> converted
+-- Terminal is terminal:
+update public.growth_opportunities set status='closed' where id='{ID}';          -- OK (approved->closed? no) ; use a legal path
+```
+The matrix source of truth is `public.growth_opportunity_transition_allowed(old,new)`;
+it MUST match `STATUS_TRANSITIONS` in `_shared/opportunities/outcomes.ts` (exhaustively
+unit-tested — every allowed and forbidden pair).
+
+### FK ON DELETE behavior (M3) — audit/history survives, operational records are protected
+| FK | ON DELETE | Why |
+|---|---|---|
+| `growth_opportunities.entity_id` → entities | **RESTRICT** | An opportunity must not silently vanish; delete its opportunities explicitly first. |
+| `growth_relationship_events.entity_id / opportunity_id / relationship_id` | **SET NULL** | Relationship **history survives**; the event keeps its own signal. |
+| `opportunity_actions.opportunity_id / actor_user_id` | **SET NULL** | Action **audit survives** deletion of the opportunity or user. |
+| `opportunity_outcomes.opportunity_id / recorded_by` | **SET NULL** | Outcome **history survives**. |
+| `growth_opportunities.assigned_to`, `growth_entities.created_by`, `song_clips.approved_by/created_by` | **SET NULL** | Keep the record; drop only the user link. |
+| `growth_opportunities.recommended_song_id` → tracks | SET NULL | Recommendation cleared; opportunity survives. |
+| `song_intelligence_profiles.track_id`, `song_clips.track_id`, `growth_conversations.entity_id`, `growth_interactions.conversation_id`, `growth_org_intelligence.organization_entity_id` | CASCADE | Child is meaningless without its parent; the durable audit lives in the SET-NULL tables above. |
+
+Verify audit-survives-delete in SQL:
+```sql
+-- after an opportunity {ID} has actions+outcomes:
+delete from public.growth_opportunities where id='{ID}';                          -- (fails if entity RESTRICT? no — deleting the opp directly is fine)
+select count(*) from public.opportunity_actions  where opportunity_id is null;    -- >= the deleted opp's actions (survived, unlinked)
+select count(*) from public.opportunity_outcomes where opportunity_id is null;    -- >= the deleted opp's outcomes (survived)
+select count(*) from public.growth_relationship_events where entity_id is null;   -- events survive entity deletion (SET NULL)
+```
+*(FK ON DELETE cannot be exercised by the in-memory test stub — it has no referential
+engine — so this is verified live here; the matrix logic is unit-tested.)*
 
 ---
 

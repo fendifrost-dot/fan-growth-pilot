@@ -8,6 +8,46 @@ import {
   STATUS_TRANSITIONS,
   validateClip,
 } from "@/lib/opportunities/outcomes";
+import { OPPORTUNITY_STATUSES } from "@/lib/opportunities/types";
+import type { OpportunityStatus } from "@/lib/opportunities/types";
+
+// Independent SPEC of the lifecycle matrix (not derived from the implementation),
+// kept identical to the DB guard `growth_opportunity_transition_allowed` in the
+// Phase-1 migration. The two exhaustive tests below assert canTransition matches
+// this spec for ALL 10×10 pairs, catching drift on either side.
+const ALLOWED: Record<OpportunityStatus, OpportunityStatus[]> = {
+  new: ["reviewing", "approved", "rejected", "snoozed"],
+  reviewing: ["approved", "rejected", "snoozed"],
+  approved: ["in_progress", "contacted", "snoozed", "rejected"],
+  snoozed: ["new", "reviewing", "approved", "rejected"],
+  in_progress: ["contacted", "closed", "rejected"],
+  contacted: ["responded", "closed"],
+  responded: ["converted", "closed"],
+  converted: ["closed"],
+  rejected: [],
+  closed: [],
+};
+
+describe("transition matrix — exhaustive (mirrors the DB guard trigger)", () => {
+  // NOTE: the DB-level trigger cannot run against the in-memory stub; this covers
+  // the shared matrix function directly, and the runbook's live e2e exercises the
+  // trigger itself with one allowed and one forbidden transition.
+  it("every ALLOWED transition (and same-status no-op) passes canTransition", () => {
+    for (const from of OPPORTUNITY_STATUSES) {
+      expect(canTransition(from, from)).toBe(true); // idempotent
+      for (const to of ALLOWED[from]) expect(canTransition(from, to)).toBe(true);
+    }
+  });
+
+  it("every FORBIDDEN transition is rejected across all 10×10 pairs", () => {
+    for (const from of OPPORTUNITY_STATUSES) {
+      for (const to of OPPORTUNITY_STATUSES) {
+        if (from === to) continue; // same-status covered above
+        expect(canTransition(from, to)).toBe(ALLOWED[from].includes(to));
+      }
+    }
+  });
+});
 
 describe("status transitions", () => {
   it("allows documented forward moves", () => {

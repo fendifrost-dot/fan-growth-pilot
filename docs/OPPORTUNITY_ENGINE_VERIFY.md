@@ -198,43 +198,66 @@ pins the score while retaining the computed components.
 - Signed-in non-admin → `GET` works; any mutation → `403 Admin role required`.
 - Direct PostgREST access to `growth_*` tables from the browser → denied by RLS.
 
-### DB-level transition guard (M2) — verify the trigger, not just the API
+### DB-level transition guard (M2) — LIVE PROOF the trigger is active in the deployed schema
 The lifecycle matrix is enforced by a DB trigger (`growth_opportunity_guard_transition`)
-so admin SQL / imports / other functions can't bypass it. Verify directly in SQL
-(replace `{ID}` with a `new` opportunity):
-```sql
--- ALLOWED: new -> approved  (succeeds)
-update public.growth_opportunities set status='approved' where id='{ID}';        -- OK
--- FORBIDDEN: approved -> converted  (must RAISE, txn-safe)
-update public.growth_opportunities set status='converted' where id='{ID}';       -- ERROR: Illegal opportunity transition approved -> converted
--- Terminal is terminal:
-update public.growth_opportunities set status='closed' where id='{ID}';          -- OK (approved->closed? no) ; use a legal path
-```
-The matrix source of truth is `public.growth_opportunity_transition_allowed(old,new)`;
-it MUST match `STATUS_TRANSITIONS` in `_shared/opportunities/outcomes.ts` (exhaustively
-unit-tested — every allowed and forbidden pair).
+so admin SQL / imports / other functions can't bypass it. The runbook MUST include a
+DIRECT SQL attempt (bypassing the API) — an allowed transition that succeeds AND a
+forbidden one the database rejects — to prove the guard is live, not merely present in
+the file. Seed a fresh `new` opportunity `{ID}` first, then run in the SQL editor:
 
-### FK ON DELETE behavior (M3) — audit/history survives, operational records are protected
-| FK | ON DELETE | Why |
-|---|---|---|
-| `growth_opportunities.entity_id` → entities | **RESTRICT** | An opportunity must not silently vanish; delete its opportunities explicitly first. |
-| `growth_relationship_events.entity_id / opportunity_id / relationship_id` | **SET NULL** | Relationship **history survives**; the event keeps its own signal. |
-| `opportunity_actions.opportunity_id / actor_user_id` | **SET NULL** | Action **audit survives** deletion of the opportunity or user. |
-| `opportunity_outcomes.opportunity_id / recorded_by` | **SET NULL** | Outcome **history survives**. |
-| `growth_opportunities.assigned_to`, `growth_entities.created_by`, `song_clips.approved_by/created_by` | **SET NULL** | Keep the record; drop only the user link. |
-| `growth_opportunities.recommended_song_id` → tracks | SET NULL | Recommendation cleared; opportunity survives. |
-| `song_intelligence_profiles.track_id`, `song_clips.track_id`, `growth_conversations.entity_id`, `growth_interactions.conversation_id`, `growth_org_intelligence.organization_entity_id` | CASCADE | Child is meaningless without its parent; the durable audit lives in the SET-NULL tables above. |
-
-Verify audit-survives-delete in SQL:
 ```sql
--- after an opportunity {ID} has actions+outcomes:
-delete from public.growth_opportunities where id='{ID}';                          -- (fails if entity RESTRICT? no — deleting the opp directly is fine)
-select count(*) from public.opportunity_actions  where opportunity_id is null;    -- >= the deleted opp's actions (survived, unlinked)
-select count(*) from public.opportunity_outcomes where opportunity_id is null;    -- >= the deleted opp's outcomes (survived)
-select count(*) from public.growth_relationship_events where entity_id is null;   -- events survive entity deletion (SET NULL)
+-- (A) ALLOWED via direct SQL: new -> approved  → SUCCEEDS
+update public.growth_opportunities set status = 'approved' where id = '{ID}';
+-- expect: UPDATE 1
+select status from public.growth_opportunities where id = '{ID}';   -- expect: approved
+
+-- (B) FORBIDDEN via direct SQL: approved -> converted  → DATABASE REJECTS
+update public.growth_opportunities set status = 'converted' where id = '{ID}';
+-- expect: ERROR:  Illegal opportunity transition approved -> converted (opportunity {ID})
+--         (SQLSTATE 23514 check_violation) — the row is UNCHANGED
+select status from public.growth_opportunities where id = '{ID}';   -- expect: still approved
+
+-- (C) FORBIDDEN from a terminal state: reject -> then any change  → REJECTED
+update public.growth_opportunities set status = 'rejected'  where id = '{ID}';  -- approved->rejected is allowed: UPDATE 1
+update public.growth_opportunities set status = 'approved'  where id = '{ID}';  -- rejected is terminal → ERROR: Illegal opportunity transition rejected -> approved
 ```
-*(FK ON DELETE cannot be exercised by the in-memory test stub — it has no referential
-engine — so this is verified live here; the matrix logic is unit-tested.)*
+If (B) or (C) does NOT raise, the trigger is not active — STOP and investigate the
+deploy before trusting status integrity. Matrix source of truth:
+`public.growth_opportunity_transition_allowed(old,new)`, which MUST match
+`STATUS_TRANSITIONS` in `_shared/opportunities/outcomes.ts` (exhaustively unit-tested —
+every allowed and forbidden pair, all 10×10).
+
+### FK ON DELETE behavior (M3) — nullability + app null-tolerance, verified per FK
+Every FK switched to `SET NULL` was confirmed to reference a **nullable** column, and the
+service/API/UI were checked to **tolerate** historical rows whose parent ref is now null.
+The one column the app assumes non-null (`growth_opportunities.entity_id`) is `RESTRICT`,
+not `SET NULL`, by design.
+
+| FK column → parent | ON DELETE | Nullable? | App null-tolerance — where checked |
+|---|---|---|---|
+| `growth_opportunities.entity_id` → entities | **RESTRICT** | NOT NULL (kept) | App **assumes non-null** — `repository.ts` `!inner` embed + `current.entity_id` in `recordOutcome`/`recalcScore`; UI reads `opp.entity?.name`. RESTRICT chosen precisely so it can never be null. |
+| `opportunity_actions.opportunity_id` → opportunities | **SET NULL** | **made nullable** | `opportunity_actions` is **write-only** in Phase 1 — `git grep` shows a single `insert`, no read → no non-null assumption. |
+| `opportunity_actions.actor_user_id` → auth.users | **SET NULL** | already nullable | Audit-only, not read. |
+| `opportunity_outcomes.opportunity_id` → opportunities | **SET NULL** | **made nullable** | Only used as an INSERT value and as an `.eq("opportunity_id", id)` filter (orphans excluded). `deriveOutcomeState` reads `outcome_type/response_received/converted/conversion_value/*_at` — **never `opportunity_id`**. |
+| `opportunity_outcomes.recorded_by` → auth.users | **SET NULL** | already nullable | Audit-only, not read. |
+| `growth_relationship_events.entity_id` → entities | **SET NULL** | **made nullable** | Written non-null; read only via `.eq("entity_id", id)` in `aggregateRelationshipForEntity` (orphans excluded). `aggregateRelationship` reads `event_type/weight/occurred_at` — **never `entity_id`**. |
+| `growth_relationship_events.opportunity_id / relationship_id` | **SET NULL** | already nullable | Same aggregation path; fields not read. |
+| `growth_opportunities.assigned_to` → auth.users | **SET NULL** | already nullable | Optional filter only; not assumed present. |
+| `growth_entities.created_by`, `song_clips.approved_by/created_by` → auth.users | **SET NULL** | already nullable | Metadata only; not read by UI/logic. |
+| `growth_opportunities.recommended_song_id` → tracks | SET NULL | already nullable | Code guards with `if (opp.recommended_song_id)` before use. |
+| `song_intelligence_profiles.track_id`, `song_clips.track_id`, `growth_conversations.entity_id`, `growth_interactions.conversation_id`, `growth_org_intelligence.organization_entity_id` | CASCADE | n/a | Child meaningless without parent; durable audit lives in the SET-NULL tables above. |
+
+Verify audit-survives-delete live (after opportunity `{ID}` has actions + outcomes):
+```sql
+delete from public.growth_opportunities where id = '{ID}';                        -- deleting the opp directly is allowed
+select count(*) from public.opportunity_actions  where opportunity_id is null;    -- >= that opp's actions (survived, unlinked)
+select count(*) from public.opportunity_outcomes where opportunity_id is null;    -- >= that opp's outcomes (survived)
+-- and history survives entity deletion (only when the entity has no opportunities, since entity_id is RESTRICT):
+select count(*) from public.growth_relationship_events where entity_id is null;   -- events survive (SET NULL)
+```
+*(FK `ON DELETE` and the trigger cannot be exercised by the in-memory test stub — it has
+no referential/trigger engine — so both are proven LIVE here; the transition matrix logic
+is exhaustively unit-tested.)*
 
 ---
 

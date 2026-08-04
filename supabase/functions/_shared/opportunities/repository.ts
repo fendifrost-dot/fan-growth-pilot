@@ -188,9 +188,12 @@ export function createOpportunityRepository(db: SupabaseLike) {
     const limit = Math.min(Math.max(opts.limit ?? 25, 1), 100);
     const offset = Math.max(opts.offset ?? 0, 0);
 
+    // !inner so a filter on entity.entity_type actually filters PARENT rows (a plain
+    // embed would only null-out the entity). Safe: entity_id is NOT NULL + FK, so
+    // every opportunity has an entity and !inner never drops a real row.
     let q = db
       .from("growth_opportunities")
-      .select("*, entity:growth_entities(*)", { count: "exact" });
+      .select("*, entity:growth_entities!inner(*)", { count: "exact" });
 
     if (filters.status) {
       const statuses = Array.isArray(filters.status) ? filters.status : [filters.status];

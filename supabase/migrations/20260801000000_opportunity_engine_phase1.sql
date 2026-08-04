@@ -11,7 +11,8 @@
 --     (public.relationships / relationship_history) rather than replacing it.
 --   * DETERMINISTIC scoring. Eight score COMPONENTS are stored separately from the
 --     composite opportunity_score. There is NO ML model; the service layer computes
---     these from documented, configurable weights (see src/lib/opportunities/scoring.ts).
+--     these from documented, configurable weights
+--     (see supabase/functions/_shared/opportunities/scoring.ts).
 --   * EVIDENCE IS PRESERVED. discovery_evidence keeps the original reason a row was
 --     surfaced; it is never overwritten by rescoring.
 --   * HUMAN OVERRIDES. score_overridden / manual_score let a person pin a score.
@@ -27,6 +28,14 @@
 --
 -- Run this in the Lovable SQL Editor. It is ALSO committed here as the
 -- version-controlled source of truth (Definition of Done).
+--
+-- ATOMIC: the whole migration runs inside ONE transaction (BEGIN/COMMIT below).
+-- Every statement is transactional DDL (no CREATE INDEX CONCURRENTLY, no enum
+-- ADD VALUE, no VACUUM), so a mid-apply failure ROLLS BACK entirely — the schema
+-- is never left partially changed. (See OPPORTUNITY_ENGINE_VERIFY.md for how to
+-- confirm the SQL editor honours the transaction before applying.)
+
+begin;
 
 -- ---------------------------------------------------------------------------
 -- 0. Self-contained updated_at helper
@@ -117,7 +126,7 @@ create trigger trg_growth_entities_updated_at
 -- response_probability / conversion_probability are modeled probabilities
 -- expressed as percentages (0..100) so the whole row shares one scale and the UI
 -- needs no per-field unit handling. The deterministic weighting lives in
--- src/lib/opportunities/scoring.ts (CONFIGURABLE, documented).
+-- supabase/functions/_shared/opportunities/scoring.ts (CONFIGURABLE, documented).
 
 create table if not exists public.growth_opportunities (
   id uuid primary key default gen_random_uuid(),
@@ -592,3 +601,5 @@ begin
     execute format('grant all on public.%I to service_role', t);
   end loop;
 end $$;
+
+commit;

@@ -56,7 +56,12 @@ async function resolveActor(req: Request, admin: any): Promise<OppActor> {
 
 function parseFilters(url: URL) {
   const p = url.searchParams;
-  const num = (k: string) => (p.get(k) != null ? Number(p.get(k)) : undefined);
+  const num = (k: string) => {
+    const v = p.get(k);
+    if (v == null) return undefined;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined; // drop non-numeric params rather than passing NaN
+  };
   return {
     filters: {
       status: p.get("status") ? p.get("status")!.split(",").map((s) => s.trim()) : undefined,
@@ -82,25 +87,25 @@ function parseFilters(url: URL) {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
-  const url = new URL(req.url);
-  const resource = parseResource(url.pathname);
-  const method = req.method.toUpperCase();
-
-  const admin = createClient(
-    Deno.env.get("SUPABASE_URL")!,
-    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-  );
-
-  // ---- Authorize (JWT + role) -------------------------------------------
-  const actor = await resolveActor(req, admin);
-  const cls = classifyRoute(method, resource);
-  const decision = decideAccess(cls, actor);
-  if (!decision.ok) return json({ error: decision.error }, decision.status);
-
-  const userId = actor.kind === "user" ? actor.userId : null;
-  const repo = createOpportunityRepository(admin);
-
   try {
+    const url = new URL(req.url);
+    const resource = parseResource(url.pathname);
+    const method = req.method.toUpperCase();
+
+    const admin = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+    );
+
+    // ---- Authorize (JWT + role) -------------------------------------------
+    const actor = await resolveActor(req, admin);
+    const cls = classifyRoute(method, resource);
+    const decision = decideAccess(cls, actor);
+    if (!decision.ok) return json({ error: decision.error }, decision.status);
+
+    const userId = actor.kind === "user" ? actor.userId : null;
+    const repo = createOpportunityRepository(admin);
+
     const body = method === "GET" ? {} : await req.json().catch(() => ({}));
     const [head, id, sub] = resource; // e.g. opportunities / :id / approve
 
@@ -176,9 +181,12 @@ Deno.serve(async (req) => {
     return json({ error: "Unknown route" }, 404);
   } catch (e) {
     const msg = (e as Error).message || "Internal error";
-    // Illegal status transitions are a client error, not a 500.
-    const status = /Illegal opportunity transition/.test(msg) ? 409 : 500;
+    // Log the full detail SERVER-SIDE only; never return DB internals to the client.
     console.error("opportunities-api error:", msg);
-    return json({ error: msg }, status);
+    if (/Illegal opportunity transition/.test(msg)) {
+      return json({ error: "Illegal status transition" }, 409);
+    }
+    if (/not found/i.test(msg)) return json({ error: "Not found" }, 404);
+    return json({ error: "Internal error" }, 500);
   }
 });

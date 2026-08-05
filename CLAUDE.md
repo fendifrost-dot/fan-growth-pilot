@@ -1,25 +1,35 @@
 # CLAUDE.md — agent instructions for `fan-growth-pilot` (FanFuel Hub / Artist Growth Hub)
 
-## 🛑 Supabase / database access — MUST READ (do it the Lovable way, NOT a standalone dashboard)
+## 🛑 PROJECT POLICY — violation of ANY item requires STOPPING work
 
-**There is NO standalone Supabase project, dashboard, or supabase.com login for this
-repo.** The database is managed **entirely through the Lovable project** (FanFuel Hub,
-GitHub `fendifrost-dot/fan-growth-pilot`). You reach the database **through Lovable** —
-never through a separate supabase.com dashboard.
+These are **policy, not notes.** If you are about to do anything that conflicts with an
+item below, **STOP**, and re-read this block + [`docs/AGENT_BOOTSTRAP.md`](docs/AGENT_BOOTSTRAP.md).
+Machine-readable version: [`.deployment/manifest.yml`](.deployment/manifest.yml) /
+[`.deployment/manifest.json`](.deployment/manifest.json).
 
-- **Apply SQL / migrations:** paste + run in **Lovable → SQL Editor** (paste, don't type —
-  the Monaco editor can strip leading keywords like `UPDATE`). Every schema change must
-  ALSO be committed as a version-controlled migration in `supabase/migrations/`.
-- **Deploy / redeploy edge functions:** the **Lovable → Edge Functions (Cloud)** area —
-  **not** `supabase functions deploy`.
-- **Connected Supabase project ref:** `vsemrziqxrrfcquxfnwd` — the data physically lives
-  there, but you administer it *through Lovable*.
-- **A `supabase` CLI `403` is a FALSE WALL** — it does not mean you lack access; use Lovable.
-- **NEVER open a standalone Supabase dashboard / supabase.com login unless Lovable itself
-  links you into it.** (A browser/deploy agent recently went to a standalone Supabase
-  dashboard by mistake — don't repeat that.)
+1. **Repository.** The canonical, active repo is **`fendifrost-dot/fan-growth-pilot`**
+   (`git remote -v` must show this). It is **NOT** `fendifrost-dot/artistgrowthhub` (a
+   stale sibling with no live traffic) and **NOT** an archived/mirror clone. If the remote
+   is anything else → STOP.
+2. **Database is Lovable-managed Supabase — there is NO standalone Supabase dashboard.**
+   Apply SQL / migrations by pasting into **Lovable → SQL Editor** (paste, don't type).
+   **Connected project ref: `vsemrziqxrrfcquxfnwd`.**
+3. **Edge functions redeploy via Lovable → Edge Functions (Cloud)** — never
+   `supabase functions deploy`.
+4. **A `supabase` CLI `403` is a FALSE WALL** — it does not mean you lack access. Use Lovable.
+5. **Source of truth:** every schema change is committed as a version-controlled migration
+   in `supabase/migrations/`; the repo is the source of truth for code.
+6. **FORBIDDEN (doing any of these = STOP):**
+   `standalone_supabase` (no supabase.com dashboard/login unless Lovable links you in) ·
+   `archived_clone` · `local_sql` (no local/CLI SQL apply) · `stale_repo`
+   (`artistgrowthhub`).
 
-**Full rule + rationale + quick-reference table:** [`docs/SUPABASE_ACCESS.md`](docs/SUPABASE_ACCESS.md).
+> A browser/deploy agent recently opened a standalone Supabase dashboard by mistake. That
+> is a policy violation — this block exists so it does not happen again.
+
+**Before doing any work, complete the pre-flight checklist:
+[`docs/AGENT_BOOTSTRAP.md`](docs/AGENT_BOOTSTRAP.md).**
+Full database-access rule + rationale: [`docs/SUPABASE_ACCESS.md`](docs/SUPABASE_ACCESS.md).
 
 ---
 
@@ -28,7 +38,8 @@ never through a separate supabase.com dashboard.
 - **App:** Vite + React + React Router + TypeScript. Operator UI is under `/admin`
   (single-operator). Public smart-link pages at `/:slug`.
 - **Backend:** Supabase Edge Functions in `supabase/functions/` (Deno), managed via Lovable.
-- **Migrations:** `supabase/migrations/` — the version-controlled source of truth; applied
-  via the Lovable SQL Editor (see the rule above).
-- **More context:** the `docs/` folder and the various `*_HANDOFF*.md` files at the repo
-  root (e.g. `CLAUDE_HANDOFF.md`).
+- **Migrations:** `supabase/migrations/` — version-controlled source of truth; applied via
+  the Lovable SQL Editor (see policy above).
+- **Governance:** `.deployment/manifest.{yml,json}` (machine-readable facts),
+  `docs/AGENT_BOOTSTRAP.md` (pre-flight), `docs/SUPABASE_ACCESS.md` (DB access rule).
+- **More context:** the `docs/` folder and the various `*_HANDOFF*.md` files at the repo root.

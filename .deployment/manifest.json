@@ -1,0 +1,28 @@
+{
+  "_comment": "Machine-readable deployment manifest — FanFuel Hub / Artist Growth Hub. Parse before any deploy/database action. Mirror of .deployment/manifest.yml (keep in sync). Prose: /CLAUDE.md, docs/AGENT_BOOTSTRAP.md, docs/SUPABASE_ACCESS.md.",
+  "project": "FanFuel Hub",
+  "canonical_repo": "fendifrost-dot/fan-growth-pilot",
+  "canonical_branch": "main",
+  "deployment": {
+    "provider": "lovable",
+    "edge_functions": "lovable_edge_functions"
+  },
+  "database": {
+    "provider": "lovable_supabase",
+    "project_ref": "vsemrziqxrrfcquxfnwd",
+    "apply_sql_via": "lovable_sql_editor",
+    "migrations_source_of_truth": "supabase/migrations",
+    "supabase_cli_403_is_false_wall": true
+  },
+  "forbidden": [
+    "standalone_supabase",
+    "archived_clone",
+    "local_sql",
+    "stale_repo"
+  ],
+  "see": [
+    "/CLAUDE.md",
+    "docs/AGENT_BOOTSTRAP.md",
+    "docs/SUPABASE_ACCESS.md"
+  ]
+}

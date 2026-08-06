@@ -1,0 +1,179 @@
+# Opportunity Engine — Architecture (Phase 1)
+
+Phase 1 delivers the **Minimum Viable Opportunity System**: a unified data model, a
+deterministic service layer, an authenticated API, and a live operator inbox. It is
+the spine that Phases 2–6 (discovery connectors, song-intelligence pipeline,
+relationship graph, referral intelligence, learning) hang off. This document is the
+map; `OPPORTUNITY_ENGINE_VERIFY.md` is the hands-on walkthrough.
+
+## 1. The core idea
+
+Every channel today is a silo: `playlist_targets`, `radio_targets`, `relationships`,
+`fan_profiles`. The Opportunity Engine adds **one** abstraction on top:
+
+- a **growth_entity** — anyone we could build a relationship with (a playlist, DJ,
+  journalist, venue, fan, …), normalized and de-duplicated across platforms;
+- a **growth_opportunity** — a scored, actionable thing to do with an entity *now*
+  (pitch this song to this playlist; reply to this DM; send this clip to this DJ).
+
+Opportunities carry their **evidence**, eight **score components**, a recommended
+**song + clip + action + draft message**, and a **lifecycle**. Actions and outcomes
+are logged so the score can be recomputed from what actually happened.
+
+## 2. Layers
+
+```
+ Browser (operator)                   Edge (Deno)                    Postgres (Supabase)
+┌────────────────────────┐   JWT   ┌────────────────────────┐     ┌──────────────────────┐
+│ AdminOpportunities.tsx │ ─────►  │ opportunities-api      │ ──► │ growth_entities       │
+│ (Opportunity Inbox)    │  Bearer │  · JWT + admin-role gate│ RLS │ growth_opportunities  │
+│ opportunitiesApi.ts    │ ◄─────  │  · REST routing         │ svc │ growth_relationship_… │
+└────────────────────────┘  JSON   │  · repository()         │ role│ song_intelligence_…   │
+                                    └──────────┬─────────────┘     │ song_clips            │
+                                               │ imports           │ opportunity_actions   │
+                              ┌────────────────▼───────────────┐   │ opportunity_outcomes  │
+                              │ _shared/opportunities (shared) │   │ (+ tracks.duration)   │
+                              │ types · scoring · normalization│   └──────────────────────┘
+                              │ relationship-memory · outcomes │
+                              │ creative-match · messaging     │
+                              │ access · repository            │
+                              └────────────────────────────────┘
+                              one source of truth: Vite · vitest · Deno
+```
+
+### Service layer — `supabase/functions/_shared/opportunities/` (single source of truth)
+Runtime-agnostic, dependency-free pure logic imported by the Deno edge function
+**in-tree** (`../_shared/opportunities/…`, so it is guaranteed to bundle on deploy),
+and by the frontend + vitest suite via thin re-export shims in
+`src/lib/opportunities/` (same physical modules — no divergent logic). No module
+imports a concrete Supabase client — the repository takes an **injected** client —
+which is what lets the same code run in all three runtimes without drift. (The
+physical home moved from `src/lib` to `_shared` specifically so Lovable's Edge
+Function bundler never has to follow an import outside `supabase/functions/`.)
+
+| Module | Responsibility |
+|---|---|
+| `types.ts` | Entity/opportunity/score/outcome types; enum lists |
+| `scoring.ts` | Deterministic 8-component scorer + configurable weights + composite |
+| `normalization.ts` | Platform/handle/URL normalization; entity & opportunity dedupe keys |
+| `relationship-memory.ts` | Fold relationship events → 0..100 strength + summary |
+| `creative-match.ts` | Song-profile ↔ entity-taste fit (seeds audience match) |
+| `outcomes.ts` | Legal status transitions; clip validation; outcome derivation & learning signals |
+| `messaging.ts` | Deterministic recommended action + draft message |
+| `access.ts` | Pure route authorization decision (unit-testable) |
+| `repository.ts` | Wires the above to storage via an injected client |
+
+### API — `supabase/functions/opportunities-api/`
+A single Deno function doing **REST** routing on method + path. It authenticates
+**in code**: every request needs a Supabase user JWT; reads allow any signed-in user,
+**all mutations require the `admin` role** (`public.user_roles` / `has_role`). The
+service-role key never leaves the server, and RLS denies direct PostgREST access to
+these tables — so this function is the sole, auditable gate. This is a deliberate
+improvement over `control-center-api`'s "URL secrecy" model.
+
+Routes: `GET/POST /opportunities`, `GET /opportunities/stats`, `GET/PATCH
+/opportunities/:id`, `POST /opportunities/:id/{approve,reject,snooze,status,
+generate-action,record-outcome,override-score}`, `POST /entities`.
+
+### UI — `src/pages/admin/AdminOpportunities.tsx`
+The **Opportunity Inbox** at `/admin/opportunities` (added to the admin nav). Backed
+by live API data. Each card shows source platform, entity, type, why-discovered,
+evidence, total + eight component scores, recommended song/clip/action, the draft
+message, status, and relationship summary — with approve/reject/snooze/edit/generate/
+mark-contacted/response/conversion/record-outcome/open-source actions. Loading,
+empty, and error states; filters (status/type/min-score/search/sort); pagination;
+mobile-responsive. The client (`opportunitiesApi.ts`) attaches the user's JWT and
+never touches a service-role key.
+
+## 3. Scoring model (deterministic — no ML)
+
+Eight components, each 0..100, stored **separately** from the composite so a human
+can see *why*. Weights are configurable (`DEFAULT_WEIGHTS`, sum 1.00, but the blend
+normalizes by the actual sum). `effort` and `risk` are "bad-is-high" and inverted in
+the blend. Absent signals fall back to documented neutrals — the engine never invents
+data. Human overrides pin a score (`score_overridden`/`manual_score`) while retaining
+the computed components. There is **no** ML model and none is claimed.
+
+**The closed loop (wired, not aspirational).** Recording an outcome writes a
+`growth_relationship_event` mapped from the outcome type; `recalcScore` then
+aggregates the entity's relationship memory back into the `relationship_score`
+component, so the composite moves with real history: **outcome → relationship event →
+memory → score**. `src/test/opportunities/integration.test.ts` asserts this loop end
+to end. Weight-tuning from outcomes is the Phase-6 learning step; the plumbing exists now.
+
+## 4. Reuse (not rebuild)
+
+- **Songs** = existing `public.tracks` (extended with `duration_seconds`), not a new table.
+- **Relationship memory** bridges to the existing RIE (`relationships`) via
+  `growth_entities.relationship_id` and complements `relationship_history`.
+- **Entities** bridge to `playlist_targets` / `radio_targets` via FK columns.
+- **Auth** reuses the `user_roles` / `has_role` model and the `outreach-auth.ts` JWT
+  pattern.
+- Phase 2 discovery connectors will translate the existing playlist/radio/fan
+  pipelines into `growth_opportunities` rather than replacing them.
+
+## 4.5 Outreach model alignment (Organization → Conversation → Interaction → Outcome)
+
+The outreach / reply-tracking / org-intelligence layer that Phases 2+ will build uses
+the refined model **Organization → Conversation → Interaction → Outcome**, with
+intelligence at the **organization** level. Phase 1 makes the schema **compatible**
+with it (migration §8.5) so that layer builds later **without a redesign**. Nothing
+here is populated by Phase 1 code; it is shape, not behavior. Key stances the schema
+now enforces:
+
+- **Interaction is polymorphic, not "message/email."** Email is one `interaction_type`
+  among `instagram_dm, telegram, web_form, reddit, youtube_comment, playlist_submission,
+  phone, in_person, event, note`. No column is email-shaped.
+- **Conversation ≠ thread.** A conversation is the *business relationship*, its own
+  entity with its own id; a Gmail thread id is a per-interaction detail
+  (`external_thread_ref`), never the conversation's identity. One conversation spans
+  email → redirect → web form → IG DM → acceptance.
+- **Intelligence is organization-level.** Each email/handle is one *observation*
+  feeding the org record, not an identity.
+- **Quality is decomposed, and scores decay.** Eight components are stored and the
+  score is computed from them; `last_computed_at` + input timestamps make decay
+  computable — no frozen number.
+- **Provenance + explainability everywhere.** Score records carry reason, confidence,
+  human-override, and a per-component +/- `score_contributions` breakdown.
+- **Terminal-vs-open outcomes + a universal 5-way match status** (`matched, partial,
+  unknown, needs_review, rejected`) so "not yet" is not treated as failure and
+  "unknown" is data.
+
+| Concept | Where it lives (Phase-1 shape) | Populated in Phase 1? |
+|---|---|---|
+| **Organization ↔ Contact** | `growth_entities.entity_type` gains `organization` + `contact`; `parent_entity_id` links a contact (an observation) to its org | Supported; a test asserts it |
+| **Conversation** (business relationship) | new `growth_conversations` (own id, `entity_id`=org, `subject`, `status`, `resolution_class`, `last_interaction_at`) — **no** channel/thread-id identity | Table exists; unpopulated |
+| **Interaction** (polymorphic) | new `growth_interactions` (`interaction_type` enum, `direction`, `external_thread_ref`, `external_message_id`, `in_reply_to`, `match_status`, `payload`) | Table exists; unpopulated |
+| **Outcome "why" + terminal-vs-open** | `opportunity_outcomes.outcome_category` (expanded CHECK, incl. open/deferred: `ignored, redirected, closed_submissions, paused, already_covered, interested_later, waiting_on_release, needs_follow_up`) + `resolution_class` (`terminal_negative/terminal_positive/open_deferred`) | Columns exist; `outcome_type` stays the lifecycle marker |
+| **Org intelligence (decomposed, decaying)** | new `growth_org_intelligence` (one per org): aliases, known contacts/forms, preferred channels/timing/formats, genres, blacklist, response history, **8 quality components** + computed `org_quality_score` + `score_contributions/confidence/reason` + `last_computed_at` & input timestamps | Table exists; **unpopulated (room, not build)** |
+| **Score provenance + match status** | `growth_opportunities`: `score_reason`, `score_confidence`, `score_contributions` (jsonb +/- breakdown), `match_status` (5-way); human-override already present | Columns exist/reserved; `score_contributions` populate is a trivial future step (scorer already emits components) |
+
+**Explicit extension points (deliberately NOT built in Phase 1):** many-to-many entity
+membership (a freelance journalist across publications) → a future
+`growth_entity_relationships('member_of')` edge table; conversation/interaction
+ingestion from email/IG/Telegram/web-form webhooks; the org-intelligence scoring +
+decay job that fills `growth_org_intelligence`; and wiring `score_contributions` /
+`match_status` into the live scorer. These are Phase 2+ — marked NOT_STARTED, not faked.
+
+> **Supersedes the first alignment note:** the earlier `growth_contact_intelligence`
+> (contact-level) and the message-shaped columns on `growth_relationship_events` were
+> replaced, per review, by org-level `growth_org_intelligence` and the polymorphic
+> `growth_interactions` table before deploy — the migration is a single coherent file.
+
+## 5. Security / RLS
+
+All ten new tables (seven core + `growth_conversations`, `growth_interactions`,
+`growth_org_intelligence` from §4.5) use the repo's **backend-table pattern** (RLS on;
+service-role full access; anon and authenticated **denied** direct access). The browser cannot read
+or write them directly — only the JWT-gated edge function can, and it authorizes every
+request. No secrets are committed; `.env` remains untracked-by-intent and is never
+staged.
+
+## 6. Phase boundaries (honest scope)
+
+Phase 1 is the data model + service + API + inbox. **Not** built yet (correctly marked
+NOT_STARTED): the discovery agents (Creator/Conversation/Radio-as-opportunity/DJ/
+Press/Event), the song-intelligence *pipeline* (tables exist; ingestion does not), the
+distribution graph, fan-discovery/lookalike (blocked by Meta Ads Manager), creative
+matching beyond the tag-overlap seed, referral intelligence, and the closed learning
+loop. See `OPPORTUNITY_ENGINE_GAP_AUDIT.md` for the full status matrix.

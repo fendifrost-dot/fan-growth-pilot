@@ -7,6 +7,13 @@
 
 project_id = "vsemrziqxrrfcquxfnwd"
 
+# opportunities-api enforces auth IN-CODE (Supabase user JWT + admin role via
+# public.user_roles), which is STRICTER than the platform gate: reads require a
+# signed-in user, all mutations require admin. verify_jwt stays false so the
+# function code is the single, auditable gate (matching this project's pattern).
+[functions.opportunities-api]
+verify_jwt = false
+
 [functions.spotify-auth]
 verify_jwt = false
 

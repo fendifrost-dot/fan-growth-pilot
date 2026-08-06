@@ -30,6 +30,7 @@ import AdminCatalogue from "./pages/admin/AdminCatalogue";
 import AdminCategories from "./pages/admin/AdminCategories";
 import AdminPitchComposer from "./pages/admin/AdminPitchComposer";
 import AdminPitchPortal from "./pages/admin/AdminPitchPortal";
+import AdminOpportunities from "./pages/admin/AdminOpportunities";
 
 const queryClient = new QueryClient();
 
@@ -64,6 +65,7 @@ const App = () => {
           {/* Admin (single-operator internal) */}
           <Route path="/admin" element={<RequireAuth><AdminGuard /></RequireAuth>}>
             <Route index element={<AdminHub />} />
+            <Route path="opportunities" element={<AdminOpportunities />} />
             <Route path="campaigns" element={<AdminCampaigns />} />
             <Route path="campaigns/:slug" element={<AdminCampaignDetail />} />
             <Route path="contacts" element={<AdminContacts />} />

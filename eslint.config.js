@@ -5,7 +5,9 @@ import reactRefresh from "eslint-plugin-react-refresh";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist"] },
+  // "dist" build output; "**/._*" macOS AppleDouble sidecar files (created when
+  // the repo lives on a non-HFS volume) which are not real source and fail to parse.
+  { ignores: ["dist", "**/._*"] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ["**/*.{ts,tsx}"],

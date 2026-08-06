@@ -10,6 +10,7 @@ const AdminGuard: React.FC = () => {
             <Link to="/admin" className="font-medium tracking-tight">Fendi Frost · Admin</Link>
             <nav className="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm">
               <Link to="/admin" className="hover:underline font-medium">Hub</Link>
+              <Link to="/admin/opportunities" className="hover:underline font-medium text-primary">Opportunities</Link>
               <Link to="/admin/send" className="hover:underline font-medium text-primary">Send</Link>
               <span className="text-muted-foreground text-xs uppercase tracking-wide">Pitching</span>
               <Link to="/admin/pitch-portal" className="hover:underline font-medium text-primary">Pitch Portal</Link>

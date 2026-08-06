@@ -8,6 +8,10 @@
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
+    "lint:ci": "eslint supabase/functions/_shared/opportunities src/lib/opportunities src/lib/opportunitiesApi.ts src/pages/admin/AdminOpportunities.tsx src/test/opportunities",
+    "typecheck": "tsc -p tsconfig.app.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "preview": "vite preview",
     "verify:funnel": "node scripts/verify-truth-funnel.mjs"
   },

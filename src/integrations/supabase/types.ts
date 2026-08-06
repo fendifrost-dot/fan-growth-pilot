@@ -751,6 +751,551 @@ export type Database = {
           },
         ]
       }
+      growth_conversations: {
+        Row: {
+          created_at: string
+          entity_id: string
+          id: string
+          last_interaction_at: string | null
+          opportunity_id: string | null
+          resolution_class: string | null
+          status: string
+          subject: string | null
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          entity_id: string
+          id?: string
+          last_interaction_at?: string | null
+          opportunity_id?: string | null
+          resolution_class?: string | null
+          status?: string
+          subject?: string | null
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          entity_id?: string
+          id?: string
+          last_interaction_at?: string | null
+          opportunity_id?: string | null
+          resolution_class?: string | null
+          status?: string
+          subject?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "growth_conversations_entity_id_fkey"
+            columns: ["entity_id"]
+            isOneToOne: false
+            referencedRelation: "growth_entities"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "growth_conversations_opportunity_id_fkey"
+            columns: ["opportunity_id"]
+            isOneToOne: false
+            referencedRelation: "growth_opportunities"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      growth_entities: {
+        Row: {
+          canonical_url: string | null
+          created_at: string
+          created_by: string | null
+          description: string | null
+          entity_type: string
+          id: string
+          location: string | null
+          metadata: Json
+          name: string
+          parent_entity_id: string | null
+          platform: string | null
+          platform_external_id: string | null
+          playlist_target_id: string | null
+          radio_target_id: string | null
+          relationship_id: string | null
+          updated_at: string
+        }
+        Insert: {
+          canonical_url?: string | null
+          created_at?: string
+          created_by?: string | null
+          description?: string | null
+          entity_type: string
+          id?: string
+          location?: string | null
+          metadata?: Json
+          name: string
+          parent_entity_id?: string | null
+          platform?: string | null
+          platform_external_id?: string | null
+          playlist_target_id?: string | null
+          radio_target_id?: string | null
+          relationship_id?: string | null
+          updated_at?: string
+        }
+        Update: {
+          canonical_url?: string | null
+          created_at?: string
+          created_by?: string | null
+          description?: string | null
+          entity_type?: string
+          id?: string
+          location?: string | null
+          metadata?: Json
+          name?: string
+          parent_entity_id?: string | null
+          platform?: string | null
+          platform_external_id?: string | null
+          playlist_target_id?: string | null
+          radio_target_id?: string | null
+          relationship_id?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "growth_entities_parent_entity_id_fkey"
+            columns: ["parent_entity_id"]
+            isOneToOne: false
+            referencedRelation: "growth_entities"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "growth_entities_playlist_target_id_fkey"
+            columns: ["playlist_target_id"]
+            isOneToOne: false
+            referencedRelation: "playlist_targets"
+            referencedColumns: ["playlist_id"]
+          },
+          {
+            foreignKeyName: "growth_entities_radio_target_id_fkey"
+            columns: ["radio_target_id"]
+            isOneToOne: false
+            referencedRelation: "radio_targets"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "growth_entities_relationship_id_fkey"
+            columns: ["relationship_id"]
+            isOneToOne: false
+            referencedRelation: "relationships"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "growth_entities_relationship_id_fkey"
+            columns: ["relationship_id"]
+            isOneToOne: false
+            referencedRelation: "v_relationship_summary"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      growth_interactions: {
+        Row: {
+          body_preview: string | null
+          conversation_id: string | null
+          created_at: string
+          direction: string
+          entity_id: string | null
+          external_message_id: string | null
+          external_thread_ref: string | null
+          id: string
+          in_reply_to: string | null
+          interaction_type: string
+          match_status: string
+          occurred_at: string
+          opportunity_id: string | null
+          payload: Json
+          subject: string | null
+        }
+        Insert: {
+          body_preview?: string | null
+          conversation_id?: string | null
+          created_at?: string
+          direction?: string
+          entity_id?: string | null
+          external_message_id?: string | null
+          external_thread_ref?: string | null
+          id?: string
+          in_reply_to?: string | null
+          interaction_type: string
+          match_status?: string
+          occurred_at?: string
+          opportunity_id?: string | null
+          payload?: Json
+          subject?: string | null
+        }
+        Update: {
+          body_preview?: string | null
+          conversation_id?: string | null
+          created_at?: string
+          direction?: string
+          entity_id?: string | null
+          external_message_id?: string | null
+          external_thread_ref?: string | null
+          id?: string
+          in_reply_to?: string | null
+          interaction_type?: string
+          match_status?: string
+          occurred_at?: string
+          opportunity_id?: string | null
+          payload?: Json
+          subject?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "growth_interactions_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "growth_conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "growth_interactions_entity_id_fkey"
+            columns: ["entity_id"]
+            isOneToOne: false
+            referencedRelation: "growth_entities"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "growth_interactions_opportunity_id_fkey"
+            columns: ["opportunity_id"]
+            isOneToOne: false
+            referencedRelation: "growth_opportunities"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      growth_opportunities: {
+        Row: {
+          acted_at: string | null
+          assigned_to: string | null
+          audience_match_score: number | null
+          conversion_probability: number | null
+          created_at: string
+          dedupe_key: string
+          discovered_at: string
+          discovery_evidence: Json
+          effort_score: number | null
+          entity_id: string
+          generated_message: string | null
+          id: string
+          lifetime_value_score: number | null
+          manual_score: number | null
+          match_status: string
+          opportunity_score: number | null
+          opportunity_type: string
+          override_reason: string | null
+          reach_score: number | null
+          recommended_action: string | null
+          recommended_end_seconds: number | null
+          recommended_song_id: string | null
+          recommended_start_seconds: number | null
+          relationship_score: number | null
+          response_probability: number | null
+          risk_score: number | null
+          score_confidence: number | null
+          score_contributions: Json
+          score_overridden: boolean
+          score_reason: string | null
+          score_version: string | null
+          scored_at: string | null
+          snoozed_until: string | null
+          source_platform: string | null
+          source_url: string | null
+          status: string
+          title: string
+          updated_at: string
+          why_discovered: string | null
+        }
+        Insert: {
+          acted_at?: string | null
+          assigned_to?: string | null
+          audience_match_score?: number | null
+          conversion_probability?: number | null
+          created_at?: string
+          dedupe_key: string
+          discovered_at?: string
+          discovery_evidence?: Json
+          effort_score?: number | null
+          entity_id: string
+          generated_message?: string | null
+          id?: string
+          lifetime_value_score?: number | null
+          manual_score?: number | null
+          match_status?: string
+          opportunity_score?: number | null
+          opportunity_type: string
+          override_reason?: string | null
+          reach_score?: number | null
+          recommended_action?: string | null
+          recommended_end_seconds?: number | null
+          recommended_song_id?: string | null
+          recommended_start_seconds?: number | null
+          relationship_score?: number | null
+          response_probability?: number | null
+          risk_score?: number | null
+          score_confidence?: number | null
+          score_contributions?: Json
+          score_overridden?: boolean
+          score_reason?: string | null
+          score_version?: string | null
+          scored_at?: string | null
+          snoozed_until?: string | null
+          source_platform?: string | null
+          source_url?: string | null
+          status?: string
+          title: string
+          updated_at?: string
+          why_discovered?: string | null
+        }
+        Update: {
+          acted_at?: string | null
+          assigned_to?: string | null
+          audience_match_score?: number | null
+          conversion_probability?: number | null
+          created_at?: string
+          dedupe_key?: string
+          discovered_at?: string
+          discovery_evidence?: Json
+          effort_score?: number | null
+          entity_id?: string
+          generated_message?: string | null
+          id?: string
+          lifetime_value_score?: number | null
+          manual_score?: number | null
+          match_status?: string
+          opportunity_score?: number | null
+          opportunity_type?: string
+          override_reason?: string | null
+          reach_score?: number | null
+          recommended_action?: string | null
+          recommended_end_seconds?: number | null
+          recommended_song_id?: string | null
+          recommended_start_seconds?: number | null
+          relationship_score?: number | null
+          response_probability?: number | null
+          risk_score?: number | null
+          score_confidence?: number | null
+          score_contributions?: Json
+          score_overridden?: boolean
+          score_reason?: string | null
+          score_version?: string | null
+          scored_at?: string | null
+          snoozed_until?: string | null
+          source_platform?: string | null
+          source_url?: string | null
+          status?: string
+          title?: string
+          updated_at?: string
+          why_discovered?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "growth_opportunities_entity_id_fkey"
+            columns: ["entity_id"]
+            isOneToOne: false
+            referencedRelation: "growth_entities"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "growth_opportunities_recommended_song_id_fkey"
+            columns: ["recommended_song_id"]
+            isOneToOne: false
+            referencedRelation: "tracks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      growth_org_intelligence: {
+        Row: {
+          activity_score: number | null
+          aliases: string[]
+          authority_score: number | null
+          blacklist_status: string | null
+          created_at: string
+          deliverability_score: number | null
+          genre_fit_score: number | null
+          genres: string[]
+          historical_response_score: number | null
+          id: string
+          known_contact_entity_ids: string[]
+          known_submission_forms: Json
+          last_activity_at: string | null
+          last_computed_at: string | null
+          last_placement_at: string | null
+          last_response_at: string | null
+          notes: string | null
+          org_quality_score: number | null
+          organization_entity_id: string
+          playlist_activity_score: number | null
+          preferred_channels: string[]
+          preferred_formats: string[]
+          preferred_timing: Json
+          relationship_score: number | null
+          response_history: Json
+          score_confidence: number | null
+          score_contributions: Json
+          score_reason: string | null
+          submission_friendliness_score: number | null
+          updated_at: string
+        }
+        Insert: {
+          activity_score?: number | null
+          aliases?: string[]
+          authority_score?: number | null
+          blacklist_status?: string | null
+          created_at?: string
+          deliverability_score?: number | null
+          genre_fit_score?: number | null
+          genres?: string[]
+          historical_response_score?: number | null
+          id?: string
+          known_contact_entity_ids?: string[]
+          known_submission_forms?: Json
+          last_activity_at?: string | null
+          last_computed_at?: string | null
+          last_placement_at?: string | null
+          last_response_at?: string | null
+          notes?: string | null
+          org_quality_score?: number | null
+          organization_entity_id: string
+          playlist_activity_score?: number | null
+          preferred_channels?: string[]
+          preferred_formats?: string[]
+          preferred_timing?: Json
+          relationship_score?: number | null
+          response_history?: Json
+          score_confidence?: number | null
+          score_contributions?: Json
+          score_reason?: string | null
+          submission_friendliness_score?: number | null
+          updated_at?: string
+        }
+        Update: {
+          activity_score?: number | null
+          aliases?: string[]
+          authority_score?: number | null
+          blacklist_status?: string | null
+          created_at?: string
+          deliverability_score?: number | null
+          genre_fit_score?: number | null
+          genres?: string[]
+          historical_response_score?: number | null
+          id?: string
+          known_contact_entity_ids?: string[]
+          known_submission_forms?: Json
+          last_activity_at?: string | null
+          last_computed_at?: string | null
+          last_placement_at?: string | null
+          last_response_at?: string | null
+          notes?: string | null
+          org_quality_score?: number | null
+          organization_entity_id?: string
+          playlist_activity_score?: number | null
+          preferred_channels?: string[]
+          preferred_formats?: string[]
+          preferred_timing?: Json
+          relationship_score?: number | null
+          response_history?: Json
+          score_confidence?: number | null
+          score_contributions?: Json
+          score_reason?: string | null
+          submission_friendliness_score?: number | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "growth_org_intelligence_organization_entity_id_fkey"
+            columns: ["organization_entity_id"]
+            isOneToOne: true
+            referencedRelation: "growth_entities"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      growth_relationship_events: {
+        Row: {
+          channel: string | null
+          created_at: string
+          direction: string
+          entity_id: string | null
+          event_type: string
+          id: string
+          occurred_at: string
+          opportunity_id: string | null
+          payload: Json
+          relationship_id: string | null
+          source: string | null
+          source_id: string | null
+          weight: number
+        }
+        Insert: {
+          channel?: string | null
+          created_at?: string
+          direction?: string
+          entity_id?: string | null
+          event_type: string
+          id?: string
+          occurred_at?: string
+          opportunity_id?: string | null
+          payload?: Json
+          relationship_id?: string | null
+          source?: string | null
+          source_id?: string | null
+          weight?: number
+        }
+        Update: {
+          channel?: string | null
+          created_at?: string
+          direction?: string
+          entity_id?: string | null
+          event_type?: string
+          id?: string
+          occurred_at?: string
+          opportunity_id?: string | null
+          payload?: Json
+          relationship_id?: string | null
+          source?: string | null
+          source_id?: string | null
+          weight?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "growth_relationship_events_entity_id_fkey"
+            columns: ["entity_id"]
+            isOneToOne: false
+            referencedRelation: "growth_entities"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "growth_relationship_events_opportunity_id_fkey"
+            columns: ["opportunity_id"]
+            isOneToOne: false
+            referencedRelation: "growth_opportunities"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "growth_relationship_events_relationship_id_fkey"
+            columns: ["relationship_id"]
+            isOneToOne: false
+            referencedRelation: "relationships"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "growth_relationship_events_relationship_id_fkey"
+            columns: ["relationship_id"]
+            isOneToOne: false
+            referencedRelation: "v_relationship_summary"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       link_analytics: {
         Row: {
           city: string | null
@@ -966,6 +1511,121 @@ export type Database = {
           notes?: string | null
         }
         Relationships: []
+      }
+      opportunity_actions: {
+        Row: {
+          action_type: string
+          actor_kind: string
+          actor_user_id: string | null
+          channel: string | null
+          created_at: string
+          detail: Json
+          from_status: string | null
+          id: string
+          message_used: string | null
+          opportunity_id: string | null
+          to_status: string | null
+        }
+        Insert: {
+          action_type: string
+          actor_kind?: string
+          actor_user_id?: string | null
+          channel?: string | null
+          created_at?: string
+          detail?: Json
+          from_status?: string | null
+          id?: string
+          message_used?: string | null
+          opportunity_id?: string | null
+          to_status?: string | null
+        }
+        Update: {
+          action_type?: string
+          actor_kind?: string
+          actor_user_id?: string | null
+          channel?: string | null
+          created_at?: string
+          detail?: Json
+          from_status?: string | null
+          id?: string
+          message_used?: string | null
+          opportunity_id?: string | null
+          to_status?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "opportunity_actions_opportunity_id_fkey"
+            columns: ["opportunity_id"]
+            isOneToOne: false
+            referencedRelation: "growth_opportunities"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      opportunity_outcomes: {
+        Row: {
+          conversion_value: number
+          converted: boolean
+          converted_at: string | null
+          created_at: string
+          detail: Json
+          id: string
+          notes: string | null
+          opportunity_id: string | null
+          outcome_category: string | null
+          outcome_type: string
+          recorded_by: string | null
+          resolution_class: string | null
+          responded_at: string | null
+          response_received: boolean
+          succeeded: boolean | null
+          updated_at: string
+        }
+        Insert: {
+          conversion_value?: number
+          converted?: boolean
+          converted_at?: string | null
+          created_at?: string
+          detail?: Json
+          id?: string
+          notes?: string | null
+          opportunity_id?: string | null
+          outcome_category?: string | null
+          outcome_type: string
+          recorded_by?: string | null
+          resolution_class?: string | null
+          responded_at?: string | null
+          response_received?: boolean
+          succeeded?: boolean | null
+          updated_at?: string
+        }
+        Update: {
+          conversion_value?: number
+          converted?: boolean
+          converted_at?: string | null
+          created_at?: string
+          detail?: Json
+          id?: string
+          notes?: string | null
+          opportunity_id?: string | null
+          outcome_category?: string | null
+          outcome_type?: string
+          recorded_by?: string | null
+          resolution_class?: string | null
+          responded_at?: string | null
+          response_received?: boolean
+          succeeded?: boolean | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "opportunity_outcomes_opportunity_id_fkey"
+            columns: ["opportunity_id"]
+            isOneToOne: false
+            referencedRelation: "growth_opportunities"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       outreach_drafts: {
         Row: {
@@ -2181,6 +2841,151 @@ export type Database = {
           },
         ]
       }
+      song_clips: {
+        Row: {
+          approved_at: string | null
+          approved_by: string | null
+          audio_url: string | null
+          created_at: string
+          created_by: string | null
+          end_seconds: number
+          id: string
+          label: string | null
+          notes: string | null
+          purpose: string | null
+          start_seconds: number
+          status: string
+          track_id: string
+          transcript: string | null
+          updated_at: string
+          waveform_url: string | null
+        }
+        Insert: {
+          approved_at?: string | null
+          approved_by?: string | null
+          audio_url?: string | null
+          created_at?: string
+          created_by?: string | null
+          end_seconds: number
+          id?: string
+          label?: string | null
+          notes?: string | null
+          purpose?: string | null
+          start_seconds: number
+          status?: string
+          track_id: string
+          transcript?: string | null
+          updated_at?: string
+          waveform_url?: string | null
+        }
+        Update: {
+          approved_at?: string | null
+          approved_by?: string | null
+          audio_url?: string | null
+          created_at?: string
+          created_by?: string | null
+          end_seconds?: number
+          id?: string
+          label?: string | null
+          notes?: string | null
+          purpose?: string | null
+          start_seconds?: number
+          status?: string
+          track_id?: string
+          transcript?: string | null
+          updated_at?: string
+          waveform_url?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "song_clips_track_id_fkey"
+            columns: ["track_id"]
+            isOneToOne: false
+            referencedRelation: "tracks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      song_intelligence_profiles: {
+        Row: {
+          acousticness: number | null
+          analysis_version: string | null
+          bpm: number | null
+          confidence: number | null
+          created_at: string
+          danceability: number | null
+          energy: number | null
+          genre_tags: string[]
+          id: string
+          instrumentalness: number | null
+          mode: string | null
+          mood_tags: string[]
+          musical_key: string | null
+          raw: Json
+          similar_artists: string[]
+          sonic_descriptors: string[]
+          source: string | null
+          summary: string | null
+          track_id: string
+          updated_at: string
+          valence: number | null
+        }
+        Insert: {
+          acousticness?: number | null
+          analysis_version?: string | null
+          bpm?: number | null
+          confidence?: number | null
+          created_at?: string
+          danceability?: number | null
+          energy?: number | null
+          genre_tags?: string[]
+          id?: string
+          instrumentalness?: number | null
+          mode?: string | null
+          mood_tags?: string[]
+          musical_key?: string | null
+          raw?: Json
+          similar_artists?: string[]
+          sonic_descriptors?: string[]
+          source?: string | null
+          summary?: string | null
+          track_id: string
+          updated_at?: string
+          valence?: number | null
+        }
+        Update: {
+          acousticness?: number | null
+          analysis_version?: string | null
+          bpm?: number | null
+          confidence?: number | null
+          created_at?: string
+          danceability?: number | null
+          energy?: number | null
+          genre_tags?: string[]
+          id?: string
+          instrumentalness?: number | null
+          mode?: string | null
+          mood_tags?: string[]
+          musical_key?: string | null
+          raw?: Json
+          similar_artists?: string[]
+          sonic_descriptors?: string[]
+          source?: string | null
+          summary?: string | null
+          track_id?: string
+          updated_at?: string
+          valence?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "song_intelligence_profiles_track_id_fkey"
+            columns: ["track_id"]
+            isOneToOne: true
+            referencedRelation: "tracks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       system_logs: {
         Row: {
           created_at: string | null
@@ -2466,6 +3271,7 @@ export type Database = {
           apple_music_url: string | null
           created_at: string
           default_tone: string
+          duration_seconds: number | null
           id: string
           isrc: string | null
           name: string
@@ -2483,6 +3289,7 @@ export type Database = {
           apple_music_url?: string | null
           created_at?: string
           default_tone?: string
+          duration_seconds?: number | null
           id?: string
           isrc?: string | null
           name: string
@@ -2500,6 +3307,7 @@ export type Database = {
           apple_music_url?: string | null
           created_at?: string
           default_tone?: string
+          duration_seconds?: number | null
           id?: string
           isrc?: string | null
           name?: string
@@ -2677,6 +3485,10 @@ export type Database = {
       decrypt_token: { Args: { encrypted_token: string }; Returns: string }
       encrypt_token: { Args: { token: string }; Returns: string }
       generate_short_code: { Args: never; Returns: string }
+      growth_opportunity_transition_allowed: {
+        Args: { new_status: string; old_status: string }
+        Returns: boolean
+      }
       increment_accordion_open: {
         Args: { link_id: string }
         Returns: undefined

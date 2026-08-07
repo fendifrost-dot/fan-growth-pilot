@@ -3323,6 +3323,30 @@ export type Database = {
         }
         Relationships: []
       }
+      user_roles: {
+        Row: {
+          granted_at: string
+          granted_by: string | null
+          id: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Insert: {
+          granted_at?: string
+          granted_by?: string | null
+          id?: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Update: {
+          granted_at?: string
+          granted_by?: string | null
+          id?: string
+          role?: Database["public"]["Enums"]["app_role"]
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       email_campaign_stats: {
@@ -3489,6 +3513,13 @@ export type Database = {
         Args: { new_status: string; old_status: string }
         Returns: boolean
       }
+      has_role: {
+        Args: {
+          _role: Database["public"]["Enums"]["app_role"]
+          _user_id: string
+        }
+        Returns: boolean
+      }
       increment_accordion_open: {
         Args: { link_id: string }
         Returns: undefined
@@ -3528,6 +3559,7 @@ export type Database = {
       }
     }
     Enums: {
+      app_role: "admin" | "operator"
       relationship_event_type:
         | "discovered"
         | "playlist_add"
@@ -3680,6 +3712,7 @@ export type CompositeTypes<
 export const Constants = {
   public: {
     Enums: {
+      app_role: ["admin", "operator"],
       relationship_event_type: [
         "discovered",
         "playlist_add",

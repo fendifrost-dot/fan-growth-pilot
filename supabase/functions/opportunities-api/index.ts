@@ -18,8 +18,10 @@ import {
   classifyRoute,
   createOpportunityRepository,
   decideAccess,
+  isOpportunityRequestError,
   type OppActor,
   parseResource,
+  validateCreateOpportunityInput,
 } from "../_shared/opportunities/index.ts";
 
 const corsHeaders = {
@@ -116,7 +118,13 @@ Deno.serve(async (req) => {
         return json(await repo.listOpportunities(filters, opts));
       }
       if (method === "POST") {
-        const result = await repo.createOpportunity(body);
+        // Validate the FULL request boundary BEFORE any DB write so malformed input
+        // returns a clean 4xx instead of an opaque 500 from a downstream NOT NULL /
+        // FK / uuid-cast / CHECK violation. Pure shape/range/UUID/clip checks first,
+        // then the DB-dependent reference + duration checks.
+        const input = validateCreateOpportunityInput(body);
+        await repo.assertCreatableReferences(input);
+        const result = await repo.createOpportunity(input);
         return json(result, result.created ? 201 : 200);
       }
     }
@@ -180,6 +188,9 @@ Deno.serve(async (req) => {
 
     return json({ error: "Unknown route" }, 404);
   } catch (e) {
+    // Request-boundary validation errors carry an explicit HTTP status and a
+    // client-safe message (no DB internals) — return them as clean 4xx.
+    if (isOpportunityRequestError(e)) return json({ error: e.message }, e.status);
     const msg = (e as Error).message || "Internal error";
     // Log the full detail SERVER-SIDE only; never return DB internals to the client.
     console.error("opportunities-api error:", msg);

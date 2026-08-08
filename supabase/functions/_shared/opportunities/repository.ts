@@ -19,8 +19,9 @@ import type {
 import { compositeScore, computeScoreComponents, DEFAULT_WEIGHTS } from "./scoring.ts";
 import { entityDedupeKey, normalizeExternalId, normalizePlatform, opportunityDedupeKey } from "./normalization.ts";
 import { aggregateRelationship, EVENT_WEIGHTS } from "./relationship-memory.ts";
-import { assertTransition, deriveOutcomeState, outcomeScoreSignals } from "./outcomes.ts";
+import { assertTransition, deriveOutcomeState, outcomeScoreSignals, validateClip } from "./outcomes.ts";
 import { generateMessage, recommendAction } from "./messaging.ts";
+import { OpportunityRequestError } from "./validation.ts";
 
 export const SCORE_VERSION = "det-v1";
 
@@ -124,6 +125,46 @@ export function createOpportunityRepository(db: SupabaseLike) {
   }
 
   // ---- Opportunities -----------------------------------------------------
+
+  /**
+   * Boundary check for the DB-dependent parts of create-opportunity validation:
+   * the referenced entity/track must exist, and (when the track's length is known)
+   * the recommended clip must fit inside it. Throws OpportunityRequestError so the
+   * API maps it to a clean 4xx instead of letting an FK/CHECK violation surface as
+   * an opaque 500. Assumes the pure `validateCreateOpportunityInput` has already run
+   * (ids are well-formed UUIDs, clip ordering is valid). Read-only.
+   */
+  async function assertCreatableReferences(input: GrowthOpportunityInput): Promise<void> {
+    // Referenced entity must exist (entity_id is a NOT NULL RESTRICT FK — a missing
+    // ref would otherwise be a 23503 at insert → 500).
+    const { data: entity, error: entityErr } = await db
+      .from("growth_entities")
+      .select("id")
+      .eq("id", input.entity_id)
+      .maybeSingle();
+    if (entityErr) throw new Error(`assertCreatableReferences (entity) failed: ${entityErr.message}`);
+    if (!entity) throw new OpportunityRequestError(404, "entity_id does not reference an existing entity");
+
+    // Referenced track (optional) must exist; if its duration is known, the clip
+    // must fit. Duration is the one clip bound we cannot check without the DB.
+    if (input.recommended_song_id != null) {
+      const { data: track, error: trackErr } = await db
+        .from("tracks")
+        .select("id, duration_seconds")
+        .eq("id", input.recommended_song_id)
+        .maybeSingle();
+      if (trackErr) throw new Error(`assertCreatableReferences (track) failed: ${trackErr.message}`);
+      if (!track) throw new OpportunityRequestError(404, "recommended_song_id does not reference an existing track");
+
+      const end = input.recommended_end_seconds;
+      const start = input.recommended_start_seconds;
+      if (end != null && track.duration_seconds != null) {
+        const clip = validateClip(Number(start ?? 0), Number(end), Number(track.duration_seconds));
+        if (!clip.ok) throw new OpportunityRequestError(400, clip.error ?? "invalid clip window");
+      }
+    }
+  }
+
   async function createOpportunity(
     input: GrowthOpportunityInput,
     weights: Partial<ScoreWeights> = {},
@@ -512,6 +553,7 @@ export function createOpportunityRepository(db: SupabaseLike) {
 
   return {
     findOrCreateEntity,
+    assertCreatableReferences,
     createOpportunity,
     getOpportunity,
     listOpportunities,

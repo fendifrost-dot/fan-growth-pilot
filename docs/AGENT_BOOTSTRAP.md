@@ -15,6 +15,17 @@ any item correctly (or a check below fails), **do NOT proceed** — stop and re-
 | 5 | **Canonical branch?** | `main` | manifest `canonical_branch`; `git rev-parse origin/main`. |
 | 6 | **Source of truth?** | Version-controlled `supabase/migrations/` for schema; the repo for code | manifest `database.migrations_source_of_truth`. |
 
+## Kill this assumption before you start
+
+**Managed service ≠ operational access to the underlying platform.** AGH / FanFuel Hub
+runs on Supabase technology *underneath* Lovable, but the team has **no** "Supabase
+environment": no dashboard, CLI, service-role key, or Admin API to operate. Lovable is the
+only control plane; the underlying Supabase is an implementation detail, not an operational
+surface. Never reason *"it's Supabase, so I'll use the Supabase dashboard/CLI/Admin API."*
+Everything goes through Lovable or the authenticated app/browser. Full statement:
+[`/ENVIRONMENT.md`](../ENVIRONMENT.md) → "Principle: managed service ≠ operational access to
+the underlying platform."
+
 ## Hard stops (the `forbidden` list — doing any of these means STOP)
 
 - **standalone_supabase** — never open a supabase.com dashboard/login unless Lovable

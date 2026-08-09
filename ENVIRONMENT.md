@@ -45,6 +45,20 @@ such standalone hop in the chain.
 A `supabase` CLI `403` / "wrong account" is a **FALSE WALL** — it is not evidence that you
 lack access. It means you are using the wrong door. Use Lovable.
 
+## Principle: managed service ≠ operational access to the underlying platform
+
+**AGH / FanFuel Hub uses Supabase technology _underneath_ Lovable — but that does NOT mean
+the team has a "Supabase environment."** There is no Supabase dashboard, CLI, service-role
+key, or Admin API for us to operate. Lovable is the **only** control plane; the underlying
+Supabase is an **implementation detail, not an operational surface.**
+
+Kill this assumption at bootstrap. A new agent must **never** reason: *"it's Supabase, so
+I'll use the Supabase dashboard / CLI / Admin API."* The fact that the platform underneath
+is Supabase grants **zero** operational access to that platform directly. Everything —
+auth, database, migrations, edge redeploys, inspection — goes through **Lovable** or the
+**authenticated app / browser**. "Managed by Lovable" means Lovable is the surface; the
+technology powering it is not yours to log into.
+
 ## How work actually gets done
 
 **All** of the following go **through the Lovable-managed environment** (Lovable's SQL

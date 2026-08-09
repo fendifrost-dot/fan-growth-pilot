@@ -9,6 +9,8 @@ project: FanFuel Hub
 canonical_repo: fendifrost-dot/fan-growth-pilot
 canonical_branch: main
 
+control_plane: lovable_managed   # Lovable-managed backend/cloud is the control plane — NOT a standalone Supabase project/dashboard/CLI. See /ENVIRONMENT.md.
+
 deployment:
   provider: lovable
   edge_functions: lovable_edge_functions   # redeploy via Lovable Edge Functions, NOT `supabase functions deploy`
@@ -22,12 +24,16 @@ database:
 
 # Hard "do not" list. Doing any of these = STOP and re-read /CLAUDE.md + docs/AGENT_BOOTSTRAP.md.
 forbidden:
-  - standalone_supabase   # no supabase.com dashboard/login unless Lovable itself links you in
-  - archived_clone        # do not act from an archived / mirror copy of the repo
-  - local_sql             # no local/CLI SQL apply — Lovable SQL Editor only
-  - stale_repo            # e.g. fendifrost-dot/artistgrowthhub (stale sibling, no live traffic)
+  - standalone_supabase        # no supabase.com dashboard/login unless Lovable itself links you in
+  - service_role_assumption    # do NOT assume/use a standalone service-role key as if independently reachable
+  - supabase_cli               # no Supabase CLI for inspect/migrate/deploy — Lovable only (a CLI 403 is a FALSE WALL)
+  - external_supabase_project  # no external/standalone Supabase project to log into or apply migrations against
+  - archived_clone             # do not act from an archived / mirror copy of the repo
+  - local_sql                  # no local/CLI SQL apply — Lovable SQL Editor only
+  - stale_repo                 # e.g. fendifrost-dot/artistgrowthhub (stale sibling, no live traffic)
 
 see:
   - /CLAUDE.md
+  - /ENVIRONMENT.md
   - docs/AGENT_BOOTSTRAP.md
   - docs/SUPABASE_ACCESS.md

@@ -3,6 +3,7 @@
   "project": "FanFuel Hub",
   "canonical_repo": "fendifrost-dot/fan-growth-pilot",
   "canonical_branch": "main",
+  "control_plane": "lovable_managed",
   "deployment": {
     "provider": "lovable",
     "edge_functions": "lovable_edge_functions"
@@ -16,12 +17,16 @@
   },
   "forbidden": [
     "standalone_supabase",
+    "service_role_assumption",
+    "supabase_cli",
+    "external_supabase_project",
     "archived_clone",
     "local_sql",
     "stale_repo"
   ],
   "see": [
     "/CLAUDE.md",
+    "/ENVIRONMENT.md",
     "docs/AGENT_BOOTSTRAP.md",
     "docs/SUPABASE_ACCESS.md"
   ]

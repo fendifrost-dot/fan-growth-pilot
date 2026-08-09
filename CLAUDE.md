@@ -7,6 +7,8 @@ item below, **STOP**, and re-read this block + [`docs/AGENT_BOOTSTRAP.md`](docs/
 Machine-readable version: [`.deployment/manifest.yml`](.deployment/manifest.yml) /
 [`.deployment/manifest.json`](.deployment/manifest.json).
 
+**Lovable-managed backend ONLY — no standalone Supabase dashboard/CLI/service-role/admin-API/external project. All auth, database, migration, and edge work goes through Lovable or the authenticated app/browser. See [`ENVIRONMENT.md`](ENVIRONMENT.md).**
+
 1. **Repository.** The canonical, active repo is **`fendifrost-dot/fan-growth-pilot`**
    (`git remote -v` must show this). It is **NOT** `fendifrost-dot/artistgrowthhub` (a
    stale sibling with no live traffic) and **NOT** an archived/mirror clone. If the remote

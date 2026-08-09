@@ -22,6 +22,17 @@ const UNIQUES: Record<string, UniqueSpec[]> = {
     },
   ],
   growth_opportunities: [{ key: (r) => (r.dedupe_key ? String(r.dedupe_key) : null) }],
+  // Provider idempotency: unique (interaction_type, external_message_id). A NULL
+  // external_message_id does not participate (matches Postgres UNIQUE semantics),
+  // so multiple proposed touches with no provider id yet never collide.
+  growth_interactions: [
+    {
+      key: (r) =>
+        r.external_message_id
+          ? `${String(r.interaction_type)}|${String(r.external_message_id)}`
+          : null,
+    },
+  ],
   growth_relationship_events: [
     {
       key: (r) =>

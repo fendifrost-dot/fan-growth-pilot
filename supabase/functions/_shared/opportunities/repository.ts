@@ -666,6 +666,10 @@ export function createOpportunityRepository(db: SupabaseLike) {
     };
     if (input.evidence !== undefined) payload.evidence = input.evidence;
     if (input.source) payload.source = input.source;
+    // Record the UNIQUE per-target Smart Link on the interaction (spec §10). A
+    // click resolves back to this opportunity via findInteractionsBySmartLink —
+    // no column on the Lovable-managed smart_links / link_analytics tables.
+    if (input.smart_link) payload.smart_link = input.smart_link;
 
     const row = {
       conversation_id: input.conversation_id ?? null,
@@ -740,6 +744,9 @@ export function createOpportunityRepository(db: SupabaseLike) {
     assertInteractionStatusTransition(from, patch.status); // throws exposable 409
 
     const payload = { ...(current.payload ?? {}), status: patch.status };
+    // The per-target link is often minted at send time — let the status advance
+    // attach/replace it in the same call.
+    if (patch.smart_link) payload.smart_link = patch.smart_link;
     const update: Record<string, unknown> = { payload };
     if (patch.match_status != null) update.match_status = patch.match_status;
     if (patch.external_message_id != null) update.external_message_id = patch.external_message_id;
@@ -757,6 +764,26 @@ export function createOpportunityRepository(db: SupabaseLike) {
     return data;
   }
 
+  /**
+   * Resolve a Smart Link identifier (slug OR short_code, as carried back by a
+   * click) to the interaction(s) — and thus the opportunity — it was attached to.
+   * This is the read half of the §10 attribution path: click ->
+   * link_analytics.link_id -> smart_links.short_code/slug -> HERE -> opportunity_id,
+   * with no schema change on the smart-link side. Filters payload.smart_link in
+   * JS so it runs identically under the Deno client and the vitest stub (pilot
+   * volume is tiny; Phase 2 can index payload->>'short_code').
+   */
+  async function findInteractionsBySmartLink(ref: string) {
+    if (!ref) return { rows: [] as Record<string, unknown>[] };
+    const { data, error } = await db.from("growth_interactions").select("*");
+    if (error) throw new Error(`findInteractionsBySmartLink failed: ${error.message}`);
+    const rows = (data ?? []).filter((r: Record<string, unknown>) => {
+      const link = (r.payload as { smart_link?: { slug?: string; short_code?: string } } | null)?.smart_link;
+      return !!link && (link.slug === ref || link.short_code === ref);
+    });
+    return { rows };
+  }
+
   return {
     findOrCreateEntity,
     assertCreatableReferences,
@@ -767,6 +794,7 @@ export function createOpportunityRepository(db: SupabaseLike) {
     getInteraction,
     listInteractions,
     updateInteractionStatus,
+    findInteractionsBySmartLink,
     createOpportunity,
     getOpportunity,
     listOpportunities,

@@ -219,6 +219,10 @@ Deno.serve(async (req) => {
     if (head === "interactions" && !id) {
       if (method === "GET") {
         const p = url.searchParams;
+        // Attribution lookup: ?smart_link=<slug|short_code> resolves a click back
+        // to the interaction(s) — and thus opportunity — the link was attached to.
+        const smartLink = p.get("smart_link");
+        if (smartLink) return json(await repo.findInteractionsBySmartLink(smartLink));
         return json(await repo.listInteractions({
           conversation_id: p.get("conversation_id") ?? undefined,
           opportunity_id: p.get("opportunity_id") ?? undefined,

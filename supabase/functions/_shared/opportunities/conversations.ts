@@ -96,6 +96,21 @@ export interface ConversationInput {
   status?: ConversationStatus;
 }
 
+/**
+ * A UNIQUE per-target Smart Link, recorded ON the interaction (spec §10). Stored
+ * in payload.smart_link — NO schema change to the Lovable-managed smart_links /
+ * link_analytics tables. This is the association half of the attribution path:
+ * a later click resolves back to this opportunity/interaction by a reverse lookup
+ * (link_analytics.link_id -> smart_links.short_code/slug -> this ref -> opportunity_id),
+ * so no column is needed on smart_links or link_analytics. At least one of
+ * slug / short_code must be present (that is what a click carries back).
+ */
+export interface SmartLinkRef {
+  slug?: string | null;
+  short_code?: string | null;
+  url?: string | null;
+}
+
 export interface InteractionInput {
   conversation_id?: string | null;
   entity_id?: string | null;
@@ -115,6 +130,8 @@ export interface InteractionInput {
   /** Evidence / source provenance, folded into payload alongside status. */
   evidence?: unknown;
   source?: string | null;
+  /** The unique per-target Smart Link for this touch (payload.smart_link). */
+  smart_link?: SmartLinkRef | null;
   payload?: Record<string, unknown>;
 }
 
@@ -126,6 +143,8 @@ export interface InteractionStatusUpdate {
   external_thread_ref?: string | null;
   occurred_at?: string | null;
   body_preview?: string | null;
+  /** Attach/replace the per-target Smart Link when it is minted at send time. */
+  smart_link?: SmartLinkRef | null;
 }
 
 // ---- Helpers ---------------------------------------------------------------
@@ -156,6 +175,19 @@ function optionalIsoTimestamp(v: unknown, field: string): string | null {
     bad(`${field} must be an ISO-8601 timestamp`);
   }
   return v as string;
+}
+
+/** Validate an optional per-target Smart Link ref. Requires at least one of
+ *  slug / short_code (the identifier a click carries back). Returns null when
+ *  absent so callers can spread it unconditionally. */
+function validateSmartLinkRef(v: unknown): SmartLinkRef | null {
+  if (v === undefined || v === null) return null;
+  if (!isPlainObject(v)) bad("smart_link must be an object");
+  const slug = optionalString(v.slug, "smart_link.slug");
+  const short_code = optionalString(v.short_code, "smart_link.short_code");
+  const url = optionalString(v.url, "smart_link.url");
+  if (!slug && !short_code) bad("smart_link requires a slug or short_code");
+  return { slug, short_code, url };
 }
 
 function inEnum<T extends readonly string[]>(
@@ -236,6 +268,7 @@ export function validateInteractionInput(input: unknown): InteractionInput {
     occurred_at: optionalIsoTimestamp(body.occurred_at, "occurred_at"),
     evidence: body.evidence ?? undefined,
     source: optionalString(body.source, "source"),
+    smart_link: validateSmartLinkRef(body.smart_link),
     payload: isPlainObject(body.payload) ? body.payload : undefined,
   };
 }
@@ -258,6 +291,7 @@ export function validateInteractionStatusUpdate(input: unknown): InteractionStat
   out.external_thread_ref = optionalString(body.external_thread_ref, "external_thread_ref");
   out.occurred_at = optionalIsoTimestamp(body.occurred_at, "occurred_at");
   out.body_preview = optionalString(body.body_preview, "body_preview");
+  out.smart_link = validateSmartLinkRef(body.smart_link);
   return out;
 }
 

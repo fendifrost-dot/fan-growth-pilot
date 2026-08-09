@@ -21,9 +21,11 @@ function seeded() {
     growth_entities: [
       { id: "ORG1", entity_type: "organization", name: "Anjuna" },
       { id: "C1", entity_type: "contact", name: "demos@anjunabeats.com", parent_entity_id: "ORG1" },
+      { id: "ORG2", entity_type: "organization", name: "Toolroom" },
     ],
     growth_opportunities: [
       { id: "OPP1", entity_id: "ORG1", opportunity_type: "playlist_pitch", title: "Pitch DFM", status: "new" },
+      { id: "OPP2", entity_id: "ORG2", opportunity_type: "playlist_pitch", title: "Pitch DFM #2", status: "new" },
     ],
   });
   return { client, repo: createOpportunityRepository(client as never) };
@@ -136,6 +138,100 @@ describe("interactions — association to opportunity + entity/contact", () => {
   });
 });
 
+describe("interactions — provider idempotency (not duplicated)", () => {
+  it("a re-sent touch with the same (interaction_type, external_message_id) is deduped, not duplicated", async () => {
+    const { client, repo } = seeded();
+    const first = await repo.recordInteraction({
+      entity_id: "C1",
+      opportunity_id: "OPP1",
+      interaction_type: "email",
+      direction: "outbound",
+      status: "sent",
+      match_status: "unknown",
+      external_message_id: "gmail-msg-idem-1",
+    });
+    expect(first.created).toBe(true);
+
+    const again = await repo.recordInteraction({
+      entity_id: "C1",
+      opportunity_id: "OPP1",
+      interaction_type: "email",
+      direction: "outbound",
+      status: "sent",
+      match_status: "unknown",
+      external_message_id: "gmail-msg-idem-1",
+    });
+    expect(again.created).toBe(false);
+    expect(again.deduped).toBe(true);
+    expect(again.interaction.id).toBe(first.interaction.id);
+    expect(client._tables.growth_interactions.length).toBe(1);
+  });
+});
+
+describe("interactions — UNIQUE per-target Smart Link association + attributable click", () => {
+  it("records a per-target link on the interaction and resolves a click back to its opportunity", async () => {
+    const { repo } = seeded();
+    const { interaction } = await repo.recordInteraction({
+      entity_id: "C1",
+      opportunity_id: "OPP1",
+      interaction_type: "email",
+      direction: "outbound",
+      status: "proposed",
+      match_status: "unknown",
+      smart_link: { slug: "anjuna-dfm", short_code: "aXb12", url: "https://smrt.link/aXb12" },
+    });
+    expect(interaction.payload.smart_link.short_code).toBe("aXb12");
+
+    // A click comes back carrying the link's short_code -> resolves to the exact
+    // interaction + opportunity (the §10 reverse-lookup, no smart_links change).
+    const byClick = await repo.findInteractionsBySmartLink("aXb12");
+    expect(byClick.rows.length).toBe(1);
+    expect(byClick.rows[0].id).toBe(interaction.id);
+    expect(byClick.rows[0].opportunity_id).toBe("OPP1");
+
+    // Slug also resolves.
+    const bySlug = await repo.findInteractionsBySmartLink("anjuna-dfm");
+    expect(bySlug.rows[0].opportunity_id).toBe("OPP1");
+  });
+
+  it("keeps per-target links UNIQUE — each opportunity's link resolves only to its own", async () => {
+    const { repo } = seeded();
+    await repo.recordInteraction({
+      entity_id: "C1", opportunity_id: "OPP1", interaction_type: "email",
+      direction: "outbound", status: "proposed", match_status: "unknown",
+      smart_link: { short_code: "TARGET1" },
+    });
+    await repo.recordInteraction({
+      entity_id: "ORG2", opportunity_id: "OPP2", interaction_type: "email",
+      direction: "outbound", status: "proposed", match_status: "unknown",
+      smart_link: { short_code: "TARGET2" },
+    });
+
+    const r1 = await repo.findInteractionsBySmartLink("TARGET1");
+    const r2 = await repo.findInteractionsBySmartLink("TARGET2");
+    expect(r1.rows.length).toBe(1);
+    expect(r2.rows.length).toBe(1);
+    expect(r1.rows[0].opportunity_id).toBe("OPP1");
+    expect(r2.rows[0].opportunity_id).toBe("OPP2");
+  });
+
+  it("can attach the per-target link at send time via a status advance", async () => {
+    const { repo } = seeded();
+    const { interaction } = await repo.recordInteraction({
+      entity_id: "C1", opportunity_id: "OPP1", interaction_type: "email",
+      direction: "outbound", status: "proposed", match_status: "unknown",
+    });
+    const sent = await repo.updateInteractionStatus(interaction.id, {
+      status: "sent",
+      external_message_id: "gmail-msg-2",
+      smart_link: { short_code: "LATE1" },
+    });
+    expect(sent.payload.smart_link.short_code).toBe("LATE1");
+    const resolved = await repo.findInteractionsBySmartLink("LATE1");
+    expect(resolved.rows[0].id).toBe(interaction.id);
+  });
+});
+
 describe("interactions — status lifecycle after a human action", () => {
   it("advances a proposed touch to sent, then responded, capturing provider ids + match_status", async () => {
     const { repo } = seeded();
@@ -235,5 +331,15 @@ describe("conversation/interaction validation — clean 400s", () => {
   it("accepts `message` as an alias for the proposed body", () => {
     const parsed = validateInteractionInput({ interaction_type: "email", message: "hello there" });
     expect(parsed.body_preview).toBe("hello there");
+  });
+
+  it("400 on a smart_link with neither slug nor short_code", () => {
+    expect(() => validateInteractionInput({ interaction_type: "email", smart_link: { url: "https://x/y" } }))
+      .toThrowError(/smart_link requires a slug or short_code/);
+  });
+
+  it("accepts a well-formed smart_link ref", () => {
+    const parsed = validateInteractionInput({ interaction_type: "email", smart_link: { short_code: "aXb12" } });
+    expect(parsed.smart_link?.short_code).toBe("aXb12");
   });
 });

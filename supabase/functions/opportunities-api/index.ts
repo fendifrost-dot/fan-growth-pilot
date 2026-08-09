@@ -21,7 +21,10 @@ import {
   isOpportunityRequestError,
   type OppActor,
   parseResource,
+  validateConversationInput,
   validateCreateOpportunityInput,
+  validateInteractionInput,
+  validateInteractionStatusUpdate,
 } from "../_shared/opportunities/index.ts";
 
 const corsHeaders = {
@@ -183,6 +186,63 @@ Deno.serve(async (req) => {
           return json(await repo.generateAction(id, act));
         default:
           return json({ error: `Unknown action: ${sub}` }, 404);
+      }
+    }
+
+    // ---- Conversations (business relationship threads) -----------------
+    // GET is any signed-in user (authenticated-read); POST is admin-write —
+    // both enforced above by classifyRoute/decideAccess before we get here.
+    if (head === "conversations" && !id) {
+      if (method === "GET") {
+        const p = url.searchParams;
+        return json(await repo.listConversations({
+          entity_id: p.get("entity_id") ?? undefined,
+          opportunity_id: p.get("opportunity_id") ?? undefined,
+          status: p.get("status") ?? undefined,
+        }));
+      }
+      if (method === "POST") {
+        // find-or-create: 201 when a new thread is minted, 200 when reused.
+        const input = validateConversationInput(body);
+        const result = await repo.findOrCreateConversation(input);
+        return json(result, result.created ? 201 : 200);
+      }
+    }
+
+    if (head === "conversations" && id && !sub && method === "GET") {
+      const conv = await repo.getConversation(id);
+      if (!conv) return json({ error: "Not found" }, 404);
+      return json({ conversation: conv });
+    }
+
+    // ---- Interactions (one polymorphic touch inside a conversation) -----
+    if (head === "interactions" && !id) {
+      if (method === "GET") {
+        const p = url.searchParams;
+        return json(await repo.listInteractions({
+          conversation_id: p.get("conversation_id") ?? undefined,
+          opportunity_id: p.get("opportunity_id") ?? undefined,
+          entity_id: p.get("entity_id") ?? undefined,
+        }));
+      }
+      if (method === "POST") {
+        // Record a PROPOSED touch (default status) associated with its
+        // conversation + entity/contact + opportunity.
+        const input = validateInteractionInput(body);
+        return json(await repo.recordInteraction(input), 201);
+      }
+    }
+
+    if (head === "interactions" && id && !sub) {
+      if (method === "GET") {
+        const it = await repo.getInteraction(id);
+        if (!it) return json({ error: "Not found" }, 404);
+        return json({ interaction: it });
+      }
+      if (method === "PATCH") {
+        // Advance the touch's lifecycle status after a human action.
+        const patch = validateInteractionStatusUpdate(body);
+        return json(await repo.updateInteractionStatus(id, patch));
       }
     }
 

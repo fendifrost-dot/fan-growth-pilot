@@ -22,6 +22,14 @@ import { aggregateRelationship, EVENT_WEIGHTS } from "./relationship-memory.ts";
 import { assertTransition, deriveOutcomeState, outcomeScoreSignals, validateClip } from "./outcomes.ts";
 import { generateMessage, recommendAction } from "./messaging.ts";
 import { OpportunityRequestError } from "./validation.ts";
+import {
+  assertInteractionStatusTransition,
+  type ConversationInput,
+  DEFAULT_INTERACTION_STATUS,
+  type InteractionInput,
+  type InteractionStatus,
+  type InteractionStatusUpdate,
+} from "./conversations.ts";
 
 export const SCORE_VERSION = "det-v1";
 
@@ -69,6 +77,18 @@ export interface ListOptions {
 export interface Actor {
   userId?: string | null;
   kind?: "user" | "scheduler" | "service";
+}
+
+export interface ConversationFilters {
+  entity_id?: string;
+  opportunity_id?: string;
+  status?: string;
+}
+
+export interface InteractionFilters {
+  conversation_id?: string;
+  opportunity_id?: string;
+  entity_id?: string;
 }
 
 const isUniqueViolation = (err: unknown): boolean =>
@@ -551,9 +571,202 @@ export function createOpportunityRepository(db: SupabaseLike) {
     };
   }
 
+  // ---- Conversations + Interactions -------------------------------------
+  // A thin, admin-gated surface over the EXISTING growth_conversations +
+  // growth_interactions tables so the daily growth op can: find-or-create the
+  // business conversation with an org, record a PROPOSED outbound touch, and
+  // advance that touch's status after a human acts — associating each touch with
+  // its opportunity + entity/contact. The interaction lifecycle status
+  // (proposed -> sent -> responded ...) lives in payload.status (the table is
+  // channel-polymorphic and has no status column); everything else maps to a
+  // real column.
+
+  async function assertEntityExists(entityId: string): Promise<void> {
+    const { data, error } = await db.from("growth_entities").select("id").eq("id", entityId).maybeSingle();
+    if (error) throw new Error(`entity lookup failed: ${error.message}`);
+    if (!data) throw new OpportunityRequestError(404, "entity_id does not reference an existing entity");
+  }
+
+  async function assertOpportunityExists(oppId: string): Promise<void> {
+    const { data, error } = await db.from("growth_opportunities").select("id").eq("id", oppId).maybeSingle();
+    if (error) throw new Error(`opportunity lookup failed: ${error.message}`);
+    if (!data) throw new OpportunityRequestError(404, "opportunity_id does not reference an existing opportunity");
+  }
+
+  /**
+   * Find the conversation for an (entity, opportunity) pair, or create one. The
+   * conversation is the BUSINESS relationship — identified by its own id, keyed
+   * here by entity (+ optional opportunity) so the daily op is idempotent and
+   * never spawns a duplicate thread for the same target.
+   */
+  async function findOrCreateConversation(input: ConversationInput) {
+    // NOT NULL FK — a missing entity would otherwise be a 23503 -> opaque 500.
+    await assertEntityExists(input.entity_id);
+    if (input.opportunity_id) await assertOpportunityExists(input.opportunity_id);
+
+    // Match on (entity_id [, opportunity_id]). Filtered by entity_id (and
+    // opportunity_id when present); the opportunity-less case is resolved in JS
+    // to avoid an `.eq(col, null)` (which is not an IS NULL against PostgREST).
+    let q = db.from("growth_conversations").select("*").eq("entity_id", input.entity_id);
+    if (input.opportunity_id) q = q.eq("opportunity_id", input.opportunity_id);
+    const { data: rows, error: findErr } = await q;
+    if (findErr) throw new Error(`findOrCreateConversation (find) failed: ${findErr.message}`);
+    const existing = input.opportunity_id
+      ? (rows ?? [])[0]
+      : (rows ?? []).find((r: Record<string, unknown>) => r.opportunity_id == null);
+    if (existing) return { conversation: existing, created: false };
+
+    const row = {
+      entity_id: input.entity_id,
+      opportunity_id: input.opportunity_id ?? null,
+      subject: input.subject ?? null,
+      status: input.status ?? "open",
+    };
+    const { data, error } = await db.from("growth_conversations").insert(row).select("*").single();
+    if (error) throw new Error(`findOrCreateConversation failed: ${error.message}`);
+    return { conversation: data, created: true };
+  }
+
+  async function getConversation(id: string) {
+    const { data, error } = await db.from("growth_conversations").select("*").eq("id", id).maybeSingle();
+    if (error) throw new Error(`getConversation failed: ${error.message}`);
+    return data;
+  }
+
+  async function listConversations(filters: ConversationFilters = {}) {
+    let q = db.from("growth_conversations").select("*");
+    if (filters.entity_id) q = q.eq("entity_id", filters.entity_id);
+    if (filters.opportunity_id) q = q.eq("opportunity_id", filters.opportunity_id);
+    if (filters.status) q = q.eq("status", filters.status);
+    q = q.order("created_at", { ascending: false });
+    const { data, error } = await q;
+    if (error) throw new Error(`listConversations failed: ${error.message}`);
+    return { rows: data ?? [] };
+  }
+
+  /**
+   * Record ONE interaction (a proposed outbound touch by default). Associates the
+   * touch with its conversation + entity/contact + opportunity, captures the
+   * channel/direction/provider refs, and folds the lifecycle status + evidence/
+   * source into payload. Idempotent on the provider (interaction_type,
+   * external_message_id) unique constraint.
+   */
+  async function recordInteraction(input: InteractionInput) {
+    if (input.conversation_id) {
+      const conv = await getConversation(input.conversation_id);
+      if (!conv) throw new OpportunityRequestError(404, "conversation_id does not reference an existing conversation");
+    }
+    if (input.entity_id) await assertEntityExists(input.entity_id);
+    if (input.opportunity_id) await assertOpportunityExists(input.opportunity_id);
+
+    const occurred_at = input.occurred_at ?? new Date().toISOString();
+    const payload: Record<string, unknown> = {
+      ...(input.payload ?? {}),
+      status: input.status ?? DEFAULT_INTERACTION_STATUS,
+    };
+    if (input.evidence !== undefined) payload.evidence = input.evidence;
+    if (input.source) payload.source = input.source;
+
+    const row = {
+      conversation_id: input.conversation_id ?? null,
+      entity_id: input.entity_id ?? null,
+      opportunity_id: input.opportunity_id ?? null,
+      interaction_type: input.interaction_type,
+      direction: input.direction,
+      occurred_at,
+      subject: input.subject ?? null,
+      body_preview: input.body_preview ?? null,
+      external_thread_ref: input.external_thread_ref ?? null,
+      external_message_id: input.external_message_id ?? null,
+      in_reply_to: input.in_reply_to ?? null,
+      match_status: input.match_status,
+      payload,
+    };
+
+    const { data, error } = await db.from("growth_interactions").insert(row).select("*").single();
+    if (error) {
+      // Provider idempotency: (interaction_type, external_message_id) is unique.
+      if (isUniqueViolation(error) && input.external_message_id) {
+        const { data: existing } = await db
+          .from("growth_interactions")
+          .select("*")
+          .eq("interaction_type", input.interaction_type)
+          .eq("external_message_id", input.external_message_id)
+          .maybeSingle();
+        if (existing) return { interaction: existing, created: false, deduped: true };
+      }
+      throw new Error(`recordInteraction failed: ${error.message}`);
+    }
+
+    // Keep the conversation's last_interaction_at current so the thread reflects
+    // this touch (best-effort; never blocks the interaction write).
+    if (input.conversation_id) {
+      await db.from("growth_conversations")
+        .update({ last_interaction_at: occurred_at })
+        .eq("id", input.conversation_id);
+    }
+    return { interaction: data, created: true, deduped: false };
+  }
+
+  async function getInteraction(id: string) {
+    const { data, error } = await db.from("growth_interactions").select("*").eq("id", id).maybeSingle();
+    if (error) throw new Error(`getInteraction failed: ${error.message}`);
+    return data;
+  }
+
+  async function listInteractions(filters: InteractionFilters = {}) {
+    let q = db.from("growth_interactions").select("*");
+    if (filters.conversation_id) q = q.eq("conversation_id", filters.conversation_id);
+    if (filters.opportunity_id) q = q.eq("opportunity_id", filters.opportunity_id);
+    if (filters.entity_id) q = q.eq("entity_id", filters.entity_id);
+    q = q.order("occurred_at", { ascending: false });
+    const { data, error } = await q;
+    if (error) throw new Error(`listInteractions failed: ${error.message}`);
+    return { rows: data ?? [] };
+  }
+
+  /**
+   * Advance an interaction's lifecycle status after a human action (e.g. a
+   * proposed touch was actually sent, or a reply came in). Enforces a monotone
+   * transition against the stored payload.status so a touch can never silently
+   * rewind, and lets the caller set the provider ids / match_status realized by
+   * the action.
+   */
+  async function updateInteractionStatus(id: string, patch: InteractionStatusUpdate) {
+    const current = await getInteraction(id);
+    if (!current) throw new OpportunityRequestError(404, "interaction not found");
+
+    const from = ((current.payload && current.payload.status) ?? DEFAULT_INTERACTION_STATUS) as InteractionStatus;
+    assertInteractionStatusTransition(from, patch.status); // throws exposable 409
+
+    const payload = { ...(current.payload ?? {}), status: patch.status };
+    const update: Record<string, unknown> = { payload };
+    if (patch.match_status != null) update.match_status = patch.match_status;
+    if (patch.external_message_id != null) update.external_message_id = patch.external_message_id;
+    if (patch.external_thread_ref != null) update.external_thread_ref = patch.external_thread_ref;
+    if (patch.occurred_at != null) update.occurred_at = patch.occurred_at;
+    if (patch.body_preview != null) update.body_preview = patch.body_preview;
+
+    const { data, error } = await db
+      .from("growth_interactions")
+      .update(update)
+      .eq("id", id)
+      .select("*")
+      .single();
+    if (error) throw new Error(`updateInteractionStatus failed: ${error.message}`);
+    return data;
+  }
+
   return {
     findOrCreateEntity,
     assertCreatableReferences,
+    findOrCreateConversation,
+    getConversation,
+    listConversations,
+    recordInteraction,
+    getInteraction,
+    listInteractions,
+    updateInteractionStatus,
     createOpportunity,
     getOpportunity,
     listOpportunities,

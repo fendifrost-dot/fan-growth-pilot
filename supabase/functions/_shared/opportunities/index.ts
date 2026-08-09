@@ -8,4 +8,5 @@ export * from "./outcomes.ts";
 export * from "./messaging.ts";
 export * from "./access.ts";
 export * from "./validation.ts";
+export * from "./conversations.ts";
 export * from "./repository.ts";

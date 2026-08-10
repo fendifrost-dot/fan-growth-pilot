@@ -623,7 +623,22 @@ export function createOpportunityRepository(db: SupabaseLike) {
       status: input.status ?? "open",
     };
     const { data, error } = await db.from("growth_conversations").insert(row).select("*").single();
-    if (error) throw new Error(`findOrCreateConversation failed: ${error.message}`);
+    if (error) {
+      // Concurrency: a parallel Cowork agent won the race and inserted first. The
+      // partial unique indexes (entity_id, opportunity_id) / (entity_id) make the
+      // loser hit 23505 — re-fetch and return the WINNER instead of erroring, so
+      // find-or-create is truly idempotent under parallelism.
+      if (isUniqueViolation(error)) {
+        let rq = db.from("growth_conversations").select("*").eq("entity_id", input.entity_id);
+        if (input.opportunity_id) rq = rq.eq("opportunity_id", input.opportunity_id);
+        const { data: rows2 } = await rq;
+        const winner = input.opportunity_id
+          ? (rows2 ?? [])[0]
+          : (rows2 ?? []).find((r: Record<string, unknown>) => r.opportunity_id == null);
+        if (winner) return { conversation: winner, created: false };
+      }
+      throw new Error(`findOrCreateConversation failed: ${error.message}`);
+    }
     return { conversation: data, created: true };
   }
 
@@ -651,13 +666,67 @@ export function createOpportunityRepository(db: SupabaseLike) {
    * source into payload. Idempotent on the provider (interaction_type,
    * external_message_id) unique constraint.
    */
-  async function recordInteraction(input: InteractionInput) {
-    if (input.conversation_id) {
-      const conv = await getConversation(input.conversation_id);
-      if (!conv) throw new OpportunityRequestError(404, "conversation_id does not reference an existing conversation");
+  // Reject attaching a Smart Link slug/short_code already claimed by a DIFFERENT
+  // interaction (per-target links must be unique). API-level check — sufficient at
+  // Week-1 scale; does not redesign smart_links.
+  async function assertSmartLinkUnused(
+    link: { slug?: string | null; short_code?: string | null },
+    exceptId: string | null,
+  ): Promise<void> {
+    const refs = [link.slug, link.short_code].filter(Boolean) as string[];
+    for (const ref of refs) {
+      const { rows } = await findInteractionsBySmartLink(ref);
+      if (rows.some((r: Record<string, unknown>) => r.id !== exceptId)) {
+        throw new OpportunityRequestError(409, "smart_link is already associated with another interaction");
+      }
     }
-    if (input.entity_id) await assertEntityExists(input.entity_id);
+  }
+
+  async function recordInteraction(input: InteractionInput) {
+    // Existence — return a clean 404 rather than letting an FK 23503 become a 500.
+    let conversation: Record<string, unknown> | null = null;
+    if (input.conversation_id) {
+      conversation = await getConversation(input.conversation_id);
+      if (!conversation) throw new OpportunityRequestError(404, "conversation_id does not reference an existing conversation");
+    }
+    let entity: { id: string; parent_entity_id?: string | null } | null = null;
+    if (input.entity_id) {
+      const { data: e, error: eErr } = await db
+        .from("growth_entities")
+        .select("id, parent_entity_id")
+        .eq("id", input.entity_id)
+        .maybeSingle();
+      if (eErr) throw new Error(`entity lookup failed: ${eErr.message}`);
+      if (!e) throw new OpportunityRequestError(404, "entity_id does not reference an existing entity");
+      entity = e;
+    }
     if (input.opportunity_id) await assertOpportunityExists(input.opportunity_id);
+
+    // Relational consistency: an interaction is a TOUCH WITHIN its conversation.
+    // Its opportunity must agree with the conversation's, and its entity/contact
+    // must belong to the conversation's organization (the org itself, or a child
+    // contact via parent_entity_id). A mismatch is a 409 — never miswire the graph.
+    if (conversation) {
+      if (
+        conversation.opportunity_id && input.opportunity_id &&
+        conversation.opportunity_id !== input.opportunity_id
+      ) {
+        throw new OpportunityRequestError(409, "interaction opportunity does not match its conversation");
+      }
+      if (entity) {
+        const belongs = entity.id === conversation.entity_id ||
+          entity.parent_entity_id === conversation.entity_id;
+        if (!belongs) {
+          throw new OpportunityRequestError(
+            409,
+            "interaction entity/contact does not belong to the conversation's organization",
+          );
+        }
+      }
+    }
+
+    // Per-target Smart Link must be unique across interactions.
+    if (input.smart_link) await assertSmartLinkUnused(input.smart_link, null);
 
     const occurred_at = input.occurred_at ?? new Date().toISOString();
     const payload: Record<string, unknown> = {
@@ -745,8 +814,12 @@ export function createOpportunityRepository(db: SupabaseLike) {
 
     const payload = { ...(current.payload ?? {}), status: patch.status };
     // The per-target link is often minted at send time — let the status advance
-    // attach/replace it in the same call.
-    if (patch.smart_link) payload.smart_link = patch.smart_link;
+    // attach/replace it in the same call, but only if no OTHER interaction already
+    // claims that slug/short_code (409 otherwise).
+    if (patch.smart_link) {
+      await assertSmartLinkUnused(patch.smart_link, id);
+      payload.smart_link = patch.smart_link;
+    }
     const update: Record<string, unknown> = { payload };
     if (patch.match_status != null) update.match_status = patch.match_status;
     if (patch.external_message_id != null) update.external_message_id = patch.external_message_id;

@@ -248,10 +248,23 @@ export function validateInteractionInput(input: unknown): InteractionInput {
     bad("payload must be an object");
   }
 
+  const conversation_id = optionalUuid(body.conversation_id, "conversation_id");
+  const entity_id = optionalUuid(body.entity_id, "entity_id");
+  const opportunity_id = optionalUuid(body.opportunity_id, "opportunity_id");
+
+  // Week-1 PROPOSED interactions must carry meaningful linkage — reject orphans
+  // (no conversation / no opportunity / no contact) with a clean 400. Scoped to
+  // 'proposed' on purpose: inbound/system touches recorded post-hoc are exempt.
+  if (status === "proposed") {
+    if (!conversation_id) bad("a proposed interaction requires conversation_id");
+    if (!opportunity_id) bad("a proposed interaction requires opportunity_id");
+    if (!entity_id) bad("a proposed interaction requires entity_id (the target contact)");
+  }
+
   return {
-    conversation_id: optionalUuid(body.conversation_id, "conversation_id"),
-    entity_id: optionalUuid(body.entity_id, "entity_id"),
-    opportunity_id: optionalUuid(body.opportunity_id, "opportunity_id"),
+    conversation_id,
+    entity_id,
+    opportunity_id,
     interaction_type,
     direction,
     status,

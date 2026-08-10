@@ -231,9 +231,12 @@ Deno.serve(async (req) => {
       }
       if (method === "POST") {
         // Record a PROPOSED touch (default status) associated with its
-        // conversation + entity/contact + opportunity.
+        // conversation + entity/contact + opportunity. 201 only for a newly-
+        // created interaction; a deduped/replayed touch returns 200 so a
+        // scheduled operator can distinguish creation from replay.
         const input = validateInteractionInput(body);
-        return json(await repo.recordInteraction(input), 201);
+        const result = await repo.recordInteraction(input);
+        return json(result, result.created ? 201 : 200);
       }
     }
 

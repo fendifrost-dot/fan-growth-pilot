@@ -22,6 +22,14 @@ const UNIQUES: Record<string, UniqueSpec[]> = {
     },
   ],
   growth_opportunities: [{ key: (r) => (r.dedupe_key ? String(r.dedupe_key) : null) }],
+  // Matches migration 20260809000000: unique (entity_id, opportunity_id) when an
+  // opportunity is present, else unique per entity_id. Models both partial indexes
+  // as one key (NULL opportunity_id -> IS NULL match, not "every NULL distinct").
+  growth_conversations: [
+    {
+      key: (r) => (r.entity_id ? `${String(r.entity_id)}|${r.opportunity_id ?? "NULL"}` : null),
+    },
+  ],
   // Provider idempotency: unique (interaction_type, external_message_id). A NULL
   // external_message_id does not participate (matches Postgres UNIQUE semantics),
   // so multiple proposed touches with no provider id yet never collide.

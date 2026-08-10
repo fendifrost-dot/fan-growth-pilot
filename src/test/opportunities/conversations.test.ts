@@ -31,6 +31,21 @@ function seeded() {
   return { client, repo: createOpportunityRepository(client as never) };
 }
 
+// Valid UUIDs for the request-boundary (validator) tests — a proposed interaction
+// must carry conversation + opportunity + contact, all UUID-format.
+const CONV_UUID = "33333333-3333-4333-8333-333333333333";
+const ENT_UUID = "44444444-4444-4444-8444-444444444444";
+const OPP_UUID = "55555555-5555-4555-8555-555555555555";
+function proposedBody(overrides: Record<string, unknown> = {}) {
+  return {
+    interaction_type: "email",
+    conversation_id: CONV_UUID,
+    entity_id: ENT_UUID,
+    opportunity_id: OPP_UUID,
+    ...overrides,
+  };
+}
+
 /** Assert the callback throws an OpportunityRequestError with the given status + message. */
 async function expectStatus(fn: () => unknown | Promise<unknown>, status: number, match: RegExp) {
   try {
@@ -232,6 +247,89 @@ describe("interactions — UNIQUE per-target Smart Link association + attributab
   });
 });
 
+describe("interactions — relational consistency (touch within its conversation)", () => {
+  it("409 when the interaction's entity/contact does not belong to the conversation's org", async () => {
+    const { repo } = seeded();
+    const conv = (await repo.findOrCreateConversation({ entity_id: "ORG1", opportunity_id: "OPP1" })).conversation;
+    // ORG2 is a different organization — not ORG1 and not a child of ORG1.
+    await expectStatus(
+      () => repo.recordInteraction({
+        conversation_id: conv.id, entity_id: "ORG2", opportunity_id: "OPP1",
+        interaction_type: "email", direction: "outbound", status: "proposed", match_status: "unknown",
+      }),
+      409,
+      /does not belong to the conversation's organization/,
+    );
+  });
+
+  it("409 when the interaction's opportunity disagrees with its conversation", async () => {
+    const { repo } = seeded();
+    const conv = (await repo.findOrCreateConversation({ entity_id: "ORG1", opportunity_id: "OPP1" })).conversation;
+    await expectStatus(
+      () => repo.recordInteraction({
+        conversation_id: conv.id, entity_id: "C1", opportunity_id: "OPP2",
+        interaction_type: "email", direction: "outbound", status: "proposed", match_status: "unknown",
+      }),
+      409,
+      /opportunity does not match its conversation/,
+    );
+  });
+});
+
+describe("conversations — concurrency-safe find-or-create", () => {
+  it("two parallel find-or-creates for the same target yield ONE row and return the winner", async () => {
+    const { client, repo } = seeded();
+    const [a, b] = await Promise.all([
+      repo.findOrCreateConversation({ entity_id: "ORG1", opportunity_id: "OPP1" }),
+      repo.findOrCreateConversation({ entity_id: "ORG1", opportunity_id: "OPP1" }),
+    ]);
+    // Exactly one insert won; the loser caught the unique violation and returned it.
+    expect(a.conversation.id).toBe(b.conversation.id);
+    expect([a.created, b.created].filter(Boolean).length).toBe(1);
+    expect(client._tables.growth_conversations.length).toBe(1);
+  });
+});
+
+describe("interactions — per-target Smart Link reuse rejected", () => {
+  it("409 when a slug/short_code is already associated with another interaction", async () => {
+    const { repo } = seeded();
+    const conv1 = (await repo.findOrCreateConversation({ entity_id: "ORG1", opportunity_id: "OPP1" })).conversation;
+    await repo.recordInteraction({
+      conversation_id: conv1.id, entity_id: "C1", opportunity_id: "OPP1",
+      interaction_type: "email", direction: "outbound", status: "proposed", match_status: "unknown",
+      smart_link: { short_code: "SHARED1" },
+    });
+    const conv2 = (await repo.findOrCreateConversation({ entity_id: "ORG2", opportunity_id: "OPP2" })).conversation;
+    await expectStatus(
+      () => repo.recordInteraction({
+        conversation_id: conv2.id, entity_id: "ORG2", opportunity_id: "OPP2",
+        interaction_type: "email", direction: "outbound", status: "proposed", match_status: "unknown",
+        smart_link: { short_code: "SHARED1" },
+      }),
+      409,
+      /already associated with another interaction/,
+    );
+  });
+});
+
+describe("interactions — 201 create vs 200 replay signal", () => {
+  it("first write is a create (created:true -> 201); a provider replay is created:false -> 200", async () => {
+    const { repo } = seeded();
+    const first = await repo.recordInteraction({
+      entity_id: "C1", opportunity_id: "OPP1", interaction_type: "email",
+      direction: "outbound", status: "sent", match_status: "unknown", external_message_id: "route-idem-1",
+    });
+    expect(first.created).toBe(true); // route maps -> 201
+
+    const replay = await repo.recordInteraction({
+      entity_id: "C1", opportunity_id: "OPP1", interaction_type: "email",
+      direction: "outbound", status: "sent", match_status: "unknown", external_message_id: "route-idem-1",
+    });
+    expect(replay.created).toBe(false); // route maps -> 200
+    expect(replay.deduped).toBe(true);
+  });
+});
+
 describe("interactions — status lifecycle after a human action", () => {
   it("advances a proposed touch to sent, then responded, capturing provider ids + match_status", async () => {
     const { repo } = seeded();
@@ -322,24 +420,47 @@ describe("conversation/interaction validation — clean 400s", () => {
   });
 
   it("defaults direction/status/match_status to the schema defaults when omitted", () => {
-    const parsed = validateInteractionInput({ interaction_type: "email" });
+    const parsed = validateInteractionInput(proposedBody());
     expect(parsed.direction).toBe("outbound");
     expect(parsed.status).toBe("proposed");
     expect(parsed.match_status).toBe("unknown");
   });
 
   it("accepts `message` as an alias for the proposed body", () => {
-    const parsed = validateInteractionInput({ interaction_type: "email", message: "hello there" });
+    const parsed = validateInteractionInput(proposedBody({ message: "hello there" }));
     expect(parsed.body_preview).toBe("hello there");
   });
 
   it("400 on a smart_link with neither slug nor short_code", () => {
-    expect(() => validateInteractionInput({ interaction_type: "email", smart_link: { url: "https://x/y" } }))
+    expect(() => validateInteractionInput(proposedBody({ smart_link: { url: "https://x/y" } })))
       .toThrowError(/smart_link requires a slug or short_code/);
   });
 
   it("accepts a well-formed smart_link ref", () => {
-    const parsed = validateInteractionInput({ interaction_type: "email", smart_link: { short_code: "aXb12" } });
+    const parsed = validateInteractionInput(proposedBody({ smart_link: { short_code: "aXb12" } }));
     expect(parsed.smart_link?.short_code).toBe("aXb12");
+  });
+});
+
+describe("interactions — orphan PROPOSED touch rejected (meaningful linkage required)", () => {
+  it("400 when a proposed interaction has no conversation_id", () => {
+    expect(() => validateInteractionInput({ interaction_type: "email", entity_id: ENT_UUID, opportunity_id: OPP_UUID }))
+      .toThrowError(/proposed interaction requires conversation_id/);
+  });
+
+  it("400 when a proposed interaction has no opportunity_id", () => {
+    expect(() => validateInteractionInput({ interaction_type: "email", conversation_id: CONV_UUID, entity_id: ENT_UUID }))
+      .toThrowError(/proposed interaction requires opportunity_id/);
+  });
+
+  it("400 when a proposed interaction has no entity_id (contact)", () => {
+    expect(() => validateInteractionInput({ interaction_type: "email", conversation_id: CONV_UUID, opportunity_id: OPP_UUID }))
+      .toThrowError(/proposed interaction requires entity_id/);
+  });
+
+  it("a NON-proposed touch (e.g. an inbound reply) is exempt from the linkage rule", () => {
+    const parsed = validateInteractionInput({ interaction_type: "email", direction: "inbound", status: "responded" });
+    expect(parsed.status).toBe("responded");
+    expect(parsed.conversation_id).toBeNull();
   });
 });

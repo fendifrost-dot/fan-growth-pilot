@@ -1,7 +1,9 @@
 # AGH Growth-Operations Specification — V1
 
-**Status:** V1 (approved baseline for the Week-1 growth pilot)
-**Date:** 2026-08-09
+**Status:** **V1 — APPROVED to run the Week-1 pilot under Controlled-Mode Amendment CM-1**
+(the operative contract is **V1 + Controlled-Mode Amendment CM-1**; CM-1 is temporary and
+scoped to the Week-1 pilot — see §15 Change Log)
+**Date:** 2026-08-09 (V1 baseline) · 2026-08-10 (CM-1)
 **Owner:** Artist Growth Hub (AGH)
 **Executing agent:** Claude (Cowork / Claude Code)
 **Repo:** `fendifrost-dot/fan-growth-pilot` (canonical)
@@ -510,7 +512,34 @@ is not replaced by this spec.
 
 | Version | Date | Change | Rationale | Approved by |
 |---|---|---|---|---|
-| **V1** | 2026-08-09 | Initial baseline contract for the Week-1 growth pilot. | Establish the evidence-first, human-reviewed, engine-scored calibration period. | (pending AGH approval) |
+| **V1** | 2026-08-09 | Initial baseline contract for the Week-1 growth pilot. | Establish the evidence-first, human-reviewed, engine-scored calibration period. | AGH |
+| **CM-1** | 2026-08-10 | **Controlled-Mode Amendment** — V1 is APPROVED to run the Week-1 pilot under the temporary controlled-mode terms below. Full terms in §15.1. | Run the pilot now while the two PR #3 integrity fixes land, by constraining operation to a single sequential, human-approved, low-volume lane that removes the conditions those fixes protect against. | AGH |
+
+### 15.1 Controlled-Mode Amendment CM-1 — terms
+
+**Operative contract:** V1 + Controlled-Mode Amendment CM-1.
+**Status:** TEMPORARY — scoped to the Week-1 pilot. Lifting, extending, or relaxing any
+term below requires its own numbered amendment.
+
+1. **Single sequential operator.** One operator/agent at a time. **No parallel writes and
+   no parallel agents** against the Opportunity Engine.
+2. **All outreach is human-approved.** No message leaves the system without an explicit
+   human approval of that specific message.
+3. **NO auto-contact.** Auto-contact remains gated to a future **V1.1** amendment only
+   (per §7.2). CM-1 does **not** open any auto-contact lane.
+4. **Volume — discovery:** 10–15 qualified opportunities per day.
+5. **Volume — sends:** 5–8 **maximum** approved sends per day.
+6. **Logging:** log everything the **currently-deployed** API supports.
+   **Note:** conversation/interaction logging is **pending the PR #3 deploy**. Until that
+   deploy lands, it is not available — **do not fabricate or back-fill it.**
+7. **Attribution:** click/listen attribution is treated as **PARTIAL** until the real
+   Smart Link click path is proven live. Reports must label it as partial, not as
+   confirmed attribution.
+8. **PR #3 integrity fixes are no longer blocking.** The two fixes — (a) conversation↔
+   opportunity entity consistency and (b) proposal-stage idempotency — continue in
+   parallel. They are **operationally de-risked** by the single-sequential /
+   no-parallel-writes constraint in term 1, and therefore **no longer BLOCK the pilot**.
+   If term 1 is ever relaxed, these fixes become blocking again until deployed.
 
 ---
 

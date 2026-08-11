@@ -42,6 +42,7 @@ function proposedBody(overrides: Record<string, unknown> = {}) {
     conversation_id: CONV_UUID,
     entity_id: ENT_UUID,
     opportunity_id: OPP_UUID,
+    idempotency_key: "cowork-op-key",
     ...overrides,
   };
 }
@@ -85,6 +86,28 @@ describe("conversations — find-or-create (idempotent business thread)", () => 
       404,
       /entity_id does not reference/,
     );
+  });
+});
+
+describe("conversations — entity/opportunity consistency AT CREATION", () => {
+  it("409 when the conversation entity and the opportunity belong to different orgs", async () => {
+    const { client, repo } = seeded();
+    // entity = ORG1, but OPP2 belongs to ORG2 — a cross-wired thread.
+    await expectStatus(
+      () => repo.findOrCreateConversation({ entity_id: "ORG1", opportunity_id: "OPP2" }),
+      409,
+      /does not belong to the opportunity's organization/,
+    );
+    // …and nothing was created.
+    expect(client._tables.growth_conversations?.length ?? 0).toBe(0);
+  });
+
+  it("allows a conversation on a child contact for an org-level opportunity (same hierarchy)", async () => {
+    const { repo } = seeded();
+    // entity = C1 (child of ORG1), opportunity OPP1 belongs to ORG1 → consistent.
+    const res = await repo.findOrCreateConversation({ entity_id: "C1", opportunity_id: "OPP1" });
+    expect(res.created).toBe(true);
+    expect(res.conversation.entity_id).toBe("C1");
   });
 });
 
@@ -179,6 +202,47 @@ describe("interactions — provider idempotency (not duplicated)", () => {
     expect(again.created).toBe(false);
     expect(again.deduped).toBe(true);
     expect(again.interaction.id).toBe(first.interaction.id);
+    expect(client._tables.growth_interactions.length).toBe(1);
+  });
+});
+
+describe("interactions — proposal-stage idempotency (no provider id yet)", () => {
+  it("the same proposed touch submitted twice with one idempotency_key yields ONE row and 200 replay", async () => {
+    const { client, repo } = seeded();
+    const conv = (await repo.findOrCreateConversation({ entity_id: "ORG1", opportunity_id: "OPP1" })).conversation;
+    const proposal = {
+      conversation_id: conv.id,
+      entity_id: "C1",
+      opportunity_id: "OPP1",
+      interaction_type: "email" as const,
+      direction: "outbound" as const,
+      status: "proposed" as const,
+      match_status: "unknown" as const,
+      idempotency_key: "cowork-op-2026-08-09-001",
+    };
+
+    const a = await repo.recordInteraction(proposal);
+    expect(a.created).toBe(true); // 201
+
+    const b = await repo.recordInteraction(proposal);
+    expect(b.created).toBe(false); // 200 replay
+    expect(b.deduped).toBe(true);
+    expect(b.interaction.id).toBe(a.interaction.id);
+    expect(client._tables.growth_interactions.length).toBe(1);
+  });
+
+  it("two PARALLEL submits of the same keyed proposal still yield exactly one row", async () => {
+    const { client, repo } = seeded();
+    const conv = (await repo.findOrCreateConversation({ entity_id: "ORG1", opportunity_id: "OPP1" })).conversation;
+    const proposal = {
+      conversation_id: conv.id, entity_id: "C1", opportunity_id: "OPP1",
+      interaction_type: "email" as const, direction: "outbound" as const,
+      status: "proposed" as const, match_status: "unknown" as const,
+      idempotency_key: "cowork-op-parallel",
+    };
+    const [a, b] = await Promise.all([repo.recordInteraction(proposal), repo.recordInteraction(proposal)]);
+    expect(a.interaction.id).toBe(b.interaction.id);
+    expect([a.created, b.created].filter(Boolean).length).toBe(1);
     expect(client._tables.growth_interactions.length).toBe(1);
   });
 });
@@ -454,8 +518,13 @@ describe("interactions — orphan PROPOSED touch rejected (meaningful linkage re
   });
 
   it("400 when a proposed interaction has no entity_id (contact)", () => {
-    expect(() => validateInteractionInput({ interaction_type: "email", conversation_id: CONV_UUID, opportunity_id: OPP_UUID }))
+    expect(() => validateInteractionInput({ interaction_type: "email", conversation_id: CONV_UUID, opportunity_id: OPP_UUID, idempotency_key: "k" }))
       .toThrowError(/proposed interaction requires entity_id/);
+  });
+
+  it("400 when a proposed interaction has no idempotency_key", () => {
+    expect(() => validateInteractionInput({ interaction_type: "email", conversation_id: CONV_UUID, opportunity_id: OPP_UUID, entity_id: ENT_UUID }))
+      .toThrowError(/proposed interaction requires idempotency_key/);
   });
 
   it("a NON-proposed touch (e.g. an inbound reply) is exempt from the linkage rule", () => {

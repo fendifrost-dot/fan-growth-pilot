@@ -132,6 +132,9 @@ export interface InteractionInput {
   source?: string | null;
   /** The unique per-target Smart Link for this touch (payload.smart_link). */
   smart_link?: SmartLinkRef | null;
+  /** Cowork-supplied idempotency key (payload.idempotency_key) — makes a proposed
+   *  touch idempotent before any provider message id exists. Required for proposed. */
+  idempotency_key?: string | null;
   payload?: Record<string, unknown>;
 }
 
@@ -251,14 +254,16 @@ export function validateInteractionInput(input: unknown): InteractionInput {
   const conversation_id = optionalUuid(body.conversation_id, "conversation_id");
   const entity_id = optionalUuid(body.entity_id, "entity_id");
   const opportunity_id = optionalUuid(body.opportunity_id, "opportunity_id");
+  const idempotency_key = optionalString(body.idempotency_key, "idempotency_key");
 
-  // Week-1 PROPOSED interactions must carry meaningful linkage — reject orphans
-  // (no conversation / no opportunity / no contact) with a clean 400. Scoped to
-  // 'proposed' on purpose: inbound/system touches recorded post-hoc are exempt.
+  // Week-1 PROPOSED interactions must carry meaningful linkage AND a deterministic
+  // idempotency key — reject orphans / un-keyed proposals with a clean 400. Scoped
+  // to 'proposed' on purpose: inbound/system touches recorded post-hoc are exempt.
   if (status === "proposed") {
     if (!conversation_id) bad("a proposed interaction requires conversation_id");
     if (!opportunity_id) bad("a proposed interaction requires opportunity_id");
     if (!entity_id) bad("a proposed interaction requires entity_id (the target contact)");
+    if (!idempotency_key) bad("a proposed interaction requires idempotency_key");
   }
 
   return {
@@ -282,6 +287,7 @@ export function validateInteractionInput(input: unknown): InteractionInput {
     evidence: body.evidence ?? undefined,
     source: optionalString(body.source, "source"),
     smart_link: validateSmartLinkRef(body.smart_link),
+    idempotency_key,
     payload: isPlainObject(body.payload) ? body.payload : undefined,
   };
 }

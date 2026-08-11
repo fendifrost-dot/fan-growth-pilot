@@ -581,10 +581,25 @@ export function createOpportunityRepository(db: SupabaseLike) {
   // channel-polymorphic and has no status column); everything else maps to a
   // real column.
 
-  async function assertEntityExists(entityId: string): Promise<void> {
-    const { data, error } = await db.from("growth_entities").select("id").eq("id", entityId).maybeSingle();
+  async function loadEntity(entityId: string): Promise<{ id: string; parent_entity_id: string | null } | null> {
+    const { data, error } = await db
+      .from("growth_entities")
+      .select("id, parent_entity_id")
+      .eq("id", entityId)
+      .maybeSingle();
     if (error) throw new Error(`entity lookup failed: ${error.message}`);
-    if (!data) throw new OpportunityRequestError(404, "entity_id does not reference an existing entity");
+    return (data as { id: string; parent_entity_id: string | null } | null) ?? null;
+  }
+
+  /** Two entities are in the same org hierarchy when they are equal, or one is the
+   *  other's parent (org <-> its child contact). Used to keep an interaction/
+   *  conversation from being cross-wired to a different organization. */
+  function sameOrgHierarchy(
+    a: { id: string; parent_entity_id?: string | null } | null,
+    b: { id: string; parent_entity_id?: string | null } | null,
+  ): boolean {
+    if (!a || !b) return false;
+    return a.id === b.id || a.parent_entity_id === b.id || b.parent_entity_id === a.id;
   }
 
   async function assertOpportunityExists(oppId: string): Promise<void> {
@@ -601,8 +616,30 @@ export function createOpportunityRepository(db: SupabaseLike) {
    */
   async function findOrCreateConversation(input: ConversationInput) {
     // NOT NULL FK — a missing entity would otherwise be a 23503 -> opaque 500.
-    await assertEntityExists(input.entity_id);
-    if (input.opportunity_id) await assertOpportunityExists(input.opportunity_id);
+    const convEntity = await loadEntity(input.entity_id);
+    if (!convEntity) throw new OpportunityRequestError(404, "entity_id does not reference an existing entity");
+
+    if (input.opportunity_id) {
+      // The opportunity must exist AND belong to the same organization as the
+      // conversation entity — otherwise the thread is cross-wired (entity = Org A,
+      // opportunity = Org B) and every later interaction consistency check would
+      // wrongly pass. Enforce it HERE, at creation. Mismatch -> 409.
+      const { data: opp, error: oppErr } = await db
+        .from("growth_opportunities")
+        .select("id, entity_id")
+        .eq("id", input.opportunity_id)
+        .maybeSingle();
+      if (oppErr) throw new Error(`opportunity lookup failed: ${oppErr.message}`);
+      if (!opp) throw new OpportunityRequestError(404, "opportunity_id does not reference an existing opportunity");
+
+      const oppEntity = opp.entity_id === convEntity.id ? convEntity : await loadEntity(opp.entity_id);
+      if (!sameOrgHierarchy(convEntity, oppEntity)) {
+        throw new OpportunityRequestError(
+          409,
+          "conversation entity does not belong to the opportunity's organization",
+        );
+      }
+    }
 
     // Match on (entity_id [, opportunity_id]). Filtered by entity_id (and
     // opportunity_id when present); the opportunity-less case is resolved in JS
@@ -682,7 +719,30 @@ export function createOpportunityRepository(db: SupabaseLike) {
     }
   }
 
+  /** Resolve an interaction by its Cowork-supplied idempotency_key (stored in
+   *  payload.idempotency_key). JS-filtered so it runs identically under the Deno
+   *  client and the vitest stub (pilot volume is tiny; the DB unique expression
+   *  index is the concurrency backstop). */
+  async function findInteractionByIdempotencyKey(key: string) {
+    const { data, error } = await db.from("growth_interactions").select("*");
+    if (error) throw new Error(`findInteractionByIdempotencyKey failed: ${error.message}`);
+    return (data ?? []).find(
+      (r: Record<string, unknown>) =>
+        (r.payload as { idempotency_key?: string } | null)?.idempotency_key === key,
+    ) ?? null;
+  }
+
   async function recordInteraction(input: InteractionInput) {
+    // Deterministic proposal-stage idempotency: a Cowork op supplies an explicit
+    // idempotency_key. A retry / timeout / parallel agent submitting the SAME
+    // touch must yield ONE interaction. Fast-path pre-check for retries; the DB
+    // unique expression index on payload->>'idempotency_key' is the race backstop
+    // (caught below). Does NOT overload external_message_id.
+    if (input.idempotency_key) {
+      const dup = await findInteractionByIdempotencyKey(input.idempotency_key);
+      if (dup) return { interaction: dup, created: false, deduped: true };
+    }
+
     // Existence — return a clean 404 rather than letting an FK 23503 become a 500.
     let conversation: Record<string, unknown> | null = null;
     if (input.conversation_id) {
@@ -691,14 +751,8 @@ export function createOpportunityRepository(db: SupabaseLike) {
     }
     let entity: { id: string; parent_entity_id?: string | null } | null = null;
     if (input.entity_id) {
-      const { data: e, error: eErr } = await db
-        .from("growth_entities")
-        .select("id, parent_entity_id")
-        .eq("id", input.entity_id)
-        .maybeSingle();
-      if (eErr) throw new Error(`entity lookup failed: ${eErr.message}`);
-      if (!e) throw new OpportunityRequestError(404, "entity_id does not reference an existing entity");
-      entity = e;
+      entity = await loadEntity(input.entity_id);
+      if (!entity) throw new OpportunityRequestError(404, "entity_id does not reference an existing entity");
     }
     if (input.opportunity_id) await assertOpportunityExists(input.opportunity_id);
 
@@ -714,9 +768,8 @@ export function createOpportunityRepository(db: SupabaseLike) {
         throw new OpportunityRequestError(409, "interaction opportunity does not match its conversation");
       }
       if (entity) {
-        const belongs = entity.id === conversation.entity_id ||
-          entity.parent_entity_id === conversation.entity_id;
-        if (!belongs) {
+        const convOrg = { id: conversation.entity_id as string, parent_entity_id: null };
+        if (!sameOrgHierarchy(entity, convOrg)) {
           throw new OpportunityRequestError(
             409,
             "interaction entity/contact does not belong to the conversation's organization",
@@ -735,6 +788,10 @@ export function createOpportunityRepository(db: SupabaseLike) {
     };
     if (input.evidence !== undefined) payload.evidence = input.evidence;
     if (input.source) payload.source = input.source;
+    // The Cowork idempotency_key lives in payload (enforced by a partial unique
+    // expression index) — this is what makes a proposed touch idempotent before a
+    // provider message id exists.
+    if (input.idempotency_key) payload.idempotency_key = input.idempotency_key;
     // Record the UNIQUE per-target Smart Link on the interaction (spec §10). A
     // click resolves back to this opportunity via findInteractionsBySmartLink —
     // no column on the Lovable-managed smart_links / link_analytics tables.
@@ -758,15 +815,24 @@ export function createOpportunityRepository(db: SupabaseLike) {
 
     const { data, error } = await db.from("growth_interactions").insert(row).select("*").single();
     if (error) {
-      // Provider idempotency: (interaction_type, external_message_id) is unique.
-      if (isUniqueViolation(error) && input.external_message_id) {
-        const { data: existing } = await db
-          .from("growth_interactions")
-          .select("*")
-          .eq("interaction_type", input.interaction_type)
-          .eq("external_message_id", input.external_message_id)
-          .maybeSingle();
-        if (existing) return { interaction: existing, created: false, deduped: true };
+      // Race backstop: a parallel agent inserted the same touch first. Resolve to
+      // the winner by whichever uniqueness fired —
+      //  * proposal idempotency: payload.idempotency_key
+      //  * provider idempotency: (interaction_type, external_message_id)
+      if (isUniqueViolation(error)) {
+        if (input.idempotency_key) {
+          const dup = await findInteractionByIdempotencyKey(input.idempotency_key);
+          if (dup) return { interaction: dup, created: false, deduped: true };
+        }
+        if (input.external_message_id) {
+          const { data: existing } = await db
+            .from("growth_interactions")
+            .select("*")
+            .eq("interaction_type", input.interaction_type)
+            .eq("external_message_id", input.external_message_id)
+            .maybeSingle();
+          if (existing) return { interaction: existing, created: false, deduped: true };
+        }
       }
       throw new Error(`recordInteraction failed: ${error.message}`);
     }

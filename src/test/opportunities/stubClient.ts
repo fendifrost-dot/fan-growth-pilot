@@ -40,6 +40,14 @@ const UNIQUES: Record<string, UniqueSpec[]> = {
           ? `${String(r.interaction_type)}|${String(r.external_message_id)}`
           : null,
     },
+    // Proposal-stage idempotency: partial unique on payload->>'idempotency_key'
+    // (migration 20260809010000). Absent key -> not enforced.
+    {
+      key: (r) => {
+        const k = (r.payload as { idempotency_key?: string } | undefined)?.idempotency_key;
+        return k ? `idem|${String(k)}` : null;
+      },
+    },
   ],
   growth_relationship_events: [
     {

@@ -13,6 +13,24 @@
 --   * opportunity-less:    at most one conversation per entity_id
 -- Partial indexes keep them independent and let NULL opportunity_id behave as an
 -- IS NULL match rather than the SQL "every NULL is distinct" default.
+--
+-- DEPLOY PREFLIGHT — run these BEFORE applying (each must return ZERO rows). If a
+-- row comes back, a pre-existing duplicate exists and MUST be reconciled by hand
+-- first, so the dup is found deliberately rather than via a failed CREATE INDEX:
+--
+--   -- opportunity-scoped duplicates:
+--   select entity_id, opportunity_id, count(*)
+--   from public.growth_conversations
+--   where opportunity_id is not null
+--   group by entity_id, opportunity_id
+--   having count(*) > 1;
+--
+--   -- opportunity-less duplicates:
+--   select entity_id, count(*)
+--   from public.growth_conversations
+--   where opportunity_id is null
+--   group by entity_id
+--   having count(*) > 1;
 
 create unique index if not exists growth_conversations_entity_opp_uidx
   on public.growth_conversations (entity_id, opportunity_id)

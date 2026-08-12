@@ -491,6 +491,29 @@ The playlist-pitching operation already in the repo continues, now expressed as
 `playlist_pitch` Opportunities inside the same engine and the same reporting (§13). It
 is not replaced by this spec.
 
+### 14.5 Operator write rule — PROPOSED interaction `idempotency_key` (REQUIRED)
+Every **PROPOSED** interaction the operator records **MUST** supply a genuinely
+**unique, deterministic** `idempotency_key`, and the same key **MUST NEVER be reused
+across different opportunities.** This is what makes a proposed touch safely retryable
+*before any provider message id exists*: a retry, timeout, or re-run submitting the
+**same** touch returns the existing interaction (HTTP **200**, no duplicate) instead of
+creating a second one.
+
+- **Deterministic.** A legitimate retry of the *same* touch must produce the *same*
+  key so it dedupes. Derive it from the stable identity of the touch — e.g.
+  `entity_id` + `opportunity_id` + recommended song/track + touch-attempt ordinal — or
+  mint a fresh UUID **once** per distinct touch and reuse that exact value only for
+  retries of that same touch.
+- **Never reused across opportunities.** The database index enforcing this is
+  **globally unique** (a partial unique index on `payload->>'idempotency_key'`,
+  migration `20260809010000_growth_interactions_idempotency.sql`) — it is **not**
+  scoped per opportunity. A key already claimed by another opportunity's interaction
+  will collide and be rejected/replayed, which would mis-associate or block the new
+  touch. Treat one opportunity's touches as their own key namespace; do not share a
+  key between targets.
+- **Distinct touches get distinct keys.** Two genuinely different touches (different
+  opportunity, or a different deliberate attempt) must each carry a different key.
+
 ---
 
 ## 15. Versioning & Change Control

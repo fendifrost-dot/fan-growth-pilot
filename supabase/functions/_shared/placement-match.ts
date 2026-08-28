@@ -104,7 +104,8 @@ export type CategoryGateResult = {
     | "category_overlap"
     | "genre_match"
     | "no_category_signal"
-    | "genre_conflict";
+    | "genre_conflict"
+    | "needs_song_intelligence";
 };
 
 /**
@@ -132,8 +133,26 @@ export function categoryGate(args: {
       : { pass: false, reason: "genre_conflict" };
   }
 
-  // One or both sides silent (the empty-playlist_categories case, and the
-  // "Meditate has no track category" case). Never zero out the pool on absence.
+  // AGH P0-A — the fail-open on absence is SPLIT by which side is silent. The
+  // original rule ("absence is missing information, not a disqualifier") treated
+  // both silences the same, and that is what let "Meditate" — a track with no
+  // category and no genre signal at all — pass the gate for every target.
+  //
+  //   TARGET silent  -> still passes. This is the DFM unblock and must not
+  //                     regress: the verified pool carries an empty
+  //                     playlist_categories, so rejecting on it zeroes out sends.
+  //                     We know what the SONG is; we just do not know the
+  //                     playlist's declared category.
+  //   TRACK silent   -> does NOT pass. We know nothing about the song being
+  //                     pitched, so there is no basis on which to address a
+  //                     curator with it. Missing song intelligence is a reason to
+  //                     hold, not a reason to send.
+  //
+  // Checked before the target-silent pass so a pair that is silent on BOTH sides
+  // resolves to needs_song_intelligence (the stricter, song-side answer).
+  if (!args.trackGenre) return { pass: false, reason: "needs_song_intelligence" };
+
+  // Track known, target silent — the empty-playlist_categories case.
   return { pass: true, reason: "no_category_signal" };
 }
 

@@ -91,10 +91,17 @@ Deno.test("compareTargets: within same placement/overlap, lower tier then higher
 // verified pool rejected 27/31 deep-house targets for "Designed For Me (Control)"
 // and 100% of targets for "Meditate" with "Category mismatch".
 
-Deno.test("categoryGate: empty-vs-empty passes (the outage case)", () => {
+// AGH P0-A SPLIT the fail-open above by which side is silent. A silent TARGET
+// still passes (that is the DFM unblock); a silent TRACK no longer does, because
+// "we know nothing about this song" is a reason to hold, not to send.
+
+Deno.test("categoryGate: empty-vs-empty is now needs_song_intelligence, not a pass", () => {
+  // Was the outage fix's headline pass. After the P0-A split the SONG side is
+  // silent here too, so it fails closed — the target-silent unblock is asserted
+  // separately below and is unaffected.
   const g = categoryGate({ trackCatIds: [], targetCatIds: [], trackGenre: null, targetGenre: null });
-  assertEquals(g.pass, true);
-  assertEquals(g.reason, "no_category_signal");
+  assertEquals(g.pass, false);
+  assertEquals(g.reason, "needs_song_intelligence");
 });
 
 Deno.test("categoryGate: target with NO category still passes on genre agreement", () => {
@@ -106,12 +113,36 @@ Deno.test("categoryGate: target with NO category still passes on genre agreement
   assertEquals(g.reason, "genre_match");
 });
 
-Deno.test("categoryGate: track with no category at all passes (the Meditate case)", () => {
+Deno.test("categoryGate: track with no category at all is BLOCKED (the AGH-001 Meditate case)", () => {
+  // The regression this gate exists for. Previously passed with
+  // "no_category_signal" against a fully categorised target, which is how a song
+  // we knew nothing about got as far as the send path.
   const g = categoryGate({
     trackCatIds: [], targetCatIds: ["cat-house"], trackGenre: null, targetGenre: "house",
   });
+  assertEquals(g.pass, false);
+  assertEquals(g.reason, "needs_song_intelligence");
+});
+
+Deno.test("categoryGate: TARGET-silent still passes — the DFM unblock must not regress", () => {
+  // The 27 rejected DFM targets: song side known (house), target side silent on
+  // both the category column and any genre signal. This is the case the fail-open
+  // was written for and the split deliberately preserves it.
+  const g = categoryGate({
+    trackCatIds: ["cat-house"], targetCatIds: [], trackGenre: "house", targetGenre: null,
+  });
   assertEquals(g.pass, true);
   assertEquals(g.reason, "no_category_signal");
+});
+
+Deno.test("categoryGate: track silence outranks target silence", () => {
+  // Both silent -> answer with the song-side (stricter) reason, never the
+  // target-side pass. Guards the ordering of the two branches.
+  const g = categoryGate({
+    trackCatIds: [], targetCatIds: [], trackGenre: null, targetGenre: null,
+  });
+  assertEquals(g.pass, false);
+  assertEquals(g.reason, "needs_song_intelligence");
 });
 
 Deno.test("categoryGate: explicit overlap short-circuits to a pass", () => {

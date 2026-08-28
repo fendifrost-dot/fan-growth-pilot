@@ -72,6 +72,11 @@ import {
 import { defaultPlaylistPitchSubject } from "./resend-pitch.ts";
 import { isDraftable, verifyEmail, domainOf, normalizeEmail } from "./verify-target.ts";
 import {
+  checkDraftEligibilityByName,
+  eligibilitySkipLog,
+  evaluateTrackEligibility,
+} from "./outreach-eligibility.ts";
+import {
   DEFAULT_STRATEGY_ORDER,
   newContext as newCuratorContext,
   runStrategyChain as runCuratorStrategyChain,
@@ -258,6 +263,34 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
     if (trackErr || !track) return { status: 404, data: { error: "Track not found" } };
 
     trackName = String(track.name ?? "").trim();
+
+    // AGH P0-A — ELIGIBILITY CONTAINMENT GATE (draft side; mirrors the refusal at
+    // the top of handleEmailPitch in execute-pitch). Runs BEFORE the category gate
+    // and the short_pitch refusal below, because "is this song cleared to be
+    // pitched at all?" is a prior question to "does it match this target?" and to
+    // "do we have copy for it?". The row was selected with `*`, so the eligibility
+    // columns are already loaded — no extra round trip.
+    //
+    // READ-ONLY, and there is no override_* escape hatch here on purpose:
+    // override_category_check waives the category match, nothing waives this.
+    const draftEligibility = evaluateTrackEligibility(track, trackName || trackId);
+    if (!draftEligibility.allowed) {
+      console.warn(
+        "draft_pitch eligibility refusal:",
+        JSON.stringify(eligibilitySkipLog(draftEligibility, { playlist_id: playlistId })),
+      );
+      return {
+        status: 422,
+        data: {
+          error: draftEligibility.message,
+          reason: draftEligibility.reason,
+          outreach_eligibility: draftEligibility.state,
+          eligibility_reason: draftEligibility.trackReason,
+          track_id: trackId,
+        },
+      };
+    }
+
     const channel = pickChannel(row, channelOverride);
     if (!channel) return { status: 400, data: { error: "No outreach channel available (email, IG, or submission URL)" } };
     if (channel !== "email") {
@@ -379,6 +412,29 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
   if (!trackName) {
     const pick = pickCatalogTrackForPlacement(row, catalog, catalog[0]?.name ?? "Designed For Me (Control)");
     trackName = pick.track;
+  }
+
+  // AGH P0-A — same containment gate on the catalogue-pick path. This branch has
+  // no track_id (the song is resolved by name from the catalogue), so it must
+  // look eligibility up by name rather than reuse a loaded row. Without this, a
+  // draft for an uncleared song could still be composed and approved, and the
+  // send-path guard would then be the only thing left standing.
+  const pickEligibility = await checkDraftEligibilityByName(sb, trackName);
+  if (!pickEligibility.allowed) {
+    console.warn(
+      "draft_pitch eligibility refusal (catalogue pick):",
+      JSON.stringify(eligibilitySkipLog(pickEligibility, { playlist_id: playlistId })),
+    );
+    return {
+      status: 422,
+      data: {
+        error: pickEligibility.message,
+        reason: pickEligibility.reason,
+        outreach_eligibility: pickEligibility.state,
+        eligibility_reason: pickEligibility.trackReason,
+        track_name: trackName,
+      },
+    };
   }
 
   const channel = pickChannel(row, channelOverride);

@@ -1,3 +1,21 @@
+-- ⚠️ SUPERSEDED IN PART — DO NOT RE-RUN. See 20260828000000_agh001_truth_drift_remediation.sql
+--
+-- Steps 4 and 6 below classify "Meditate" as a house/club record. That is WRONG
+-- and is the AGH-001 error. Meditate is artist-verified RAP / HIP-HOP — a
+-- hip-hop club record (Larry June lifestyle-wellness lane; production references
+-- Kendrick Lamar "HUMBLE." and J. Cole "Two Six"). "Club" describes the context
+-- it was built for, not its genre; reading "club" as a dance/electronic genre
+-- lane is precisely the mistake. Production has since been corrected: Meditate's
+-- live categories are rap_general + rap_trap_hype and its short_pitch is the
+-- "hip-hop club banger" copy.
+--
+-- This file is retained UNEDITED as incident evidence — it is the record of what
+-- AGH-001 actually was, and rewriting applied history would destroy that. It is
+-- left here for the audit trail only. Because steps 4 and 6 are idempotent
+-- (`on conflict do nothing`), RE-RUNNING THIS FILE WOULD RE-INTRODUCE the house
+-- categories on Meditate. Do not re-run it. Corrections are forward-only.
+--
+-- ---------------------------------------------------------------------------
 -- Category data fix for the submissions outage of 2026-07-19.
 --
 -- ROOT CAUSE (data half). The original seed populated playlist_categories by

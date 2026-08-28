@@ -216,15 +216,46 @@ Deno.test("targetGenre falls back to the row's own text when lane is absent", ()
   assertEquals(targetGenre({ playlist_name: "Chill Vibes" }), null);
 });
 
-Deno.test("trackGenre: Meditate is a CLUB record despite the name", () => {
-  // Named like a meditation track; the category/copy is what decides.
+// AGH-001 TRUTH DRIFT. These two tests previously used "Meditate" as the worked
+// example of a house record ("Meditate is a CLUB record despite the name"). The
+// trackGenre LOGIC they cover was and is correct — a title never decides a
+// genre, the category/copy does — but the fixture asserted a false fact about a
+// real song and is exactly the assumption AGH-001 was made of. The logic
+// coverage is preserved below on a neutral fixture; Meditate now appears with
+// its verified values.
+
+Deno.test("trackGenre: a title never decides the genre — the category does", () => {
   assertEquals(
-    trackGenre({ name: "Meditate", categories: [{ slug: "house-club", label: "House / Club" }] }),
+    trackGenre({ name: "Some Ambient-Sounding Title", categories: [{ slug: "house-club", label: "House / Club" }] }),
     "house",
   );
 });
 
 Deno.test("trackGenre falls back to short_pitch copy when uncategorised", () => {
-  assertEquals(trackGenre({ name: "Meditate", short_pitch: "A late-night house club cut." }), "house");
+  assertEquals(trackGenre({ name: "Some Song", short_pitch: "A late-night house club cut." }), "house");
   assertEquals(trackGenre({ name: "Some Song" }), null);
+});
+
+Deno.test("trackGenre: Meditate is RAP — club is context, not genre (live values)", () => {
+  // Verified against production 2026-08-28: categories rap_general +
+  // rap_trap_hype, short_pitch "a hip-hop club banger. Hard-hitting rap bars
+  // built for the nightclub floor". "Club" appears throughout its copy and must
+  // NOT pull the genre toward house.
+  assertEquals(
+    trackGenre({
+      name: "Meditate",
+      categories: [
+        { slug: "rap_general", label: "Rap (General)" },
+        { slug: "rap_trap_hype", label: "Trap / Hype Rap" },
+      ],
+      short_pitch: 'Don\'t let the title fool you - "Meditate" is a hip-hop club banger. ' +
+        "Hard-hitting rap bars built for the nightclub floor, not a downtempo or meditation cut.",
+    }),
+    "rap",
+  );
+  // Even on copy alone, with no categories, the club wording must not read as house.
+  assertEquals(
+    trackGenre({ name: "Meditate", short_pitch: "A hip-hop club banger — rap bars for the nightclub floor." }),
+    "rap",
+  );
 });

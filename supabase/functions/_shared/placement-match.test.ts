@@ -135,6 +135,36 @@ Deno.test("categoryGate: TARGET-silent still passes — the DFM unblock must not
   assertEquals(g.reason, "no_category_signal");
 });
 
+// PRODUCTION REGRESSION (verified against the live DB on 2026-08-28). An earlier
+// form of the split gated on `trackGenre === null`, which blocked "Designed For
+// Me (Control)" against the entire verified pool — a total send outage for the
+// primary song. Cause: trackGenre is null for a CONTRADICTORY track (categories
+// and copy naming two genres) exactly as it is for a SILENT one.
+const DFM_LIVE_CAT_IDS = ["deep_house_groove", "house_club", "house_general", "rap_general"];
+
+Deno.test("categoryGate: BLENDED track (live DFM: house+rap categories, genre null) still PASSES", () => {
+  const g = categoryGate({
+    trackCatIds: DFM_LIVE_CAT_IDS,
+    targetCatIds: [], // the verified pool's empty playlist_categories
+    trackGenre: null, // real value — sweepLaneTextGenre refuses to guess between two genres
+    targetGenre: null,
+  });
+  assertEquals(g.pass, true, "DFM must not be blocked — this is the send-outage regression");
+  assertEquals(g.reason, "no_category_signal");
+});
+
+Deno.test("categoryGate: silence means NO category AND no genre, not merely an unresolved genre", () => {
+  // Has categories -> has song intelligence -> not silent, even with a null genre.
+  assertEquals(
+    categoryGate({ trackCatIds: ["some_cat"], targetCatIds: [], trackGenre: null, targetGenre: null }).pass,
+    true,
+  );
+  // Nothing at all -> silent -> blocked.
+  const silent = categoryGate({ trackCatIds: [], targetCatIds: [], trackGenre: null, targetGenre: null });
+  assertEquals(silent.pass, false);
+  assertEquals(silent.reason, "needs_song_intelligence");
+});
+
 Deno.test("categoryGate: track silence outranks target silence", () => {
   // Both silent -> answer with the song-side (stricter) reason, never the
   // target-side pass. Guards the ordering of the two branches.

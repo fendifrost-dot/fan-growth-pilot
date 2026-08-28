@@ -148,9 +148,26 @@ export function categoryGate(args: {
   //                     curator with it. Missing song intelligence is a reason to
   //                     hold, not a reason to send.
   //
-  // Checked before the target-silent pass so a pair that is silent on BOTH sides
-  // resolves to needs_song_intelligence (the stricter, song-side answer).
-  if (!args.trackGenre) return { pass: false, reason: "needs_song_intelligence" };
+  // SILENT is not the same as CONTRADICTORY, and conflating them is a live
+  // outage. Verified against production 2026-08-28:
+  //   Meditate at incident time -> no categories, no copy  => genuinely SILENT.
+  //   "Designed For Me (Control)" -> four categories (deep_house_groove,
+  //     house_club, house_general, rap_general) plus authored short_pitch and
+  //     pitch_angle that name BOTH "deep-house" and "melodic rap". trackGenre
+  //     returns null for that too, because sweepLaneTextGenre deliberately
+  //     refuses to guess between two matched genres.
+  // Gating on `trackGenre === null` alone therefore blocked DFM against the
+  // whole verified pool (which carries an empty playlist_categories), i.e. the
+  // exact outage the fail-open was written to fix.
+  //
+  // The song side is SILENT only when it has NO category AND no genre signal —
+  // nothing at all to reason from. A blended record that declares categories is
+  // information, not absence, so it passes here and is left to the ranker.
+  // Checked before the target-silent pass so a pair silent on both sides
+  // resolves to the stricter, song-side answer.
+  if (args.trackCatIds.length === 0 && !args.trackGenre) {
+    return { pass: false, reason: "needs_song_intelligence" };
+  }
 
   // Track known, target silent — the empty-playlist_categories case.
   return { pass: true, reason: "no_category_signal" };

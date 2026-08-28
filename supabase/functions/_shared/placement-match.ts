@@ -104,7 +104,8 @@ export type CategoryGateResult = {
     | "category_overlap"
     | "genre_match"
     | "no_category_signal"
-    | "genre_conflict";
+    | "genre_conflict"
+    | "needs_song_intelligence";
 };
 
 /**
@@ -132,8 +133,43 @@ export function categoryGate(args: {
       : { pass: false, reason: "genre_conflict" };
   }
 
-  // One or both sides silent (the empty-playlist_categories case, and the
-  // "Meditate has no track category" case). Never zero out the pool on absence.
+  // AGH P0-A — the fail-open on absence is SPLIT by which side is silent. The
+  // original rule ("absence is missing information, not a disqualifier") treated
+  // both silences the same, and that is what let "Meditate" — a track with no
+  // category and no genre signal at all — pass the gate for every target.
+  //
+  //   TARGET silent  -> still passes. This is the DFM unblock and must not
+  //                     regress: the verified pool carries an empty
+  //                     playlist_categories, so rejecting on it zeroes out sends.
+  //                     We know what the SONG is; we just do not know the
+  //                     playlist's declared category.
+  //   TRACK silent   -> does NOT pass. We know nothing about the song being
+  //                     pitched, so there is no basis on which to address a
+  //                     curator with it. Missing song intelligence is a reason to
+  //                     hold, not a reason to send.
+  //
+  // SILENT is not the same as CONTRADICTORY, and conflating them is a live
+  // outage. Verified against production 2026-08-28:
+  //   Meditate at incident time -> no categories, no copy  => genuinely SILENT.
+  //   "Designed For Me (Control)" -> four categories (deep_house_groove,
+  //     house_club, house_general, rap_general) plus authored short_pitch and
+  //     pitch_angle that name BOTH "deep-house" and "melodic rap". trackGenre
+  //     returns null for that too, because sweepLaneTextGenre deliberately
+  //     refuses to guess between two matched genres.
+  // Gating on `trackGenre === null` alone therefore blocked DFM against the
+  // whole verified pool (which carries an empty playlist_categories), i.e. the
+  // exact outage the fail-open was written to fix.
+  //
+  // The song side is SILENT only when it has NO category AND no genre signal —
+  // nothing at all to reason from. A blended record that declares categories is
+  // information, not absence, so it passes here and is left to the ranker.
+  // Checked before the target-silent pass so a pair silent on both sides
+  // resolves to the stricter, song-side answer.
+  if (args.trackCatIds.length === 0 && !args.trackGenre) {
+    return { pass: false, reason: "needs_song_intelligence" };
+  }
+
+  // Track known, target silent — the empty-playlist_categories case.
   return { pass: true, reason: "no_category_signal" };
 }
 

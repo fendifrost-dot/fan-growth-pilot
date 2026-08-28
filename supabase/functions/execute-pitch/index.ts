@@ -5,6 +5,10 @@ import {
   pitchFromHeader,
   pitchReplyTo,
 } from "../_shared/resend-pitch.ts";
+import {
+  checkSendEligibility,
+  eligibilitySkipLog,
+} from "../_shared/outreach-eligibility.ts";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-api-key",
@@ -160,7 +164,9 @@ Deno.serve(async (req) => {
     const tierRaw = row.tier;
     const tier = typeof tierRaw === "number" ? tierRaw : tierRaw != null && tierRaw !== "" ? Number(tierRaw) : null;
     if (tier === 3 && !tierConfirmed) return jsonPitch({ ok:false, method_used:method, action_taken:"tier_gate", cooldown_until:null, message_to_user:"⚠️ *Tier 3 playlist* — *" + (row.playlist_name ?? playlistId) + "*\n\nFlagged for verify-first pitching. Reply *confirm* to send." });
-    if (method === "email") return await handleEmailPitch(sb, row, trackName, bulk, draftOverrides, testMode, testEmail, batchOverrideCap, ignoreSendWindow);
+    // draftId is threaded through so the eligibility gate applies (and logs)
+    // identically for draft-backed and draft-less sends.
+    if (method === "email") return await handleEmailPitch(sb, row, trackName, bulk, draftOverrides, testMode, testEmail, batchOverrideCap, ignoreSendWindow, draftId);
     return jsonPitch(buildNonEmailMessage(row, method, trackName));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -199,8 +205,58 @@ async function handleEmailPitch(
   testEmail = "fendifrost@gmail.com",
   batchOverrideCap = false,
   ignoreSendWindow = false,
+  draftId = "",
 ): Promise<Response> {
   const playlistId = String(row.playlist_id);
+  // ---------------------------------------------------------------------------
+  // AGH P0-A — ELIGIBILITY CONTAINMENT GATE. Must stay the FIRST thing this
+  // handler does.
+  //
+  // This asks "is this SONG cleared to be pitched at all?", which no other
+  // control on this path asks: the send window, the cooldown, and the per-song /
+  // global caps are all capacity controls, and the target-side gates are about
+  // the curator. AGH-001 ("Meditate": no category, no genre signal) walked
+  // straight through all of them.
+  //
+  // Deliberately placed ABOVE and OUTSIDE the `if (!testMode)` block below.
+  // test_mode / batch_override_cap / ignore_send_window each waive exactly one
+  // named capacity or window behaviour; NONE of them may ever waive eligibility,
+  // integrity, or (future) envelope / prohibited / approval checks. The flags are
+  // handed to checkSendEligibility only so that ignoring them is explicit.
+  //
+  // It also runs whether or not a draft_id was supplied, which closes the
+  // draft-less bypass: a bare {playlist_id, track_name} call used to skip every
+  // draft-time refusal in runDraftPitch and go straight to Resend.
+  //
+  // READ-ONLY: the send path never writes eligibility. Promotion to `eligible` is
+  // a human/artist-truth action, out of scope for the pitcher.
+  // ---------------------------------------------------------------------------
+  const eligibility = await checkSendEligibility(sb, trackName, {
+    testMode,
+    batchOverrideCap,
+    ignoreSendWindow,
+    draftId: draftId || null,
+  });
+  if (!eligibility.allowed) {
+    console.warn(
+      "execute-pitch eligibility refusal:",
+      JSON.stringify(eligibilitySkipLog(eligibility, {
+        playlist_id: playlistId,
+        // Recorded so a refusal that happened "with the flags on" is visible in logs.
+        test_mode: testMode,
+        batch_override_cap: batchOverrideCap,
+        ignore_send_window: ignoreSendWindow,
+        draft_id: draftId || null,
+      })),
+    );
+    return jsonPitch({
+      ok: false,
+      method_used: "email",
+      action_taken: "skipped",
+      cooldown_until: null,
+      message_to_user: "🚫 " + eligibility.message,
+    }, 422);
+  }
   const curatorEmail = await resolveCuratorEmail(sb, row, draft);
   const email = testMode ? testEmail : curatorEmail;
   const playlistName = (row.playlist_name as string|null) ?? playlistId;

@@ -17,6 +17,13 @@
 -- human, via the artist-truth path) says otherwise. Only the two tracks Fendi
 -- has verified on 2026-08-27 are backfilled to `eligible`.
 --
+-- NOTE ON MEDITATE'S GENRE. Meditate is artist-verified RAP / hip-hop (Larry June
+-- lifestyle-wellness lane; production references Kendrick Lamar "HUMBLE." and
+-- J. Cole "Two Six"), live categories rap_general + rap_trap_hype. An earlier
+-- migration tagged it house_club / deep_house_groove / late_night — that tagging
+-- is WRONG and is the AGH-001 error. Nothing in this file asserts, restates, or
+-- re-applies a house lane for Meditate; it records eligibility STATE only.
+--
 -- PROMOTION RULE (encoded here in the grants, mirrored in code)
 -- -------------------------------------------------------------
 -- Nothing on the automated pitching path may set a track to `eligible`.
@@ -92,9 +99,10 @@ comment on column public.tracks.eligibility_reason is
   'see WHY a track was held without opening the database.';
 
 comment on column public.tracks.eligibility_source is
-  'What produced the current state: ''migration'' (this file), ''artist_review'' '
-  '(human clearance), or the name of the automated check that DEMOTED it. '
-  'Automation may write this only alongside a more restrictive state.';
+  'What produced the current state: ''migration'' (this file), ''artist_review'' or '
+  '''artist_review_<correction>_<date>'' (human clearance, optionally naming the '
+  'specific correction it rests on), or the name of the automated check that '
+  'DEMOTED it. Automation may write this only alongside a more restrictive state.';
 
 comment on column public.tracks.eligibility_set_by is
   'Actor of record for the decision — a person/approval token for human clearance '
@@ -133,12 +141,27 @@ comment on policy "Authenticated read tracks" on public.tracks is
 -- ---------------------------------------------------------------------------
 -- 4. Backfill — the ONLY two tracks cleared on 2026-08-27.
 -- ---------------------------------------------------------------------------
--- Both are artist-verified: categories and short_pitch are corrected (see
--- 20260719000000_category_backfill_and_meditate.sql), and Fendi has reviewed the
--- pitch copy. Every other track in the catalogue stays on the fail-closed
--- default and cannot be pitched until it is cleared by a human.
+-- Both are artist-verified, but on DIFFERENT bases — do not collapse them:
 --
--- Scoped by explicit name match so a future track cannot be swept in by re-run.
+--   Designed For Me (Control) -> house/club. Categories and short_pitch were
+--     corrected in 20260719000000_category_backfill_and_meditate.sql and
+--     artist-reviewed. That classification stands.
+--
+--   Meditate -> RAP / hip-hop. Larry June lifestyle/wellness lane; production
+--     references Kendrick Lamar "HUMBLE." and J. Cole "Two Six". Its live
+--     categories are rap_general + rap_trap_hype. The house_club /
+--     deep_house_groove / late_night tagging asserted for Meditate by that same
+--     earlier migration was WRONG — that mis-classification IS the AGH-001 error,
+--     and this file must never restate or re-assert it.
+--
+-- SCOPE: this migration writes ONLY the eligibility columns. It does NOT insert
+-- track_categories, does NOT set short_pitch, and does not touch genre/lane data
+-- for either track. Correcting Meditate's categories/copy is the artist-truth
+-- path's job, not this gate's.
+--
+-- Every other track in the catalogue stays on the fail-closed default and cannot
+-- be pitched until a human clears it. Scoped by explicit name match so a future
+-- track cannot be swept in by re-run.
 
 update public.tracks
 set outreach_eligibility  = 'eligible',
@@ -151,17 +174,21 @@ set outreach_eligibility  = 'eligible',
     eligibility_si_version = 'si-2026-07-19-category-backfill'
 where lower(name) like '%designed for me%';
 
+-- Meditate: artist-verified RAP / hip-hop. Cleared on the CORRECTED
+-- classification, not the earlier house/club tagging that caused AGH-001.
 update public.tracks
 set outreach_eligibility  = 'eligible',
-    eligibility_reason    = 'Artist-verified 2026-08-27: club record despite the title; '
-                            'house_club / deep_house_groove / late_night categories and '
-                            'authored short_pitch reviewed by the artist. This is the '
-                            'AGH-001 track — it is eligible BECAUSE a human cleared it, '
-                            'not because the gate defaulted open.',
-    eligibility_source    = 'migration',
+    eligibility_reason    = 'Artist-verified 2026-08-27: RAP / hip-hop. Larry June '
+                            'lifestyle-wellness lane; production references Kendrick '
+                            'Lamar "HUMBLE." and J. Cole "Two Six". Live categories are '
+                            'rap_general + rap_trap_hype. AGH-001 remediation: supersedes '
+                            'the prior genre mis-classification that caused the incident. '
+                            'Eligible BECAUSE a human cleared it on the corrected rap '
+                            'classification, not because the gate defaulted open.',
+    eligibility_source    = 'artist_review_rap_correction_2026-08-27',
     eligibility_set_by    = 'fendi-approved-2026-08-27',
     eligibility_set_at    = now(),
-    eligibility_si_version = 'si-2026-07-19-category-backfill'
+    eligibility_si_version = 'si-2026-08-27-meditate-rap-correction'
 where lower(name) = 'meditate';
 
 commit;

@@ -17,12 +17,19 @@
 -- human, via the artist-truth path) says otherwise. Only the two tracks Fendi
 -- has verified on 2026-08-27 are backfilled to `eligible`.
 --
--- NOTE ON MEDITATE'S GENRE. Meditate is artist-verified RAP / hip-hop (Larry June
--- lifestyle-wellness lane; production references Kendrick Lamar "HUMBLE." and
--- J. Cole "Two Six"), live categories rap_general + rap_trap_hype. An earlier
--- migration tagged it house_club / deep_house_groove / late_night — that tagging
--- is WRONG and is the AGH-001 error. Nothing in this file asserts, restates, or
--- re-applies a house lane for Meditate; it records eligibility STATE only.
+-- NOTE ON MEDITATE'S GENRE. Meditate is artist-verified RAP / HIP-HOP — a
+-- hip-hop CLUB record. Larry June lifestyle-wellness lane; production references
+-- Kendrick Lamar "HUMBLE." and J. Cole "Two Six"; live categories rap_general +
+-- rap_trap_hype.
+--
+-- GENRE vs CONTEXT — the distinction AGH-001 collapsed. "Club" is the CONTEXT
+-- the record was built for (nightclub-floor energy, hard-hitting rap bars) and
+-- is CORRECT. It is NOT a genre claim. The GENRE is rap/hip-hop, full stop.
+-- An earlier migration (20260719000000_category_backfill_and_meditate.sql) read
+-- "club" as a dance/electronic genre lane and tagged Meditate accordingly —
+-- that GENRE assignment is WRONG and is the AGH-001 error itself. Nothing in
+-- this file asserts, restates, or re-applies that lane for Meditate; it records
+-- eligibility STATE only.
 --
 -- PROMOTION RULE (encoded here in the grants, mirrored in code)
 -- -------------------------------------------------------------
@@ -147,12 +154,15 @@ comment on policy "Authenticated read tracks" on public.tracks is
 --     corrected in 20260719000000_category_backfill_and_meditate.sql and
 --     artist-reviewed. That classification stands.
 --
---   Meditate -> RAP / hip-hop. Larry June lifestyle/wellness lane; production
---     references Kendrick Lamar "HUMBLE." and J. Cole "Two Six". Its live
---     categories are rap_general + rap_trap_hype. The house_club /
---     deep_house_groove / late_night tagging asserted for Meditate by that same
---     earlier migration was WRONG — that mis-classification IS the AGH-001 error,
---     and this file must never restate or re-assert it.
+--   Meditate -> RAP / HIP-HOP, a hip-hop CLUB record ("a hip-hop club banger.
+--     Hard-hitting rap bars built for the nightclub floor" — matching the
+--     corrected tracks.short_pitch). Larry June lifestyle-wellness lane;
+--     production references Kendrick Lamar "HUMBLE." and J. Cole "Two Six". Its
+--     live categories are rap_general + rap_trap_hype. "Club" is CONTEXT and is
+--     correct; the GENRE is rap/hip-hop. The dance/electronic genre lane that
+--     same earlier migration assigned to Meditate was WRONG — that
+--     mis-classification IS the AGH-001 error, and this file must never restate
+--     or re-assert it.
 --
 -- SCOPE: this migration writes ONLY the eligibility columns. It does NOT insert
 -- track_categories, does NOT set short_pitch, and does not touch genre/lane data
@@ -174,17 +184,23 @@ set outreach_eligibility  = 'eligible',
     eligibility_si_version = 'si-2026-07-19-category-backfill'
 where lower(name) like '%designed for me%';
 
--- Meditate: artist-verified RAP / hip-hop. Cleared on the CORRECTED
--- classification, not the earlier house/club tagging that caused AGH-001.
+-- Meditate: artist-verified RAP / HIP-HOP club record. "Club" is the CONTEXT it
+-- was built for and is correct; the GENRE is rap/hip-hop. Cleared on that
+-- corrected classification, NOT on the dance/electronic genre lane that caused
+-- AGH-001.
 update public.tracks
 set outreach_eligibility  = 'eligible',
-    eligibility_reason    = 'Artist-verified 2026-08-27: RAP / hip-hop. Larry June '
-                            'lifestyle-wellness lane; production references Kendrick '
-                            'Lamar "HUMBLE." and J. Cole "Two Six". Live categories are '
-                            'rap_general + rap_trap_hype. AGH-001 remediation: supersedes '
-                            'the prior genre mis-classification that caused the incident. '
-                            'Eligible BECAUSE a human cleared it on the corrected rap '
-                            'classification, not because the gate defaulted open.',
+    eligibility_reason    = 'Artist-verified 2026-08-27: RAP / HIP-HOP club record — a '
+                            'hip-hop club banger. Hard-hitting rap bars built for the '
+                            'nightclub floor. Larry June lifestyle-wellness lane; '
+                            'production references Kendrick Lamar "HUMBLE." and J. Cole '
+                            '"Two Six". Live categories are rap_general + rap_trap_hype. '
+                            '"Club" is the CONTEXT the record was made for, NOT a genre '
+                            'claim — the genre is rap/hip-hop. AGH-001 remediation: '
+                            'supersedes the prior dance/electronic genre mis-classification '
+                            'that caused the incident. Eligible BECAUSE a human cleared it '
+                            'on the corrected rap classification, not because the gate '
+                            'defaulted open.',
     eligibility_source    = 'artist_review_rap_correction_2026-08-27',
     eligibility_set_by    = 'fendi-approved-2026-08-27',
     eligibility_set_at    = now(),

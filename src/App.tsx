@@ -27,10 +27,12 @@ import AdminFanIgQueue from "./pages/admin/AdminFanIgQueue";
 import AdminIgRoster from "./pages/admin/AdminIgRoster";
 import AdminRadioTargets from "./pages/admin/AdminRadioTargets";
 import AdminCatalogue from "./pages/admin/AdminCatalogue";
+import AdminLicensing from "./pages/admin/AdminLicensing";
 import AdminCategories from "./pages/admin/AdminCategories";
 import AdminPitchComposer from "./pages/admin/AdminPitchComposer";
 import AdminPitchPortal from "./pages/admin/AdminPitchPortal";
 import AdminOpportunities from "./pages/admin/AdminOpportunities";
+import RegisterPreview from "./pages/dev/RegisterPreview";
 
 const queryClient = new QueryClient();
 
@@ -61,6 +63,9 @@ const App = () => {
           {/* Public Meta-required pages — must be above the /:slug catch-all */}
           <Route path="/privacy" element={<PrivacyPolicy />} />
           <Route path="/data-deletion" element={<DataDeletion />} />
+          {import.meta.env.DEV && (
+            <Route path="/dev/registers" element={<RegisterPreview />} />
+          )}
 
           {/* Admin (single-operator internal) */}
           <Route path="/admin" element={<RequireAuth><AdminGuard /></RequireAuth>}>
@@ -79,6 +84,8 @@ const App = () => {
             <Route path="radio" element={<AdminRadioTargets />} />
             <Route path="pitch-log" element={<AdminPitchLog />} />
             <Route path="catalogue" element={<AdminCatalogue />} />
+            <Route path="songs" element={<AdminCatalogue />} />
+            <Route path="licensing" element={<AdminLicensing />} />
             <Route path="categories" element={<AdminCategories />} />
             <Route path="pitch-composer" element={<AdminPitchComposer />} />
             <Route path="pitch-portal" element={<AdminPitchPortal />} />

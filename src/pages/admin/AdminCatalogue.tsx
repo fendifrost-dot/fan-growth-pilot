@@ -30,6 +30,17 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import { Music2, Plus } from "lucide-react";
 import { callHubFn } from "@/lib/hubApi";
+import {
+  AGGREGATOR_LABEL,
+  AGGREGATORS,
+  GENRE_STAMP_LABEL,
+  GENRE_STAMPS,
+  SAMPLE_FLAG_LABEL,
+  SAMPLE_FLAGS,
+  type Aggregator,
+  type GenreStamp,
+  type SampleFlag,
+} from "@/lib/syncRegisters";
 
 type Category = { id: string; slug: string; label: string; family: string };
 type TrackRow = {
@@ -47,6 +58,11 @@ type TrackRow = {
   reference_artists: string[];
   notes: string | null;
   updated_at: string;
+  aggregator?: Aggregator | string | null;
+  genre_stamp?: GenreStamp | string | null;
+  has_sample?: SampleFlag | string | null;
+  sync_eligible?: boolean | null;
+  is_month1_sync_default?: boolean | null;
   track_categories?: { category_id: string; categories: Category | null }[];
 };
 
@@ -72,6 +88,10 @@ const emptyForm = (): Partial<TrackRow> & { category_ids: string[] } => ({
   pitch_angle: "",
   reference_artists: [],
   notes: "",
+  aggregator: "open",
+  genre_stamp: "unknown",
+  has_sample: "unknown",
+  is_month1_sync_default: false,
   category_ids: [],
 });
 
@@ -163,6 +183,10 @@ const AdminCatalogue: React.FC = () => {
         pitch_angle: form.pitch_angle || null,
         reference_artists: form.reference_artists ?? [],
         notes: form.notes || null,
+        aggregator: form.aggregator || "open",
+        genre_stamp: form.genre_stamp || "unknown",
+        has_sample: form.has_sample || "unknown",
+        is_month1_sync_default: Boolean(form.is_month1_sync_default),
         category_ids: form.category_ids ?? [],
       });
       toast.success(form.id ? "Track updated" : "Track added");
@@ -175,29 +199,25 @@ const AdminCatalogue: React.FC = () => {
     }
   };
 
-  const PlatformIcons = ({ row }: { row: TrackRow }) => (
-    <span className="flex gap-1">
-      {row.spotify_url && <Badge variant="outline" className="text-[10px]">Spotify</Badge>}
-      {row.apple_music_url && <Badge variant="outline" className="text-[10px]">Apple</Badge>}
-      {row.soundcloud_url && <Badge variant="outline" className="text-[10px]">SC</Badge>}
-    </span>
-  );
-
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
-            <Music2 className="h-6 w-6" /> Catalogue
+            <Music2 className="h-6 w-6" /> Song register
           </h1>
-          <p className="text-sm text-muted-foreground mt-1">Manage tracks, tones, and category tags for pitching.</p>
+          <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
+            Operator-only catalog: titles, optional ISRC, aggregator, genre stamp, and sample flag.
+            Sync-eligible is automatic (no sample only). A DistroKid miss is not unreleased — leave
+            aggregator OPEN when the distributor is unknown. Month-1 sync default is Meditate (Hip-Hop/Rap).
+          </p>
         </div>
         <Button onClick={openNew}>
           <Plus className="h-4 w-4 mr-1" /> Add Track
         </Button>
       </div>
 
-      <Card className="overflow-hidden">
+      <Card className="overflow-hidden" data-testid="song-register">
         {loading ? (
           <p className="p-6 text-sm text-muted-foreground">Loading…</p>
         ) : (
@@ -206,18 +226,44 @@ const AdminCatalogue: React.FC = () => {
               <TableRow>
                 <TableHead>Name</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead>Aggregator</TableHead>
+                <TableHead>Genre</TableHead>
+                <TableHead>Sample</TableHead>
+                <TableHead>Sync</TableHead>
+                <TableHead>ISRC</TableHead>
                 <TableHead>Categories</TableHead>
-                <TableHead>Platforms</TableHead>
-                <TableHead>Tone</TableHead>
-                <TableHead>Release</TableHead>
                 <TableHead>Updated</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {tracks.map((row) => (
                 <TableRow key={row.id} className="cursor-pointer" onClick={() => openEdit(row)}>
-                  <TableCell className="font-medium">{row.name}</TableCell>
+                  <TableCell className="font-medium">
+                    {row.name}
+                    {row.is_month1_sync_default ? (
+                      <Badge className="ml-2 text-[10px]" variant="default">Month-1 sync</Badge>
+                    ) : null}
+                  </TableCell>
                   <TableCell><Badge variant="secondary">{row.status}</Badge></TableCell>
+                  <TableCell className="text-xs">
+                    {AGGREGATOR_LABEL[(row.aggregator as Aggregator) || "open"] ?? row.aggregator ?? "OPEN"}
+                  </TableCell>
+                  <TableCell className="text-xs">
+                    {GENRE_STAMP_LABEL[(row.genre_stamp as GenreStamp) || "unknown"] ?? row.genre_stamp ?? "—"}
+                  </TableCell>
+                  <TableCell className="text-xs">
+                    {SAMPLE_FLAG_LABEL[(row.has_sample as SampleFlag) || "unknown"] ?? row.has_sample ?? "—"}
+                  </TableCell>
+                  <TableCell>
+                    {row.sync_eligible ? (
+                      <Badge variant="default" className="text-[10px]">Eligible</Badge>
+                    ) : (
+                      <Badge variant="outline" className="text-[10px]">No</Badge>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {row.isrc?.trim() ? "on file" : "—"}
+                  </TableCell>
                   <TableCell>
                     <div className="flex flex-wrap gap-1 max-w-[200px]">
                       {(row.track_categories ?? []).map((tc) =>
@@ -229,9 +275,6 @@ const AdminCatalogue: React.FC = () => {
                       )}
                     </div>
                   </TableCell>
-                  <TableCell><PlatformIcons row={row} /></TableCell>
-                  <TableCell className="text-xs">{toneLabel(row.default_tone)}</TableCell>
-                  <TableCell className="text-xs">{row.release_date ?? "—"}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">
                     {new Date(row.updated_at).toLocaleDateString()}
                   </TableCell>
@@ -239,8 +282,8 @@ const AdminCatalogue: React.FC = () => {
               ))}
               {!tracks.length && (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
-                    No tracks yet — add your first song.
+                    <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
+                    No tracks yet — add titles (ISRC optional). Do not invent TBD singles.
                   </TableCell>
                 </TableRow>
               )}
@@ -260,9 +303,54 @@ const AdminCatalogue: React.FC = () => {
               <Input value={form.name ?? ""} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             </div>
             <div>
-              <Label>ISRC</Label>
-              <Input value={form.isrc ?? ""} onChange={(e) => setForm({ ...form, isrc: e.target.value })} />
+              <Label>ISRC (operator only — never shown on public pages)</Label>
+              <Input value={form.isrc ?? ""} onChange={(e) => setForm({ ...form, isrc: e.target.value })} placeholder="Optional — do not mint" />
             </div>
+            <div>
+              <Label>Aggregator</Label>
+              <Select value={form.aggregator ?? "open"} onValueChange={(v) => setForm({ ...form, aggregator: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {AGGREGATORS.map((a) => (
+                    <SelectItem key={a} value={a}>{AGGREGATOR_LABEL[a]}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-muted-foreground mt-1">Catalog is split. OPEN is not unreleased.</p>
+            </div>
+            <div>
+              <Label>Genre stamp</Label>
+              <Select value={form.genre_stamp ?? "unknown"} onValueChange={(v) => setForm({ ...form, genre_stamp: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {GENRE_STAMPS.map((g) => (
+                    <SelectItem key={g} value={g}>{GENRE_STAMP_LABEL[g]}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Meditate is Hip-Hop/Rap only. House/electronic pool is Balenciaga (Let Me Freeze), Electrilla, Designed For Me (Control).
+              </p>
+            </div>
+            <div>
+              <Label>Has sample</Label>
+              <Select value={form.has_sample ?? "unknown"} onValueChange={(v) => setForm({ ...form, has_sample: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {SAMPLE_FLAGS.map((s) => (
+                    <SelectItem key={s} value={s}>{SAMPLE_FLAG_LABEL[s]}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-muted-foreground mt-1">Sync-eligible only when this is “no sample”.</p>
+            </div>
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <Checkbox
+                checked={Boolean(form.is_month1_sync_default)}
+                onCheckedChange={(v) => setForm({ ...form, is_month1_sync_default: Boolean(v) })}
+              />
+              Month-1 sync default (Meditate)
+            </label>
             <div>
               <Label>Spotify URL</Label>
               <Input value={form.spotify_url ?? ""} onChange={(e) => setForm({ ...form, spotify_url: e.target.value })} />

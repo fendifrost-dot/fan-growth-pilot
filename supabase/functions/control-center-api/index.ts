@@ -3,6 +3,7 @@ import { isPlaylistAgentAction, runPlaylistAgentAction } from '../_shared/playli
 import { isRadioAction, runRadioAction } from '../_shared/radio-outreach.ts';
 import { isFanEngagementAction, runFanEngagementAction } from '../_shared/fan-engagement-run.ts';
 import { isPitchCampaignAction, runPitchCampaignAction } from '../_shared/pitch-campaigns.ts';
+import { isSyncRegisterAction, runSyncRegisterAction } from '../_shared/sync-registers.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -107,6 +108,14 @@ Deno.serve(async (req) => {
 
     if (isPitchCampaignAction(String(action ?? ''))) {
       const result = await runPitchCampaignAction(String(action), body, supabase);
+      return new Response(JSON.stringify(result.data), {
+        status: result.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isSyncRegisterAction(String(action ?? ''))) {
+      const result = await runSyncRegisterAction(String(action), body, supabase);
       return new Response(JSON.stringify(result.data), {
         status: result.status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },

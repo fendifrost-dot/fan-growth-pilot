@@ -10,7 +10,7 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "13.0.5"
+    PostgrestVersion: "14.5"
   }
   public: {
     Tables: {
@@ -1296,6 +1296,75 @@ export type Database = {
           },
         ]
       }
+      licensing_pitch_log: {
+        Row: {
+          company: string | null
+          contact_email: string | null
+          contact_name: string
+          created_at: string
+          id: string
+          pitched_at: string
+          placed: boolean
+          reply_received: boolean
+          response_notes: string | null
+          response_status: string
+          status: string
+          supervisor_id: string | null
+          track_id: string | null
+          track_name: string
+          updated_at: string
+        }
+        Insert: {
+          company?: string | null
+          contact_email?: string | null
+          contact_name: string
+          created_at?: string
+          id?: string
+          pitched_at?: string
+          placed?: boolean
+          reply_received?: boolean
+          response_notes?: string | null
+          response_status?: string
+          status?: string
+          supervisor_id?: string | null
+          track_id?: string | null
+          track_name: string
+          updated_at?: string
+        }
+        Update: {
+          company?: string | null
+          contact_email?: string | null
+          contact_name?: string
+          created_at?: string
+          id?: string
+          pitched_at?: string
+          placed?: boolean
+          reply_received?: boolean
+          response_notes?: string | null
+          response_status?: string
+          status?: string
+          supervisor_id?: string | null
+          track_id?: string | null
+          track_name?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "licensing_pitch_log_supervisor_id_fkey"
+            columns: ["supervisor_id"]
+            isOneToOne: false
+            referencedRelation: "music_supervisors"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "licensing_pitch_log_track_id_fkey"
+            columns: ["track_id"]
+            isOneToOne: false
+            referencedRelation: "tracks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       link_analytics: {
         Row: {
           city: string | null
@@ -1490,6 +1559,39 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      music_supervisors: {
+        Row: {
+          company: string | null
+          created_at: string
+          email: string | null
+          id: string
+          name: string
+          notes: string | null
+          source: string | null
+          updated_at: string
+        }
+        Insert: {
+          company?: string | null
+          created_at?: string
+          email?: string | null
+          id?: string
+          name: string
+          notes?: string | null
+          source?: string | null
+          updated_at?: string
+        }
+        Update: {
+          company?: string | null
+          created_at?: string
+          email?: string | null
+          id?: string
+          name?: string
+          notes?: string | null
+          source?: string | null
+          updated_at?: string
+        }
+        Relationships: []
       }
       non_curator_domains: {
         Row: {
@@ -3268,14 +3370,24 @@ export type Database = {
       }
       tracks: {
         Row: {
+          aggregator: string
           apple_music_url: string | null
           created_at: string
           default_tone: string
           duration_seconds: number | null
+          eligibility_reason: string | null
+          eligibility_set_at: string | null
+          eligibility_set_by: string | null
+          eligibility_si_version: string | null
+          eligibility_source: string | null
+          genre_stamp: string
+          has_sample: string
           id: string
+          is_month1_sync_default: boolean
           isrc: string | null
           name: string
           notes: string | null
+          outreach_eligibility: Database["public"]["Enums"]["outreach_eligibility"]
           pitch_angle: string | null
           reference_artists: string[]
           release_date: string | null
@@ -3283,17 +3395,28 @@ export type Database = {
           soundcloud_url: string | null
           spotify_url: string | null
           status: string
+          sync_eligible: boolean | null
           updated_at: string
         }
         Insert: {
+          aggregator?: string
           apple_music_url?: string | null
           created_at?: string
           default_tone?: string
           duration_seconds?: number | null
+          eligibility_reason?: string | null
+          eligibility_set_at?: string | null
+          eligibility_set_by?: string | null
+          eligibility_si_version?: string | null
+          eligibility_source?: string | null
+          genre_stamp?: string
+          has_sample?: string
           id?: string
+          is_month1_sync_default?: boolean
           isrc?: string | null
           name: string
           notes?: string | null
+          outreach_eligibility?: Database["public"]["Enums"]["outreach_eligibility"]
           pitch_angle?: string | null
           reference_artists?: string[]
           release_date?: string | null
@@ -3301,17 +3424,28 @@ export type Database = {
           soundcloud_url?: string | null
           spotify_url?: string | null
           status?: string
+          sync_eligible?: boolean | null
           updated_at?: string
         }
         Update: {
+          aggregator?: string
           apple_music_url?: string | null
           created_at?: string
           default_tone?: string
           duration_seconds?: number | null
+          eligibility_reason?: string | null
+          eligibility_set_at?: string | null
+          eligibility_set_by?: string | null
+          eligibility_si_version?: string | null
+          eligibility_source?: string | null
+          genre_stamp?: string
+          has_sample?: string
           id?: string
+          is_month1_sync_default?: boolean
           isrc?: string | null
           name?: string
           notes?: string | null
+          outreach_eligibility?: Database["public"]["Enums"]["outreach_eligibility"]
           pitch_angle?: string | null
           reference_artists?: string[]
           release_date?: string | null
@@ -3319,6 +3453,7 @@ export type Database = {
           soundcloud_url?: string | null
           spotify_url?: string | null
           status?: string
+          sync_eligible?: boolean | null
           updated_at?: string
         }
         Relationships: []
@@ -3560,6 +3695,11 @@ export type Database = {
     }
     Enums: {
       app_role: "admin" | "operator"
+      outreach_eligibility:
+        | "eligible"
+        | "needs_song_intelligence"
+        | "no_genre_lane"
+        | "blocked"
       relationship_event_type:
         | "discovered"
         | "playlist_add"
@@ -3713,6 +3853,12 @@ export const Constants = {
   public: {
     Enums: {
       app_role: ["admin", "operator"],
+      outreach_eligibility: [
+        "eligible",
+        "needs_song_intelligence",
+        "no_genre_lane",
+        "blocked",
+      ],
       relationship_event_type: [
         "discovered",
         "playlist_add",

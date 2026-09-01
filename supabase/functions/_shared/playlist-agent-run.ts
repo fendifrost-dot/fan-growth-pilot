@@ -3,6 +3,7 @@
  * Workaround: Lovable Publish redeploys existing functions only; new function names 404 until registered.
  */
 import { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import { trackSyncFields } from "./sync-registers.ts";
 import {
   confidenceForEmailSource,
   detectSubmissionCost,
@@ -2462,6 +2463,12 @@ export async function runCatalogueAdmin(body: Record<string, unknown>, sb: Supab
       updated_at: new Date().toISOString(),
     };
     if (!fields.name) return { status: 400, data: { error: "name required" } };
+    const syncFields = trackSyncFields(body, String(fields.name));
+    if ("error" in syncFields) return { status: 400, data: { error: syncFields.error } };
+    Object.assign(fields, syncFields);
+    if (fields.is_month1_sync_default === true) {
+      await sb.from("tracks").update({ is_month1_sync_default: false }).neq("id", id ?? "00000000-0000-0000-0000-000000000000");
+    }
     let track;
     if (id) {
       const { data, error } = await sb.from("tracks").update(fields).eq("id", id).select().single();

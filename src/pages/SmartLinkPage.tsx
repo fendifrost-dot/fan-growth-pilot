@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/collapsible";
 import { InnerCircleSubscribeButton } from "@/components/InnerCircleSubscribeButton";
 import { shouldShowInnerCircleCta } from "@/lib/innerCircle";
+import { resolvePublicEvenUrl } from "@/lib/syncRegisters";
 
 interface SmartLinkData {
   id: string;
@@ -362,7 +363,8 @@ export default function SmartLinkPage() {
     if (meta.soundcloud_url) dspLinks.push({ name: 'SoundCloud', url: meta.soundcloud_url, bg: '#FF5500', color: '#fff' });
     if (meta.youtube_url) dspLinks.push({ name: 'YouTube', url: meta.youtube_url, bg: '#FF0000', color: '#fff' });
     if (meta.tidal_url) dspLinks.push({ name: 'Tidal', url: meta.tidal_url, bg: '#000000', color: '#fff' });
-    if (meta.even_url) dspLinks.push({ name: 'EVEN', url: meta.even_url, bg: 'linear-gradient(135deg, #D4AF37, #FFD700)', color: '#000' });
+    const evenUrl = resolvePublicEvenUrl(slug, meta);
+    if (evenUrl) dspLinks.push({ name: 'EVEN', url: evenUrl, bg: 'linear-gradient(135deg, #D4AF37, #FFD700)', color: '#000' });
   }
   const hasDspLinks = dspLinks.length > 0;
   const showInnerCircle = shouldShowInnerCircleCta(slug, meta);

@@ -60,10 +60,17 @@ const AdminHub: React.FC = () => {
           </Button>
         </Card>
         <Card className="p-5">
-          <h3 className="font-medium">Song catalogue</h3>
-          <p className="text-sm text-muted-foreground mt-1">Tracks, tones, and category tags</p>
+          <h3 className="font-medium">Song register</h3>
+          <p className="text-sm text-muted-foreground mt-1">Titles, optional ISRC, aggregator, sample flag</p>
           <Button variant="outline" size="sm" className="mt-3" asChild>
             <Link to="/admin/catalogue">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">Licensing register</h3>
+          <p className="text-sm text-muted-foreground mt-1">Supervisor roster + who / when / response</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/licensing">Open →</Link>
           </Button>
         </Card>
         <Card className="p-5">

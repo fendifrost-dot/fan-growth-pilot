@@ -1,6 +1,9 @@
 // Canonical domain for all public smart links
 export const LINKS_DOMAIN = "https://links.fendifrost.com";
 
+/** Locked public EVEN artist URL — use on existing listen-pills / runway pages. */
+export { EVEN_ARTIST_URL } from "@/lib/syncRegisters";
+
 /** Runway Music album art — only for the runwaymusic smart link. */
 export const RUNWAY_OG_IMAGE = `${LINKS_DOMAIN}/og-runwaymusic.png`;
 

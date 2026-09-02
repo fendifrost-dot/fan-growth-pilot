@@ -61,6 +61,16 @@ export const ACTION_AUTH: Record<string, AuthClass> = {
   list_campaignable_tracks: 'admin-write',
   check_campaign_config: 'admin-write',
 
+  // ---- Song DNA (Fendi approval workflow; admin JWT only) -----------------
+  list_song_dna: 'authenticated-read',
+  get_song_dna: 'authenticated-read',
+  list_song_dna_audit: 'authenticated-read',
+  create_song_dna_draft: 'admin-write',
+  update_song_dna_draft: 'admin-write',
+  submit_song_dna_for_review: 'admin-write',
+  approve_song_dna: 'admin-write',
+  reject_song_dna: 'admin-write',
+
   // ---- Campaign reads -----------------------------------------------------
   list_campaigns: 'authenticated-read',
   get_campaign: 'authenticated-read',

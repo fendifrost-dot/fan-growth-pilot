@@ -17,6 +17,7 @@ import {
 import { toast } from "sonner";
 import { AlertTriangle, Megaphone, Pause, Play, Square } from "lucide-react";
 import { callHubFn } from "@/lib/hubApi";
+import type { SongDnaVersion } from "@/lib/songDna";
 
 interface CampaignStats {
   sent: number;
@@ -76,6 +77,21 @@ const MISSING_LABELS: Record<string, { label: string; fixTo: string; fixLabel: s
     fixTo: "/admin/catalogue",
     fixLabel: "Write pitch copy",
   },
+  approved_song_dna: {
+    label: "No approved Song DNA version for this track",
+    fixTo: "/admin/song-dna",
+    fixLabel: "Song DNA",
+  },
+  song_dna_version_id: {
+    label: "Select an approved Song DNA version before activating",
+    fixTo: "/admin/song-dna",
+    fixLabel: "Song DNA",
+  },
+  admin_jwt: {
+    label: "Sign in as admin — activation records your user id as Fendi approver",
+    fixTo: "/auth",
+    fixLabel: "Sign in",
+  },
 };
 
 const fmtDate = (v: string | null) => (v ? new Date(v).toLocaleDateString() : "—");
@@ -84,6 +100,7 @@ const AdminPitchPortal: React.FC = () => {
   const [campaigns, setCampaigns] = useState<CampaignRow[]>([]);
   const [tracks, setTracks] = useState<TrackOption[]>([]);
   const [smartLinks, setSmartLinks] = useState<SmartLinkOption[]>([]);
+  const [approvedDna, setApprovedDna] = useState<SongDnaVersion[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
 
@@ -96,15 +113,17 @@ const AdminPitchPortal: React.FC = () => {
 
   const load = useCallback(async () => {
     try {
-      const [c, t] = await Promise.all([
+      const [c, t, dna] = await Promise.all([
         callHubFn<{ rows: CampaignRow[] }>("list_campaigns", { status: "all" }),
         callHubFn<{ rows: TrackOption[]; smart_links: SmartLinkOption[] }>(
           "list_campaignable_tracks",
         ),
+        callHubFn<{ rows: SongDnaVersion[] }>("list_song_dna", {}).catch(() => ({ rows: [] })),
       ]);
       setCampaigns(c.rows ?? []);
       setTracks(t.rows ?? []);
       setSmartLinks(t.smart_links ?? []);
+      setApprovedDna((dna.rows ?? []).filter((r) => r.approval_state === "approved"));
     } catch (e) {
       toast.error((e as Error).message || "Failed to load campaigns");
     } finally {
@@ -354,19 +373,44 @@ const AdminPitchPortal: React.FC = () => {
               </div>
               <p className="text-xs text-muted-foreground">
                 Activation freezes Song DNA, pitch copy, and smart-link snapshot. Approver is
-                your signed-in admin user id — not a free-text field.
+                your signed-in admin user id — not a free-text field.{" "}
+                <Link to="/admin/song-dna" className="underline">
+                  Manage Song DNA
+                </Link>
               </p>
+              {(() => {
+                const dna = approvedDna.find((d) => d.track_id === c.track_id);
+                return (
+                  <div className="text-xs">
+                    {dna ? (
+                      <span>
+                        Approved DNA: <span className="font-mono">v{dna.version_number}</span>{" "}
+                        ({dna.primary_genre || "genre unset"})
+                      </span>
+                    ) : (
+                      <span className="text-destructive">
+                        No approved Song DNA for this track — approve one before activating.
+                      </span>
+                    )}
+                  </div>
+                );
+              })()}
               <div className="flex gap-2 pt-1">
                 <Button
                   size="sm"
-                  disabled={busy}
-                  onClick={() =>
-                    patch(
+                  disabled={busy || !approvedDna.some((d) => d.track_id === c.track_id)}
+                  onClick={() => {
+                    const dna = approvedDna.find((d) => d.track_id === c.track_id);
+                    if (!dna) {
+                      toast.error("Approved Song DNA required");
+                      return;
+                    }
+                    void patch(
                       c.id,
-                      { status: "active" },
-                      `Activated “${c.track_name}” (requires approved Song DNA)`,
-                    )
-                  }
+                      { status: "active", song_dna_version_id: dna.id },
+                      `Activated “${c.track_name}”`,
+                    );
+                  }}
                 >
                   Activate
                 </Button>

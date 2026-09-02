@@ -4,6 +4,7 @@ import { isRadioAction, runRadioAction } from '../_shared/radio-outreach.ts';
 import { isFanEngagementAction, runFanEngagementAction } from '../_shared/fan-engagement-run.ts';
 import { isPitchCampaignAction, runPitchCampaignAction } from '../_shared/pitch-campaigns.ts';
 import { isSyncRegisterAction, runSyncRegisterAction } from '../_shared/sync-registers.ts';
+import { isSongDnaAction, runSongDnaAction } from '../_shared/song-dna.ts';
 import { authorizeAction } from '../_shared/outreach-auth.ts';
 
 const corsHeaders = {
@@ -117,6 +118,26 @@ Deno.serve(async (req) => {
         });
       }
       const result = await runPitchCampaignAction(
+        String(action),
+        body,
+        supabase,
+        decision.actor,
+      );
+      return new Response(JSON.stringify(result.data), {
+        status: result.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isSongDnaAction(String(action ?? ''))) {
+      const decision = await authorizeAction(String(action), req, supabase);
+      if (!decision.ok) {
+        return new Response(JSON.stringify({ error: decision.error }), {
+          status: decision.status,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      const result = await runSongDnaAction(
         String(action),
         body,
         supabase,

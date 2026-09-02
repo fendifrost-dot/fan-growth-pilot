@@ -7,7 +7,7 @@ Redeploying `execute-pitch` alone while `send-pitch-email` stays ungated (or bef
 
 ## Order (strict)
 
-1. **Song DNA schema** — apply Phase 1 `song_dna_versions` (+ related) via Lovable SQL Editor.
+1. **Song DNA schema** — apply `20260903000000_song_dna_versions.sql` via Lovable SQL Editor.
 2. **Campaign table stack** (if `to_regclass('public.pitch_campaigns')` is still null):
    - `20260718005000_admin_roles.sql` (if needed)
    - `20260718000000_pitch_campaigns.sql`

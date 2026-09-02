@@ -2,7 +2,7 @@
  * Draft → approve identity wiring tests.
  * Title-only drafts are forbidden; approve_draft must forward track_id + campaign_id.
  */
-import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { assert } from "https://deno.land/std@0.224.0/assert/mod.ts";
 
 Deno.test("WIRING: runDraftPitch requires track_id + campaign_id before loading playlist", async () => {
   const src = await Deno.readTextFile(new URL("./playlist-agent-run.ts", import.meta.url));

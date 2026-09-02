@@ -14,7 +14,10 @@ import {
   evaluateControlSameTargetCooldown,
   isControlTrackId,
 } from "../_shared/control-cooldown.ts";
-import { assertSendCampaignIdentity } from "../_shared/pitch-campaigns.ts";
+import {
+  requireHubKey,
+  requireSendIdentity,
+} from "../_shared/send-identity-gate.ts";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-api-key",
@@ -60,10 +63,6 @@ function isWithinSendWindow(now: Date): boolean {
     hour >= SEND_WINDOW_START_HOUR &&
     hour < SEND_WINDOW_END_HOUR
   );
-}
-function getHubKey(req: Request): string {
-  return (req.headers.get("x-api-key") || req.headers.get("apikey") ||
-    (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim());
 }
 type PitchResponse = {
   ok: boolean; method_used: string;
@@ -129,18 +128,11 @@ function pitchLogRow(
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   try {
-    const expected = (Deno.env.get("FANFUEL_HUB_KEY") || "").trim();
-    const provided = getHubKey(req).trim();
-    // Auth is optional and only validated when both sides provide a value.
-    // - No env configured -> allow (internal-only deployment).
-    // - No header provided -> allow.
-    // - Both present but mismatched -> reject as bad explicit key.
-    if (expected && provided && provided !== expected) return json({ error: "Unauthorized" }, 401);
+    const auth = requireHubKey(req);
+    if (!auth.ok) return json({ error: auth.error }, 401);
+
     const body = await req.json().catch(() => ({}));
     const playlistId = String(body.playlist_id || "").trim();
-    const trackId = String(body.track_id || "").trim();
-    const campaignId = String(body.campaign_id || "").trim();
-    const trackNameBody = String(body.track_name || "").trim();
     const methodOverride = typeof body.method_override === "string" ? body.method_override.trim() : "";
     const tierConfirmed = Boolean(body.tier_confirmed);
     const bulk = Boolean(body.bulk);
@@ -153,27 +145,22 @@ Deno.serve(async (req) => {
     if (!playlistId) {
       return jsonPitch({ ok:false, method_used:"none", action_taken:"error", cooldown_until:null, message_to_user:"Missing playlist_id." });
     }
-    if (!trackId || !campaignId) {
-      return jsonPitch({ ok:false, method_used:"none", action_taken:"error", cooldown_until:null, message_to_user:"Missing exact track_id and campaign_id. Title-only sends are not allowed." }, 400);
-    }
     const url = Deno.env.get("SUPABASE_URL")!;
     const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const sb = createClient(url, key);
 
-    const { data: trackRow, error: trackErr } = await sb.from("tracks").select("id, name").eq("id", trackId).maybeSingle();
-    if (trackErr || !trackRow) {
-      return jsonPitch({ ok:false, method_used:"none", action_taken:"error", cooldown_until:null, message_to_user:"track_id not found." }, 404);
+    const identity = await requireSendIdentity(sb, body as Record<string, unknown>);
+    if (!identity.ok) {
+      const action = identity.status === 422 ? "skipped" : "error";
+      return jsonPitch({
+        ok: false,
+        method_used: "none",
+        action_taken: action,
+        cooldown_until: null,
+        message_to_user: (identity.status === 422 ? "🚫 " : "") + identity.error,
+      }, identity.status);
     }
-    const trackName = String(trackRow.name);
-    if (trackNameBody && trackNameBody.toLowerCase() !== trackName.toLowerCase()) {
-      return jsonPitch({ ok:false, method_used:"none", action_taken:"error", cooldown_until:null, message_to_user:"track_name does not match track_id." }, 400);
-    }
-    try {
-      await assertSendCampaignIdentity(sb, { trackId, campaignId });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return jsonPitch({ ok:false, method_used:"none", action_taken:"skipped", cooldown_until:null, message_to_user:"🚫 " + msg }, 422);
-    }
+    const { trackId, campaignId, trackName } = identity.identity;
 
     let draftOverrides: { email?: string; subject?: string; bodyHtml?: string } | undefined;
     let draftChannel: string | null = null;

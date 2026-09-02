@@ -1,8 +1,10 @@
 /**
- * Phase 0 send-gate integration tests (pure logic + shared gate modules).
- * These prove the review-required contracts without hitting live Resend.
+ * Phase 0 send-gate integration tests.
+ * Proves review-required contracts without hitting live Resend.
  */
 import { describe, it, expect } from "vitest";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import {
   TRACK_IDS,
   assertHouseElectronicStampAllowed,
@@ -14,6 +16,8 @@ import {
   evaluateControlSameTargetCooldown,
 } from "@/lib/controlCooldown";
 import { assertGenreStampAllowed } from "@/lib/syncRegisters";
+
+const MIGRATIONS = join(process.cwd(), "supabase/migrations");
 
 describe("integration: write-boundary House allow-list", () => {
   it("rejects house stamp without track_id at the write boundary", () => {
@@ -50,15 +54,55 @@ describe("integration: Control cooldown uses track_id primary key", () => {
   });
 });
 
-describe("integration: sync gate + send identity contracts", () => {
+describe("integration: sync gate", () => {
   it("sample=no is not sync-ready", () => {
     expect(computeSyncEligible("no")).toBe(false);
     expect(evaluateSyncReady({ hasSample: "no" }).ready).toBe(false);
   });
+});
 
-  it("documents required send fields track_id + campaign_id", () => {
-    const required = ["track_id", "campaign_id", "playlist_id"] as const;
-    expect(required).toEqual(["track_id", "campaign_id", "playlist_id"]);
+describe("integration: send identity contract (code presence)", () => {
+  it("both playlist senders import the shared identity gate", () => {
+    const execute = readFileSync(
+      join(process.cwd(), "supabase/functions/execute-pitch/index.ts"),
+      "utf8",
+    );
+    const alt = readFileSync(
+      join(process.cwd(), "supabase/functions/send-pitch-email/index.ts"),
+      "utf8",
+    );
+    expect(execute).toMatch(/requireSendIdentity/);
+    expect(execute).toMatch(/requireHubKey/);
+    expect(alt).toMatch(/requireSendIdentity/);
+    expect(alt).toMatch(/requireHubKey/);
+    expect(alt).toMatch(/track_id/);
+    expect(alt).toMatch(/campaign_id/);
+    // Playlist pitch_log insert must carry exact identity columns.
+    const playlistInsert = alt.slice(alt.indexOf('from("pitch_log")'));
+    expect(playlistInsert).toMatch(/track_id/);
+    expect(playlistInsert).toMatch(/campaign_id/);
+    expect(playlistInsert).toMatch(/status:\s*"sent"/);
+  });
+
+  it("activation derives approver from admin actor, not body text", () => {
+    const src = readFileSync(
+      join(process.cwd(), "supabase/functions/_shared/pitch-campaigns.ts"),
+      "utf8",
+    );
+    expect(src).toMatch(/Server-derived only/);
+    expect(src).toMatch(/const fendiBy = actor\.userId/);
+    expect(src).not.toMatch(
+      /fendiBy = String\(body\.fendi_activation_approved_by/,
+    );
+  });
+
+  it("createCampaign rejects non-draft status on create", () => {
+    const src = readFileSync(
+      join(process.cwd(), "supabase/functions/_shared/pitch-campaigns.ts"),
+      "utf8",
+    );
+    expect(src).toMatch(/Campaigns always create as draft/);
+    expect(src).toMatch(/\.in\('status', \['draft', 'active', 'paused'\]\)/);
   });
 });
 
@@ -76,5 +120,38 @@ describe("integration: genre stamp helper requires UUID for house", () => {
   it("assertGenreStampAllowed blocks Meditate UUID from house", () => {
     const r = assertGenreStampAllowed("Meditate", "house_electronic", TRACK_IDS.MEDITATE);
     expect(r.ok).toBe(false);
+  });
+});
+
+describe("integration: migration sequencing contracts", () => {
+  it("Control backfill migration exists before campaign-gate require migration", () => {
+    const files = readdirSync(MIGRATIONS).filter((f) => f.endsWith(".sql")).sort();
+    const backfill = files.find((f) => f.includes("control_pitch_log_track_id_backfill"));
+    const requireGate = files.find((f) => f.includes("campaign_gate_require"));
+    expect(backfill).toBeTruthy();
+    expect(requireGate).toBeTruthy();
+    expect(backfill! < requireGate!).toBe(true);
+  });
+
+  it("campaign gate require migration fails loudly without pitch_campaigns", () => {
+    const sql = readFileSync(
+      join(MIGRATIONS, "20260902200000_campaign_gate_require_and_control_backfill.sql"),
+      "utf8",
+    );
+    expect(sql).toMatch(/to_regclass\('public\.pitch_campaigns'\) is null/);
+    expect(sql).toMatch(/raise exception/i);
+    expect(sql).toMatch(/pitch_log_campaign_id_fkey/);
+    expect(sql).toMatch(/fendi_activation_approved_by/);
+    expect(sql).toMatch(/song_dna_version_id/);
+  });
+
+  it("Control backfill migration asserts leftover = 0", () => {
+    const sql = readFileSync(
+      join(MIGRATIONS, "20260902190000_control_pitch_log_track_id_backfill.sql"),
+      "utf8",
+    );
+    expect(sql).toMatch(/5d09da7e-98cf-4276-8dca-861d1fbbfa98/);
+    expect(sql).toMatch(/designed for me/);
+    expect(sql).toMatch(/leftover/);
   });
 });

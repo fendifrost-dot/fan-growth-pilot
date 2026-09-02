@@ -50,21 +50,24 @@ export type AuthDecision =
  */
 export const ACTION_AUTH: Record<string, AuthClass> = {
   // ---- Campaign lifecycle (human decisions; admin JWT only) ----------------
-  create_campaign_draft: 'admin-write',
+  create_campaign: 'admin-write',
+  create_campaign_draft: 'admin-write', // alias / legacy name
   update_campaign: 'admin-write',
-  activate_campaign: 'admin-write',
+  activate_campaign: 'admin-write', // legacy alias; Hub uses update_campaign + status
   pause_campaign: 'admin-write',
   resume_campaign: 'admin-write',
   end_campaign: 'admin-write',
   set_outreach_ceiling: 'admin-write',
+  list_campaignable_tracks: 'admin-write',
+  check_campaign_config: 'admin-write',
 
   // ---- Campaign reads -----------------------------------------------------
-  list_campaigns: 'public-read',
-  get_campaign: 'public-read',
-  validate_campaign: 'public-read',
-  get_campaign_stats: 'public-read',
-  get_campaign_supply: 'public-read',
-  get_campaign_activity: 'public-read',
+  list_campaigns: 'authenticated-read',
+  get_campaign: 'authenticated-read',
+  validate_campaign: 'authenticated-read',
+  get_campaign_stats: 'authenticated-read',
+  get_campaign_supply: 'authenticated-read',
+  get_campaign_activity: 'authenticated-read',
 
   // ---- Outreach-triggering writes (admin JWT OR scheduler secret) ----------
   // These are what the daily submissions task drives. Locking them without

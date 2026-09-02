@@ -34,7 +34,7 @@ interface CampaignRow {
   smart_link_id: string | null;
   smart_link_slug: string | null;
   smart_link_active: boolean;
-  status: "active" | "paused" | "ended";
+  status: "draft" | "active" | "paused" | "ended";
   daily_target: number;
   notes: string | null;
   started_at: string | null;
@@ -117,7 +117,11 @@ const AdminPitchPortal: React.FC = () => {
   }, [load]);
 
   const active = useMemo(() => campaigns.filter((c) => c.status === "active"), [campaigns]);
-  const history = useMemo(() => campaigns.filter((c) => c.status !== "active"), [campaigns]);
+  const drafts = useMemo(() => campaigns.filter((c) => c.status === "draft"), [campaigns]);
+  const history = useMemo(
+    () => campaigns.filter((c) => c.status === "paused" || c.status === "ended"),
+    [campaigns],
+  );
 
   // Tracks without an open campaign are the only ones you can create for.
   const available = useMemo(() => tracks.filter((t) => !t.open_campaign_id), [tracks]);
@@ -145,7 +149,7 @@ const AdminPitchPortal: React.FC = () => {
         daily_target: dailyTarget,
         notes: notes.trim() || null,
       });
-      toast.success(`Campaign started for “${selectedTrack?.name ?? "track"}”`);
+      toast.success(`Draft campaign created for “${selectedTrack?.name ?? "track"}”`);
       resetForm();
       await load();
     } catch (e) {
@@ -200,8 +204,8 @@ const AdminPitchPortal: React.FC = () => {
         <div>
           <h2 className="font-medium">Start a new campaign</h2>
           <p className="text-xs text-muted-foreground mt-1">
-            Pick a song, confirm its smart link and daily target, then activate. A song needs a
-            live smart link, an assigned category, and written pitch copy before it can go active.
+            Pick a song and create a <strong>draft</strong>. Activation is a separate step that
+            requires approved Song DNA and Fendi’s signed-in admin identity (derived server-side).
           </p>
         </div>
 
@@ -311,7 +315,7 @@ const AdminPitchPortal: React.FC = () => {
 
         <div className="flex gap-2">
           <Button onClick={create} disabled={busy || !trackId}>
-            Start campaign
+            Create draft campaign
           </Button>
           {trackId && (
             <Button variant="ghost" onClick={resetForm} disabled={busy}>
@@ -320,6 +324,65 @@ const AdminPitchPortal: React.FC = () => {
           )}
         </div>
       </Card>
+
+      {/* ---------------------------------------------------------------- */}
+      {/* Draft campaigns                                                   */}
+      {/* ---------------------------------------------------------------- */}
+      <div className="space-y-3">
+        <h2 className="font-medium">
+          Draft campaigns{" "}
+          <span className="text-muted-foreground font-normal text-sm">({drafts.length})</span>
+        </h2>
+        {!loading && drafts.length === 0 && (
+          <Card className="p-5">
+            <p className="text-sm text-muted-foreground">
+              No drafts. New campaigns always start here before Fendi activation.
+            </p>
+          </Card>
+        )}
+        <div className="grid gap-3 md:grid-cols-2">
+          {drafts.map((c) => (
+            <Card key={c.id} className="p-5 space-y-3">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <div className="font-medium">{c.track_name}</div>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Created {fmtDate(c.created_at)}
+                  </p>
+                </div>
+                <Badge variant="secondary">draft</Badge>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Activation freezes Song DNA, pitch copy, and smart-link snapshot. Approver is
+                your signed-in admin user id — not a free-text field.
+              </p>
+              <div className="flex gap-2 pt-1">
+                <Button
+                  size="sm"
+                  disabled={busy}
+                  onClick={() =>
+                    patch(
+                      c.id,
+                      { status: "active" },
+                      `Activated “${c.track_name}” (requires approved Song DNA)`,
+                    )
+                  }
+                >
+                  Activate
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => patch(c.id, { status: "ended" }, `Ended draft “${c.track_name}”`)}
+                >
+                  End draft
+                </Button>
+              </div>
+            </Card>
+          ))}
+        </div>
+      </div>
 
       {/* ---------------------------------------------------------------- */}
       {/* Active campaigns                                                  */}

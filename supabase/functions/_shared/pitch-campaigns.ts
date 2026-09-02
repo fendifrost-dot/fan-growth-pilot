@@ -9,6 +9,7 @@
 // It is dispatched from control-center-api as its own tier.
 
 import type { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1';
+import type { Actor } from './outreach-auth.ts';
 
 export const PITCH_CAMPAIGN_ACTIONS = [
   'list_campaigns',
@@ -435,7 +436,7 @@ async function listCampaignableTracks(sb: SupabaseClient): Promise<Result> {
   const { data: open } = await sb
     .from('pitch_campaigns')
     .select('id, track_id, status')
-    .in('status', ['active', 'paused']);
+    .in('status', ['draft', 'active', 'paused']);
   const openByTrack = new Map<string, { id: string; status: string }>();
   for (const c of (open ?? []) as { id: string; track_id: string; status: string }[]) {
     openByTrack.set(c.track_id, { id: c.id, status: c.status });
@@ -485,25 +486,18 @@ async function createCampaign(sb: SupabaseClient, body: Record<string, unknown>)
   const dailyTarget = Math.min(200, Math.max(1, Number(body.daily_target) || 20));
   const notes = body.notes == null ? null : String(body.notes);
 
-  // Phase 0 locked decision §8: campaigns ALWAYS begin as drafts. Activation is a
-  // separate Fendi-approved step (requires approved Song DNA + explicit approval).
-  if (body.status != null && String(body.status) === 'active') {
+  // Phase 0 locked decision §8: campaigns ALWAYS begin as drafts.
+  // Creation never accepts active | paused | ended — activate/pause/end via update.
+  if (body.status != null && String(body.status).trim() !== '' && String(body.status) !== 'draft') {
     return {
       status: 400,
       data: {
         error:
-          'Campaigns cannot be created as active. Create a draft, then activate with approved Song DNA and explicit Fendi approval.',
+          'Campaigns always create as draft. Do not pass status=paused|ended|active on create; activate only after approved Song DNA + authenticated Fendi approval.',
       },
     };
   }
-  const requested = body.status == null ? 'draft' : String(body.status);
-  if (!(CAMPAIGN_STATUSES as readonly string[]).includes(requested) || requested === 'active') {
-    // 'active' already rejected; allow draft | paused | ended on create only if not active.
-  }
-  const status: CampaignStatus =
-    requested === 'paused' || requested === 'ended' || requested === 'draft'
-      ? (requested as CampaignStatus)
-      : 'draft';
+  const status: CampaignStatus = 'draft';
 
   const { data: existing } = await sb
     .from('pitch_campaigns')
@@ -542,7 +536,11 @@ async function createCampaign(sb: SupabaseClient, body: Record<string, unknown>)
   return { status: 200, data: { ok: true, campaign: data, config } };
 }
 
-async function updateCampaign(sb: SupabaseClient, body: Record<string, unknown>): Promise<Result> {
+async function updateCampaign(
+  sb: SupabaseClient,
+  body: Record<string, unknown>,
+  actor: Actor | null,
+): Promise<Result> {
   const campaignId = String(body.campaign_id ?? '').trim();
   if (!campaignId) return { status: 400, data: { error: 'campaign_id required' } };
 
@@ -575,9 +573,21 @@ async function updateCampaign(sb: SupabaseClient, body: Record<string, unknown>)
       };
     }
 
-    // Activation requires verified approved Song DNA + explicit Fendi approval (§8).
-    // Disabled until song_dna_versions exists and the version can be verified.
+    // Activation requires verified approved Song DNA + server-derived Fendi identity.
     if (nextStatus === 'active') {
+      if (!actor || actor.kind !== 'user' || !actor.isAdmin) {
+        return {
+          status: 401,
+          data: {
+            error:
+              'Activation requires Fendi’s authenticated admin JWT. Caller-supplied approver text is ignored.',
+            missing: ['admin_jwt'],
+          },
+        };
+      }
+      // Server-derived only — never trust body.fendi_activation_approved_by.
+      const fendiBy = actor.userId;
+
       const smartLinkId =
         patch.smart_link_id !== undefined
           ? (patch.smart_link_id as string | null)
@@ -617,17 +627,6 @@ async function updateCampaign(sb: SupabaseClient, body: Record<string, unknown>)
         };
       }
 
-      const fendiBy = String(body.fendi_activation_approved_by ?? current.fendi_activation_approved_by ?? '').trim();
-      if (!fendiBy) {
-        return {
-          status: 400,
-          data: {
-            error: 'Activation requires explicit Fendi approval (fendi_activation_approved_by).',
-            missing: ['fendi_activation_approved_by'],
-          },
-        };
-      }
-
       const { data: trackRow } = await sb
         .from('tracks')
         .select('id, name, short_pitch')
@@ -658,7 +657,7 @@ async function updateCampaign(sb: SupabaseClient, body: Record<string, unknown>)
         smartLink,
         dna: dnaCheck.version,
         fendiApprovedBy: fendiBy,
-        fendiApprovedAt: String(body.fendi_activation_approved_at ?? '').trim() || nowIso,
+        fendiApprovedAt: nowIso,
         pitchCopy,
       });
 
@@ -696,6 +695,7 @@ export async function runPitchCampaignAction(
   action: string,
   body: Record<string, unknown>,
   sb: SupabaseClient,
+  actor: Actor | null = null,
 ): Promise<Result> {
   switch (action) {
     case 'list_campaigns':
@@ -707,7 +707,7 @@ export async function runPitchCampaignAction(
     case 'create_campaign':
       return await createCampaign(sb, body);
     case 'update_campaign':
-      return await updateCampaign(sb, body);
+      return await updateCampaign(sb, body, actor);
     default:
       return { status: 400, data: { error: `Unknown pitch campaign action: ${action}` } };
   }

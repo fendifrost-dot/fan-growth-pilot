@@ -88,10 +88,24 @@ const AdminHub: React.FC = () => {
           </Button>
         </Card>
         <Card className="p-5">
+          <h3 className="font-medium">Private licenses</h3>
+          <p className="text-sm text-muted-foreground mt-1">Evidence index for vaulted license files (e.g. Neva)</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/private-licenses">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
           <h3 className="font-medium">Ops incidents</h3>
           <p className="text-sm text-muted-foreground mt-1">Chief-of-Staff audit log</p>
           <Button variant="outline" size="sm" className="mt-3" asChild>
             <Link to="/admin/ops">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">Fan leads</h3>
+          <p className="text-sm text-muted-foreground mt-1">Smart-link capture stats and recent leads</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/fan-leads">Open →</Link>
           </Button>
         </Card>
         <Card className="p-5">

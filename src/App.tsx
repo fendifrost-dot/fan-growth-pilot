@@ -37,6 +37,8 @@ import AdminSplitSheets from "./pages/admin/AdminSplitSheets";
 import AdminOpsIncidents from "./pages/admin/AdminOpsIncidents";
 import AdminPressKit from "./pages/admin/AdminPressKit";
 import AdminCategoryCoverage from "./pages/admin/AdminCategoryCoverage";
+import AdminPrivateLicenses from "./pages/admin/AdminPrivateLicenses";
+import AdminFanLeads from "./pages/admin/AdminFanLeads";
 import AdminOpportunities from "./pages/admin/AdminOpportunities";
 import RegisterPreview from "./pages/dev/RegisterPreview";
 
@@ -101,6 +103,8 @@ const App = () => {
             <Route path="split-sheets" element={<AdminSplitSheets />} />
             <Route path="ops" element={<AdminOpsIncidents />} />
             <Route path="press" element={<AdminPressKit />} />
+            <Route path="private-licenses" element={<AdminPrivateLicenses />} />
+            <Route path="fan-leads" element={<AdminFanLeads />} />
           </Route>
 
           {/* Public smart link pages (CATCH-ALL — must stay last among meaningful routes) */}

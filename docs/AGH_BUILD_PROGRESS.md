@@ -19,6 +19,9 @@
 | Canonical playlist send gate | done | `execute-pitch` + `send-pitch-email` share `send-identity-gate` + `PITCH_IDENTITY_GATE` |
 | Draft/approve identity (no title-only) | done | `outreach_drafts.track_id`, composer campaign picker, approve forwards IDs |
 | Playlist category coverage audit | done | `audit_playlist_category_coverage` + `/admin/category-coverage` |
+| Private license admin UI | done | `/admin/private-licenses` |
+| Fan leads reporting UI | done | `/admin/fan-leads` (`get_fan_stats` / `get_leads`) |
+| Pitch log identity columns | done | shows `track_id` / `campaign_id` prefixes |
 
 ## Migrations to apply (Lovable SQL Editor — order)
 

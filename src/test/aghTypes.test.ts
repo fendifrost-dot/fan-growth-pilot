@@ -4,20 +4,27 @@ import type { Database } from "@/integrations/supabase/types";
 type PublicTables = Database["public"]["Tables"];
 
 describe("supabase types cover AGH Phase 1 tables/columns", () => {
-  it("includes Song DNA, private license, ops, press", () => {
+  it("includes Song DNA, private license, ops, press, campaigns, lyrics, splits", () => {
     type SongDna = PublicTables["song_dna_versions"]["Row"];
     type License = PublicTables["private_license_evidence"]["Row"];
     type Ops = PublicTables["ops_incidents"]["Row"];
     type Press = PublicTables["press_kits"]["Row"];
+    type Campaign = PublicTables["pitch_campaigns"]["Row"];
+    type Lyrics = PublicTables["lyrics_transcriptions"]["Row"];
+    type Split = PublicTables["split_sheets"]["Row"];
+    type Contrib = PublicTables["split_sheet_contributors"]["Row"];
 
-    const dna = null as SongDna | null;
-    const lic = null as License | null;
-    const ops = null as Ops | null;
-    const press = null as Press | null;
-    expect(dna).toBeNull();
-    expect(lic).toBeNull();
-    expect(ops).toBeNull();
-    expect(press).toBeNull();
+    const keys = [
+      null as SongDna | null,
+      null as License | null,
+      null as Ops | null,
+      null as Press | null,
+      null as Campaign | null,
+      null as Lyrics | null,
+      null as Split | null,
+      null as Contrib | null,
+    ];
+    expect(keys.every((k) => k === null)).toBe(true);
   });
 
   it("includes draft/send identity + sync gate columns", () => {

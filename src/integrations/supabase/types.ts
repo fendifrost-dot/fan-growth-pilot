@@ -3664,6 +3664,239 @@ export type Database = {
         }
         Relationships: []
       }
+      pitch_campaigns: {
+        Row: {
+          id: string
+          track_id: string
+          smart_link_id: string | null
+          status: string
+          daily_target: number
+          notes: string | null
+          started_at: string | null
+          ended_at: string | null
+          authority_kind: string
+          song_dna_version_id: string | null
+          fendi_activation_approved_by: string | null
+          fendi_activation_approved_at: string | null
+          configuration_snapshot: Json
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          track_id: string
+          smart_link_id?: string | null
+          status?: string
+          daily_target?: number
+          notes?: string | null
+          started_at?: string | null
+          ended_at?: string | null
+          authority_kind?: string
+          song_dna_version_id?: string | null
+          fendi_activation_approved_by?: string | null
+          fendi_activation_approved_at?: string | null
+          configuration_snapshot?: Json
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          track_id?: string
+          smart_link_id?: string | null
+          status?: string
+          daily_target?: number
+          notes?: string | null
+          started_at?: string | null
+          ended_at?: string | null
+          authority_kind?: string
+          song_dna_version_id?: string | null
+          fendi_activation_approved_by?: string | null
+          fendi_activation_approved_at?: string | null
+          configuration_snapshot?: Json
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pitch_campaigns_track_id_fkey"
+            columns: ["track_id"]
+            isOneToOne: false
+            referencedRelation: "tracks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      lyrics_transcriptions: {
+        Row: {
+          id: string
+          track_id: string
+          version_number: number
+          source: string
+          provider_id: string | null
+          provider_job_id: string | null
+          status: string
+          language: string
+          plain_text: string
+          timed_lines: Json
+          storage_path: string | null
+          notes: string | null
+          created_by: string | null
+          updated_by: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          track_id: string
+          version_number: number
+          source?: string
+          provider_id?: string | null
+          provider_job_id?: string | null
+          status?: string
+          language?: string
+          plain_text?: string
+          timed_lines?: Json
+          storage_path?: string | null
+          notes?: string | null
+          created_by?: string | null
+          updated_by?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          track_id?: string
+          version_number?: number
+          source?: string
+          provider_id?: string | null
+          provider_job_id?: string | null
+          status?: string
+          language?: string
+          plain_text?: string
+          timed_lines?: Json
+          storage_path?: string | null
+          notes?: string | null
+          created_by?: string | null
+          updated_by?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "lyrics_transcriptions_track_id_fkey"
+            columns: ["track_id"]
+            isOneToOne: false
+            referencedRelation: "tracks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      split_sheets: {
+        Row: {
+          id: string
+          track_id: string
+          version_number: number
+          status: string
+          title: string | null
+          notes: string | null
+          action_items: Json
+          document_storage_path: string | null
+          document_mime: string | null
+          generated_html: string | null
+          created_by: string | null
+          updated_by: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          track_id: string
+          version_number: number
+          status?: string
+          title?: string | null
+          notes?: string | null
+          action_items?: Json
+          document_storage_path?: string | null
+          document_mime?: string | null
+          generated_html?: string | null
+          created_by?: string | null
+          updated_by?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          track_id?: string
+          version_number?: number
+          status?: string
+          title?: string | null
+          notes?: string | null
+          action_items?: Json
+          document_storage_path?: string | null
+          document_mime?: string | null
+          generated_html?: string | null
+          created_by?: string | null
+          updated_by?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "split_sheets_track_id_fkey"
+            columns: ["track_id"]
+            isOneToOne: false
+            referencedRelation: "tracks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      split_sheet_contributors: {
+        Row: {
+          id: string
+          split_sheet_id: string
+          legal_name: string | null
+          role: string
+          split_percent: number | null
+          ipi_number: string | null
+          pro_affiliation: string | null
+          notes: string | null
+          sort_order: number
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          split_sheet_id: string
+          legal_name?: string | null
+          role?: string
+          split_percent?: number | null
+          ipi_number?: string | null
+          pro_affiliation?: string | null
+          notes?: string | null
+          sort_order?: number
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          split_sheet_id?: string
+          legal_name?: string | null
+          role?: string
+          split_percent?: number | null
+          ipi_number?: string | null
+          pro_affiliation?: string | null
+          notes?: string | null
+          sort_order?: number
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "split_sheet_contributors_split_sheet_id_fkey"
+            columns: ["split_sheet_id"]
+            isOneToOne: false
+            referencedRelation: "split_sheets"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       tracks: {
         Row: {
           aggregator: string

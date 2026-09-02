@@ -2,8 +2,9 @@
 
 **Date:** 2026-09-02  
 **Branch:** `cursor/phase0-locked-decisions-02a5`  
+**Head:** `ecdddc1`  
 **PR:** https://github.com/fendifrost-dot/fan-growth-pilot/pull/8  
-**Verdict:** **NOT ready to merge or deploy.** Code backlog for approved operating surfaces is largely implemented in-repo; live DB + Fendi approvals + production authorize remain blockers.
+**Verdict:** **NOT ready to Publish or redeploy gated senders.** Approved operating-surface code is implemented in-repo and CI is green; live Lovable DB + Fendi approvals + production authorize remain the cutover blockers.
 
 ## Features completed (in code)
 
@@ -13,34 +14,36 @@
 4. DNA↔playlist genre-fit on sends  
 5. Lyrics manual transcriptions + deferred provider adapter  
 6. Split-sheet generator (incomplete → action items) + HTML document  
-7. Ops incidents, Press/EPK, private license evidence vault  
+7. Ops incidents, Press/EPK, private license evidence vault + admin UI  
 8. Sync/licensing register write auth; playlist-agent + radio CCA auth; catalogue admin-write  
-9. Expanded Vitest + Deno CI  
+9. Draft/approve identity (no title-only): `outreach_drafts.track_id`, composer campaign picker, follow-up cron  
+10. Playlist category coverage audit (`audit_playlist_category_coverage` + `/admin/category-coverage`)  
+11. Sync eligibility persistence from DNA + Fendi/ops gates (`/admin/sync-gate`; Neva needs private license)  
+12. Fan leads/stats admin UI; pitch log shows `track_id`/`campaign_id`  
+13. Supabase types refreshed for AGH tables/columns; catalogue deep-links  
+14. Expanded Vitest + Deno CI  
 
-Fan capture / smart-link / truth funnel surfaces were already present on `main` lineage and remain.
+Fan capture / smart-link / truth funnel surfaces were already present on `main` lineage and remain. Lyric vendor remains deferred (Phase 0 §6).
 
-## Commit list (since Phase 0 branch start)
+## Recent commits (this continuous-build loop)
 
 ```
-b54741a fix(auth): gate playlist-agent and radio actions; catalogue admin-write
-7fecb31 feat(ops): DNA genre-fit on sends, incidents, press/EPK, license vault
-d6f42f7 feat(ops): lyrics manual path, split-sheet generator, sync write auth
-d17af74 feat(song-dna): schema, CCA workflow, admin UI, Pitch Portal wiring
-3b0c5ec fix(pr8): close remaining Phase 0 send/auth/migration blockers
-728d134 fix(pr8): address review — UUID gates, sync gate, campaigns, CI
-ff8d440 feat(phase0): lock Fendi decisions — Control cooldown, campaigns, MEDITATE copy
-1ed5e92 chore(phase0): commit sync-operator migration + tests already live
+ecdddc1 chore(types): add pitch_campaigns, lyrics, and split-sheet tables
+d82d50b chore(types): refresh AGH schema types + catalogue deep-links
+91753df feat(sync): persist sync_eligible from DNA + Fendi gates
+53c4cc9 feat(admin): private license vault, fan leads, pitch-log identity
+d803189 feat(outreach): require draft campaign identity + category coverage audit
 ```
 
 ## Automated checks
 
-- `npm run typecheck` — pass (local)  
-- Vitest suite in `.github/workflows/ci.yml` — pass (local + CI on prior commits)  
-- Deno edge tests listed in CI — pass (local)  
-- `npm run build` — pass (local)  
-- CI on `d17af74` / `d6f42f7` — success; follow head commits via Actions  
+- `npm run typecheck` — pass  
+- Vitest suite in `.github/workflows/ci.yml` — pass  
+- Deno edge tests listed in CI — pass  
+- `npm run build` — pass  
+- GitHub Actions on branch — green through `d82d50b` / `91753df`; follow head via Actions  
 
-## New migrations (apply via Lovable SQL Editor only)
+## Migrations to apply (Lovable SQL Editor only)
 
 Order after campaign stack exists (see `docs/PHASE0_ATOMIC_CUTOVER.md`):
 
@@ -51,11 +54,12 @@ Order after campaign stack exists (see `docs/PHASE0_ATOMIC_CUTOVER.md`):
 5. `20260903110000_split_sheets.sql`  
 6. `20260903200000_ops_incidents_press_license.sql`  
 7. `20260904000000_outreach_drafts_track_id.sql`  
+8. `20260904100000_track_sync_gate_columns.sql`  
 
 ## Remaining Fendi-only decisions
 
 1. Approve Song DNA versions (genre / lanes / sample)  
-2. Sync / sample declaration approvals per track  
+2. Sync / sample declaration approvals per track (via Sync gate)  
 3. Contributor legal names, splits, PRO, IPI  
 4. Upload Neva private license evidence  
 5. Final press kit copy  
@@ -65,12 +69,13 @@ Order after campaign stack exists (see `docs/PHASE0_ATOMIC_CUTOVER.md`):
 ## Deployment sequence (after production authorize)
 
 1. Apply migrations in order (Lovable SQL Editor)  
-2. Verify: `pitch_campaigns` exists, DNA table exists, Control leftover = 0, FK present  
-3. Fendi creates/approves DNA; creates draft campaigns; activates with JWT  
-4. Set secret `PITCH_IDENTITY_GATE=required`  
-5. Redeploy together: `execute-pitch`, `send-pitch-email`, `control-center-api`  
-6. Lovable Publish frontend  
-7. Verify missing credentials / missing campaign_id rejected on both senders; genre-fit refuses mismatch  
+2. Verify: `pitch_campaigns` exists, DNA table exists, Control leftover = 0, FK present, sync-gate columns present  
+3. Run category coverage audit; fill empty playlist categories  
+4. Fendi creates/approves DNA; sets sync-gate flags; creates draft campaigns; activates with JWT  
+5. Set secret `PITCH_IDENTITY_GATE=required`  
+6. Redeploy together: `execute-pitch`, `send-pitch-email`, `control-center-api`  
+7. Lovable Publish frontend  
+8. Verify missing credentials / missing campaign_id rejected on both senders; genre-fit refuses mismatch  
 
 ## Rollback
 
@@ -80,11 +85,11 @@ Order after campaign stack exists (see `docs/PHASE0_ATOMIC_CUTOVER.md`):
 
 ## Residual risks
 
-- Live DB may still lack `pitch_campaigns` / `song_dna_versions` until apply  
+- Live DB may still lack `pitch_campaigns` / `song_dna_versions` / sync-gate columns until apply  
 - Accidental half-redeploy of one sender without arming/secret coordination  
 - Scheduler/cron callers must present correct secrets after auth hardening  
 - Empty playlist categories fail genre-fit closed (intentional)  
 
 ## Merge/deploy readiness
 
-**NO — do not merge or deploy** until production authorization + migration apply + Fendi DNA/campaign activation + gate arming checklist is green.
+**NO — do not Publish or redeploy gated playlist senders** until production authorization + migration apply + Fendi DNA/campaign/sync activation + category coverage + gate arming checklist is green.

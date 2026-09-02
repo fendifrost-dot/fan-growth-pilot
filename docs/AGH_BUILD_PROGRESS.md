@@ -23,6 +23,8 @@
 | Fan leads reporting UI | done | `/admin/fan-leads` (`get_fan_stats` / `get_leads`) |
 | Pitch log identity columns | done | shows `track_id` / `campaign_id` prefixes |
 | Sync eligible recompute (DNA + Fendi gates) | done | `20260904100000`, `sync-eligibility.ts`, `/admin/sync-gate` |
+| Supabase types refresh (AGH tables/columns) | done | `src/integrations/supabase/types.ts` |
+| Catalogue deep-links to DNA/license/sync | done | `AdminCatalogue` sheet + sync column |
 
 ## Migrations to apply (Lovable SQL Editor — order)
 

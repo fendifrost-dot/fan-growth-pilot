@@ -67,7 +67,7 @@ describe("operator song + licensing registers", () => {
       expect(container.textContent).toContain("Meditate");
       expect(container.textContent).toContain("Hip-Hop/Rap");
       expect(container.textContent).toContain("No sample");
-      expect(container.textContent).toContain("Month-1 sync");
+      expect(container.textContent).toContain("Month-one candidate");
       expect(container.textContent).toContain("Neva Too Much Prada");
     });
     expect(container.textContent).not.toContain("US-SECRET-0000000");
@@ -86,7 +86,26 @@ describe("operator song + licensing registers", () => {
       expect(container.textContent).toContain("Licensing register");
       expect(container.textContent).toContain("No licensing pitches yet");
       expect(container.textContent).toContain("Roster is empty");
+      expect(container.querySelector('[data-testid="month1-candidate-notice"]')).toBeTruthy();
+      expect(container.textContent).toContain("Month-one candidate — not approved for sync submission");
+      expect(container.textContent).toContain("Select song — no default");
     });
+    // Must not auto-select Meditate into a live log/send control.
+    const songTrigger = container.querySelector('[data-testid="licensing-song-select"]');
+    expect(songTrigger?.textContent ?? "").not.toMatch(/^Meditate/);
     expect(container.textContent).not.toContain("US-SECRET");
+  });
+
+  it("labels Meditate as month-one candidate in the song register, not as sync-approved", async () => {
+    const { default: AdminCatalogue } = await import("@/pages/admin/AdminCatalogue");
+    const { container } = render(
+      <MemoryRouter>
+        <AdminCatalogue />
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(container.textContent).toContain("Month-one candidate");
+    });
+    expect(container.textContent).not.toContain("Month-1 sync");
   });
 });

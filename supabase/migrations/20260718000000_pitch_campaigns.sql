@@ -20,16 +20,20 @@
 -- ->>'spotify_url'). The campaign is the natural place to bind them, because
 -- choosing the link to pitch IS part of choosing to pitch the song.
 --
+-- REVISED 2026-09-02 (docs/PHASE0_LOCKED_DECISIONS.md §8):
+-- Campaigns MUST begin as drafts. Default status is 'draft'. Never auto-activate.
+-- Apply 20260902000000_pitch_campaigns_activation_gate.sql after this chain.
+--
 -- Run this in the Lovable SQL Editor.
 
 create table if not exists public.pitch_campaigns (
   id uuid primary key default gen_random_uuid(),
   track_id uuid not null references public.tracks(id) on delete cascade,
-  -- Nullable so a half-configured campaign can be saved as 'paused' while the
+  -- Nullable so a half-configured campaign can be saved as 'draft' while the
   -- artist fills in the missing pieces. The create/resume guardrail (enforced
   -- in _shared/pitch-campaigns.ts) requires it to be set before 'active'.
   smart_link_id uuid references public.smart_links(id) on delete set null,
-  status text not null default 'active' check (status in ('active', 'paused', 'ended')),
+  status text not null default 'draft' check (status in ('draft', 'active', 'paused', 'ended')),
   daily_target integer not null default 20 check (daily_target > 0 and daily_target <= 200),
   notes text,
   started_at timestamptz,

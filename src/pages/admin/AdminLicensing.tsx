@@ -21,6 +21,7 @@ import {
   licensingResponseFromRow,
   type LicensingResponse,
 } from "@/lib/syncRegisters";
+import { MONTH1_CANDIDATE_NOTICE } from "@/lib/controlCooldown";
 
 type Supervisor = {
   id: string;
@@ -82,9 +83,13 @@ const AdminLicensing: React.FC = () => {
   const [editingNotesId, setEditingNotesId] = useState<string | null>(null);
   const [notesDraft, setNotesDraft] = useState("");
 
-  const defaultTrackId = useMemo(() => {
-    const med = tracks.find((t) => t.name.trim().toLowerCase() === MONTH1_SYNC_DEFAULT_TITLE.toLowerCase());
-    return med?.id ?? tracks.find((t) => t.is_month1_sync_default)?.id ?? "";
+  /** Month-one candidate for REVIEW display only — never auto-selected for a live log/send. */
+  const month1Candidate = useMemo(() => {
+    return (
+      tracks.find((t) => t.name.trim().toLowerCase() === MONTH1_SYNC_DEFAULT_TITLE.toLowerCase()) ??
+      tracks.find((t) => t.is_month1_sync_default) ??
+      null
+    );
   }, [tracks]);
 
   const load = useCallback(async () => {
@@ -110,12 +115,6 @@ const AdminLicensing: React.FC = () => {
   }, [trackFilter, onlyPending]);
 
   useEffect(() => { load(); }, [load]);
-
-  useEffect(() => {
-    if (!pitchForm.track_id && defaultTrackId) {
-      setPitchForm((f) => ({ ...f, track_id: defaultTrackId }));
-    }
-  }, [defaultTrackId, pitchForm.track_id]);
 
   const saveSupervisor = async () => {
     if (!supForm.name.trim()) {
@@ -217,8 +216,19 @@ const AdminLicensing: React.FC = () => {
         <h1 className="text-2xl font-semibold tracking-tight mt-1">Licensing register</h1>
         <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
           Same bookkeeping as playlist submissions: who was pitched, which song, when, whether they responded.
-          No licenses exist today — this log starts empty. Month-1 default song is Meditate.
+          No licenses exist today — this log starts empty. Recording a pitch here is bookkeeping only;
+          it is not a sync send and does not grant approval.
         </p>
+        {month1Candidate && (
+          <p
+            className="text-sm mt-3 max-w-2xl border border-border/60 rounded-md px-3 py-2 bg-muted/40"
+            data-testid="month1-candidate-notice"
+          >
+            <span className="font-medium">{month1Candidate.name}</span>
+            {" — "}
+            {MONTH1_CANDIDATE_NOTICE}
+          </p>
+        )}
       </div>
 
       <Card className="p-5 space-y-4" data-testid="supervisor-roster">
@@ -335,16 +345,27 @@ const AdminLicensing: React.FC = () => {
           </div>
           <div>
             <Label>Song</Label>
-            <Select value={pitchForm.track_id} onValueChange={(v) => setPitchForm({ ...pitchForm, track_id: v })}>
-              <SelectTrigger><SelectValue placeholder="Select song" /></SelectTrigger>
+            <Select
+              value={pitchForm.track_id || undefined}
+              onValueChange={(v) => setPitchForm({ ...pitchForm, track_id: v })}
+            >
+              <SelectTrigger data-testid="licensing-song-select">
+                <SelectValue placeholder="Select song — no default" />
+              </SelectTrigger>
               <SelectContent>
                 {tracks.map((t) => (
                   <SelectItem key={t.id} value={t.id}>
-                    {t.name}{t.is_month1_sync_default ? " (month-1 default)" : ""}
+                    {t.name}
+                    {t.is_month1_sync_default || t.name.trim().toLowerCase() === MONTH1_SYNC_DEFAULT_TITLE.toLowerCase()
+                      ? " (month-one candidate — not approved)"
+                      : ""}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
+            <p className="text-xs text-muted-foreground mt-1">
+              Song is never auto-selected. Month-one candidate is for review only, not a live send default.
+            </p>
           </div>
           <div>
             <Label>Date pitched</Label>

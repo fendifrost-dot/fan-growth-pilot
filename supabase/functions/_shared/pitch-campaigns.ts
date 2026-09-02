@@ -24,7 +24,7 @@ export function isPitchCampaignAction(action: string): boolean {
 
 type Result = { status: number; data: Record<string, unknown> };
 
-const CAMPAIGN_STATUSES = ['active', 'paused', 'ended'] as const;
+const CAMPAIGN_STATUSES = ['draft', 'active', 'paused', 'ended'] as const;
 type CampaignStatus = (typeof CAMPAIGN_STATUSES)[number];
 
 /** Start of the current day in America/Chicago, as an ISO instant.
@@ -382,14 +382,32 @@ async function createCampaign(sb: SupabaseClient, body: Record<string, unknown>)
   const smartLinkId = body.smart_link_id ? String(body.smart_link_id) : null;
   const dailyTarget = Math.min(200, Math.max(1, Number(body.daily_target) || 20));
   const notes = body.notes == null ? null : String(body.notes);
-  // Callers can stage a campaign as 'paused' while config is still incomplete.
-  const wantActive = body.status == null ? true : String(body.status) === 'active';
+
+  // Phase 0 locked decision §8: campaigns ALWAYS begin as drafts. Activation is a
+  // separate Fendi-approved step (requires approved Song DNA + explicit approval).
+  if (body.status != null && String(body.status) === 'active') {
+    return {
+      status: 400,
+      data: {
+        error:
+          'Campaigns cannot be created as active. Create a draft, then activate with approved Song DNA and explicit Fendi approval.',
+      },
+    };
+  }
+  const requested = body.status == null ? 'draft' : String(body.status);
+  if (!(CAMPAIGN_STATUSES as readonly string[]).includes(requested) || requested === 'active') {
+    // 'active' already rejected; allow draft | paused | ended on create only if not active.
+  }
+  const status: CampaignStatus =
+    requested === 'paused' || requested === 'ended' || requested === 'draft'
+      ? (requested as CampaignStatus)
+      : 'draft';
 
   const { data: existing } = await sb
     .from('pitch_campaigns')
     .select('id, status')
     .eq('track_id', trackId)
-    .in('status', ['active', 'paused'])
+    .in('status', ['draft', 'active', 'paused'])
     .maybeSingle();
   if (existing) {
     return {
@@ -403,19 +421,7 @@ async function createCampaign(sb: SupabaseClient, body: Record<string, unknown>)
 
   const config = await evaluateCampaignConfig(sb, trackId, smartLinkId);
   if (!config) return { status: 404, data: { error: 'Track not found' } };
-  if (wantActive && !config.ready) {
-    return {
-      status: 400,
-      data: {
-        error: 'Campaign is not fully configured',
-        missing: config.missing,
-        config,
-      },
-    };
-  }
 
-  const status: CampaignStatus = wantActive ? 'active' : 'paused';
-  const nowIso = new Date().toISOString();
   const { data, error } = await sb
     .from('pitch_campaigns')
     .insert({
@@ -424,7 +430,8 @@ async function createCampaign(sb: SupabaseClient, body: Record<string, unknown>)
       status,
       daily_target: dailyTarget,
       notes,
-      started_at: status === 'active' ? nowIso : null,
+      started_at: null,
+      activated_at: null,
     })
     .select('*')
     .single();
@@ -439,7 +446,7 @@ async function updateCampaign(sb: SupabaseClient, body: Record<string, unknown>)
 
   const { data: current } = await sb
     .from('pitch_campaigns')
-    .select('id, track_id, smart_link_id, status, started_at')
+    .select('id, track_id, smart_link_id, status, started_at, song_dna_version_id, fendi_activation_approved_by, fendi_activation_approved_at, authority_kind')
     .eq('id', campaignId)
     .maybeSingle();
   if (!current) return { status: 404, data: { error: 'Campaign not found' } };
@@ -466,8 +473,7 @@ async function updateCampaign(sb: SupabaseClient, body: Record<string, unknown>)
       };
     }
 
-    // Re-run the guardrail on every transition INTO active, not just on create —
-    // config can rot while a campaign is paused (e.g. the smart link goes down).
+    // Activation requires approved Song DNA + explicit Fendi approval (§8).
     if (nextStatus === 'active') {
       const smartLinkId =
         patch.smart_link_id !== undefined
@@ -481,7 +487,41 @@ async function updateCampaign(sb: SupabaseClient, body: Record<string, unknown>)
           data: { error: 'Campaign is not fully configured', missing: config.missing, config },
         };
       }
-      if (!current.started_at) patch.started_at = new Date().toISOString();
+
+      const dnaId =
+        body.song_dna_version_id != null
+          ? String(body.song_dna_version_id).trim()
+          : String(current.song_dna_version_id ?? '').trim();
+      if (!dnaId) {
+        return {
+          status: 400,
+          data: {
+            error:
+              'Activation requires an approved Song DNA version id (Phase 1). Campaigns cannot be activated without it.',
+            missing: ['song_dna_version_id', 'fendi_activation_approval'],
+          },
+        };
+      }
+
+      const fendiBy = String(body.fendi_activation_approved_by ?? current.fendi_activation_approved_by ?? '').trim();
+      if (!fendiBy) {
+        return {
+          status: 400,
+          data: {
+            error: 'Activation requires explicit Fendi approval (fendi_activation_approved_by).',
+            missing: ['fendi_activation_approved_by'],
+          },
+        };
+      }
+
+      const nowIso = new Date().toISOString();
+      patch.song_dna_version_id = dnaId;
+      patch.fendi_activation_approved_by = fendiBy;
+      patch.fendi_activation_approved_at =
+        String(body.fendi_activation_approved_at ?? '').trim() || nowIso;
+      patch.authority_kind = 'live';
+      patch.activated_at = nowIso;
+      if (!current.started_at) patch.started_at = nowIso;
       patch.ended_at = null;
     }
 

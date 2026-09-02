@@ -209,7 +209,9 @@ const AdminCatalogue: React.FC = () => {
           <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
             Operator-only catalog: titles, optional ISRC, aggregator, genre stamp, and sample flag.
             Sync-eligible is automatic (no sample only). A DistroKid miss is not unreleased — leave
-            aggregator OPEN when the distributor is unknown. Month-1 sync default is Meditate (Hip-Hop/Rap).
+            aggregator OPEN when the distributor is unknown. Meditate is the month-one
+            candidate for review only — not approved for sync until Fendi completes DNA,
+            sample, rights, splits, assets, and sync approval.
           </p>
         </div>
         <Button onClick={openNew}>
@@ -241,7 +243,7 @@ const AdminCatalogue: React.FC = () => {
                   <TableCell className="font-medium">
                     {row.name}
                     {row.is_month1_sync_default ? (
-                      <Badge className="ml-2 text-[10px]" variant="default">Month-1 sync</Badge>
+                      <Badge className="ml-2 text-[10px]" variant="default">Month-one candidate</Badge>
                     ) : null}
                   </TableCell>
                   <TableCell><Badge variant="secondary">{row.status}</Badge></TableCell>
@@ -349,7 +351,7 @@ const AdminCatalogue: React.FC = () => {
                 checked={Boolean(form.is_month1_sync_default)}
                 onCheckedChange={(v) => setForm({ ...form, is_month1_sync_default: Boolean(v) })}
               />
-              Month-1 sync default (Meditate)
+              Month-one candidate (Meditate — not sync-approved)
             </label>
             <div>
               <Label>Spotify URL</Label>

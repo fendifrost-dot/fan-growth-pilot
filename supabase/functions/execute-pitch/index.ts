@@ -9,6 +9,11 @@ import {
   checkSendEligibility,
   eligibilitySkipLog,
 } from "../_shared/outreach-eligibility.ts";
+import {
+  CONTROL_TRACK_ID,
+  evaluateControlSameTargetCooldown,
+  isControlTrackName,
+} from "../_shared/control-cooldown.ts";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-api-key",
@@ -257,6 +262,44 @@ async function handleEmailPitch(
       message_to_user: "🚫 " + eligibility.message,
     }, 422);
   }
+
+  // Control same-track/same-target hard block through 2026-09-14 (Phase 0 locked decision §2).
+  // New Control targets (no prior pitch_log for Control on this playlist) remain allowed.
+  // test_mode does NOT waive this artist-policy hold.
+  if (isControlTrackName(trackName)) {
+    const { data: priorControl } = await sb
+      .from("pitch_log")
+      .select("id")
+      .eq("playlist_id", playlistId)
+      .eq("status", "sent")
+      .ilike("track_name", "%designed for me%")
+      .limit(1)
+      .maybeSingle();
+    const controlHold = evaluateControlSameTargetCooldown({
+      trackId: CONTROL_TRACK_ID,
+      trackName,
+      playlistId,
+      priorPitchExists: Boolean(priorControl?.id),
+    });
+    if (controlHold.blocked) {
+      console.warn(
+        "execute-pitch control cooldown:",
+        JSON.stringify({
+          playlist_id: playlistId,
+          track_id: CONTROL_TRACK_ID,
+          reason: controlHold.reason,
+        }),
+      );
+      return jsonPitch({
+        ok: false,
+        method_used: "email",
+        action_taken: "skipped",
+        cooldown_until: controlHold.cooldown_until,
+        message_to_user: "🚫 " + controlHold.message,
+      }, 422);
+    }
+  }
+
   const curatorEmail = await resolveCuratorEmail(sb, row, draft);
   const email = testMode ? testEmail : curatorEmail;
   const playlistName = (row.playlist_name as string|null) ?? playlistId;

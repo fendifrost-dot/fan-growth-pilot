@@ -79,7 +79,7 @@ describe("sync register rules", () => {
     expect(looksLikeIsrc("Meditate")).toBe(false);
   });
 
-  it("keeps Meditate as the month-1 default title", () => {
+  it("keeps Meditate as the month-1 candidate title (not an approval)", () => {
     expect(MONTH1_SYNC_DEFAULT_TITLE).toBe("Meditate");
   });
 });

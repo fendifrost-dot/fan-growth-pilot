@@ -4,7 +4,9 @@
  * - MEDITATE is Hip-Hop/Rap. Never house / deep house / Kaytranada.
  * - House/electronic pool is ONLY Balenciaga (Let Me Freeze), Electrilla,
  *   Designed For Me (Control).
- * - sync_eligible is true only when has_sample === "no".
+ * - sync_eligible is true only when has_sample === "no" (UNSAFE — replaced in Phase 1).
+ * - MONTH1_SYNC_DEFAULT_TITLE is a review candidate only — never sync approval
+ *   or a live-send preselect (docs/PHASE0_LOCKED_DECISIONS.md §10).
  * - A DistroKid miss is not "unreleased". Aggregator OPEN means unknown/split.
  */
 

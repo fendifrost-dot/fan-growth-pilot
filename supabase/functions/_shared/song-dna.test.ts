@@ -14,6 +14,9 @@ function stubSb(state: { versions: any[]; audits?: any[] }): any {
         const chain: Record<string, unknown> = {
           select: () => chain,
           eq: () => chain,
+          update: () => ({
+            eq: () => Promise.resolve({ data: null, error: null }),
+          }),
           maybeSingle: () =>
             Promise.resolve({
               data: versions[0]

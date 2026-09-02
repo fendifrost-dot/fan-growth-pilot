@@ -19,6 +19,7 @@ const AdminGuard: React.FC = () => {
               <Link to="/admin/split-sheets" className="hover:underline">Split sheets</Link>
               <Link to="/admin/press" className="hover:underline">Press/EPK</Link>
               <Link to="/admin/private-licenses" className="hover:underline">Private licenses</Link>
+              <Link to="/admin/sync-gate" className="hover:underline">Sync gate</Link>
               <Link to="/admin/ops" className="hover:underline">Ops</Link>
               <Link to="/admin/catalogue" className="hover:underline">Songs</Link>
               <Link to="/admin/licensing" className="hover:underline">Licensing</Link>

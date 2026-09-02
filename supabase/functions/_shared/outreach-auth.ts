@@ -106,9 +106,12 @@ export const ACTION_AUTH: Record<string, AuthClass> = {
   // ---- Sync / licensing registers (operator writes; admin JWT) ------------
   list_music_supervisors: 'authenticated-read',
   list_licensing_pitches: 'authenticated-read',
+  get_track_sync_gate: 'authenticated-read',
   upsert_music_supervisor: 'admin-write',
   delete_music_supervisor: 'admin-write',
   log_licensing_pitch: 'admin-write',
+  update_track_sync_gate: 'admin-write',
+  recompute_track_sync_eligible: 'admin-write',
   // mark_licensing_response: outreach-write below (admin JWT OR scheduler)
 
   // ---- Campaign reads -----------------------------------------------------

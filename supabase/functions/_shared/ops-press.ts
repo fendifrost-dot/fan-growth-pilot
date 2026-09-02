@@ -157,7 +157,21 @@ export async function runOpsPressAction(
         .select("*")
         .single();
       if (error) throw error;
-      return { status: 200, data: { ok: true, evidence: data } };
+      try {
+        const { recomputeTrackSyncEligible } = await import("./sync-eligibility.ts");
+        const sync = await recomputeTrackSyncEligible(sb, trackId);
+        return { status: 200, data: { ok: true, evidence: data, sync } };
+      } catch (e) {
+        console.error("sync recompute after private license register failed:", e);
+        return {
+          status: 200,
+          data: {
+            ok: true,
+            evidence: data,
+            sync_recompute_error: e instanceof Error ? e.message : String(e),
+          },
+        };
+      }
     }
     default:
       return { status: 400, data: { error: `Unknown ops/press action: ${action}` } };

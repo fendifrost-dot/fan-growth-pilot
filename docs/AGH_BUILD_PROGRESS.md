@@ -22,6 +22,7 @@
 | Private license admin UI | done | `/admin/private-licenses` |
 | Fan leads reporting UI | done | `/admin/fan-leads` (`get_fan_stats` / `get_leads`) |
 | Pitch log identity columns | done | shows `track_id` / `campaign_id` prefixes |
+| Sync eligible recompute (DNA + Fendi gates) | done | `20260904100000`, `sync-eligibility.ts`, `/admin/sync-gate` |
 
 ## Migrations to apply (Lovable SQL Editor — order)
 
@@ -33,6 +34,7 @@
 6. `20260903110000` Split sheets
 7. `20260903200000` Ops / press / private license
 8. `20260904000000` outreach_drafts.track_id (+ metadata backfill)
+9. `20260904100000` track sync-gate columns (`sync_eligible` recompute inputs)
 
 ## Atomic send cutover (still blocked live)
 

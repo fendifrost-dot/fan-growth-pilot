@@ -219,7 +219,12 @@ Deno.serve(async (req) => {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
-      const result = await runSyncRegisterAction(String(action), body, supabase);
+      const bodyWithActor = {
+        ...body,
+        actor_user_id:
+          decision.actor?.kind === 'user' ? decision.actor.userId : body.actor_user_id,
+      };
+      const result = await runSyncRegisterAction(String(action), bodyWithActor, supabase);
       return new Response(JSON.stringify(result.data), {
         status: result.status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },

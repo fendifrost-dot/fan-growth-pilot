@@ -80,4 +80,20 @@ describe("sync eligibility is not inferred from sample", () => {
     expect(r.ready).toBe(false);
     expect(r.blockers).toContain("sample_rights_exception");
   });
+
+  it("Neva stays blocked without private license evidence", () => {
+    const r = evaluateSyncReady({
+      hasSample: "no",
+      approvedDnaVersionId: "dna-1",
+      sampleDeclarationApproved: true,
+      syncApprovedByFendi: true,
+      splitsReady: true,
+      publishingReady: true,
+      assetsReady: true,
+      privateLicenseRequired: true,
+      privateLicenseOnFile: false,
+    });
+    expect(r.ready).toBe(false);
+    expect(r.blockers).toContain("private_license_evidence");
+  });
 });

@@ -35,6 +35,7 @@ jobs:
             supabase/functions/_shared/lyrics-split.test.ts \
             supabase/functions/_shared/genre-fit.test.ts \
             supabase/functions/_shared/draft-identity.test.ts \
-            supabase/functions/_shared/playlist-category-coverage.test.ts
+            supabase/functions/_shared/playlist-category-coverage.test.ts \
+            supabase/functions/_shared/sync-eligibility.test.ts
       - name: Production build
         run: npm run build

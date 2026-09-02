@@ -413,7 +413,26 @@ async function approveSongDna(
     detail: { approved_by: approver },
   });
 
-  return { status: 200, data: { ok: true, version: data } };
+  await sb
+    .from("tracks")
+    .update({ approved_song_dna_version_id: id })
+    .eq("id", current.track_id);
+
+  try {
+    const { recomputeTrackSyncEligible } = await import("./sync-eligibility.ts");
+    const sync = await recomputeTrackSyncEligible(sb, String(current.track_id));
+    return { status: 200, data: { ok: true, version: data, sync } };
+  } catch (e) {
+    console.error("sync recompute after DNA approve failed:", e);
+    return {
+      status: 200,
+      data: {
+        ok: true,
+        version: data,
+        sync_recompute_error: e instanceof Error ? e.message : String(e),
+      },
+    };
+  }
 }
 
 async function rejectSongDna(

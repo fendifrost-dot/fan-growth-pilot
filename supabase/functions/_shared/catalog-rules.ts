@@ -67,6 +67,9 @@ export type SyncGateInput = {
   assetsReady?: boolean;
   unresolvedRightsException?: boolean;
   sampleExceptionResolved?: boolean;
+  /** Neva Too Much Prada stays sync-blocked until private license evidence exists. */
+  privateLicenseRequired?: boolean;
+  privateLicenseOnFile?: boolean;
 };
 
 export function evaluateSyncReady(input: SyncGateInput): { ready: boolean; blockers: string[] } {
@@ -82,6 +85,10 @@ export function evaluateSyncReady(input: SyncGateInput): { ready: boolean; block
   const sample = String(input.hasSample ?? "unknown");
   if (sample === "yes" || sample === "unknown") {
     if (!input.sampleExceptionResolved) blockers.push("sample_rights_exception");
+  }
+
+  if (input.privateLicenseRequired && !input.privateLicenseOnFile) {
+    blockers.push("private_license_evidence");
   }
 
   return { ready: blockers.length === 0, blockers };

@@ -258,7 +258,7 @@ const AdminCatalogue: React.FC = () => {
                   </TableCell>
                   <TableCell>
                     {row.sync_eligible ? (
-                      <Badge variant="default" className="text-[10px]">Sync gated</Badge>
+                      <Badge variant="default" className="text-[10px]">Sync-ready</Badge>
                     ) : (
                       <Badge variant="outline" className="text-[10px]">Not sync-ready</Badge>
                     )}

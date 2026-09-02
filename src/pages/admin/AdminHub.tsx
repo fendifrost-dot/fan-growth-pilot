@@ -95,6 +95,13 @@ const AdminHub: React.FC = () => {
           </Button>
         </Card>
         <Card className="p-5">
+          <h3 className="font-medium">Sync gate</h3>
+          <p className="text-sm text-muted-foreground mt-1">Fendi/ops flags that drive tracks.sync_eligible (never from sample alone)</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/sync-gate">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
           <h3 className="font-medium">Ops incidents</h3>
           <p className="text-sm text-muted-foreground mt-1">Chief-of-Staff audit log</p>
           <Button variant="outline" size="sm" className="mt-3" asChild>

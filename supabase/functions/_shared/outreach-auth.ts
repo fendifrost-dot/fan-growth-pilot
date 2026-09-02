@@ -50,21 +50,77 @@ export type AuthDecision =
  */
 export const ACTION_AUTH: Record<string, AuthClass> = {
   // ---- Campaign lifecycle (human decisions; admin JWT only) ----------------
-  create_campaign_draft: 'admin-write',
+  create_campaign: 'admin-write',
+  create_campaign_draft: 'admin-write', // alias / legacy name
   update_campaign: 'admin-write',
-  activate_campaign: 'admin-write',
+  activate_campaign: 'admin-write', // legacy alias; Hub uses update_campaign + status
   pause_campaign: 'admin-write',
   resume_campaign: 'admin-write',
   end_campaign: 'admin-write',
   set_outreach_ceiling: 'admin-write',
+  list_campaignable_tracks: 'admin-write',
+  check_campaign_config: 'admin-write',
+
+  // ---- Song DNA (Fendi approval workflow; admin JWT only) -----------------
+  list_song_dna: 'authenticated-read',
+  get_song_dna: 'authenticated-read',
+  list_song_dna_audit: 'authenticated-read',
+  create_song_dna_draft: 'admin-write',
+  update_song_dna_draft: 'admin-write',
+  submit_song_dna_for_review: 'admin-write',
+  approve_song_dna: 'admin-write',
+  reject_song_dna: 'admin-write',
+
+  // ---- Lyrics (manual; provider deferred) ---------------------------------
+  list_lyrics: 'authenticated-read',
+  get_lyrics: 'authenticated-read',
+  upsert_lyrics_manual: 'admin-write',
+  mark_lyrics_ready: 'admin-write',
+  request_lyrics_provider_job: 'admin-write',
+
+  // ---- Split sheets -------------------------------------------------------
+  list_split_sheets: 'authenticated-read',
+  get_split_sheet: 'authenticated-read',
+  create_split_sheet: 'admin-write',
+  update_split_sheet_contributors: 'admin-write',
+  regenerate_split_sheet_document: 'admin-write',
+
+  // ---- Ops / press / private license --------------------------------------
+  list_ops_incidents: 'authenticated-read',
+  log_ops_incident: 'admin-write',
+  ack_ops_incident: 'admin-write',
+  resolve_ops_incident: 'admin-write',
+  list_press_kits: 'authenticated-read',
+  upsert_press_kit: 'admin-write',
+  list_private_licenses: 'authenticated-read',
+  register_private_license: 'admin-write',
+
+  // ---- Catalogue / taxonomy writes ----------------------------------------
+  upsert_track: 'admin-write',
+  delete_track: 'admin-write',
+  upsert_category: 'admin-write',
+  delete_category: 'admin-write',
+  set_track_categories: 'admin-write',
+  set_playlist_categories: 'admin-write',
+
+  // ---- Sync / licensing registers (operator writes; admin JWT) ------------
+  list_music_supervisors: 'authenticated-read',
+  list_licensing_pitches: 'authenticated-read',
+  get_track_sync_gate: 'authenticated-read',
+  upsert_music_supervisor: 'admin-write',
+  delete_music_supervisor: 'admin-write',
+  log_licensing_pitch: 'admin-write',
+  update_track_sync_gate: 'admin-write',
+  recompute_track_sync_eligible: 'admin-write',
+  // mark_licensing_response: outreach-write below (admin JWT OR scheduler)
 
   // ---- Campaign reads -----------------------------------------------------
-  list_campaigns: 'public-read',
-  get_campaign: 'public-read',
-  validate_campaign: 'public-read',
-  get_campaign_stats: 'public-read',
-  get_campaign_supply: 'public-read',
-  get_campaign_activity: 'public-read',
+  list_campaigns: 'authenticated-read',
+  get_campaign: 'authenticated-read',
+  validate_campaign: 'authenticated-read',
+  get_campaign_stats: 'authenticated-read',
+  get_campaign_supply: 'authenticated-read',
+  get_campaign_activity: 'authenticated-read',
 
   // ---- Outreach-triggering writes (admin JWT OR scheduler secret) ----------
   // These are what the daily submissions task drives. Locking them without
@@ -111,8 +167,6 @@ export const ACTION_AUTH: Record<string, AuthClass> = {
   list_warm_curators: 'public-read',
   recommend_targets_for_track: 'public-read',
   list_tracks: 'public-read',
-  list_music_supervisors: 'public-read',
-  list_licensing_pitches: 'public-read',
   list_categories: 'public-read',
   list_social_queue: 'public-read',
   list_ig_roster: 'public-read',
@@ -128,6 +182,7 @@ export const ACTION_AUTH: Record<string, AuthClass> = {
   get_outreach_stats: 'public-read',
   get_instagram_messaging_status: 'public-read',
   connect_spotify_status: 'public-read',
+  audit_playlist_category_coverage: 'authenticated-read',
 };
 
 /**
@@ -142,15 +197,6 @@ export const ACTION_AUTH: Record<string, AuthClass> = {
  * basis they sit in Phase 3 rather than Phase 1.
  */
 export const PHASE_3_PENDING_WRITES = [
-  'upsert_track',
-  'delete_track',
-  'upsert_music_supervisor',
-  'delete_music_supervisor',
-  'log_licensing_pitch',
-  'upsert_category',
-  'delete_category',
-  'set_track_categories',
-  'set_playlist_categories',
   'ingest_apple_spins',
   'enrich_curator_contacts',
   'enrich_radio_contacts',

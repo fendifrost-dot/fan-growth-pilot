@@ -19,6 +19,8 @@ type PitchRow = {
   id: string;
   playlist_id: string | null;
   track_name: string;
+  track_id?: string | null;
+  campaign_id?: string | null;
   curator_email: string | null;
   method: string | null;
   status: string | null;
@@ -185,6 +187,8 @@ const AdminPitchLog: React.FC = () => {
           <thead className="bg-muted/50">
             <tr>
               <th className="text-left p-3">Sent at</th>
+              <th className="text-left p-3">Track</th>
+              <th className="text-left p-3">Identity</th>
               <th className="text-left p-3">Playlist</th>
               <th className="text-left p-3">Curator</th>
               <th className="text-left p-3">Status</th>
@@ -194,10 +198,10 @@ const AdminPitchLog: React.FC = () => {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={6} className="p-4 text-muted-foreground">Loading…</td></tr>
+              <tr><td colSpan={8} className="p-4 text-muted-foreground">Loading…</td></tr>
             ) : rows.length === 0 ? (
               <tr>
-                <td colSpan={6} className="p-6 text-muted-foreground text-center">
+                <td colSpan={8} className="p-6 text-muted-foreground text-center">
                   No pitches match. Send from{" "}
                   <Link to="/admin/pitch-composer" className="underline">Pitch Composer</Link>.
                 </td>
@@ -210,7 +214,18 @@ const AdminPitchLog: React.FC = () => {
                     <td className="p-3 text-xs whitespace-nowrap">
                       {r.sent_at ? new Date(r.sent_at).toLocaleString() : r.pitched_at ? new Date(r.pitched_at).toLocaleString() : "—"}
                     </td>
-                    <td className="p-3 font-mono text-xs max-w-[200px] truncate" title={r.playlist_id ?? ""}>
+                    <td className="p-3 text-xs max-w-[140px]">
+                      <div className="font-medium truncate" title={r.track_name}>{r.track_name}</div>
+                    </td>
+                    <td className="p-3 text-[10px] font-mono text-muted-foreground space-y-0.5">
+                      <div title={r.track_id ?? ""}>
+                        t:{r.track_id ? r.track_id.slice(0, 8) : "—"}
+                      </div>
+                      <div title={r.campaign_id ?? ""}>
+                        c:{r.campaign_id ? r.campaign_id.slice(0, 8) : "—"}
+                      </div>
+                    </td>
+                    <td className="p-3 font-mono text-xs max-w-[160px] truncate" title={r.playlist_id ?? ""}>
                       {r.playlist_id ?? "—"}
                     </td>
                     <td className="p-3 text-xs">{r.curator_email ?? "—"}</td>

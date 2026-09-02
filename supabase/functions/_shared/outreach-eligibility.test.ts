@@ -369,12 +369,11 @@ Deno.test("WIRING: runDraftPitch refuses on eligibility before the category and 
   const gateAt = fn.indexOf("evaluateTrackEligibility(");
   const categoryAt = fn.indexOf("categoryGate({");
   const shortPitchAt = fn.indexOf("has no short_pitch");
-  const pickGateAt = fn.indexOf("checkDraftEligibilityByName(");
 
   assert(gateAt > -1, "runDraftPitch does not evaluate eligibility");
   assert(gateAt < categoryAt, "eligibility must be decided before the category gate");
   assert(gateAt < shortPitchAt, "eligibility must be decided before the short_pitch refusal");
-  assert(pickGateAt > -1, "the catalogue-pick branch does not check eligibility");
+  assert(!fn.includes("checkDraftEligibilityByName("), "title-only catalogue-pick path must remain removed");
 });
 
 Deno.test("WIRING: no override_* flag is wired to the eligibility refusal", async () => {

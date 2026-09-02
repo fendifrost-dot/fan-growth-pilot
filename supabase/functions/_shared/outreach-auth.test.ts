@@ -123,9 +123,27 @@ Deno.test("an unset scheduler secret never authorizes", () => {
   assertEquals(isSchedulerRequest(req({ "x-outreach-scheduler-secret": "" })), false);
 });
 
-Deno.test("reads stay public in Phase 1", async () => {
-  for (const a of ["list_campaigns", "get_pitch_log", "count_targets", "list_targets"]) {
+Deno.test("campaign list requires sign-in; other Phase-1 reads stay public", async () => {
+  const list = await authorizeAction("list_campaigns", req(), stubSb(null, false));
+  assertEquals(list.ok, false);
+  assert(!list.ok && list.status === 401);
+
+  for (const a of ["get_pitch_log", "count_targets", "list_targets"]) {
     const d = await authorizeAction(a, req(), stubSb(null, false));
     assert(d.ok, `${a} should remain public`);
+  }
+});
+
+Deno.test("catalogue writes require admin", () => {
+  assertEquals(classifyAction("upsert_track"), "admin-write");
+  assertEquals(classifyAction("set_track_categories"), "admin-write");
+  assertEquals(classifyAction("upsert_category"), "admin-write");
+});
+
+Deno.test("anonymous cannot create or update campaigns", async () => {
+  for (const a of ["create_campaign", "update_campaign", "list_campaignable_tracks"]) {
+    const d = await authorizeAction(a, req(), stubSb(null, false));
+    assertEquals(d.ok, false);
+    assert(!d.ok && d.status === 401);
   }
 });

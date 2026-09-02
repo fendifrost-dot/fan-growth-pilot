@@ -9,6 +9,15 @@ import {
   checkSendEligibility,
   eligibilitySkipLog,
 } from "../_shared/outreach-eligibility.ts";
+import {
+  CONTROL_TRACK_ID,
+  evaluateControlSameTargetCooldown,
+  isControlTrackId,
+} from "../_shared/control-cooldown.ts";
+import {
+  requireHubKey,
+  requireSendIdentity,
+} from "../_shared/send-identity-gate.ts";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-api-key",
@@ -55,10 +64,6 @@ function isWithinSendWindow(now: Date): boolean {
     hour < SEND_WINDOW_END_HOUR
   );
 }
-function getHubKey(req: Request): string {
-  return (req.headers.get("x-api-key") || req.headers.get("apikey") ||
-    (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim());
-}
 type PitchResponse = {
   ok: boolean; method_used: string;
   action_taken: "email_sent"|"instructions_only"|"link_delivered"|"skipped"|"tier_gate"|"error";
@@ -96,6 +101,8 @@ function pitchLogRow(
     subject?: string | null;
     email_body?: string | null;
     sent_at?: string | null;
+    track_id?: string | null;
+    campaign_id?: string | null;
   } = {},
 ) {
   // Only attach subject/email_body/sent_at when explicitly provided so error rows keep
@@ -111,6 +118,8 @@ function pitchLogRow(
     response_notes: extra.response_notes ?? null,
     resend_message_id: extra.resend_message_id ?? null,
   };
+  if (extra.track_id) row.track_id = extra.track_id;
+  if (extra.campaign_id) row.campaign_id = extra.campaign_id;
   if (extra.subject !== undefined) row.subject = extra.subject;
   if (extra.email_body !== undefined) row.email_body = extra.email_body;
   if (extra.sent_at !== undefined) row.sent_at = extra.sent_at;
@@ -119,16 +128,11 @@ function pitchLogRow(
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   try {
-    const expected = (Deno.env.get("FANFUEL_HUB_KEY") || "").trim();
-    const provided = getHubKey(req).trim();
-    // Auth is optional and only validated when both sides provide a value.
-    // - No env configured -> allow (internal-only deployment).
-    // - No header provided -> allow.
-    // - Both present but mismatched -> reject as bad explicit key.
-    if (expected && provided && provided !== expected) return json({ error: "Unauthorized" }, 401);
+    const auth = requireHubKey(req);
+    if (!auth.ok) return json({ error: auth.error }, 401);
+
     const body = await req.json().catch(() => ({}));
     const playlistId = String(body.playlist_id || "").trim();
-    const trackName = String(body.track_name || "").trim();
     const methodOverride = typeof body.method_override === "string" ? body.method_override.trim() : "";
     const tierConfirmed = Boolean(body.tier_confirmed);
     const bulk = Boolean(body.bulk);
@@ -138,10 +142,26 @@ Deno.serve(async (req) => {
     const batchOverrideCap = Boolean(body.batch_override_cap);
     // Escape hatch for legitimate off-hours admin sends; defaults to enforcing the window.
     const ignoreSendWindow = Boolean(body.ignore_send_window);
-    if (!playlistId || !trackName) return jsonPitch({ ok:false, method_used:"none", action_taken:"error", cooldown_until:null, message_to_user:"Missing playlist_id or track_name." });
+    if (!playlistId) {
+      return jsonPitch({ ok:false, method_used:"none", action_taken:"error", cooldown_until:null, message_to_user:"Missing playlist_id." });
+    }
     const url = Deno.env.get("SUPABASE_URL")!;
     const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const sb = createClient(url, key);
+
+    const identity = await requireSendIdentity(sb, body as Record<string, unknown>);
+    if (!identity.ok) {
+      const action = identity.status === 422 ? "skipped" : "error";
+      return jsonPitch({
+        ok: false,
+        method_used: "none",
+        action_taken: action,
+        cooldown_until: null,
+        message_to_user: (identity.status === 422 ? "🚫 " : "") + identity.error,
+      }, identity.status);
+    }
+    const { trackId, campaignId, trackName } = identity.identity;
+
     let draftOverrides: { email?: string; subject?: string; bodyHtml?: string } | undefined;
     let draftChannel: string | null = null;
     if (draftId) {
@@ -166,7 +186,7 @@ Deno.serve(async (req) => {
     if (tier === 3 && !tierConfirmed) return jsonPitch({ ok:false, method_used:method, action_taken:"tier_gate", cooldown_until:null, message_to_user:"⚠️ *Tier 3 playlist* — *" + (row.playlist_name ?? playlistId) + "*\n\nFlagged for verify-first pitching. Reply *confirm* to send." });
     // draftId is threaded through so the eligibility gate applies (and logs)
     // identically for draft-backed and draft-less sends.
-    if (method === "email") return await handleEmailPitch(sb, row, trackName, bulk, draftOverrides, testMode, testEmail, batchOverrideCap, ignoreSendWindow, draftId);
+    if (method === "email") return await handleEmailPitch(sb, row, trackName, trackId, campaignId, bulk, draftOverrides, testMode, testEmail, batchOverrideCap, ignoreSendWindow, draftId);
     return jsonPitch(buildNonEmailMessage(row, method, trackName));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -199,6 +219,8 @@ async function handleEmailPitch(
   sb: SupabaseClient,
   row: Record<string, unknown>,
   trackName: string,
+  trackId: string,
+  campaignId: string,
   _bulk: boolean,
   draft?: { email?: string; subject?: string; bodyHtml?: string },
   testMode = false,
@@ -257,6 +279,43 @@ async function handleEmailPitch(
       message_to_user: "🚫 " + eligibility.message,
     }, 422);
   }
+
+  // Control same-track/same-target hard block through 2026-09-14 (Phase 0 locked decision §2).
+  // New Control targets (no prior pitch_log for Control on this playlist) remain allowed.
+  // test_mode does NOT waive this artist-policy hold.
+  if (isControlTrackId(trackId)) {
+    const { data: priorControl } = await sb
+      .from("pitch_log")
+      .select("id")
+      .eq("playlist_id", playlistId)
+      .eq("status", "sent")
+      .eq("track_id", CONTROL_TRACK_ID)
+      .limit(1)
+      .maybeSingle();
+    const controlHold = evaluateControlSameTargetCooldown({
+      trackId,
+      playlistId,
+      priorPitchExists: Boolean(priorControl?.id),
+    });
+    if (controlHold.blocked) {
+      console.warn(
+        "execute-pitch control cooldown:",
+        JSON.stringify({
+          playlist_id: playlistId,
+          track_id: CONTROL_TRACK_ID,
+          reason: controlHold.reason,
+        }),
+      );
+      return jsonPitch({
+        ok: false,
+        method_used: "email",
+        action_taken: "skipped",
+        cooldown_until: controlHold.cooldown_until,
+        message_to_user: "🚫 " + controlHold.message,
+      }, 422);
+    }
+  }
+
   const curatorEmail = await resolveCuratorEmail(sb, row, draft);
   const email = testMode ? testEmail : curatorEmail;
   const playlistName = (row.playlist_name as string|null) ?? playlistId;
@@ -302,6 +361,8 @@ async function handleEmailPitch(
     if (!testMode) {
       await sb.from("pitch_log").insert(pitchLogRow(playlistId, trackName, email, method, "error", {
         response_notes: "RESEND_API_KEY not configured",
+        track_id: trackId,
+        campaign_id: campaignId,
       }));
     }
     return jsonPitch({ ok:false, method_used:method, action_taken:"error", cooldown_until:null, message_to_user:"❌ Email not sent (Hub missing RESEND_API_KEY)." });
@@ -333,6 +394,8 @@ async function handleEmailPitch(
     if (!testMode) {
       await sb.from("pitch_log").insert(pitchLogRow(playlistId, trackName, email, method, "error", {
         response_notes: "Resend " + res.status + ": " + raw.slice(0, 500),
+        track_id: trackId,
+        campaign_id: campaignId,
       }));
     }
     return jsonPitch({ ok:false, method_used:method, action_taken:"error", cooldown_until:null, message_to_user:"❌ Email failed (" + res.status + "). No cooldown applied — retry after fixing." });
@@ -354,6 +417,8 @@ async function handleEmailPitch(
       subject,
       email_body: bodyHtml,
       sent_at: new Date().toISOString(),
+      track_id: trackId,
+      campaign_id: campaignId,
     }))
     .select("id")
     .single();

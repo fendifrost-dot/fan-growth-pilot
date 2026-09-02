@@ -53,6 +53,14 @@ type TargetRow = {
   playlist_categories?: { category_id: string }[];
 };
 
+type CampaignOption = {
+  id: string;
+  track_id: string;
+  status: string;
+  track_name?: string;
+  notes?: string | null;
+};
+
 type DraftPreview = {
   playlist_id: string;
   playlist_name: string;
@@ -83,6 +91,8 @@ type ModeKey = typeof MODES[number]["key"];
 const AdminPitchComposer: React.FC = () => {
   const [tracks, setTracks] = useState<TrackRow[]>([]);
   const [trackId, setTrackId] = useState("");
+  const [campaignId, setCampaignId] = useState("");
+  const [campaigns, setCampaigns] = useState<CampaignOption[]>([]);
   const [tone, setTone] = useState("warm_personal");
   const [step, setStep] = useState(1);
   const [targetsByMode, setTargetsByMode] = useState<Record<ModeKey, TargetRow[]>>({
@@ -102,11 +112,19 @@ const AdminPitchComposer: React.FC = () => {
   const [editingDraft, setEditingDraft] = useState<string | null>(null);
 
   const track = useMemo(() => tracks.find((t) => t.id === trackId), [tracks, trackId]);
+  const activeCampaignsForTrack = useMemo(
+    () => campaigns.filter((c) => c.track_id === trackId && c.status === "active"),
+    [campaigns, trackId],
+  );
 
   const loadTracks = useCallback(async () => {
     try {
-      const t = await callHubFn<{ rows: TrackRow[] }>("list_tracks");
+      const [t, c] = await Promise.all([
+        callHubFn<{ rows: TrackRow[] }>("list_tracks"),
+        callHubFn<{ rows: CampaignOption[] }>("list_campaigns", { status: "active" }).catch(() => ({ rows: [] })),
+      ]);
       setTracks((t.rows ?? []).filter((r) => r.status === "active"));
+      setCampaigns(c.rows ?? []);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     }
@@ -117,6 +135,15 @@ const AdminPitchComposer: React.FC = () => {
   useEffect(() => {
     if (track?.default_tone) setTone(track.default_tone);
   }, [track?.id, track?.default_tone]);
+
+  useEffect(() => {
+    setCampaignId((prev) => {
+      const match = campaigns.filter((c) => c.track_id === trackId && c.status === "active");
+      if (match.some((c) => c.id === prev)) return prev;
+      if (match.length === 1) return match[0].id;
+      return "";
+    });
+  }, [trackId, campaigns]);
 
   const fetchTargets = async () => {
     if (!trackId) return;
@@ -175,6 +202,10 @@ const AdminPitchComposer: React.FC = () => {
 
   const createDrafts = async () => {
     if (!trackId || !selectedRows.length) return;
+    if (!campaignId) {
+      toast.error("Select an active pitch campaign before drafting");
+      return;
+    }
 
     const unacked = selectedRows.filter(needsMismatchAck);
     if (unacked.length) {
@@ -202,6 +233,7 @@ const AdminPitchComposer: React.FC = () => {
             error?: string;
           }>("draft_pitch", {
             track_id: trackId,
+            campaign_id: campaignId,
             playlist_id: r.playlist_id,
             tone,
             override_category_check: r._overlap === 0,
@@ -346,7 +378,7 @@ const AdminPitchComposer: React.FC = () => {
         <p className="text-sm text-muted-foreground mt-1">Select a track, pick curators, preview drafts, and send.</p>
       </div>
 
-      {/* Step 1 — Select song */}
+      {/* Step 1 — Select song + active campaign */}
       <Card className="p-4 space-y-3">
         <Label>Step 1 — Select song</Label>
         <Select value={trackId} onValueChange={(v) => { setTrackId(v); setStep(1); }}>
@@ -367,10 +399,37 @@ const AdminPitchComposer: React.FC = () => {
             {track.soundcloud_url && <Badge variant="secondary">SoundCloud</Badge>}
           </div>
         )}
+        {trackId && (
+          <div className="space-y-2 pt-2 border-t">
+            <Label>Active pitch campaign (required)</Label>
+            <Select value={campaignId} onValueChange={setCampaignId}>
+              <SelectTrigger>
+                <SelectValue placeholder={
+                  activeCampaignsForTrack.length
+                    ? "Choose an active campaign…"
+                    : "No active campaign — activate in Pitch Portal"
+                } />
+              </SelectTrigger>
+              <SelectContent>
+                {activeCampaignsForTrack.map((c) => (
+                  <SelectItem key={c.id} value={c.id}>
+                    {c.track_name ?? track?.name ?? "Campaign"} · {c.id.slice(0, 8)}
+                    {c.notes ? ` — ${c.notes}` : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {!activeCampaignsForTrack.length && (
+              <p className="text-xs text-amber-700">
+                Drafting requires an active campaign with approved Song DNA. Create/activate one in Pitch Portal first.
+              </p>
+            )}
+          </div>
+        )}
       </Card>
 
       {/* Step 2 — Tone */}
-      {trackId && (
+      {trackId && campaignId && (
         <Card className="p-4 space-y-3">
           <Label>Step 2 — Confirm tone</Label>
           <Select value={tone} onValueChange={setTone}>

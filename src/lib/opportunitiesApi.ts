@@ -1,9 +1,8 @@
 // Frontend client for the authenticated opportunities-api Edge Function.
 //
-// Unlike hubApi.callHubFn (which sends no auth — "URL secrecy"), this client
-// attaches the signed-in user's Supabase JWT so the function can enforce
-// per-request authorization (reads = any user, writes = admin). No service-role
-// key ever touches the browser.
+// Unlike the old hubApi "URL secrecy" client, callHubFn now attaches the
+// signed-in user's Supabase JWT so campaign writes can enforce admin role
+// and derive Fendi activation identity server-side.
 
 import { supabase } from "@/integrations/supabase/client";
 import type { OpportunityStatus } from "@/lib/opportunities/types";

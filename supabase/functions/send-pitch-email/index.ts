@@ -1,5 +1,10 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendResendEmail } from "../_shared/resend-pitch.ts";
+import {
+  checkControlCooldown,
+  requireHubKey,
+  requireSendIdentity,
+} from "../_shared/send-identity-gate.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -10,20 +15,10 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const xApiKey = req.headers.get("x-api-key");
-    const authHeader = req.headers.get("authorization");
-    const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    const anonApiKey = req.headers.get("apikey");
-    const providedKey = (xApiKey || bearerToken || anonApiKey || "").trim();
-    const expectedKey = (Deno.env.get("FANFUEL_HUB_KEY") || "").trim();
-    if (!expectedKey || !providedKey || providedKey !== expectedKey) {
-      console.error("Auth failed", {
-        hasExpectedKey: !!expectedKey,
-        expectedKeyLen: expectedKey.length,
-        providedKeyLen: providedKey.length,
-        headerUsed: xApiKey ? "x-api-key" : bearerToken ? "bearer" : anonApiKey ? "apikey" : "none",
-      });
-      return json({ error: "Unauthorized" }, 401);
+    const auth = requireHubKey(req);
+    if (!auth.ok) {
+      console.error("send-pitch-email auth failed:", auth.error);
+      return json({ error: auth.error }, 401);
     }
 
     const payload = await req.json();
@@ -33,15 +28,41 @@ Deno.serve(async (req) => {
       return await handleRadioPitch(payload);
     }
 
-    const { playlist_id, curator_email, curator_name, playlist_name, track_name, subject, body } = payload;
+    // Playlist branch: same campaign/track gate as execute-pitch. No title-only bypass.
+    const supabase = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+    );
 
-    if (!curator_email || !subject || !body || !track_name || !playlist_id) {
-      return json({ error: "curator_email, subject, body, track_name, and playlist_id are required" }, 400);
+    const identity = await requireSendIdentity(supabase, payload as Record<string, unknown>);
+    if (!identity.ok) {
+      return json({ error: identity.error }, identity.status);
+    }
+
+    const { playlist_id, curator_email, curator_name, playlist_name, subject, body } = payload;
+    const track_name = identity.identity.trackName;
+    const track_id = identity.identity.trackId;
+    const campaign_id = identity.identity.campaignId;
+
+    if (!curator_email || !subject || !body || !playlist_id) {
+      return json({
+        error: "curator_email, subject, body, playlist_id, track_id, and campaign_id are required",
+      }, 400);
     }
 
     if (!Deno.env.get("RESEND_API_KEY")) return json({ error: "RESEND_API_KEY not configured" }, 500);
 
-    const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+    const hold = await checkControlCooldown(supabase, {
+      trackId: track_id,
+      playlistId: String(playlist_id),
+    });
+    if (hold.blocked) {
+      return json({
+        error: hold.message,
+        cooldown_until: hold.cooldown_until,
+        skipped: true,
+      }, 422);
+    }
 
     let finalBody = body;
 
@@ -54,11 +75,15 @@ Deno.serve(async (req) => {
         .maybeSingle();
 
       if (targetData?.research_context) {
-        const ctx = targetData.research_context as any;
-        const artists = Object.values(ctx.neighborhood_artists || {}).slice(0, 3).join(", ");
-        const features = ctx.audio_features || {};
-        const tempo = features.tempo ? `${Math.round(features.tempo)}bpm` : "";
-        const energy = features.energy !== undefined ? `energy ${Math.round(features.energy * 100)}%` : "";
+        const ctx = targetData.research_context as Record<string, unknown>;
+        const artists = Object.values((ctx.neighborhood_artists as Record<string, unknown>) || {})
+          .slice(0, 3)
+          .join(", ");
+        const features = (ctx.audio_features as Record<string, unknown>) || {};
+        const tempo = features.tempo ? `${Math.round(Number(features.tempo))}bpm` : "";
+        const energy = features.energy !== undefined
+          ? `energy ${Math.round(Number(features.energy) * 100)}%`
+          : "";
 
         finalBody = `Hi ${curator_name || "there"},
 
@@ -82,18 +107,20 @@ Fendi Frost`;
       return json({ error: `Email send failed: ${sent.status} - ${sent.error}` }, sent.status >= 500 ? 500 : 422);
     }
 
-    // Log the pitch
+    // Log with exact track_id + campaign_id (no title-only rows).
     await supabase.from("pitch_log").insert({
       playlist_id,
       track_name,
+      track_id,
+      campaign_id,
       curator_email,
       subject,
       email_body: finalBody,
+      status: "sent",
       sent_at: new Date().toISOString(),
       resend_message_id: sent.id,
     });
 
-    // Update playlist target status
     await supabase
       .from("playlist_targets")
       .update({ pitch_status: "pitched", pitched_at: new Date().toISOString() })
@@ -104,6 +131,8 @@ Fendi Frost`;
       message_id: sent.id,
       to: curator_email,
       track: track_name,
+      track_id,
+      campaign_id,
       playlist: playlist_name || playlist_id,
     });
   } catch (err) {

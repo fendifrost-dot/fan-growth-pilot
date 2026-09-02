@@ -29,6 +29,7 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import { Music2, Plus } from "lucide-react";
+import { Link } from "react-router-dom";
 import { callHubFn } from "@/lib/hubApi";
 import {
   AGGREGATOR_LABEL,
@@ -208,8 +209,10 @@ const AdminCatalogue: React.FC = () => {
           </h1>
           <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
             Operator-only catalog: titles, optional ISRC, aggregator, genre stamp, and sample flag.
-            Sync-eligible is automatic (no sample only). A DistroKid miss is not unreleased — leave
-            aggregator OPEN when the distributor is unknown. Month-1 sync default is Meditate (Hip-Hop/Rap).
+            Sync-ready is never inferred from sample status. A DistroKid miss is not unreleased — leave
+            aggregator OPEN when the distributor is unknown. Meditate is the month-one
+            candidate for review only — not approved for sync until Fendi completes DNA,
+            sample, rights, splits, assets, and sync approval.
           </p>
         </div>
         <Button onClick={openNew}>
@@ -241,7 +244,7 @@ const AdminCatalogue: React.FC = () => {
                   <TableCell className="font-medium">
                     {row.name}
                     {row.is_month1_sync_default ? (
-                      <Badge className="ml-2 text-[10px]" variant="default">Month-1 sync</Badge>
+                      <Badge className="ml-2 text-[10px]" variant="default">Month-one candidate</Badge>
                     ) : null}
                   </TableCell>
                   <TableCell><Badge variant="secondary">{row.status}</Badge></TableCell>
@@ -255,11 +258,16 @@ const AdminCatalogue: React.FC = () => {
                     {SAMPLE_FLAG_LABEL[(row.has_sample as SampleFlag) || "unknown"] ?? row.has_sample ?? "—"}
                   </TableCell>
                   <TableCell>
-                    {row.sync_eligible ? (
-                      <Badge variant="default" className="text-[10px]">Eligible</Badge>
-                    ) : (
-                      <Badge variant="outline" className="text-[10px]">No</Badge>
-                    )}
+                    <div className="flex flex-col gap-1" onClick={(e) => e.stopPropagation()}>
+                      {row.sync_eligible ? (
+                        <Badge variant="default" className="text-[10px] w-fit">Sync-ready</Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-[10px] w-fit">Not sync-ready</Badge>
+                      )}
+                      <Link className="text-[10px] underline text-muted-foreground" to="/admin/sync-gate">
+                        Gate →
+                      </Link>
+                    </div>
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
                     {row.isrc?.trim() ? "on file" : "—"}
@@ -342,15 +350,40 @@ const AdminCatalogue: React.FC = () => {
                   ))}
                 </SelectContent>
               </Select>
-              <p className="text-[11px] text-muted-foreground mt-1">Sync-eligible only when this is “no sample”.</p>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Sample status alone never grants sync eligibility. Use{" "}
+                <Link className="underline" to="/admin/sync-gate" onClick={(e) => e.stopPropagation()}>
+                  Sync gate
+                </Link>{" "}
+                for Fendi approvals.
+              </p>
             </div>
             <label className="flex items-center gap-2 text-sm cursor-pointer">
               <Checkbox
                 checked={Boolean(form.is_month1_sync_default)}
                 onCheckedChange={(v) => setForm({ ...form, is_month1_sync_default: Boolean(v) })}
               />
-              Month-1 sync default (Meditate)
+              Month-one candidate (Meditate — not sync-approved)
             </label>
+            {form.id && (
+              <div className="rounded border p-3 space-y-2 bg-muted/30">
+                <p className="text-xs font-medium">Related AGH surfaces</p>
+                <div className="flex flex-wrap gap-2">
+                  <Button asChild size="sm" variant="outline" onClick={(e) => e.stopPropagation()}>
+                    <Link to="/admin/song-dna">Song DNA</Link>
+                  </Button>
+                  <Button asChild size="sm" variant="outline" onClick={(e) => e.stopPropagation()}>
+                    <Link to="/admin/sync-gate">Sync gate</Link>
+                  </Button>
+                  <Button asChild size="sm" variant="outline" onClick={(e) => e.stopPropagation()}>
+                    <Link to="/admin/private-licenses">Private licenses</Link>
+                  </Button>
+                  <Button asChild size="sm" variant="outline" onClick={(e) => e.stopPropagation()}>
+                    <Link to="/admin/pitch-portal">Pitch Portal</Link>
+                  </Button>
+                </div>
+              </div>
+            )}
             <div>
               <Label>Spotify URL</Label>
               <Input value={form.spotify_url ?? ""} onChange={(e) => setForm({ ...form, spotify_url: e.target.value })} />

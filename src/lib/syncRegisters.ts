@@ -1,11 +1,20 @@
+import {
+  assertHouseElectronicStampAllowed,
+  computeSyncEligible as computeSyncEligibleFromRules,
+  isHouseElectronicTrackId,
+  TRACK_IDS,
+} from "./catalogRules";
+
+export { TRACK_IDS, isHouseElectronicTrackId, assertHouseElectronicStampAllowed };
+export { evaluateSyncReady } from "./catalogRules";
+
 /** Sync / licensing register helpers — operator-only song + pitch bookkeeping.
  *
  * Genre rules (artist-verified):
- * - MEDITATE is Hip-Hop/Rap. Never house / deep house / Kaytranada.
- * - House/electronic pool is ONLY Balenciaga (Let Me Freeze), Electrilla,
- *   Designed For Me (Control).
- * - sync_eligible is true only when has_sample === "no".
- * - A DistroKid miss is not "unreleased". Aggregator OPEN means unknown/split.
+ * - MEDITATE is Hip-Hop/Rap. Never house / deep house.
+ * - House/electronic pool is ONLY the three allow-listed track UUIDs.
+ * - has_sample === "no" does NOT make a track sync-eligible.
+ * - MONTH1_SYNC_DEFAULT_TITLE is a review candidate only — never sync approval.
  */
 
 export const EVEN_ARTIST_URL = "https://www.even.biz/artists/fendi-frost";
@@ -24,7 +33,7 @@ export type GenreStamp = (typeof GENRE_STAMPS)[number];
 export const LICENSING_RESPONSES = ["awaiting", "replied", "licensed", "declined"] as const;
 export type LicensingResponse = (typeof LICENSING_RESPONSES)[number];
 
-/** House/electronic pool — titles only, matched case-insensitively. */
+/** @deprecated Prefer TRACK_IDS / isHouseElectronicTrackId. */
 export const HOUSE_ELECTRONIC_TITLES = [
   "Balenciaga (Let Me Freeze)",
   "Electrilla",
@@ -47,6 +56,7 @@ export function isMeditateTitle(name: string | null | undefined): boolean {
   return normalizeTitle(name) === "meditate";
 }
 
+/** Display helper only — write boundary uses track UUID allow-list. */
 export function isHouseElectronicTitle(name: string | null | undefined): boolean {
   const n = normalizeTitle(name);
   return (
@@ -60,20 +70,21 @@ export function isNevaTooMuchPrada(name: string | null | undefined): boolean {
   return normalizeTitle(name).includes("neva too much prada");
 }
 
-export function computeSyncEligible(hasSample: SampleFlag | string | null | undefined): boolean {
-  return hasSample === "no";
+/** Sample alone never grants sync eligibility. Always false. */
+export function computeSyncEligible(_hasSample?: SampleFlag | string | null): boolean {
+  return computeSyncEligibleFromRules(_hasSample);
 }
 
-/** Reject house stamps on Meditate. Other titles may be stamped by the operator. */
+/**
+ * Write-boundary gate. For house_electronic, trackId (UUID) is required.
+ */
 export function assertGenreStampAllowed(
   name: string,
   genreStamp: string,
+  trackId?: string | null,
 ): { ok: true } | { ok: false; error: string } {
-  if (isMeditateTitle(name) && genreStamp === "house_electronic") {
-    return {
-      ok: false,
-      error: 'Meditate is Hip-Hop/Rap — never stamp it house / deep house.',
-    };
+  if (genreStamp === "house_electronic") {
+    return assertHouseElectronicStampAllowed(trackId, genreStamp);
   }
   return { ok: true };
 }
@@ -139,7 +150,6 @@ export const SAMPLE_FLAG_LABEL: Record<SampleFlag, string> = {
   unknown: "Unknown",
 };
 
-/** Strip ISRC from any object before it can reach a public/unauthenticated surface. */
 export function stripIsrc<T extends Record<string, unknown>>(row: T): Omit<T, "isrc"> {
   const { isrc: _omit, ...rest } = row;
   return rest;
@@ -171,9 +181,8 @@ export function collectPublicMetadataUrls(meta: Record<string, string> | null | 
   };
 }
 
-/** Attach the locked EVEN artist URL only when a listen-pills stack already exists. */
 export function resolvePublicEvenUrl(
-  slug: string | undefined,
+  _slug: string | undefined,
   meta: Record<string, string> | null | undefined,
 ): string | null {
   if (meta?.even_url?.trim()) return meta.even_url.trim();

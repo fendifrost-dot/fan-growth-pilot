@@ -3,23 +3,46 @@
 import { assert, assertEquals, assertRejects } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
   activeCampaignTrackNames,
+  assertSendCampaignIdentity,
   assertTrackHasActiveCampaign,
   chicagoDayStartIso,
   evaluateCampaignConfig,
   isPitchCampaignAction,
+  runPitchCampaignAction,
 } from "./pitch-campaigns.ts";
 
 // Minimal stub of the PostgREST builder surface these helpers actually touch.
 // Each table maps to the rows a .select() should resolve to.
 // deno-lint-ignore no-explicit-any
-function stubClient(tables: Record<string, any[]>): any {
+function stubClient(tables: Record<string, any[]>, opts?: { insertError?: string }): any {
   const builder = (rows: unknown[]) => {
-    const chain = {
+    const chain: Record<string, unknown> = {
       select: () => chain,
       eq: () => chain,
       in: () => chain,
       not: () => chain,
       order: () => chain,
+      insert: (row: unknown) => {
+        const inserted = Array.isArray(row) ? row[0] : row;
+        (tables._lastInsert ??= []).push(inserted);
+        const out = { ...(inserted as object), id: "new-campaign" };
+        const after = {
+          select: () => ({
+            single: () =>
+              opts?.insertError
+                ? Promise.resolve({ data: null, error: { message: opts.insertError } })
+                : Promise.resolve({ data: out, error: null }),
+          }),
+        };
+        return after;
+      },
+      update: () => ({
+        eq: () => ({
+          select: () => ({
+            single: () => Promise.resolve({ data: rows[0] ?? null, error: null }),
+          }),
+        }),
+      }),
       maybeSingle: () => Promise.resolve({ data: rows[0] ?? null, error: null }),
       single: () => Promise.resolve({ data: rows[0] ?? null, error: null }),
       then: (resolve: (v: { data: unknown[]; error: null }) => unknown) =>
@@ -107,24 +130,121 @@ Deno.test("activeCampaignTrackNames lowercases and skips blanks", async () => {
 Deno.test("assertTrackHasActiveCampaign rejects an un-campaigned song", async () => {
   const sb = stubClient({ pitch_campaigns: [] });
   await assertRejects(
-    () => assertTrackHasActiveCampaign(sb, { trackName: "Some Random Song" }),
+    () => assertTrackHasActiveCampaign(sb, { trackId: "t1" }),
     Error,
     "No active pitch campaign",
   );
 });
 
-Deno.test("assertTrackHasActiveCampaign passes a campaigned song by name", async () => {
+Deno.test("assertTrackHasActiveCampaign passes a campaigned song by track_id", async () => {
   const sb = stubClient({
-    pitch_campaigns: [{ tracks: { name: "Designed For Me" } }],
+    pitch_campaigns: [{ id: "c1", tracks: { name: "Designed For Me" } }],
   });
-  await assertTrackHasActiveCampaign(sb, { trackName: "designed for me" });
+  const result = await assertTrackHasActiveCampaign(sb, { trackId: "t1" });
+  assertEquals(result.campaign_id, "c1");
 });
 
-Deno.test("assertTrackHasActiveCampaign requires an identifier", async () => {
+Deno.test("assertTrackHasActiveCampaign requires track_id", async () => {
   const sb = stubClient({ pitch_campaigns: [] });
   await assertRejects(
     () => assertTrackHasActiveCampaign(sb, {}),
     Error,
-    "track_id or track_name required",
+    "track_id is required",
   );
+});
+
+Deno.test("create_campaign always inserts draft and rejects paused/ended/active", async () => {
+  const tables: Record<string, unknown[]> = {
+    pitch_campaigns: [],
+    tracks: [{
+      id: "t1",
+      name: "Meditate",
+      short_pitch: "copy",
+      track_categories: [{ category_id: "c1" }],
+    }],
+    smart_links: [{ id: "l1", slug: "meditate", is_active: true }],
+    _lastInsert: [],
+  };
+  const sb = stubClient(tables);
+
+  for (const bad of ["paused", "ended", "active"]) {
+    const r = await runPitchCampaignAction("create_campaign", {
+      track_id: "t1",
+      smart_link_id: "l1",
+      status: bad,
+    }, sb);
+    assertEquals(r.status, 400);
+  }
+
+  const ok = await runPitchCampaignAction("create_campaign", {
+    track_id: "t1",
+    smart_link_id: "l1",
+  }, sb);
+  assertEquals(ok.status, 200);
+  assertEquals((tables._lastInsert[0] as { status: string }).status, "draft");
+});
+
+Deno.test("assertSendCampaignIdentity requires active live campaign evidence", async () => {
+  const sb = stubClient({
+    pitch_campaigns: [{
+      id: "c1",
+      track_id: "t1",
+      status: "draft",
+      authority_kind: "live",
+      song_dna_version_id: null,
+      fendi_activation_approved_at: null,
+      configuration_snapshot: {},
+    }],
+  });
+  await assertRejects(
+    () => assertSendCampaignIdentity(sb, { trackId: "t1", campaignId: "c1" }),
+    Error,
+    "not active",
+  );
+});
+
+Deno.test("activation rejects caller-supplied approver without admin actor", async () => {
+  const sb = stubClient({
+    pitch_campaigns: [{
+      id: "c1",
+      track_id: "t1",
+      smart_link_id: "l1",
+      status: "draft",
+      started_at: null,
+      pitch_copy: "copy",
+      song_dna_version_id: "dna1",
+      fendi_activation_approved_by: null,
+      fendi_activation_approved_at: null,
+      authority_kind: "live",
+    }],
+    tracks: [{
+      id: "t1",
+      name: "Meditate",
+      short_pitch: "copy",
+      track_categories: [{ category_id: "c1" }],
+    }],
+    smart_links: [{ id: "l1", slug: "m", is_active: true }],
+    song_dna_versions: [{
+      id: "dna1",
+      track_id: "t1",
+      approval_state: "approved",
+      version_number: 1,
+      primary_genre: "rap",
+      approved_lanes: [],
+      excluded_lanes: [],
+    }],
+  });
+  const spoof = await runPitchCampaignAction(
+    "update_campaign",
+    {
+      campaign_id: "c1",
+      status: "active",
+      song_dna_version_id: "dna1",
+      fendi_activation_approved_by: "I am Fendi I swear",
+    },
+    sb,
+    null,
+  );
+  assertEquals(spoof.status, 401);
+  assertEquals(String((spoof.data as { error?: string }).error).includes("JWT"), true);
 });

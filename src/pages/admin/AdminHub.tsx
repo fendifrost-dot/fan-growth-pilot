@@ -53,6 +53,69 @@ const AdminHub: React.FC = () => {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Card className="p-5">
+          <h3 className="font-medium">Pitch Portal</h3>
+          <p className="text-sm text-muted-foreground mt-1">Draft → activate campaigns (requires approved Song DNA)</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/pitch-portal">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">Song DNA</h3>
+          <p className="text-sm text-muted-foreground mt-1">Versioned identity · Fendi approval only</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/song-dna">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">Lyrics</h3>
+          <p className="text-sm text-muted-foreground mt-1">Manual transcriptions · provider deferred</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/lyrics">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">Split sheets</h3>
+          <p className="text-sm text-muted-foreground mt-1">Generator with action items for missing legal facts</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/split-sheets">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">Press / EPK</h3>
+          <p className="text-sm text-muted-foreground mt-1">Press kit metadata and asset pointers</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/press">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">Private licenses</h3>
+          <p className="text-sm text-muted-foreground mt-1">Evidence index for vaulted license files (e.g. Neva)</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/private-licenses">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">Sync gate</h3>
+          <p className="text-sm text-muted-foreground mt-1">Fendi/ops flags that drive tracks.sync_eligible (never from sample alone)</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/sync-gate">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">Ops incidents</h3>
+          <p className="text-sm text-muted-foreground mt-1">Chief-of-Staff audit log</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/ops">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">Fan leads</h3>
+          <p className="text-sm text-muted-foreground mt-1">Smart-link capture stats and recent leads</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/fan-leads">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
           <h3 className="font-medium">Pitch Composer</h3>
           <p className="text-sm text-muted-foreground mt-1">Multi-tone drafts with warm/cold detection</p>
           <Button variant="outline" size="sm" className="mt-3" asChild>
@@ -78,6 +141,13 @@ const AdminHub: React.FC = () => {
           <p className="text-sm text-muted-foreground mt-1">Research → enrich → draft curator emails</p>
           <Button variant="outline" size="sm" className="mt-3" asChild>
             <Link to="/admin/playlists">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">Category coverage</h3>
+          <p className="text-sm text-muted-foreground mt-1">Audit playlists missing categories before send-gate cutover</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/category-coverage">Open →</Link>
           </Button>
         </Card>
         <Card className="p-5">

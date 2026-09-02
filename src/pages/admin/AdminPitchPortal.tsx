@@ -17,6 +17,7 @@ import {
 import { toast } from "sonner";
 import { AlertTriangle, Megaphone, Pause, Play, Square } from "lucide-react";
 import { callHubFn } from "@/lib/hubApi";
+import type { SongDnaVersion } from "@/lib/songDna";
 
 interface CampaignStats {
   sent: number;
@@ -34,7 +35,7 @@ interface CampaignRow {
   smart_link_id: string | null;
   smart_link_slug: string | null;
   smart_link_active: boolean;
-  status: "active" | "paused" | "ended";
+  status: "draft" | "active" | "paused" | "ended";
   daily_target: number;
   notes: string | null;
   started_at: string | null;
@@ -76,6 +77,21 @@ const MISSING_LABELS: Record<string, { label: string; fixTo: string; fixLabel: s
     fixTo: "/admin/catalogue",
     fixLabel: "Write pitch copy",
   },
+  approved_song_dna: {
+    label: "No approved Song DNA version for this track",
+    fixTo: "/admin/song-dna",
+    fixLabel: "Song DNA",
+  },
+  song_dna_version_id: {
+    label: "Select an approved Song DNA version before activating",
+    fixTo: "/admin/song-dna",
+    fixLabel: "Song DNA",
+  },
+  admin_jwt: {
+    label: "Sign in as admin — activation records your user id as Fendi approver",
+    fixTo: "/auth",
+    fixLabel: "Sign in",
+  },
 };
 
 const fmtDate = (v: string | null) => (v ? new Date(v).toLocaleDateString() : "—");
@@ -84,6 +100,7 @@ const AdminPitchPortal: React.FC = () => {
   const [campaigns, setCampaigns] = useState<CampaignRow[]>([]);
   const [tracks, setTracks] = useState<TrackOption[]>([]);
   const [smartLinks, setSmartLinks] = useState<SmartLinkOption[]>([]);
+  const [approvedDna, setApprovedDna] = useState<SongDnaVersion[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
 
@@ -96,15 +113,17 @@ const AdminPitchPortal: React.FC = () => {
 
   const load = useCallback(async () => {
     try {
-      const [c, t] = await Promise.all([
+      const [c, t, dna] = await Promise.all([
         callHubFn<{ rows: CampaignRow[] }>("list_campaigns", { status: "all" }),
         callHubFn<{ rows: TrackOption[]; smart_links: SmartLinkOption[] }>(
           "list_campaignable_tracks",
         ),
+        callHubFn<{ rows: SongDnaVersion[] }>("list_song_dna", {}).catch(() => ({ rows: [] })),
       ]);
       setCampaigns(c.rows ?? []);
       setTracks(t.rows ?? []);
       setSmartLinks(t.smart_links ?? []);
+      setApprovedDna((dna.rows ?? []).filter((r) => r.approval_state === "approved"));
     } catch (e) {
       toast.error((e as Error).message || "Failed to load campaigns");
     } finally {
@@ -117,7 +136,11 @@ const AdminPitchPortal: React.FC = () => {
   }, [load]);
 
   const active = useMemo(() => campaigns.filter((c) => c.status === "active"), [campaigns]);
-  const history = useMemo(() => campaigns.filter((c) => c.status !== "active"), [campaigns]);
+  const drafts = useMemo(() => campaigns.filter((c) => c.status === "draft"), [campaigns]);
+  const history = useMemo(
+    () => campaigns.filter((c) => c.status === "paused" || c.status === "ended"),
+    [campaigns],
+  );
 
   // Tracks without an open campaign are the only ones you can create for.
   const available = useMemo(() => tracks.filter((t) => !t.open_campaign_id), [tracks]);
@@ -145,7 +168,7 @@ const AdminPitchPortal: React.FC = () => {
         daily_target: dailyTarget,
         notes: notes.trim() || null,
       });
-      toast.success(`Campaign started for “${selectedTrack?.name ?? "track"}”`);
+      toast.success(`Draft campaign created for “${selectedTrack?.name ?? "track"}”`);
       resetForm();
       await load();
     } catch (e) {
@@ -200,8 +223,8 @@ const AdminPitchPortal: React.FC = () => {
         <div>
           <h2 className="font-medium">Start a new campaign</h2>
           <p className="text-xs text-muted-foreground mt-1">
-            Pick a song, confirm its smart link and daily target, then activate. A song needs a
-            live smart link, an assigned category, and written pitch copy before it can go active.
+            Pick a song and create a <strong>draft</strong>. Activation is a separate step that
+            requires approved Song DNA and Fendi’s signed-in admin identity (derived server-side).
           </p>
         </div>
 
@@ -311,7 +334,7 @@ const AdminPitchPortal: React.FC = () => {
 
         <div className="flex gap-2">
           <Button onClick={create} disabled={busy || !trackId}>
-            Start campaign
+            Create draft campaign
           </Button>
           {trackId && (
             <Button variant="ghost" onClick={resetForm} disabled={busy}>
@@ -320,6 +343,90 @@ const AdminPitchPortal: React.FC = () => {
           )}
         </div>
       </Card>
+
+      {/* ---------------------------------------------------------------- */}
+      {/* Draft campaigns                                                   */}
+      {/* ---------------------------------------------------------------- */}
+      <div className="space-y-3">
+        <h2 className="font-medium">
+          Draft campaigns{" "}
+          <span className="text-muted-foreground font-normal text-sm">({drafts.length})</span>
+        </h2>
+        {!loading && drafts.length === 0 && (
+          <Card className="p-5">
+            <p className="text-sm text-muted-foreground">
+              No drafts. New campaigns always start here before Fendi activation.
+            </p>
+          </Card>
+        )}
+        <div className="grid gap-3 md:grid-cols-2">
+          {drafts.map((c) => (
+            <Card key={c.id} className="p-5 space-y-3">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <div className="font-medium">{c.track_name}</div>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Created {fmtDate(c.created_at)}
+                  </p>
+                </div>
+                <Badge variant="secondary">draft</Badge>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Activation freezes Song DNA, pitch copy, and smart-link snapshot. Approver is
+                your signed-in admin user id — not a free-text field.{" "}
+                <Link to="/admin/song-dna" className="underline">
+                  Manage Song DNA
+                </Link>
+              </p>
+              {(() => {
+                const dna = approvedDna.find((d) => d.track_id === c.track_id);
+                return (
+                  <div className="text-xs">
+                    {dna ? (
+                      <span>
+                        Approved DNA: <span className="font-mono">v{dna.version_number}</span>{" "}
+                        ({dna.primary_genre || "genre unset"})
+                      </span>
+                    ) : (
+                      <span className="text-destructive">
+                        No approved Song DNA for this track — approve one before activating.
+                      </span>
+                    )}
+                  </div>
+                );
+              })()}
+              <div className="flex gap-2 pt-1">
+                <Button
+                  size="sm"
+                  disabled={busy || !approvedDna.some((d) => d.track_id === c.track_id)}
+                  onClick={() => {
+                    const dna = approvedDna.find((d) => d.track_id === c.track_id);
+                    if (!dna) {
+                      toast.error("Approved Song DNA required");
+                      return;
+                    }
+                    void patch(
+                      c.id,
+                      { status: "active", song_dna_version_id: dna.id },
+                      `Activated “${c.track_name}”`,
+                    );
+                  }}
+                >
+                  Activate
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => patch(c.id, { status: "ended" }, `Ended draft “${c.track_name}”`)}
+                >
+                  End draft
+                </Button>
+              </div>
+            </Card>
+          ))}
+        </div>
+      </div>
 
       {/* ---------------------------------------------------------------- */}
       {/* Active campaigns                                                  */}

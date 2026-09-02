@@ -4,6 +4,11 @@ import { isRadioAction, runRadioAction } from '../_shared/radio-outreach.ts';
 import { isFanEngagementAction, runFanEngagementAction } from '../_shared/fan-engagement-run.ts';
 import { isPitchCampaignAction, runPitchCampaignAction } from '../_shared/pitch-campaigns.ts';
 import { isSyncRegisterAction, runSyncRegisterAction } from '../_shared/sync-registers.ts';
+import { isSongDnaAction, runSongDnaAction } from '../_shared/song-dna.ts';
+import { isLyricsAction, runLyricsAction } from '../_shared/lyrics.ts';
+import { isSplitSheetAction, runSplitSheetAction } from '../_shared/split-sheets.ts';
+import { isOpsPressAction, runOpsPressAction } from '../_shared/ops-press.ts';
+import { authorizeAction } from '../_shared/outreach-auth.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -83,6 +88,13 @@ Deno.serve(async (req) => {
     const { action } = body;
 
     if (isPlaylistAgentAction(String(action ?? ''))) {
+      const decision = await authorizeAction(String(action), req, supabase);
+      if (!decision.ok) {
+        return new Response(JSON.stringify({ error: decision.error }), {
+          status: decision.status,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
       const result = await runPlaylistAgentAction(String(action), body, supabase, expectedKey);
       return new Response(JSON.stringify(result.data), {
         status: result.status,
@@ -91,6 +103,13 @@ Deno.serve(async (req) => {
     }
 
     if (isRadioAction(String(action ?? ''))) {
+      const decision = await authorizeAction(String(action), req, supabase);
+      if (!decision.ok) {
+        return new Response(JSON.stringify({ error: decision.error }), {
+          status: decision.status,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
       const result = await runRadioAction(String(action), body, supabase, expectedKey);
       return new Response(JSON.stringify(result.data), {
         status: result.status,
@@ -107,7 +126,85 @@ Deno.serve(async (req) => {
     }
 
     if (isPitchCampaignAction(String(action ?? ''))) {
-      const result = await runPitchCampaignAction(String(action), body, supabase);
+      // Wire JWT+role gate for campaign lifecycle (activation derives Fendi identity).
+      const decision = await authorizeAction(String(action), req, supabase);
+      if (!decision.ok) {
+        return new Response(JSON.stringify({ error: decision.error }), {
+          status: decision.status,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      const result = await runPitchCampaignAction(
+        String(action),
+        body,
+        supabase,
+        decision.actor,
+      );
+      return new Response(JSON.stringify(result.data), {
+        status: result.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isSongDnaAction(String(action ?? ''))) {
+      const decision = await authorizeAction(String(action), req, supabase);
+      if (!decision.ok) {
+        return new Response(JSON.stringify({ error: decision.error }), {
+          status: decision.status,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      const result = await runSongDnaAction(
+        String(action),
+        body,
+        supabase,
+        decision.actor,
+      );
+      return new Response(JSON.stringify(result.data), {
+        status: result.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isLyricsAction(String(action ?? ''))) {
+      const decision = await authorizeAction(String(action), req, supabase);
+      if (!decision.ok) {
+        return new Response(JSON.stringify({ error: decision.error }), {
+          status: decision.status,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      const result = await runLyricsAction(String(action), body, supabase, decision.actor);
+      return new Response(JSON.stringify(result.data), {
+        status: result.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isSplitSheetAction(String(action ?? ''))) {
+      const decision = await authorizeAction(String(action), req, supabase);
+      if (!decision.ok) {
+        return new Response(JSON.stringify({ error: decision.error }), {
+          status: decision.status,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      const result = await runSplitSheetAction(String(action), body, supabase, decision.actor);
+      return new Response(JSON.stringify(result.data), {
+        status: result.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isOpsPressAction(String(action ?? ''))) {
+      const decision = await authorizeAction(String(action), req, supabase);
+      if (!decision.ok) {
+        return new Response(JSON.stringify({ error: decision.error }), {
+          status: decision.status,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      const result = await runOpsPressAction(String(action), body, supabase, decision.actor);
       return new Response(JSON.stringify(result.data), {
         status: result.status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -115,7 +212,19 @@ Deno.serve(async (req) => {
     }
 
     if (isSyncRegisterAction(String(action ?? ''))) {
-      const result = await runSyncRegisterAction(String(action), body, supabase);
+      const decision = await authorizeAction(String(action), req, supabase);
+      if (!decision.ok) {
+        return new Response(JSON.stringify({ error: decision.error }), {
+          status: decision.status,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      const bodyWithActor = {
+        ...body,
+        actor_user_id:
+          decision.actor?.kind === 'user' ? decision.actor.userId : body.actor_user_id,
+      };
+      const result = await runSyncRegisterAction(String(action), bodyWithActor, supabase);
       return new Response(JSON.stringify(result.data), {
         status: result.status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },

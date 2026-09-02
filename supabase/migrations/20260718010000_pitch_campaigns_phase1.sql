@@ -302,16 +302,16 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
--- 10. Backfill: seed campaigns for the two songs already being pitched
+-- 10. OPTIONAL legacy attribution — DRAFT ONLY (revised 2026-09-02)
 -- ---------------------------------------------------------------------------
--- DFM and Meditate have live smart links (slugs 'designedforme' / 'meditate',
--- seeded 20260715000000) and existing pitch history. Seeding them as ACTIVE
--- campaigns makes their history attributable without changing what the daily
--- job does today.
+-- SUPERSEDED POLICY (docs/PHASE0_LOCKED_DECISIONS.md §8):
+-- Do NOT auto-activate Meditate or DFM. Do NOT treat a reconstructed snapshot
+-- as Fendi-approved authority. Campaigns begin as drafts; activation requires
+-- approved Song DNA + explicit Fendi approval (see 20260902000000).
 --
--- Deliberately NOT a blanket backfill of the whole catalogue — that would
--- recreate the implicit "everything is pitchable" behaviour this table exists
--- to remove. Only these two, because only these two are actually in flight.
+-- This block creates DRAFT rows labeled legacy_reconstructed so historical
+-- pitch_log / outreach_drafts can be attributed without unlocking sends.
+-- New sends must still carry a live campaign_id after Fendi activation.
 
 with seed(slug, name_pattern) as (
   values ('designedforme', '%designed for me%'),
@@ -335,23 +335,24 @@ insert into public.pitch_campaigns (
 select
   r.track_id,
   r.smart_link_id,
-  'active',
+  'draft',
   20,
   r.pitch_copy,
   jsonb_build_object(
     'seeded_by', '20260718010000_pitch_campaigns_phase1',
+    'authority_kind', 'legacy_reconstructed',
     'track_name', r.track_name,
     'pitch_copy', r.pitch_copy,
     'artist', 'Fendi Frost',
-    'note', 'Backfilled from in-flight outreach; snapshot reconstructed, not captured at true activation.'
+    'note', 'Legacy reconstructed draft — NOT an approved Fendi activation snapshot. Sends blocked until Fendi activates with approved Song DNA.'
   ),
-  now(),
-  now(),
-  'Seed campaign backfilled for outreach already in flight.'
+  null,
+  null,
+  'Legacy reconstructed draft for in-flight history attribution. Not activated.'
 from resolved r
 on conflict do nothing;
 
--- Attribute existing pitch history to those seed campaigns.
+-- Attribute existing pitch history to those DRAFT campaigns (legacy label only).
 update public.pitch_log pl
    set campaign_id = c.id
   from public.pitch_campaigns c

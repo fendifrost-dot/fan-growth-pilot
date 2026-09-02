@@ -95,6 +95,14 @@ export const ACTION_AUTH: Record<string, AuthClass> = {
   list_private_licenses: 'authenticated-read',
   register_private_license: 'admin-write',
 
+  // ---- Catalogue / taxonomy writes ----------------------------------------
+  upsert_track: 'admin-write',
+  delete_track: 'admin-write',
+  upsert_category: 'admin-write',
+  delete_category: 'admin-write',
+  set_track_categories: 'admin-write',
+  set_playlist_categories: 'admin-write',
+
   // ---- Sync / licensing registers (operator writes; admin JWT) ------------
   list_music_supervisors: 'authenticated-read',
   list_licensing_pitches: 'authenticated-read',
@@ -185,12 +193,6 @@ export const ACTION_AUTH: Record<string, AuthClass> = {
  * basis they sit in Phase 3 rather than Phase 1.
  */
 export const PHASE_3_PENDING_WRITES = [
-  'upsert_track',
-  'delete_track',
-  'upsert_category',
-  'delete_category',
-  'set_track_categories',
-  'set_playlist_categories',
   'ingest_apple_spins',
   'enrich_curator_contacts',
   'enrich_radio_contacts',

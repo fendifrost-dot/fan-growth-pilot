@@ -134,11 +134,10 @@ Deno.test("campaign list requires sign-in; other Phase-1 reads stay public", asy
   }
 });
 
-Deno.test("create_campaign and update_campaign are admin-write", () => {
-  assertEquals(classifyAction("create_campaign"), "admin-write");
-  assertEquals(classifyAction("update_campaign"), "admin-write");
-  assertEquals(classifyAction("list_campaignable_tracks"), "admin-write");
-  assertEquals(classifyAction("check_campaign_config"), "admin-write");
+Deno.test("catalogue writes require admin", () => {
+  assertEquals(classifyAction("upsert_track"), "admin-write");
+  assertEquals(classifyAction("set_track_categories"), "admin-write");
+  assertEquals(classifyAction("upsert_category"), "admin-write");
 });
 
 Deno.test("anonymous cannot create or update campaigns", async () => {

@@ -53,6 +53,48 @@ const AdminHub: React.FC = () => {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Card className="p-5">
+          <h3 className="font-medium">Pitch Portal</h3>
+          <p className="text-sm text-muted-foreground mt-1">Draft → activate campaigns (requires approved Song DNA)</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/pitch-portal">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">Song DNA</h3>
+          <p className="text-sm text-muted-foreground mt-1">Versioned identity · Fendi approval only</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/song-dna">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">Lyrics</h3>
+          <p className="text-sm text-muted-foreground mt-1">Manual transcriptions · provider deferred</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/lyrics">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">Split sheets</h3>
+          <p className="text-sm text-muted-foreground mt-1">Generator with action items for missing legal facts</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/split-sheets">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">Press / EPK</h3>
+          <p className="text-sm text-muted-foreground mt-1">Press kit metadata and asset pointers</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/press">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">Ops incidents</h3>
+          <p className="text-sm text-muted-foreground mt-1">Chief-of-Staff audit log</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/ops">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
           <h3 className="font-medium">Pitch Composer</h3>
           <p className="text-sm text-muted-foreground mt-1">Multi-tone drafts with warm/cold detection</p>
           <Button variant="outline" size="sm" className="mt-3" asChild>

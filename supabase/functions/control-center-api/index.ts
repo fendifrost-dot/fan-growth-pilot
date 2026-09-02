@@ -88,6 +88,13 @@ Deno.serve(async (req) => {
     const { action } = body;
 
     if (isPlaylistAgentAction(String(action ?? ''))) {
+      const decision = await authorizeAction(String(action), req, supabase);
+      if (!decision.ok) {
+        return new Response(JSON.stringify({ error: decision.error }), {
+          status: decision.status,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
       const result = await runPlaylistAgentAction(String(action), body, supabase, expectedKey);
       return new Response(JSON.stringify(result.data), {
         status: result.status,
@@ -96,6 +103,13 @@ Deno.serve(async (req) => {
     }
 
     if (isRadioAction(String(action ?? ''))) {
+      const decision = await authorizeAction(String(action), req, supabase);
+      if (!decision.ok) {
+        return new Response(JSON.stringify({ error: decision.error }), {
+          status: decision.status,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
       const result = await runRadioAction(String(action), body, supabase, expectedKey);
       return new Response(JSON.stringify(result.data), {
         status: result.status,

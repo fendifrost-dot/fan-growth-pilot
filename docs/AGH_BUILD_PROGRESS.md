@@ -13,6 +13,7 @@
 | Lyrics manual + provider-neutral deferred adapter | done | `20260903100000`, `_shared/lyrics.ts`, `AdminLyrics` |
 | Split-sheet generator (incomplete OK) | done | `20260903110000`, `_shared/split-sheets.ts`, `AdminSplitSheets` |
 | Sync-register write auth | done | CCA `authorizeAction` on sync actions |
+| Playlist-agent + radio path auth | done | CCA `authorizeAction` before dispatch; catalogue writes = admin-write |
 | DNA↔playlist genre-fit on shared send gate | done | `_shared/genre-fit.ts` wired into `send-identity-gate` |
 | Ops incidents + Press/EPK + private license evidence | done | `20260903200000`, `_shared/ops-press.ts`, admin pages |
 | Canonical playlist send gate | done | `execute-pitch` + `send-pitch-email` share `send-identity-gate` + `PITCH_IDENTITY_GATE` |

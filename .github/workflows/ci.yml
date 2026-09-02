@@ -19,7 +19,7 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
       - name: Unit + integration tests
-        run: npm run test -- src/test/catalogRules.test.ts src/test/controlCooldown.test.ts src/test/syncRegisters.test.ts src/test/operator-registers.test.tsx src/test/no-public-isrc.test.tsx src/test/phase0-send-gates.integration.test.ts src/test/songDna.test.ts
+        run: npm run test -- src/test/catalogRules.test.ts src/test/controlCooldown.test.ts src/test/syncRegisters.test.ts src/test/operator-registers.test.tsx src/test/no-public-isrc.test.tsx src/test/phase0-send-gates.integration.test.ts src/test/songDna.test.ts src/test/lyrics-split-sheets.test.ts
       - name: Setup Deno
         uses: denoland/setup-deno@v2
         with:
@@ -31,6 +31,7 @@ jobs:
             supabase/functions/_shared/outreach-auth.test.ts \
             supabase/functions/_shared/pitch-campaigns.test.ts \
             supabase/functions/_shared/control-cooldown.test.ts \
-            supabase/functions/_shared/song-dna.test.ts
+            supabase/functions/_shared/song-dna.test.ts \
+            supabase/functions/_shared/lyrics-split.test.ts
       - name: Production build
         run: npm run build

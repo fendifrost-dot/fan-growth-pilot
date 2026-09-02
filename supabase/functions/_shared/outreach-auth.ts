@@ -71,6 +71,28 @@ export const ACTION_AUTH: Record<string, AuthClass> = {
   approve_song_dna: 'admin-write',
   reject_song_dna: 'admin-write',
 
+  // ---- Lyrics (manual; provider deferred) ---------------------------------
+  list_lyrics: 'authenticated-read',
+  get_lyrics: 'authenticated-read',
+  upsert_lyrics_manual: 'admin-write',
+  mark_lyrics_ready: 'admin-write',
+  request_lyrics_provider_job: 'admin-write',
+
+  // ---- Split sheets -------------------------------------------------------
+  list_split_sheets: 'authenticated-read',
+  get_split_sheet: 'authenticated-read',
+  create_split_sheet: 'admin-write',
+  update_split_sheet_contributors: 'admin-write',
+  regenerate_split_sheet_document: 'admin-write',
+
+  // ---- Sync / licensing registers (operator writes; admin JWT) ------------
+  list_music_supervisors: 'authenticated-read',
+  list_licensing_pitches: 'authenticated-read',
+  upsert_music_supervisor: 'admin-write',
+  delete_music_supervisor: 'admin-write',
+  log_licensing_pitch: 'admin-write',
+  // mark_licensing_response: outreach-write below (admin JWT OR scheduler)
+
   // ---- Campaign reads -----------------------------------------------------
   list_campaigns: 'authenticated-read',
   get_campaign: 'authenticated-read',
@@ -124,8 +146,6 @@ export const ACTION_AUTH: Record<string, AuthClass> = {
   list_warm_curators: 'public-read',
   recommend_targets_for_track: 'public-read',
   list_tracks: 'public-read',
-  list_music_supervisors: 'public-read',
-  list_licensing_pitches: 'public-read',
   list_categories: 'public-read',
   list_social_queue: 'public-read',
   list_ig_roster: 'public-read',
@@ -157,9 +177,6 @@ export const ACTION_AUTH: Record<string, AuthClass> = {
 export const PHASE_3_PENDING_WRITES = [
   'upsert_track',
   'delete_track',
-  'upsert_music_supervisor',
-  'delete_music_supervisor',
-  'log_licensing_pitch',
   'upsert_category',
   'delete_category',
   'set_track_categories',

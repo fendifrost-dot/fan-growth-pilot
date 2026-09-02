@@ -7,6 +7,7 @@ import { isSyncRegisterAction, runSyncRegisterAction } from '../_shared/sync-reg
 import { isSongDnaAction, runSongDnaAction } from '../_shared/song-dna.ts';
 import { isLyricsAction, runLyricsAction } from '../_shared/lyrics.ts';
 import { isSplitSheetAction, runSplitSheetAction } from '../_shared/split-sheets.ts';
+import { isOpsPressAction, runOpsPressAction } from '../_shared/ops-press.ts';
 import { authorizeAction } from '../_shared/outreach-auth.ts';
 
 const corsHeaders = {
@@ -175,6 +176,21 @@ Deno.serve(async (req) => {
         });
       }
       const result = await runSplitSheetAction(String(action), body, supabase, decision.actor);
+      return new Response(JSON.stringify(result.data), {
+        status: result.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isOpsPressAction(String(action ?? ''))) {
+      const decision = await authorizeAction(String(action), req, supabase);
+      if (!decision.ok) {
+        return new Response(JSON.stringify({ error: decision.error }), {
+          status: decision.status,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      const result = await runOpsPressAction(String(action), body, supabase, decision.actor);
       return new Response(JSON.stringify(result.data), {
         status: result.status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },

@@ -32,6 +32,7 @@ jobs:
             supabase/functions/_shared/pitch-campaigns.test.ts \
             supabase/functions/_shared/control-cooldown.test.ts \
             supabase/functions/_shared/song-dna.test.ts \
-            supabase/functions/_shared/lyrics-split.test.ts
+            supabase/functions/_shared/lyrics-split.test.ts \
+            supabase/functions/_shared/genre-fit.test.ts
       - name: Production build
         run: npm run build

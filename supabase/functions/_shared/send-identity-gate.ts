@@ -15,6 +15,7 @@ import {
   evaluateControlSameTargetCooldown,
   isControlTrackId,
 } from "./control-cooldown.ts";
+import { assertDnaPlaylistGenreFit } from "./genre-fit.ts";
 
 export type SendIdentity = {
   trackId: string;
@@ -90,6 +91,14 @@ export async function requireSendIdentity(
       status: 422,
       error: e instanceof Error ? e.message : String(e),
     };
+  }
+
+  const playlistId = String(body.playlist_id ?? "").trim();
+  if (playlistId) {
+    const fit = await assertDnaPlaylistGenreFit(sb, { campaignId, playlistId });
+    if (!fit.ok) {
+      return { ok: false, status: 422, error: fit.error };
+    }
   }
 
   return { ok: true, identity: { trackId, campaignId, trackName } };

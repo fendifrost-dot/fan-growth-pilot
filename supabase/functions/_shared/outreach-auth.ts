@@ -85,6 +85,16 @@ export const ACTION_AUTH: Record<string, AuthClass> = {
   update_split_sheet_contributors: 'admin-write',
   regenerate_split_sheet_document: 'admin-write',
 
+  // ---- Ops / press / private license --------------------------------------
+  list_ops_incidents: 'authenticated-read',
+  log_ops_incident: 'admin-write',
+  ack_ops_incident: 'admin-write',
+  resolve_ops_incident: 'admin-write',
+  list_press_kits: 'authenticated-read',
+  upsert_press_kit: 'admin-write',
+  list_private_licenses: 'authenticated-read',
+  register_private_license: 'admin-write',
+
   // ---- Sync / licensing registers (operator writes; admin JWT) ------------
   list_music_supervisors: 'authenticated-read',
   list_licensing_pitches: 'authenticated-read',

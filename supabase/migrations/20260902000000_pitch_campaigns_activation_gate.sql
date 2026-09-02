@@ -76,6 +76,19 @@ begin
       or coalesce(notes, '') ilike '%Seed campaign backfilled%'
       or fendi_activation_approved_at is null
     );
+
+  -- Draft rows from the revised July seed must also be labeled legacy, not live.
+  -- (authority_kind defaults to 'live' when the column is added — correct that.)
+  update public.pitch_campaigns
+  set authority_kind = 'legacy_reconstructed',
+      configuration_snapshot = coalesce(configuration_snapshot, '{}'::jsonb) ||
+        jsonb_build_object(
+          'authority_kind', 'legacy_reconstructed',
+          'labeled_by', '20260902000000_pitch_campaigns_activation_gate'
+        )
+  where coalesce(configuration_snapshot->>'seeded_by', '') = '20260718010000_pitch_campaigns_phase1'
+     or coalesce(configuration_snapshot->>'authority_kind', '') = 'legacy_reconstructed'
+     or coalesce(notes, '') ilike '%Legacy reconstructed draft%';
 end$$;
 
 commit;

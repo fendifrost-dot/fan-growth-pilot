@@ -142,13 +142,12 @@ export async function activeCampaignTrackNames(sb: SupabaseClient): Promise<Set<
   return names;
 }
 
-/** Throws unless the given track (by id OR name) has an active campaign.
- *  This is the hard backend enforcement: no caller — cron, Telegram, browser,
- *  agent — can pitch a song the artist did not deliberately activate. */
+/** Throws unless the given track_id has an active campaign.
+ *  Prefer exact track_id. Title fallback is legacy-only and must not be used for new sends. */
 export async function assertTrackHasActiveCampaign(
   sb: SupabaseClient,
   opts: { trackId?: string | null; trackName?: string | null },
-): Promise<void> {
+): Promise<{ campaign_id: string }> {
   const trackId = String(opts.trackId ?? '').trim();
   if (trackId) {
     const { data } = await sb
@@ -159,20 +158,123 @@ export async function assertTrackHasActiveCampaign(
       .maybeSingle();
     if (!data) {
       throw new Error(
-        'No active pitch campaign for this track. Create one in the Pitch Portal before pitching it.',
+        'No active pitch campaign for this track_id. Create a draft and activate with approved Song DNA + Fendi approval before pitching.',
       );
     }
-    return;
+    return { campaign_id: String(data.id) };
   }
 
-  const trackName = String(opts.trackName ?? '').trim().toLowerCase();
-  if (!trackName) throw new Error('track_id or track_name required to check campaign status');
-  const active = await activeCampaignTrackNames(sb);
-  if (!active.has(trackName)) {
+  throw new Error('track_id is required to check campaign status (title matching is not allowed for sends).');
+}
+
+/**
+ * New sends require exact campaign_id + track_id, and the campaign must be
+ * active for that track with live (non-legacy) authority.
+ */
+export async function assertSendCampaignIdentity(
+  sb: SupabaseClient,
+  opts: { trackId: string; campaignId: string },
+): Promise<{ campaign: Record<string, unknown> }> {
+  const trackId = String(opts.trackId ?? '').trim();
+  const campaignId = String(opts.campaignId ?? '').trim();
+  if (!trackId) throw new Error('track_id is required on every send');
+  if (!campaignId) throw new Error('campaign_id is required on every send');
+
+  const { data, error } = await sb
+    .from('pitch_campaigns')
+    .select('id, track_id, status, authority_kind, song_dna_version_id, fendi_activation_approved_at, configuration_snapshot')
+    .eq('id', campaignId)
+    .maybeSingle();
+  if (error) {
     throw new Error(
-      `No active pitch campaign for "${opts.trackName}". Create one in the Pitch Portal before pitching it.`,
+      `Campaign lookup failed (${error.message}). pitch_campaigns must exist before sends.`,
     );
   }
+  if (!data) throw new Error('campaign_id not found');
+  if (String(data.track_id) !== trackId) {
+    throw new Error('campaign_id does not belong to the supplied track_id');
+  }
+  if (data.status !== 'active') {
+    throw new Error(`Campaign is ${data.status}, not active. Sends require an active campaign.`);
+  }
+  if (String(data.authority_kind ?? '') === 'legacy_reconstructed') {
+    throw new Error('Legacy/reconstructed campaigns cannot authorize new sends.');
+  }
+  if (!data.song_dna_version_id || !data.fendi_activation_approved_at) {
+    throw new Error('Campaign activation evidence incomplete (Song DNA + Fendi approval required).');
+  }
+  return { campaign: data as Record<string, unknown> };
+}
+
+/**
+ * Verify an approved Song DNA version exists for the track.
+ * Until Phase 1 creates song_dna_versions, activation remains disabled.
+ */
+export async function verifyApprovedSongDna(
+  sb: SupabaseClient,
+  opts: { trackId: string; songDnaVersionId: string },
+): Promise<{ ok: true; version: Record<string, unknown> } | { ok: false; error: string }> {
+  const trackId = String(opts.trackId ?? '').trim();
+  const dnaId = String(opts.songDnaVersionId ?? '').trim();
+  if (!trackId || !dnaId) {
+    return { ok: false, error: 'track_id and song_dna_version_id are required' };
+  }
+
+  const { data, error } = await sb
+    .from('song_dna_versions')
+    .select('id, track_id, approval_state, version_number, primary_genre, approved_lanes, excluded_lanes')
+    .eq('id', dnaId)
+    .maybeSingle();
+
+  if (error) {
+    // Table missing or RLS — activation disabled until Phase 1 DNA exists.
+    return {
+      ok: false,
+      error:
+        'Campaign activation is disabled until approved Song DNA exists and can be verified ' +
+        `(song_dna_versions unavailable: ${error.message}).`,
+    };
+  }
+  if (!data) {
+    return { ok: false, error: 'song_dna_version_id not found' };
+  }
+  if (String(data.track_id) !== trackId) {
+    return { ok: false, error: 'Song DNA version does not belong to this track_id' };
+  }
+  if (String(data.approval_state) !== 'approved') {
+    return {
+      ok: false,
+      error: `Song DNA version is '${data.approval_state}', not approved. Activation requires an approved version.`,
+    };
+  }
+  return { ok: true, version: data as Record<string, unknown> };
+}
+
+export function buildActivationSnapshot(opts: {
+  track: Record<string, unknown>;
+  smartLink: Record<string, unknown> | null;
+  dna: Record<string, unknown>;
+  fendiApprovedBy: string;
+  fendiApprovedAt: string;
+  pitchCopy: string;
+}): Record<string, unknown> {
+  return {
+    authority_kind: 'live',
+    captured_at: opts.fendiApprovedAt,
+    fendi_activation_approved_by: opts.fendiApprovedBy,
+    fendi_activation_approved_at: opts.fendiApprovedAt,
+    track_id: opts.track.id,
+    track_name: opts.track.name,
+    pitch_copy: opts.pitchCopy,
+    smart_link_id: opts.smartLink?.id ?? null,
+    smart_link_slug: opts.smartLink?.slug ?? null,
+    song_dna_version_id: opts.dna.id,
+    song_dna_version_number: opts.dna.version_number ?? null,
+    primary_genre: opts.dna.primary_genre ?? null,
+    approved_lanes: opts.dna.approved_lanes ?? null,
+    excluded_lanes: opts.dna.excluded_lanes ?? null,
+    note: 'Frozen at Fendi activation — not a reconstructed legacy snapshot.',
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -446,7 +548,7 @@ async function updateCampaign(sb: SupabaseClient, body: Record<string, unknown>)
 
   const { data: current } = await sb
     .from('pitch_campaigns')
-    .select('id, track_id, smart_link_id, status, started_at, song_dna_version_id, fendi_activation_approved_by, fendi_activation_approved_at, authority_kind')
+    .select('id, track_id, smart_link_id, status, started_at, pitch_copy, song_dna_version_id, fendi_activation_approved_by, fendi_activation_approved_at, authority_kind')
     .eq('id', campaignId)
     .maybeSingle();
   if (!current) return { status: 404, data: { error: 'Campaign not found' } };
@@ -473,7 +575,8 @@ async function updateCampaign(sb: SupabaseClient, body: Record<string, unknown>)
       };
     }
 
-    // Activation requires approved Song DNA + explicit Fendi approval (§8).
+    // Activation requires verified approved Song DNA + explicit Fendi approval (§8).
+    // Disabled until song_dna_versions exists and the version can be verified.
     if (nextStatus === 'active') {
       const smartLinkId =
         patch.smart_link_id !== undefined
@@ -497,9 +600,20 @@ async function updateCampaign(sb: SupabaseClient, body: Record<string, unknown>)
           status: 400,
           data: {
             error:
-              'Activation requires an approved Song DNA version id (Phase 1). Campaigns cannot be activated without it.',
+              'Activation requires an approved Song DNA version id. Campaign activation is disabled until approved Song DNA exists and can be verified.',
             missing: ['song_dna_version_id', 'fendi_activation_approval'],
           },
+        };
+      }
+
+      const dnaCheck = await verifyApprovedSongDna(sb, {
+        trackId: String(current.track_id),
+        songDnaVersionId: dnaId,
+      });
+      if (!dnaCheck.ok) {
+        return {
+          status: 400,
+          data: { error: dnaCheck.error, missing: ['approved_song_dna'] },
         };
       }
 
@@ -514,13 +628,47 @@ async function updateCampaign(sb: SupabaseClient, body: Record<string, unknown>)
         };
       }
 
+      const { data: trackRow } = await sb
+        .from('tracks')
+        .select('id, name, short_pitch')
+        .eq('id', current.track_id)
+        .maybeSingle();
+      if (!trackRow) return { status: 404, data: { error: 'Track not found' } };
+
+      let smartLink: Record<string, unknown> | null = null;
+      if (smartLinkId) {
+        const { data: link } = await sb
+          .from('smart_links')
+          .select('id, slug, is_active')
+          .eq('id', smartLinkId)
+          .maybeSingle();
+        smartLink = (link as Record<string, unknown> | null) ?? null;
+      }
+
+      const pitchCopy = String(
+        body.pitch_copy ?? current.pitch_copy ?? trackRow.short_pitch ?? '',
+      ).trim();
+      if (!pitchCopy) {
+        return { status: 400, data: { error: 'pitch_copy required at activation', missing: ['pitch_copy'] } };
+      }
+
       const nowIso = new Date().toISOString();
+      const snapshot = buildActivationSnapshot({
+        track: trackRow as Record<string, unknown>,
+        smartLink,
+        dna: dnaCheck.version,
+        fendiApprovedBy: fendiBy,
+        fendiApprovedAt: String(body.fendi_activation_approved_at ?? '').trim() || nowIso,
+        pitchCopy,
+      });
+
       patch.song_dna_version_id = dnaId;
       patch.fendi_activation_approved_by = fendiBy;
-      patch.fendi_activation_approved_at =
-        String(body.fendi_activation_approved_at ?? '').trim() || nowIso;
+      patch.fendi_activation_approved_at = snapshot.fendi_activation_approved_at;
       patch.authority_kind = 'live';
       patch.activated_at = nowIso;
+      patch.pitch_copy = pitchCopy;
+      patch.configuration_snapshot = snapshot;
       if (!current.started_at) patch.started_at = nowIso;
       patch.ended_at = null;
     }

@@ -107,24 +107,25 @@ Deno.test("activeCampaignTrackNames lowercases and skips blanks", async () => {
 Deno.test("assertTrackHasActiveCampaign rejects an un-campaigned song", async () => {
   const sb = stubClient({ pitch_campaigns: [] });
   await assertRejects(
-    () => assertTrackHasActiveCampaign(sb, { trackName: "Some Random Song" }),
+    () => assertTrackHasActiveCampaign(sb, { trackId: "t1" }),
     Error,
     "No active pitch campaign",
   );
 });
 
-Deno.test("assertTrackHasActiveCampaign passes a campaigned song by name", async () => {
+Deno.test("assertTrackHasActiveCampaign passes a campaigned song by track_id", async () => {
   const sb = stubClient({
-    pitch_campaigns: [{ tracks: { name: "Designed For Me" } }],
+    pitch_campaigns: [{ id: "c1", tracks: { name: "Designed For Me" } }],
   });
-  await assertTrackHasActiveCampaign(sb, { trackName: "designed for me" });
+  const result = await assertTrackHasActiveCampaign(sb, { trackId: "t1" });
+  assertEquals(result.campaign_id, "c1");
 });
 
-Deno.test("assertTrackHasActiveCampaign requires an identifier", async () => {
+Deno.test("assertTrackHasActiveCampaign requires track_id", async () => {
   const sb = stubClient({ pitch_campaigns: [] });
   await assertRejects(
     () => assertTrackHasActiveCampaign(sb, {}),
     Error,
-    "track_id or track_name required",
+    "track_id is required",
   );
 });

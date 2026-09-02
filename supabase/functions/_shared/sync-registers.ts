@@ -3,6 +3,10 @@
 // No send path — recording only. Licensing log starts empty (no seed rows).
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import {
+  assertHouseElectronicStampAllowed,
+  computeSyncEligible as computeSyncEligibleFromRules,
+} from "./catalog-rules.ts";
 
 export type RunResult = { status: number; data: Record<string, unknown> };
 
@@ -35,14 +39,23 @@ export function isMeditateTitle(name: string | null | undefined): boolean {
   return normalizeTitle(name) === "meditate";
 }
 
+/** Sample alone never grants sync eligibility. */
 export function computeSyncEligible(hasSample: string | null | undefined): boolean {
-  return hasSample === "no";
+  return computeSyncEligibleFromRules(hasSample);
 }
 
+/**
+ * Write-boundary genre stamp gate. trackId is required for house_electronic.
+ * @deprecated Prefer assertHouseElectronicStampAllowed(trackId, genre) directly.
+ */
 export function assertGenreStampAllowed(
   name: string,
   genreStamp: string,
+  trackId?: string | null,
 ): { ok: true } | { ok: false; error: string } {
+  if (genreStamp === "house_electronic") {
+    return assertHouseElectronicStampAllowed(trackId, genreStamp);
+  }
   if (isMeditateTitle(name) && genreStamp === "house_electronic") {
     return { ok: false, error: "Meditate is Hip-Hop/Rap — never stamp it house / deep house." };
   }
@@ -80,17 +93,26 @@ export function patchForLicensingResponse(c: string): {
   return { reply_received: false, placed: false, response_status: "awaiting" };
 }
 
-/** Fields catalogue upsert may write. Only applied when the caller sent them. */
-export function trackSyncFields(body: Record<string, unknown>, name: string): Record<string, unknown> | { error: string } {
+/** Fields catalogue upsert may write. House stamp gated by exact track_id. */
+export function trackSyncFields(
+  body: Record<string, unknown>,
+  name: string,
+  trackId?: string | null,
+): Record<string, unknown> | { error: string } {
   const fields: Record<string, unknown> = {};
+  const id = trackId ?? (body.id ? String(body.id) : null);
   if (body.aggregator !== undefined) fields.aggregator = parseAggregator(body.aggregator);
   if (body.genre_stamp !== undefined) {
     const genre = parseGenreStamp(body.genre_stamp);
-    const gate = assertGenreStampAllowed(name, genre);
+    const gate = assertGenreStampAllowed(name, genre, id);
     if (!gate.ok) return { error: gate.error };
     fields.genre_stamp = genre;
   }
   if (body.has_sample !== undefined) fields.has_sample = parseSampleFlag(body.has_sample);
+  // Never accept client writes that set sync_eligible true from sample alone.
+  if (body.sync_eligible !== undefined) {
+    return { error: "sync_eligible is not writable from catalogue upsert; use the sync gate / Fendi approval path." };
+  }
   if (typeof body.is_month1_sync_default === "boolean") {
     fields.is_month1_sync_default = body.is_month1_sync_default;
   }

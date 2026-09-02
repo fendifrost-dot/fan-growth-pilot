@@ -208,7 +208,7 @@ const AdminCatalogue: React.FC = () => {
           </h1>
           <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
             Operator-only catalog: titles, optional ISRC, aggregator, genre stamp, and sample flag.
-            Sync-eligible is automatic (no sample only). A DistroKid miss is not unreleased — leave
+            Sync-ready is never inferred from sample status. A DistroKid miss is not unreleased — leave
             aggregator OPEN when the distributor is unknown. Meditate is the month-one
             candidate for review only — not approved for sync until Fendi completes DNA,
             sample, rights, splits, assets, and sync approval.
@@ -258,9 +258,9 @@ const AdminCatalogue: React.FC = () => {
                   </TableCell>
                   <TableCell>
                     {row.sync_eligible ? (
-                      <Badge variant="default" className="text-[10px]">Eligible</Badge>
+                      <Badge variant="default" className="text-[10px]">Sync gated</Badge>
                     ) : (
-                      <Badge variant="outline" className="text-[10px]">No</Badge>
+                      <Badge variant="outline" className="text-[10px]">Not sync-ready</Badge>
                     )}
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">

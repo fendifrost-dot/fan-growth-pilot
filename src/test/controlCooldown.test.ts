@@ -7,11 +7,12 @@ import {
   isControlCooldownActive,
   isControlTrackId,
 } from "@/lib/controlCooldown";
+import { TRACK_IDS } from "@/lib/catalogRules";
 
 describe("Control same-target cooldown", () => {
-  it("uses the locked Control track UUID", () => {
+  it("uses the locked Control track UUID as primary key", () => {
     expect(isControlTrackId(CONTROL_TRACK_ID)).toBe(true);
-    expect(isControlTrackId("506ad12f-9e2e-450c-b2e9-f3d10670c015")).toBe(false);
+    expect(isControlTrackId(TRACK_IDS.MEDITATE)).toBe(false);
     expect(CONTROL_COOLDOWN_UNTIL_DATE).toBe("2026-09-14");
   });
 
@@ -51,10 +52,9 @@ describe("Control same-target cooldown", () => {
     expect(d.blocked).toBe(false);
   });
 
-  it("does not apply the Control hold to Meditate", () => {
+  it("does not apply the Control hold without the Control track UUID", () => {
     const d = evaluateControlSameTargetCooldown({
-      trackId: "506ad12f-9e2e-450c-b2e9-f3d10670c015",
-      trackName: "Meditate",
+      trackId: TRACK_IDS.MEDITATE,
       playlistId: "spotify:abc",
       priorPitchExists: true,
       now: new Date("2026-09-10T12:00:00Z"),

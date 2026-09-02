@@ -1,13 +1,13 @@
 // Deno tests for Control same-target cooldown.
-// Run: deno test supabase/functions/_shared/control-cooldown.test.ts
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
   CONTROL_TRACK_ID,
   evaluateControlSameTargetCooldown,
   isControlCooldownActive,
 } from "./control-cooldown.ts";
+import { TRACK_IDS } from "./catalog-rules.ts";
 
-Deno.test("blocks prior Control target during cooldown window", () => {
+Deno.test("blocks prior Control target during cooldown window by UUID", () => {
   const d = evaluateControlSameTargetCooldown({
     trackId: CONTROL_TRACK_ID,
     playlistId: "spotify:prior",
@@ -23,6 +23,16 @@ Deno.test("allows new Control targets during the window", () => {
     trackId: CONTROL_TRACK_ID,
     playlistId: "spotify:fresh",
     priorPitchExists: false,
+    now: new Date("2026-09-10T15:00:00Z"),
+  });
+  assertEquals(d.blocked, false);
+});
+
+Deno.test("non-Control UUID is never blocked by Control cooldown", () => {
+  const d = evaluateControlSameTargetCooldown({
+    trackId: TRACK_IDS.MEDITATE,
+    playlistId: "spotify:prior",
+    priorPitchExists: true,
     now: new Date("2026-09-10T15:00:00Z"),
   });
   assertEquals(d.blocked, false);

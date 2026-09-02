@@ -2463,7 +2463,7 @@ export async function runCatalogueAdmin(body: Record<string, unknown>, sb: Supab
       updated_at: new Date().toISOString(),
     };
     if (!fields.name) return { status: 400, data: { error: "name required" } };
-    const syncFields = trackSyncFields(body, String(fields.name));
+    const syncFields = trackSyncFields(body, String(fields.name), id);
     if ("error" in syncFields) return { status: 400, data: { error: syncFields.error } };
     Object.assign(fields, syncFields);
     if (fields.is_month1_sync_default === true) {

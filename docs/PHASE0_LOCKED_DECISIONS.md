@@ -62,14 +62,17 @@ Build the generator without waiting for contributor data. Actual sheets stay inc
 
 ---
 
-## 6. Lyrics provider
+## 6. Lyrics provider — DEFERRED
 
-Do **not** treat “no vendor this cycle” as locked. Authorize:
+**Provider deferred.** Do not select, purchase, or wire a paid lyric vendor in this cycle.
 
-- Provider-neutral integration + adapter interface
-- Limited **one-song** evaluation
-- Test **AudioShake** first; **Whisper** as comparison/fallback
-- No recurring subscription or larger catalog processing without separate Fendi approval
+Authorize later (separate Fendi decision + budget):
+
+- Provider-neutral adapter interface
+- Limited one-song evaluation candidates (AudioShake first; Whisper comparison/fallback)
+- No recurring subscription or larger catalog processing without approval
+
+Until that decision: manual upload/import only; no vendor integration work beyond the adapter stub in Phase 4.
 
 ---
 

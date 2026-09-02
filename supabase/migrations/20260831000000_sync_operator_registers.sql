@@ -54,6 +54,8 @@ begin
 end$$;
 
 -- Generated: sync-eligible only when the operator has confirmed no sample.
+-- SUPERSEDED by 20260902120000_replace_sync_eligible_and_pitch_identity.sql
+-- which drops this generated column. has_sample=no must NEVER imply sync-ready.
 alter table public.tracks
   add column if not exists sync_eligible boolean
   generated always as (has_sample = 'no') stored;

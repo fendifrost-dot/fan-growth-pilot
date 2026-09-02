@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   EVEN_ARTIST_URL,
   MONTH1_SYNC_DEFAULT_TITLE,
+  TRACK_IDS,
   assertGenreStampAllowed,
   computeSyncEligible,
   isHouseElectronicTitle,
@@ -13,33 +14,40 @@ import {
   resolvePublicEvenUrl,
   stripIsrc,
 } from "@/lib/syncRegisters";
+import { evaluateSyncReady } from "@/lib/catalogRules";
 
 describe("sync register rules", () => {
-  it("treats Meditate as Hip-Hop/Rap and refuses a house stamp", () => {
+  it("refuses house stamp on Meditate by UUID at the write boundary", () => {
     expect(isMeditateTitle("Meditate")).toBe(true);
-    expect(isMeditateTitle("  MEDITATE ")).toBe(true);
-    expect(assertGenreStampAllowed("Meditate", "house_electronic").ok).toBe(false);
-    expect(assertGenreStampAllowed("Meditate", "hip_hop_rap").ok).toBe(true);
+    expect(assertGenreStampAllowed("Meditate", "house_electronic", TRACK_IDS.MEDITATE).ok).toBe(false);
+    expect(assertGenreStampAllowed("Meditate", "hip_hop_rap", TRACK_IDS.MEDITATE).ok).toBe(true);
   });
 
-  it("limits the house/electronic pool to the three named titles", () => {
+  it("limits house/electronic writes to the three allow-listed track UUIDs", () => {
+    expect(assertGenreStampAllowed("x", "house_electronic", TRACK_IDS.BALENCIAGA).ok).toBe(true);
+    expect(assertGenreStampAllowed("x", "house_electronic", TRACK_IDS.ELECTRILLA).ok).toBe(true);
+    expect(assertGenreStampAllowed("x", "house_electronic", TRACK_IDS.CONTROL).ok).toBe(true);
+    expect(assertGenreStampAllowed("Meditate", "house_electronic", TRACK_IDS.MEDITATE).ok).toBe(false);
+    expect(assertGenreStampAllowed("Neva", "house_electronic", TRACK_IDS.NEVA_TOO_MUCH_PRADA).ok).toBe(false);
+    expect(assertGenreStampAllowed("Designed For Me (Control)", "house_electronic").ok).toBe(false);
+  });
+
+  it("keeps title helpers for display only", () => {
     expect(isHouseElectronicTitle("Balenciaga (Let Me Freeze)")).toBe(true);
-    expect(isHouseElectronicTitle("Electrilla")).toBe(true);
-    expect(isHouseElectronicTitle("Designed For Me (Control)")).toBe(true);
     expect(isHouseElectronicTitle("Meditate")).toBe(false);
-    expect(isHouseElectronicTitle("Neva Too Much Prada")).toBe(false);
   });
 
-  it("marks Neva Too Much Prada as the sampled title", () => {
+  it("marks Neva Too Much Prada as the sampled title and never sync-eligible from sample alone", () => {
     expect(isNevaTooMuchPrada("Neva Too Much Prada")).toBe(true);
     expect(computeSyncEligible("yes")).toBe(false);
+    expect(computeSyncEligible("no")).toBe(false);
   });
 
-  it("is sync-eligible only when has_sample is no", () => {
-    expect(computeSyncEligible("no")).toBe(true);
+  it("does not treat has_sample=no as sync-eligible", () => {
+    expect(computeSyncEligible("no")).toBe(false);
     expect(computeSyncEligible("yes")).toBe(false);
     expect(computeSyncEligible("unknown")).toBe(false);
-    expect(computeSyncEligible(null)).toBe(false);
+    expect(evaluateSyncReady({ hasSample: "no" }).ready).toBe(false);
   });
 
   it("defaults unknown aggregators to OPEN (not unreleased)", () => {

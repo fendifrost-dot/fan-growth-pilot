@@ -50,6 +50,7 @@ Order after campaign stack exists (see `docs/PHASE0_ATOMIC_CUTOVER.md`):
 4. `20260903100000_lyrics_transcriptions.sql`  
 5. `20260903110000_split_sheets.sql`  
 6. `20260903200000_ops_incidents_press_license.sql`  
+7. `20260904000000_outreach_drafts_track_id.sql`  
 
 ## Remaining Fendi-only decisions
 

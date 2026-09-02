@@ -179,6 +179,7 @@ export const ACTION_AUTH: Record<string, AuthClass> = {
   get_outreach_stats: 'public-read',
   get_instagram_messaging_status: 'public-read',
   connect_spotify_status: 'public-read',
+  audit_playlist_category_coverage: 'authenticated-read',
 };
 
 /**

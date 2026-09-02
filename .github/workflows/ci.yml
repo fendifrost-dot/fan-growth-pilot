@@ -26,13 +26,15 @@ jobs:
           deno-version: v2.x
       - name: Deno edge-function gate tests
         run: |
-          deno test --allow-env \
+          deno test --allow-env --allow-read \
             supabase/functions/_shared/send-identity-gate.test.ts \
             supabase/functions/_shared/outreach-auth.test.ts \
             supabase/functions/_shared/pitch-campaigns.test.ts \
             supabase/functions/_shared/control-cooldown.test.ts \
             supabase/functions/_shared/song-dna.test.ts \
             supabase/functions/_shared/lyrics-split.test.ts \
-            supabase/functions/_shared/genre-fit.test.ts
+            supabase/functions/_shared/genre-fit.test.ts \
+            supabase/functions/_shared/draft-identity.test.ts \
+            supabase/functions/_shared/playlist-category-coverage.test.ts
       - name: Production build
         run: npm run build

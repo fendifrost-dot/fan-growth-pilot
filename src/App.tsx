@@ -36,6 +36,7 @@ import AdminLyrics from "./pages/admin/AdminLyrics";
 import AdminSplitSheets from "./pages/admin/AdminSplitSheets";
 import AdminOpsIncidents from "./pages/admin/AdminOpsIncidents";
 import AdminPressKit from "./pages/admin/AdminPressKit";
+import AdminCategoryCoverage from "./pages/admin/AdminCategoryCoverage";
 import AdminOpportunities from "./pages/admin/AdminOpportunities";
 import RegisterPreview from "./pages/dev/RegisterPreview";
 
@@ -92,6 +93,7 @@ const App = () => {
             <Route path="songs" element={<AdminCatalogue />} />
             <Route path="licensing" element={<AdminLicensing />} />
             <Route path="categories" element={<AdminCategories />} />
+            <Route path="category-coverage" element={<AdminCategoryCoverage />} />
             <Route path="pitch-composer" element={<AdminPitchComposer />} />
             <Route path="pitch-portal" element={<AdminPitchPortal />} />
             <Route path="song-dna" element={<AdminSongDna />} />

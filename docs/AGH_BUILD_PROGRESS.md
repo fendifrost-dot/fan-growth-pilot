@@ -17,6 +17,8 @@
 | DNA↔playlist genre-fit on shared send gate | done | `_shared/genre-fit.ts` wired into `send-identity-gate` |
 | Ops incidents + Press/EPK + private license evidence | done | `20260903200000`, `_shared/ops-press.ts`, admin pages |
 | Canonical playlist send gate | done | `execute-pitch` + `send-pitch-email` share `send-identity-gate` + `PITCH_IDENTITY_GATE` |
+| Draft/approve identity (no title-only) | done | `outreach_drafts.track_id`, composer campaign picker, approve forwards IDs |
+| Playlist category coverage audit | done | `audit_playlist_category_coverage` + `/admin/category-coverage` |
 
 ## Migrations to apply (Lovable SQL Editor — order)
 
@@ -27,6 +29,7 @@
 5. `20260903100000` Lyrics
 6. `20260903110000` Split sheets
 7. `20260903200000` Ops / press / private license
+8. `20260904000000` outreach_drafts.track_id (+ metadata backfill)
 
 ## Atomic send cutover (still blocked live)
 

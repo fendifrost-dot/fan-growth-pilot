@@ -22,6 +22,7 @@ const AdminGuard: React.FC = () => {
               <Link to="/admin/catalogue" className="hover:underline">Songs</Link>
               <Link to="/admin/licensing" className="hover:underline">Licensing</Link>
               <Link to="/admin/categories" className="hover:underline">Categories</Link>
+              <Link to="/admin/category-coverage" className="hover:underline">Category coverage</Link>
               <Link to="/admin/pitch-composer" className="hover:underline">Pitch Composer</Link>
               <Link to="/admin/playlists" className="hover:underline">Find playlists</Link>
               <Link to="/admin/outreach" className="hover:underline">Curator drafts</Link>

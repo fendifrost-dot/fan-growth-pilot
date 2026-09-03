@@ -1,7 +1,7 @@
 /** Sync / licensing register helpers — operator-only song + pitch bookkeeping.
  *
  * Genre rules (artist-verified):
- * - MEDITATE is Hip-Hop/Rap. Never house / deep house / Kaytranada.
+ * - MEDITATE is Hip-Hop/Rap. Never house / electronic.
  * - House/electronic pool is ONLY Balenciaga (Let Me Freeze), Electrilla,
  *   Designed For Me (Control).
  * - sync_eligible is true only when has_sample === "no".

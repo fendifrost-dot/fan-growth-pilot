@@ -48,7 +48,7 @@ export const LANE_MODIFIERS = [
   "hidden gems", "playlist 2024", "spotify playlist", "top", "chill", "discover",
   "deep cuts", "rotation", "monthly", "selects", "favourites",
 ];
-// Templates applied to each reference artist (e.g. "Kaytranada type playlist").
+// Templates applied to each reference artist (e.g. "<artist> type playlist").
 export const REF_MODIFIERS = [
   "type playlist", "radio", "mix", "similar artists playlist", "essentials",
   "fans playlist", "inspired playlist", "fans also like", "adjacent",

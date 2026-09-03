@@ -30,6 +30,7 @@ import {
   isLaneGenreMismatch,
   laneRegexBoost,
   loadLanesConfig,
+  setSweepLaneRoutingFromProfiles,
   type LaneConfig,
   rowMatchesLane,
 } from "./playlist-lanes.ts";
@@ -76,6 +77,16 @@ import {
   missingPitchCopyResult,
   resolvePitchAngle,
 } from "./pitch-copy.ts";
+import {
+  buildCutoverReadinessReport,
+  evaluateOutreachDecision,
+} from "./outreach-decision.ts";
+import {
+  handleDiscoveryProfileAction,
+  isDiscoveryProfileAction,
+  loadActiveDiscoveryProfiles,
+  profilesToSweepBuckets,
+} from "./discovery-profiles.ts";
 import { isDraftable, verifyEmail, domainOf, normalizeEmail } from "./verify-target.ts";
 import {
   eligibilitySkipLog,
@@ -266,16 +277,22 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
   const policyBlock = outreachPolicyBlock(row as Record<string, unknown>, pickChannel(row, channelOverride));
   if (policyBlock) return policyBlock;
 
-  // Every send path resolves a tracks row. track_id wins; otherwise look up by
-  // lower(name). A missing name falls through to catalogue pick, then the same lookup.
+  // Exact track identity preferred. Catalog guessing is legacy-only and is
+  // recorded via evaluateOutreachDecision shadow log; enforce mode rejects it.
   let lookupId = requestedTrackId;
+  const campaignId = String(body.campaign_id ?? "").trim();
   if (!lookupId && !trackName) {
-    const catalog = await loadCatalogTracks(sb);
-    const pick = pickCatalogTrackForPlacement(row, catalog, catalog[0]?.name ?? "");
-    trackName = pick.track;
+    return {
+      status: 422,
+      data: {
+        error: "track_id required. Title-only / automatic catalogue guessing is not allowed for new drafts.",
+        playlist_id: playlistId,
+      },
+    };
   }
-  if (!lookupId && !trackName) {
-    return { status: 422, data: { error: "No track specified and catalogue is empty" } };
+  if (!lookupId && trackName) {
+    // Operator search by title remains for controlled lookup, but the resolved
+    // UUID is what we persist — never send by title alone.
   }
 
   const loaded = await loadTrackForPitch(sb, lookupId
@@ -344,7 +361,19 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
     }),
     targetGenre: targetGenre(row as Record<string, unknown>),
   });
-  if (!gate.pass && !Boolean(body.override_category_check)) {
+  if (!gate.pass) {
+    // General override_category_check removed from operational drafts.
+    // Fendi-only scoped override goes through evaluateOutreachDecision.
+    if (Boolean(body.override_category_check)) {
+      return {
+        status: 403,
+        data: {
+          error:
+            "override_category_check is disabled on operational drafts. " +
+            "Use a Fendi-scoped mismatch override with written reason via outreach decision.",
+        },
+      };
+    }
     return {
       status: 422,
       data: {
@@ -356,17 +385,46 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
     };
   }
 
-  const lanes = await loadLanesConfig(sb);
   const lane = String(row.lane ?? "").trim();
-  const copy = resolvePitchAngle(sb, { track, row, lanes });
-  if (!copy.ok) {
+
+  // Shared decision: track-only {{pitch}}, DNA compatibility, identity (shadow by default).
+  const decision = await evaluateOutreachDecision(sb, {
+    route: "draft_pitch",
+    trackId,
+    trackName,
+    campaignId: campaignId || null,
+    playlistId,
+    lane,
+    overrideCategoryCheck: false,
+    isFendiAdmin: false,
+  });
+
+  if (!decision.pitch.ok) {
     return missingPitchCopyResult({
       trackName,
       trackId: trackId || null,
       playlistId,
       lane: lane || null,
+      missing: decision.pitch.missing,
     });
   }
+
+  // Enforce mode blocks incompatible lanes / missing identity at draft time.
+  if (decision.mode === "enforce" && !decision.allow) {
+    return {
+      status: 422,
+      data: {
+        error: decision.errors[0] ?? decision.code,
+        decision_code: decision.code,
+        errors: decision.errors,
+        contradiction: decision.contradictionExplanation,
+        song_dna_version_id: decision.songDnaVersionId,
+      },
+    };
+  }
+
+  const copy = decision.pitch;
+  const fit = decision.fitReason;
 
   const platform = (String(row.platform ?? "spotify").trim() || "spotify") as Platform;
   const streamUrl = trackUrlForPlatform(track, platform)
@@ -393,6 +451,7 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
     playlistName: (row.playlist_name as string | null)?.trim() || "your playlist",
     trackName,
     shortPitch: copy.pitch,
+    fitReason: fit.fitReason,
     platform,
     streamUrl: streamUrl ?? "",
     isWarm,
@@ -429,19 +488,33 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
   else if (channel === "web_form") recipient = (row.submission_url as string)?.trim() ?? null;
 
   const { data: draft, error: insErr } = await sb.from("outreach_drafts").insert({
-    playlist_id: playlistId, track_name: trackName, channel, recipient,
-    subject: channel === "email" ? subject : null, body: pitchBody,
-    generated_by: generatedBy, status: "pending",
+    playlist_id: playlistId,
+    track_name: trackName,
+    track_id: trackId || null,
+    song_dna_version_id: decision.songDnaVersionId,
+    campaign_id: campaignId || null,
+    channel,
+    recipient,
+    subject: channel === "email" ? subject : null,
+    body: pitchBody,
+    generated_by: generatedBy,
+    status: "pending",
     metadata: {
       lane: lane || null,
       why_it_fits: (row.why_it_fits as string | null) ?? null,
+      fit_reason: fit.fitReason || null,
+      fit_reason_source: fit.source,
       stream_link: streamUrl || null,
       tone,
       platform,
       is_warm: isWarm,
       prior_track: priorTrack ?? null,
       track_id: trackId || null,
+      song_dna_version_id: decision.songDnaVersionId,
+      campaign_id: campaignId || null,
       pitch_source: copy.source,
+      decision_mode: decision.mode,
+      decision_code: decision.code,
       placement_source: placementWarm ? (rc?.source as string) : null,
     },
   }).select("id, channel, subject, body, recipient").single();
@@ -727,9 +800,10 @@ export async function runQueueInstagramPitch(
   sb: SupabaseClient,
 ): Promise<RunResult> {
   const playlistId = String(body.playlist_id ?? "").trim();
+  const trackIdReq = String(body.track_id ?? "").trim();
   const trackName = String(body.track_name ?? "").trim();
-  if (!playlistId || !trackName) {
-    return { status: 400, data: { error: "playlist_id and track_name required" } };
+  if (!playlistId || (!trackIdReq && !trackName)) {
+    return { status: 400, data: { error: "playlist_id and track_id (or track_name for lookup) required" } };
   }
 
   const { data: row, error } = await sb.from("playlist_targets").select("*").eq("playlist_id", playlistId).maybeSingle();
@@ -748,28 +822,46 @@ export async function runQueueInstagramPitch(
     return { status: 400, data: { error: "Curator IG matches a lane reference artist; reject mis-targeted DM" } };
   }
   const lane = String(row.lane ?? "").trim();
-  const loadedTrack = await loadTrackForPitch(sb, { trackName });
+  const loadedTrack = await loadTrackForPitch(
+    sb,
+    trackIdReq ? { trackId: trackIdReq } : { trackName },
+  );
   if (loadedTrack.error) return { status: 500, data: { error: loadedTrack.error } };
   const track = loadedTrack.track;
   if (!track) {
     return {
       status: 422,
       data: {
-        error: `No catalogue track matches "${trackName}". Add it in Admin → Songs before queuing a DM.`,
+        error: `No catalogue track matches. Pass exact track_id.`,
         track_name: trackName,
         playlist_id: playlistId,
       },
     };
   }
-  const copy = resolvePitchAngle(sb, { track, row, lanes });
-  if (!copy.ok) {
+  const decision = await evaluateOutreachDecision(sb, {
+    route: "queue_instagram_pitch",
+    trackId: String(track.id),
+    trackName: String(track.name),
+    campaignId: String(body.campaign_id ?? "").trim() || null,
+    playlistId,
+    lane,
+  });
+  if (!decision.pitch.ok) {
     return missingPitchCopyResult({
       trackName: String(track.name ?? trackName),
       trackId: String(track.id ?? "") || null,
       playlistId,
       lane: lane || null,
+      missing: decision.pitch.missing,
     });
   }
+  if (decision.mode === "enforce" && !decision.allow) {
+    return {
+      status: 422,
+      data: { error: decision.errors[0] ?? decision.code, errors: decision.errors },
+    };
+  }
+  const copy = decision.pitch;
   const streamLink = await resolveStreamLinkForPlatform(
     sb,
     String(track.name ?? trackName),
@@ -2398,6 +2490,8 @@ const PLAYLIST_AGENT_ACTIONS = new Set([
   "list_tracks", "upsert_track", "delete_track",
   "list_categories", "upsert_category", "delete_category",
   "list_lanes", "upsert_lane", "delete_lane",
+  "list_discovery_profiles", "upsert_discovery_profile", "deactivate_discovery_profile", "approve_discovery_profile",
+  "outreach_cutover_readiness",
   "list_pitch_templates", "upsert_pitch_template", "preview_pitch_template",
   "set_track_categories", "set_playlist_categories",
   "recommend_targets_for_track", "list_warm_curators",
@@ -2450,6 +2544,15 @@ export async function runCatalogueAdmin(body: Record<string, unknown>, sb: Supab
       regex_boost: cfg.regex_boost ?? "",
     }));
     return { status: 200, data: { ok: true, rows } };
+  }
+
+  if (isDiscoveryProfileAction(action)) {
+    return handleDiscoveryProfileAction(sb, action, body, null);
+  }
+
+  if (action === "outreach_cutover_readiness") {
+    const report = await buildCutoverReadinessReport(sb);
+    return { status: 200, data: { ok: true, report } };
   }
 
   if (action === "upsert_lane") {

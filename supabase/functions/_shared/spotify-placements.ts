@@ -65,7 +65,7 @@ async function resolveCatalogTracks(sb: SupabaseClient): Promise<string[]> {
   if (data?.value && typeof data.value === "object" && !Array.isArray(data.value)) {
     return Object.keys(data.value as Record<string, string>).filter(Boolean);
   }
-  return ["Designed For Me (Control)"];
+  return [];
 }
 
 export async function discoverSpotifyPlacements(

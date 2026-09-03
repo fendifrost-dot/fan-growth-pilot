@@ -61,18 +61,16 @@ export const REF_MODIFIERS = [
 // a modifier and the cross-product widens. Kept genre-only (no artist refs) so a
 // sweep spans the whole space instead of orbiting one lane's reference set.
 
-/** Rap subgenres — the full spread the sweep should cover. Deliberately broad and
- * rap-led (Fendi's catalogue spans house rap, trap, conscious/hard rap, and club
- * records) so the balanced sweep always has a deep rap bench to interleave from. */
-export const RAP_SUBGENRES = [
+/** Rap/house search-term fixtures for unit tests only.
+ * Operational discovery loads included_search_terms from discovery_profiles. */
+export const TEST_FIXTURE_RAP_SUBGENRES = [
   "trap", "drill", "boom bap", "melodic rap", "rage rap", "west coast rap",
   "east coast rap", "southern hip hop", "underground hip hop", "lofi rap",
   "conscious rap", "hard rap", "club rap", "party rap", "gangsta rap", "g-funk",
   "phonk", "plugg", "hip hop", "rap", "new rap", "hip hop 2026",
 ];
 
-/** House subgenres — the full spread the sweep should cover. */
-export const HOUSE_SUBGENRES = [
+export const TEST_FIXTURE_HOUSE_SUBGENRES = [
   "deep house", "tech house", "afro house", "soulful house", "bass house",
   "progressive house", "melodic house", "organic house", "disco house",
   "funky house", "vocal house", "amapiano", "house",

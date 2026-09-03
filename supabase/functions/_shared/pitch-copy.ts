@@ -1,56 +1,151 @@
 /**
- * Resolve song pitch copy from the database — never from source literals.
+ * Resolve song pitch copy from the track / approved Song DNA only.
  *
- * Precedence (track first: the copy describes the song):
- *   1. tracks.short_pitch
- *   2. tracks.pitch_angle
- *   3. playlist_targets.recommended_pitch_angle
- *   4. artist_config.lanes[lane].pitch_angle
- *   5. missing → caller must 422 (do not invent genre copy)
+ * {{pitch}} MUST NEVER be filled from playlist_targets.recommended_pitch_angle
+ * or artist_config.lanes[lane].pitch_angle — those are target-fit copy only
+ * (see resolveFitReason → {{fit_reason}}).
  */
 import { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
-import { loadLanesConfig, type LaneConfig } from "./playlist-lanes.ts";
 
-export const PITCH_COPY_MISSING_FIELDS = [
+export const TRACK_PITCH_MISSING_FIELDS = [
   "tracks.short_pitch",
-  "tracks.pitch_angle",
-  "playlist_targets.recommended_pitch_angle",
+  "song_dna_versions.short_pitch (approved)",
 ] as const;
 
-export type PitchCopySource =
-  | "tracks.short_pitch"
-  | "tracks.pitch_angle"
-  | "playlist_targets.recommended_pitch_angle"
-  | "artist_config.lanes.pitch_angle";
+export type TrackPitchSource =
+  | "song_dna_versions.short_pitch"
+  | "tracks.short_pitch";
 
-export type PitchCopyOk = {
+export type TrackPitchOk = {
   ok: true;
   pitch: string;
-  source: PitchCopySource;
+  source: TrackPitchSource;
+  songDnaVersionId: string | null;
 };
 
-export type PitchCopyMissing = {
+export type TrackPitchMissing = {
   ok: false;
   pitch: null;
   source: null;
+  songDnaVersionId: null;
   missing: string[];
 };
 
-export type PitchCopyResult = PitchCopyOk | PitchCopyMissing;
+export type TrackPitchResult = TrackPitchOk | TrackPitchMissing;
+
+export type FitReasonOk = {
+  ok: true;
+  fitReason: string;
+  source: "playlist_targets.recommended_pitch_angle" | "artist_config.lanes.pitch_angle";
+};
+
+export type FitReasonEmpty = {
+  ok: true;
+  fitReason: "";
+  source: null;
+};
+
+export type FitReasonResult = FitReasonOk | FitReasonEmpty;
 
 function trimText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
 /**
- * Sync resolution when the caller already has the track row, playlist row, and
- * lanes map. `sb` is accepted so every call site shares one signature; it is
- * unused when `lanes` is provided.
+ * Song description for {{pitch}}. Track / approved DNA only.
+ * Does not read playlist or lane pitch fields.
  */
+export function resolveTrackPitchCopy(args: {
+  track?: {
+    id?: unknown;
+    short_pitch?: unknown;
+    pitch_angle?: unknown;
+  } | null;
+  approvedDna?: {
+    id?: unknown;
+    short_pitch?: unknown;
+    approval_state?: unknown;
+  } | null;
+}): TrackPitchResult {
+  const missing: string[] = [...TRACK_PITCH_MISSING_FIELDS];
+
+  const dnaState = trimText(args.approvedDna?.approval_state);
+  const dnaPitch = trimText(args.approvedDna?.short_pitch);
+  if (dnaState === "approved" && dnaPitch) {
+    return {
+      ok: true,
+      pitch: dnaPitch,
+      source: "song_dna_versions.short_pitch",
+      songDnaVersionId: trimText(args.approvedDna?.id) || null,
+    };
+  }
+
+  // tracks.short_pitch is the operator-editable song description.
+  // tracks.pitch_angle is treated as a legacy alias for the same song-level field
+  // (not lane/playlist copy) until fully migrated into Song DNA.
+  const shortPitch = trimText(args.track?.short_pitch);
+  if (shortPitch) {
+    return {
+      ok: true,
+      pitch: shortPitch,
+      source: "tracks.short_pitch",
+      songDnaVersionId: null,
+    };
+  }
+
+  const legacyTrackAngle = trimText(args.track?.pitch_angle);
+  if (legacyTrackAngle) {
+    return {
+      ok: true,
+      pitch: legacyTrackAngle,
+      source: "tracks.short_pitch",
+      songDnaVersionId: null,
+    };
+  }
+
+  return {
+    ok: false,
+    pitch: null,
+    source: null,
+    songDnaVersionId: null,
+    missing,
+  };
+}
+
+/** Target-fit explanation for {{fit_reason}} — never used as {{pitch}}. */
+export function resolveFitReason(args: {
+  row?: {
+    recommended_pitch_angle?: unknown;
+    lane?: unknown;
+  } | null;
+  lanes?: Record<string, { pitch_angle?: string | null }>;
+}): FitReasonResult {
+  const recommended = trimText(args.row?.recommended_pitch_angle);
+  if (recommended) {
+    return {
+      ok: true,
+      fitReason: recommended,
+      source: "playlist_targets.recommended_pitch_angle",
+    };
+  }
+  const lane = trimText(args.row?.lane);
+  const laneAngle = lane ? trimText(args.lanes?.[lane]?.pitch_angle) : "";
+  if (laneAngle) {
+    return {
+      ok: true,
+      fitReason: laneAngle,
+      source: "artist_config.lanes.pitch_angle",
+    };
+  }
+  return { ok: true, fitReason: "", source: null };
+}
+
+/** @deprecated Use resolveTrackPitchCopy — kept name for call-site migration. */
 export function resolvePitchAngle(
   _sb: SupabaseClient | null,
   args: {
     track?: {
+      id?: unknown;
       short_pitch?: unknown;
       pitch_angle?: unknown;
     } | null;
@@ -58,40 +153,55 @@ export function resolvePitchAngle(
       recommended_pitch_angle?: unknown;
       lane?: unknown;
     } | null;
-    lanes?: Record<string, LaneConfig>;
+    lanes?: Record<string, { pitch_angle?: string | null }>;
+    approvedDna?: {
+      id?: unknown;
+      short_pitch?: unknown;
+      approval_state?: unknown;
+    } | null;
   },
-): PitchCopyResult {
-  const missing: string[] = [...PITCH_COPY_MISSING_FIELDS];
-  const shortPitch = trimText(args.track?.short_pitch);
-  if (shortPitch) return { ok: true, pitch: shortPitch, source: "tracks.short_pitch" };
-
-  const trackAngle = trimText(args.track?.pitch_angle);
-  if (trackAngle) return { ok: true, pitch: trackAngle, source: "tracks.pitch_angle" };
-
-  const recommended = trimText(args.row?.recommended_pitch_angle);
-  if (recommended) {
-    return { ok: true, pitch: recommended, source: "playlist_targets.recommended_pitch_angle" };
-  }
-
-  const lane = trimText(args.row?.lane);
-  const laneAngle = lane ? trimText(args.lanes?.[lane]?.pitch_angle) : "";
-  if (laneAngle) return { ok: true, pitch: laneAngle, source: "artist_config.lanes.pitch_angle" };
-
-  if (lane) missing.push("artist_config.lanes.pitch_angle");
-  return { ok: false, pitch: null, source: null, missing };
+): TrackPitchResult {
+  // Intentionally ignores row/lanes for {{pitch}}.
+  void args.row;
+  void args.lanes;
+  return resolveTrackPitchCopy({
+    track: args.track,
+    approvedDna: args.approvedDna,
+  });
 }
 
-/** Async wrapper: loads lanes from artist_config when the caller did not pass them. */
 export async function resolvePitchAngleAsync(
   sb: SupabaseClient,
   args: {
-    track?: { short_pitch?: unknown; pitch_angle?: unknown } | null;
-    row?: { recommended_pitch_angle?: unknown; lane?: unknown } | null;
-    lanes?: Record<string, LaneConfig>;
+    track?: {
+      id?: unknown;
+      short_pitch?: unknown;
+      pitch_angle?: unknown;
+    } | null;
+    row?: {
+      recommended_pitch_angle?: unknown;
+      lane?: unknown;
+    } | null;
+    lanes?: Record<string, { pitch_angle?: string | null }>;
+    approvedDna?: {
+      id?: unknown;
+      short_pitch?: unknown;
+      approval_state?: unknown;
+    } | null;
   },
-): Promise<PitchCopyResult> {
-  const lanes = args.lanes ?? await loadLanesConfig(sb);
-  return resolvePitchAngle(sb, { ...args, lanes });
+): Promise<TrackPitchResult> {
+  let approvedDna = args.approvedDna ?? null;
+  const trackId = trimText(args.track?.id);
+  if (!approvedDna && trackId) {
+    const { data } = await sb
+      .from("song_dna_versions")
+      .select("id, short_pitch, approval_state")
+      .eq("track_id", trackId)
+      .eq("approval_state", "approved")
+      .maybeSingle();
+    if (data) approvedDna = data;
+  }
+  return resolveTrackPitchCopy({ track: args.track, approvedDna });
 }
 
 export function missingPitchCopyResult(args: {
@@ -99,6 +209,7 @@ export function missingPitchCopyResult(args: {
   trackId: string | null;
   playlistId: string;
   lane: string | null;
+  missing?: string[];
 }): { status: 422; data: Record<string, unknown> } {
   return {
     status: 422,
@@ -108,13 +219,14 @@ export function missingPitchCopyResult(args: {
       track_id: args.trackId,
       playlist_id: args.playlistId,
       lane: args.lane,
-      missing: [...PITCH_COPY_MISSING_FIELDS],
-      remedy: "Set a short pitch for this track in Admin → Songs.",
+      missing: args.missing ?? [...TRACK_PITCH_MISSING_FIELDS],
+      remedy:
+        "Set an approved song-specific short_pitch on this track (Admin → Songs / Song DNA). " +
+        "Playlist or lane copy cannot populate {{pitch}}.",
     },
   };
 }
 
-/** Case-insensitive exact match for PostgREST `ilike` (no wildcards). */
 export function escapeIlikeExact(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
 }

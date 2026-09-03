@@ -63,7 +63,7 @@ function patchForResponse(c: ResponseChoice): Record<string, unknown> {
 const AdminPitchLog: React.FC = () => {
   const [rows, setRows] = useState<PitchRow[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
-  const [trackFilter, setTrackFilter] = useState("Designed For Me (Control)");
+  const [trackFilter, setTrackFilter] = useState("");
   const [onlyPending, setOnlyPending] = useState(false);
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState<string | null>(null);

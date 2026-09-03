@@ -25,6 +25,7 @@ Deno.test("applyPitchTemplate substitutes every documented placeholder", () => {
     playlist_name: "Night Drive",
     track_name: "Example Track",
     pitch: "KNOWN SHORT PITCH",
+    fit_reason: "TARGET FIT",
     stream_link: "Stream: https://open.spotify.com/track/x",
     artist_name: "Test Artist",
     prior_track: "Earlier Cut",
@@ -221,5 +222,8 @@ Deno.test("missing pitch copy on every source returns 422 and inserts no draft",
   assertEquals(res.status, 422);
   const data = res.data as { error: string };
   assertEquals(data.error, "No pitch copy configured");
-  assertEquals(sb.inserted.length, 0);
+  const draftInserts = sb.inserted.filter((row) =>
+    row && typeof row === "object" && "playlist_id" in (row as object) && "body" in (row as object)
+  );
+  assertEquals(draftInserts.length, 0);
 });

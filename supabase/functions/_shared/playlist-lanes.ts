@@ -58,30 +58,43 @@ export const MIN_LANE_BOOST_FOR_TAG = 8;
 // rap/house buffer. These helpers give reconcile/rowMatchesLane a config-free way
 // to validate a sweep lane against the row's own genre signal instead.
 // ---------------------------------------------------------------------------
-export const SWEEP_LANE_GENRE: Record<string, "rap" | "house"> = {
-  rap_trap_hype: "rap",
-  rap_conscious: "rap",
-  rap_general: "rap",
-  house_club: "house",
-  house_general: "house",
-};
+// Sweep-lane genre families — populated at runtime from discovery_profiles.
+// Empty until setSweepLaneRoutingFromProfiles() runs. No catalog literals here.
+export let SWEEP_LANE_GENRE: Record<string, "rap" | "house"> = {};
+
+export function setSweepLaneRoutingFromProfiles(
+  laneGenre: Record<string, "rap" | "house">,
+  laneBlockPatterns?: Record<string, string>,
+): void {
+  SWEEP_LANE_GENRE = { ...laneGenre };
+  LANE_GENRE_BLOCK = {};
+  for (const [lane, pattern] of Object.entries(laneBlockPatterns ?? {})) {
+    try {
+      LANE_GENRE_BLOCK[lane] = new RegExp(pattern, "i");
+    } catch {
+      // Invalid expressions are rejected at save time; skip bad runtime values.
+    }
+  }
+}
 
 export function isSweepLane(lane: string): boolean {
   return Object.prototype.hasOwnProperty.call(SWEEP_LANE_GENRE, lane);
 }
 
 // Compact genre detectors for reconcile — read the row's own text, not config.
-const RAP_LANE_RE =
+// Patterns come from discovery profile matching_expression when set; these
+// defaults are generic family detectors (not catalog- or song-specific).
+const FAMILY_RAP_RE =
   /\b(rap|hip ?hop|hiphop|trap|drill|boom ?bap|phonk|plugg|grime|g-?funk|gangsta|gangster|conscious|cypher|freestyle)\b/i;
-const HOUSE_LANE_RE =
+const FAMILY_HOUSE_RE =
   /\b(house|techno|edm|electronic|disco|garage|amapiano|nu ?disco|balearic)\b/i;
 
 /** Rap/house genre of a text blob, or null when neither (or both) clearly present —
  * "no contradiction" rather than a forced guess. Used only to validate an already
  * assigned sweep lane, never to assign one. */
 export function sweepLaneTextGenre(text: string): "rap" | "house" | null {
-  const rap = RAP_LANE_RE.test(text);
-  const house = HOUSE_LANE_RE.test(text);
+  const rap = FAMILY_RAP_RE.test(text);
+  const house = FAMILY_HOUSE_RE.test(text);
   if (rap && !house) return "rap";
   if (house && !rap) return "house";
   return null;
@@ -125,9 +138,7 @@ export function rowMatchesLane(
   );
 }
 
-const LANE_GENRE_BLOCK: Record<string, RegExp> = {
-  deep_house_groove: /\b(rap|hip ?hop|hiphop|trap|drill)\b/i,
-};
+let LANE_GENRE_BLOCK: Record<string, RegExp> = {};
 
 /** Playlist/curator name signals wrong genre for the stamped lane. */
 export function isLaneGenreMismatch(

@@ -173,7 +173,13 @@ export async function runQueueIgOutreachBatch(
   }
 
   const catalog = await loadCatalogTracks(sb);
-  const fallbackTrack = explicitTrack || catalog[0]?.name || "Designed For Me (Control)";
+  const fallbackTrack = explicitTrack || catalog[0]?.name || "";
+  if (!fallbackTrack) {
+    return {
+      status: 422,
+      data: { error: "No track_id/track_name and catalogue is empty — refusing automatic song guess." },
+    };
+  }
 
   const sentToday = await countIgDmsSentToday(sb);
   const queuedToday = await countIgDmsToday(sb);

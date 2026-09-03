@@ -45,32 +45,12 @@ Deno.serve(async (req) => {
 
     let finalBody = body;
 
-    // Auto-generate body if requested
+    // body === "auto" inventing is removed — require real drafted body with track pitch.
     if (body === "auto") {
-      const { data: targetData } = await supabase
-        .from("playlist_targets")
-        .select("research_context, overlap_score, matched_artists")
-        .eq("playlist_id", playlist_id)
-        .maybeSingle();
-
-      if (targetData?.research_context) {
-        const ctx = targetData.research_context as any;
-        const artists = Object.values(ctx.neighborhood_artists || {}).slice(0, 3).join(", ");
-        const features = ctx.audio_features || {};
-        const tempo = features.tempo ? `${Math.round(features.tempo)}bpm` : "";
-        const energy = features.energy !== undefined ? `energy ${Math.round(features.energy * 100)}%` : "";
-
-        finalBody = `Hi ${curator_name || "there"},
-
-I came across your playlist "${playlist_name}" and think my track "${track_name}" would be a great fit.
-
-My data shows my audience overlaps heavily with fans of ${artists || "similar artists"} — my track runs at ${tempo} with ${energy}, fitting naturally alongside what you're already curating.
-
-Would love for you to give it a listen. Happy to share any additional info.
-
-Best,
-Fendi Frost`;
-      }
+      return json({
+        error:
+          "body=auto is disabled. Provide a drafted body whose {{pitch}} came from approved track Song DNA / short_pitch.",
+      }, 422);
     }
 
     const sent = await sendResendEmail({

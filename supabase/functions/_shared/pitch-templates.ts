@@ -20,6 +20,7 @@ export const PITCH_TEMPLATE_PLACEHOLDERS = [
   "playlist_name",
   "track_name",
   "pitch",
+  "fit_reason",
   "stream_link",
   "artist_name",
   "prior_track",
@@ -32,6 +33,8 @@ export interface PitchContext {
   playlistName: string;
   trackName: string;
   shortPitch: string;
+  /** Target/playlist/lane fit copy — NEVER used as {{pitch}}. */
+  fitReason?: string;
   platform: Platform;
   streamUrl: string;
   isWarm: boolean;
@@ -68,15 +71,26 @@ export function platformLinkLine(platform: Platform, url: string): string {
   return `${PLATFORM_LINK_PREFIX[platform]} ${url}`;
 }
 
+export class UnknownPitchPlaceholderError extends Error {
+  constructor(public readonly placeholder: string) {
+    super(`Unknown pitch template placeholder: {{${placeholder}}}`);
+    this.name = "UnknownPitchPlaceholderError";
+  }
+}
+
 export function applyPitchTemplate(
   subjectTemplate: string,
   bodyTemplate: string,
   vars: PitchTemplateVars,
 ): RenderedPitch {
+  const known = new Set<string>(PITCH_TEMPLATE_PLACEHOLDERS);
   const sub = (template: string) =>
     template.replace(/\{\{\s*([a-z_]+)\s*\}\}/gi, (_, key: string) => {
-      const k = key.toLowerCase() as keyof PitchTemplateVars;
-      return Object.prototype.hasOwnProperty.call(vars, k) ? vars[k] : "";
+      const k = key.toLowerCase();
+      if (!known.has(k)) {
+        throw new UnknownPitchPlaceholderError(k);
+      }
+      return vars[k as keyof PitchTemplateVars] ?? "";
     });
   return { subject: sub(subjectTemplate), body: sub(bodyTemplate) };
 }
@@ -89,6 +103,7 @@ export function varsFromPitchContext(ctx: PitchContext): PitchTemplateVars {
     playlist_name: ctx.playlistName,
     track_name: ctx.trackName,
     pitch: ctx.shortPitch.trim(),
+    fit_reason: (ctx.fitReason ?? "").trim(),
     stream_link: streamLink,
     artist_name: ctx.artistName,
     prior_track: priorTrack,

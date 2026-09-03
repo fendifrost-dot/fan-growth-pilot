@@ -204,7 +204,6 @@ const AdminPitchComposer: React.FC = () => {
             track_id: trackId,
             playlist_id: r.playlist_id,
             tone,
-            override_category_check: r._overlap === 0,
           });
           previews[i] = {
             ...previews[i],

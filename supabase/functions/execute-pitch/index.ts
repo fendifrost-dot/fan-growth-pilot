@@ -1,6 +1,5 @@
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import {
-  defaultPlaylistPitchSubject,
   htmlToPlainText,
   pitchFromHeader,
   pitchReplyTo,
@@ -296,8 +295,18 @@ async function handleEmailPitch(
   const trackUrl = trackUrls[trackName] || trackUrls[trackName.toLowerCase()] || "https://open.spotify.com/artist/" + (artistId || "0000000000000000000000");
   const cooldownDays = await getCooldownDays(sb);
   const cooldownIso = new Date(Date.now() + cooldownDays * 86400000).toISOString();
-  const bodyHtml = draft?.bodyHtml ?? ["<p>Hi,</p>","<p>I'm reaching out to submit <strong>" + escapeHtml(trackName) + "</strong> by <strong>Fendi Frost</strong> for playlist consideration.</p>","<p>Listen: <a href=\"" + escapeHtml(trackUrl) + "\">" + escapeHtml(trackUrl) + "</a></p>",artistId ? "<p>Artist on Spotify: <a href=\"https://open.spotify.com/artist/" + escapeHtml(artistId) + "\">profile</a></p>" : "","<p>Thank you for your time.</p>","<p>— Fendi Frost team</p>"].filter(Boolean).join("\n");
-  const subject = draft?.subject ?? defaultPlaylistPitchSubject(trackName, playlistName);
+  const bodyHtml = draft?.bodyHtml;
+  const subject = draft?.subject;
+  if (!bodyHtml?.trim() || !subject?.trim()) {
+    return jsonPitch({
+      ok: false,
+      method_used: method,
+      action_taken: "error",
+      cooldown_until: null,
+      message_to_user:
+        "❌ No approved draft body/subject. Draft-less inventing of pitch copy is disabled — create a draft with track-specific {{pitch}} first.",
+    });
+  }
   if (!resendKey) {
     if (!testMode) {
       await sb.from("pitch_log").insert(pitchLogRow(playlistId, trackName, email, method, "error", {

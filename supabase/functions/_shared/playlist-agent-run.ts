@@ -4,6 +4,8 @@
  */
 import { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import { trackSyncFields } from "./sync-registers.ts";
+import type { Actor } from "./outreach-auth.ts";
+import { isSongDnaAction, runSongDnaAction } from "./song-dna.ts";
 import {
   confidenceForEmailSource,
   detectSubmissionCost,
@@ -277,43 +279,42 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
   const policyBlock = outreachPolicyBlock(row as Record<string, unknown>, pickChannel(row, channelOverride));
   if (policyBlock) return policyBlock;
 
-  // Exact track identity preferred. Catalog guessing is legacy-only and is
-  // recorded via evaluateOutreachDecision shadow log; enforce mode rejects it.
+  // Exact track identity required. Title-only / catalogue guessing is not allowed
+  // for operational drafts — repair legacy rows before send.
   let lookupId = requestedTrackId;
   const campaignId = String(body.campaign_id ?? "").trim();
-  if (!lookupId && !trackName) {
+  if (!lookupId) {
     return {
       status: 422,
       data: {
         error: "track_id required. Title-only / automatic catalogue guessing is not allowed for new drafts.",
         playlist_id: playlistId,
+        track_name: trackName || null,
       },
     };
   }
-  if (!lookupId && trackName) {
-    // Operator search by title remains for controlled lookup, but the resolved
-    // UUID is what we persist — never send by title alone.
-  }
 
-  const loaded = await loadTrackForPitch(sb, lookupId
-    ? { trackId: lookupId }
-    : { trackName });
+  const loaded = await loadTrackForPitch(sb, { trackId: lookupId });
   if (loaded.error) return { status: 500, data: { error: loaded.error } };
   const track = loaded.track;
   if (!track) {
-    if (requestedTrackId) return { status: 404, data: { error: "Track not found" } };
-    return {
-      status: 422,
-      data: {
-        error: `No catalogue track matches "${trackName}". Add it in Admin → Songs before drafting.`,
-        track_name: trackName,
-        playlist_id: playlistId,
-      },
-    };
+    return { status: 404, data: { error: "Track not found", track_id: lookupId } };
   }
 
   const trackId = String(track.id ?? requestedTrackId ?? "").trim();
   trackName = String(track.name ?? trackName).trim();
+  if (trackName && String(track.name).toLowerCase() !== trackName.toLowerCase()) {
+    return {
+      status: 422,
+      data: {
+        error: "track_name does not match track_id",
+        track_id: trackId,
+        track_name: trackName,
+        resolved_name: track.name,
+      },
+    };
+  }
+  trackName = String(track.name);
 
   // AGH P0-A — ELIGIBILITY CONTAINMENT GATE (draft side; mirrors the refusal at
   // the top of handleEmailPitch in execute-pitch). Runs BEFORE the category gate
@@ -393,6 +394,7 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
     trackId,
     trackName,
     campaignId: campaignId || null,
+    songDnaVersionId: String(body.song_dna_version_id ?? "").trim() || null,
     playlistId,
     lane,
     overrideCategoryCheck: false,
@@ -553,6 +555,40 @@ export async function runApproveDraft(body: Record<string, unknown>, sb: Supabas
 
   if (!actionable) return { status: 400, data: { error: `Draft is already ${draftStatus} — nothing to approve or send.` } };
 
+  // Legacy drafts without exact identity cannot send until repaired.
+  const draftTrackId = String((draft as { track_id?: string | null }).track_id ?? "").trim();
+  if (sendImmediately && !draftTrackId) {
+    return {
+      status: 422,
+      data: {
+        error: "Legacy draft missing track_id — repair identity before send.",
+        draft_id: draftId,
+      },
+    };
+  }
+
+  const sendDecision = await evaluateOutreachDecision(sb, {
+    route: "approve_draft",
+    trackId: draftTrackId || null,
+    trackName: String(draft.track_name ?? ""),
+    campaignId: String((draft as { campaign_id?: string | null }).campaign_id ?? "").trim() || null,
+    songDnaVersionId: String((draft as { song_dna_version_id?: string | null }).song_dna_version_id ?? "").trim() ||
+      null,
+    playlistId: String(draft.playlist_id),
+    lane: String((draft.metadata as { lane?: string } | null)?.lane ?? "").trim() || null,
+  });
+  if (sendImmediately && sendDecision.mode === "enforce" && !sendDecision.allow) {
+    return {
+      status: 422,
+      data: {
+        error: sendDecision.errors[0] ?? sendDecision.code,
+        decision_code: sendDecision.code,
+        errors: sendDecision.errors,
+        contradiction: sendDecision.contradictionExplanation,
+      },
+    };
+  }
+
   // Defense in depth: test/staging drafts must never reach a real curator inbox.
   // (`env` may be absent on older rows → undefined → treated as production.)
   const draftEnv = (draft as { env?: string | null }).env;
@@ -587,6 +623,9 @@ export async function runApproveDraft(body: Record<string, unknown>, sb: Supabas
     body: JSON.stringify({
       playlist_id: draft.playlist_id,
       track_name: draft.track_name,
+      track_id: draftTrackId || undefined,
+      song_dna_version_id: (draft as { song_dna_version_id?: string | null }).song_dna_version_id || undefined,
+      campaign_id: (draft as { campaign_id?: string | null }).campaign_id || undefined,
       draft_id: draftId,
       test_mode: testMode,
       test_email: typeof body.test_email === "string" ? body.test_email.trim() : undefined,
@@ -1613,7 +1652,7 @@ export async function runReconcileLaneTargets(
 export async function runScheduleFollowUp(body: Record<string, unknown>, sb: SupabaseClient, _hubKey: string): Promise<RunResult> {
   if (body.run === "cron") {
     const now = new Date().toISOString();
-    const { data: due, error } = await sb.from("pitch_log").select("id, playlist_id, track_name, method")
+    const { data: due, error } = await sb.from("pitch_log").select("id, playlist_id, track_name, track_id, song_dna_version_id, campaign_id, method")
       .eq("status", "sent").lte("follow_up_at", now).not("follow_up_at", "is", null);
     if (error) return { status: 500, data: { error: error.message } };
 
@@ -1621,8 +1660,19 @@ export async function runScheduleFollowUp(body: Record<string, unknown>, sb: Sup
     const errors: string[] = [];
     for (const row of due ?? []) {
       const channel = row.method === "email" ? "email" : row.method === "instagram_dm" ? "instagram_dm" : "web_form";
+      const trackId = String((row as { track_id?: string | null }).track_id ?? "").trim();
+      if (!trackId) {
+        errors.push(`${row.id}: legacy pitch_log missing track_id — repair before follow-up draft`);
+        continue;
+      }
       const draftResult = await runDraftPitch({
-        playlist_id: row.playlist_id, track_name: row.track_name, channel, generated_by: "schedule-follow-up:cron",
+        playlist_id: row.playlist_id,
+        track_id: trackId,
+        track_name: row.track_name,
+        campaign_id: (row as { campaign_id?: string | null }).campaign_id ?? undefined,
+        song_dna_version_id: (row as { song_dna_version_id?: string | null }).song_dna_version_id ?? undefined,
+        channel,
+        generated_by: "schedule-follow-up:cron",
       }, sb);
       if (draftResult.status !== 200) {
         errors.push(`${row.id}: ${(draftResult.data as { error?: string }).error ?? draftResult.status}`);
@@ -2492,13 +2542,19 @@ const PLAYLIST_AGENT_ACTIONS = new Set([
   "list_lanes", "upsert_lane", "delete_lane",
   "list_discovery_profiles", "upsert_discovery_profile", "deactivate_discovery_profile", "approve_discovery_profile",
   "outreach_cutover_readiness",
+  "list_song_dna", "get_song_dna", "create_song_dna_draft", "update_song_dna_draft",
+  "submit_song_dna_for_review", "approve_song_dna", "reject_song_dna", "list_song_dna_audit",
   "list_pitch_templates", "upsert_pitch_template", "preview_pitch_template",
   "set_track_categories", "set_playlist_categories",
   "recommend_targets_for_track", "list_warm_curators",
   "mark_pitch_response", "pitch_stats_summary", "list_pitches",
 ]);
 
-export async function runCatalogueAdmin(body: Record<string, unknown>, sb: SupabaseClient): Promise<RunResult> {
+export async function runCatalogueAdmin(
+  body: Record<string, unknown>,
+  sb: SupabaseClient,
+  actor: Actor | null = null,
+): Promise<RunResult> {
   const action = String(body.action ?? "").trim();
 
   if (action === "list_tracks") {
@@ -2547,7 +2603,7 @@ export async function runCatalogueAdmin(body: Record<string, unknown>, sb: Supab
   }
 
   if (isDiscoveryProfileAction(action)) {
-    return handleDiscoveryProfileAction(sb, action, body, null);
+    return handleDiscoveryProfileAction(sb, action, body, actor);
   }
 
   if (action === "outreach_cutover_readiness") {
@@ -2648,10 +2704,11 @@ export async function runCatalogueAdmin(body: Record<string, unknown>, sb: Supab
       track_name: String(body.track_name ?? "the track"),
       pitch: String(body.pitch ?? ""),
       stream_link: String(body.stream_link ?? ""),
-      artist_name: String(body.artist_name ?? await loadArtistName(sb)),
-      prior_track: String(body.prior_track ?? "your last track"),
-    };
-    const rendered = applyPitchTemplate(subject, bodyTpl, vars);
+    fitReason: String(body.fit_reason ?? ""),
+    artist_name: String(body.artist_name ?? await loadArtistName(sb)),
+    prior_track: String(body.prior_track ?? "your last track"),
+  };
+  const rendered = applyPitchTemplate(subject, bodyTpl, vars);
     return { status: 200, data: { ok: true, ...rendered } };
   }
 
@@ -2673,7 +2730,12 @@ export async function runCatalogueAdmin(body: Record<string, unknown>, sb: Supab
       updated_at: new Date().toISOString(),
     };
     if (!fields.name) return { status: 400, data: { error: "name required" } };
-    const syncFields = trackSyncFields(body, String(fields.name));
+    const syncFields = trackSyncFields(body, {
+      currentStamp: id
+        ? String((await sb.from("tracks").select("genre_stamp").eq("id", id).maybeSingle()).data?.genre_stamp ?? "")
+          || null
+        : null,
+    });
     if ("error" in syncFields) return { status: 400, data: { error: syncFields.error } };
     Object.assign(fields, syncFields);
     if (fields.is_month1_sync_default === true) {
@@ -2984,7 +3046,11 @@ export async function runPlaylistAgentAction(
   body: Record<string, unknown>,
   sb: SupabaseClient,
   hubKey: string,
+  actor: Actor | null = null,
 ): Promise<RunResult> {
+  if (isSongDnaAction(action)) {
+    return runSongDnaAction(action, body, sb, actor);
+  }
   switch (action) {
     case "draft_pitch": return runDraftPitch(body, sb);
     case "approve_draft": return runApproveDraft(body, sb, hubKey);
@@ -3090,7 +3156,12 @@ export async function runPlaylistAgentAction(
     case "mark_pitch_response":
     case "pitch_stats_summary":
     case "list_pitches":
-      return runCatalogueAdmin({ ...body, action }, sb);
+    case "list_discovery_profiles":
+    case "upsert_discovery_profile":
+    case "deactivate_discovery_profile":
+    case "approve_discovery_profile":
+    case "outreach_cutover_readiness":
+      return runCatalogueAdmin({ ...body, action }, sb, actor);
     default:
       return { status: 400, data: { error: `Unknown playlist agent action: ${action}` } };
   }

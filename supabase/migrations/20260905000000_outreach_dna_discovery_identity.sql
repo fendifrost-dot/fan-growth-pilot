@@ -193,10 +193,16 @@ alter table public.outreach_drafts
 
 alter table public.pitch_log
   add column if not exists track_id uuid references public.tracks(id) on delete set null,
-  add column if not exists song_dna_version_id uuid references public.song_dna_versions(id) on delete set null;
+  add column if not exists song_dna_version_id uuid references public.song_dna_versions(id) on delete set null,
+  add column if not exists campaign_id uuid;
 
 create index if not exists outreach_drafts_track_id_idx on public.outreach_drafts (track_id);
 create index if not exists pitch_log_track_id_idx on public.pitch_log (track_id);
+
+-- Pointer from catalogue track → current Fendi-approved DNA (never set by migration seed).
+alter table public.tracks
+  add column if not exists approved_song_dna_version_id uuid
+    references public.song_dna_versions(id) on delete set null;
 
 -- Attach campaign FK only when pitch_campaigns exists
 do $$

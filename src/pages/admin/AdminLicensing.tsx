@@ -17,7 +17,6 @@ import { toast } from "sonner";
 import { callHubFn } from "@/lib/hubApi";
 import {
   LICENSING_RESPONSES,
-  MONTH1_SYNC_DEFAULT_TITLE,
   licensingResponseFromRow,
   type LicensingResponse,
 } from "@/lib/syncRegisters";
@@ -83,8 +82,7 @@ const AdminLicensing: React.FC = () => {
   const [notesDraft, setNotesDraft] = useState("");
 
   const defaultTrackId = useMemo(() => {
-    const med = tracks.find((t) => t.name.trim().toLowerCase() === MONTH1_SYNC_DEFAULT_TITLE.toLowerCase());
-    return med?.id ?? tracks.find((t) => t.is_month1_sync_default)?.id ?? "";
+    return tracks.find((t) => t.is_month1_sync_default)?.id ?? tracks[0]?.id ?? "";
   }, [tracks]);
 
   const load = useCallback(async () => {

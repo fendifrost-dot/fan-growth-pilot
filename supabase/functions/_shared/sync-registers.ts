@@ -1,13 +1,13 @@
 // Operator-only song flags + music-supervisor roster + licensing pitch log.
 // Mirrors playlist pitch_log: who was pitched, when, whether they responded.
 // No send path — recording only. Licensing log starts empty (no seed rows).
+// Genre stamps are never gated by display-title literals.
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
 export type RunResult = { status: number; data: Record<string, unknown> };
 
 export const EVEN_ARTIST_URL = "https://www.even.biz/artists/fendi-frost";
-export const MONTH1_SYNC_DEFAULT_TITLE = "Meditate";
 
 const AGGREGATORS = new Set(["distrokid", "tunecore", "orchard", "open"]);
 const SAMPLE_FLAGS = new Set(["yes", "no", "unknown"]);
@@ -31,20 +31,27 @@ export function normalizeTitle(name: string | null | undefined): string {
   return (name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-export function isMeditateTitle(name: string | null | undefined): boolean {
-  return normalizeTitle(name) === "meditate";
-}
-
 export function computeSyncEligible(hasSample: string | null | undefined): boolean {
   return hasSample === "no";
 }
 
-export function assertGenreStampAllowed(
-  name: string,
-  genreStamp: string,
-): { ok: true } | { ok: false; error: string } {
-  if (isMeditateTitle(name) && genreStamp === "house_electronic") {
-    return { ok: false, error: "Meditate is Hip-Hop/Rap — never stamp it house / deep house." };
+function isRapPrimary(v: string | null | undefined): boolean {
+  const s = (v ?? "").trim().toLowerCase();
+  return s === "hip_hop_rap" || s === "rap" || s.includes("hip-hop") || s.includes("hip hop");
+}
+
+export function assertGenreStampAllowed(opts: {
+  genreStamp: string;
+  currentStamp?: string | null;
+  approvedPrimaryGenre?: string | null;
+}): { ok: true } | { ok: false; error: string } {
+  if (opts.genreStamp !== "house_electronic") return { ok: true };
+  if (isRapPrimary(opts.approvedPrimaryGenre) || opts.currentStamp === "hip_hop_rap") {
+    return {
+      ok: false,
+      error:
+        "house_electronic stamp contradicts this track’s rap / hip-hop identity (current stamp or approved Song DNA).",
+    };
   }
   return { ok: true };
 }
@@ -81,12 +88,19 @@ export function patchForLicensingResponse(c: string): {
 }
 
 /** Fields catalogue upsert may write. Only applied when the caller sent them. */
-export function trackSyncFields(body: Record<string, unknown>, name: string): Record<string, unknown> | { error: string } {
+export function trackSyncFields(
+  body: Record<string, unknown>,
+  opts?: { currentStamp?: string | null; approvedPrimaryGenre?: string | null },
+): Record<string, unknown> | { error: string } {
   const fields: Record<string, unknown> = {};
   if (body.aggregator !== undefined) fields.aggregator = parseAggregator(body.aggregator);
   if (body.genre_stamp !== undefined) {
     const genre = parseGenreStamp(body.genre_stamp);
-    const gate = assertGenreStampAllowed(name, genre);
+    const gate = assertGenreStampAllowed({
+      genreStamp: genre,
+      currentStamp: opts?.currentStamp ?? null,
+      approvedPrimaryGenre: opts?.approvedPrimaryGenre ?? null,
+    });
     if (!gate.ok) return { error: gate.error };
     fields.genre_stamp = genre;
   }

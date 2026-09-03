@@ -167,7 +167,7 @@ function baseTables(track = TRACK_A, playlist = PLAYLIST): Record<string, Row[]>
   };
 }
 
-Deno.test("draft_pitch with track_id and with track_name produce identical subject and body", async () => {
+Deno.test("draft_pitch requires track_id — title-only is rejected", async () => {
   const tables = baseTables();
   const byId = stubSb(tables);
   const byName = stubSb(tables);
@@ -180,12 +180,9 @@ Deno.test("draft_pitch with track_id and with track_name produce identical subje
     byName as never,
   );
   assertEquals(a.status, 200, JSON.stringify(a.data));
-  assertEquals(b.status, 200, JSON.stringify(b.data));
-  const da = a.data as { subject: string; body: string };
-  const db = b.data as { subject: string; body: string };
-  assertEquals(da.subject, db.subject);
-  assertEquals(da.body, db.body);
-  assert(da.body.includes("KNOWN SHORT PITCH FROM TRACK A"));
+  assertEquals(b.status, 422, JSON.stringify(b.data));
+  assertEquals(String((b.data as { error?: string }).error).includes("track_id required"), true);
+  assert((a.data as { body: string }).body.includes("KNOWN SHORT PITCH FROM TRACK A"));
 });
 
 Deno.test("track short_pitch wins over an unrelated lane pitch_angle", async () => {

@@ -131,7 +131,12 @@ export async function evaluateOutreachDecision(
     if (!data) {
       errors.push("track_id_not_found");
     } else {
-      trackRow = data as typeof trackRow;
+      trackRow = data as {
+        id: string;
+        name: string;
+        short_pitch: string | null;
+        pitch_angle: string | null;
+      };
       trackName = String(data.name);
       if (input.trackName && trim(input.trackName).toLowerCase() !== trackName.toLowerCase()) {
         errors.push("track_name_mismatch");
@@ -158,7 +163,14 @@ export async function evaluateOutreachDecision(
       ).eq("track_id", trackId).eq("approval_state", "approved").maybeSingle();
     const { data } = await q;
     if (data && String(data.approval_state) === "approved") {
-      approvedDna = data as typeof approvedDna;
+      approvedDna = data as {
+        id: string;
+        short_pitch: string | null;
+        approval_state: string;
+        approved_lanes: string[] | null;
+        excluded_lanes: string[] | null;
+        primary_genre: string | null;
+      };
       songDnaVersionId = String(data.id);
     } else if (songDnaVersionId) {
       errors.push("song_dna_not_approved");

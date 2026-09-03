@@ -1908,6 +1908,39 @@ export type Database = {
           },
         ]
       }
+      pitch_templates: {
+        Row: {
+          body_template: string
+          channel: string
+          id: string
+          is_active: boolean
+          is_warm: boolean
+          subject_template: string
+          tone: string
+          updated_at: string
+        }
+        Insert: {
+          body_template: string
+          channel?: string
+          id?: string
+          is_active?: boolean
+          is_warm?: boolean
+          subject_template: string
+          tone: string
+          updated_at?: string
+        }
+        Update: {
+          body_template?: string
+          channel?: string
+          id?: string
+          is_active?: boolean
+          is_warm?: boolean
+          subject_template?: string
+          tone?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       platform_connections: {
         Row: {
           access_token: string | null

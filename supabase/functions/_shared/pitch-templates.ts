@@ -1,5 +1,31 @@
+/**
+ * Pitch email renderer. Wording lives in `pitch_templates` (editable in Admin).
+ * This module only substitutes placeholders — it must not contain song or
+ * campaign copy.
+ */
+import { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+
 export type Tone = "warm_personal" | "casual_friendly" | "business_formal" | "hyped_energetic";
 export type Platform = "spotify" | "apple_music" | "soundcloud" | "youtube" | "blog";
+
+export const VALID_TONES = new Set<string>([
+  "warm_personal",
+  "casual_friendly",
+  "business_formal",
+  "hyped_energetic",
+]);
+
+export const PITCH_TEMPLATE_PLACEHOLDERS = [
+  "curator_name",
+  "playlist_name",
+  "track_name",
+  "pitch",
+  "stream_link",
+  "artist_name",
+  "prior_track",
+] as const;
+
+export type PitchTemplateVars = Record<(typeof PITCH_TEMPLATE_PLACEHOLDERS)[number], string>;
 
 export interface PitchContext {
   curatorName: string;
@@ -12,12 +38,23 @@ export interface PitchContext {
   priorTrack?: string;
   tone: Tone;
   artistName: string;
+  channel?: string;
 }
 
 export interface RenderedPitch {
   subject: string;
   body: string;
 }
+
+export type PitchTemplateRow = {
+  id?: string;
+  tone: string;
+  channel: string;
+  is_warm: boolean;
+  subject_template: string;
+  body_template: string;
+  is_active?: boolean;
+};
 
 const PLATFORM_LINK_PREFIX: Record<Platform, string> = {
   spotify: "Stream:",
@@ -27,178 +64,76 @@ const PLATFORM_LINK_PREFIX: Record<Platform, string> = {
   blog: "Listen:",
 };
 
-function platformLinkLine(platform: Platform, url: string): string {
+export function platformLinkLine(platform: Platform, url: string): string {
   return `${PLATFORM_LINK_PREFIX[platform]} ${url}`;
 }
 
-function requirePriorTrack(ctx: PitchContext): string {
-  return ctx.priorTrack?.trim() || "your last track";
+export function applyPitchTemplate(
+  subjectTemplate: string,
+  bodyTemplate: string,
+  vars: PitchTemplateVars,
+): RenderedPitch {
+  const sub = (template: string) =>
+    template.replace(/\{\{\s*([a-z_]+)\s*\}\}/gi, (_, key: string) => {
+      const k = key.toLowerCase() as keyof PitchTemplateVars;
+      return Object.prototype.hasOwnProperty.call(vars, k) ? vars[k] : "";
+    });
+  return { subject: sub(subjectTemplate), body: sub(bodyTemplate) };
 }
 
-export function renderPitchBody(ctx: PitchContext): RenderedPitch {
-  const {
-    curatorName,
-    playlistName,
-    trackName,
-    shortPitch,
-    platform,
-    streamUrl,
-    isWarm,
-    tone,
-    artistName,
-  } = ctx;
-  const priorTrack = requirePriorTrack(ctx);
-  const link = platformLinkLine(platform, streamUrl);
-  const pitch = shortPitch.trim();
-
-  if (tone === "warm_personal") {
-    if (!isWarm) {
-      return {
-        subject: `Submission for ${playlistName}: ${artistName} — ${trackName}`,
-        body: [
-          `Hi ${curatorName},`,
-          "",
-          `I'd love to submit **${trackName}** for *${playlistName}*.`,
-          "",
-          pitch,
-          "",
-          link,
-          "Happy to share extra context or a different mix if useful.",
-          "Thank you for your time.",
-          "",
-          `— ${artistName}`,
-        ].join("\n"),
-      };
-    }
-    return {
-      subject: `Thanks for the ${priorTrack} add — new release for ${playlistName}`,
-      body: [
-        `Hi ${curatorName},`,
-        "",
-        `Thank you for adding **${priorTrack}** to *${playlistName}* — meant a lot.`,
-        "",
-        `I just released **${trackName}** — ${pitch} Feels like it lives in the same lane as what landed last time.`,
-        "",
-        link,
-        "",
-        "No pressure if it's not the right fit. Wanted to share it with you first either way.",
-        "",
-        `— ${artistName}`,
-      ].join("\n"),
-    };
-  }
-
-  if (tone === "casual_friendly") {
-    if (!isWarm) {
-      return {
-        subject: `${trackName} for ${playlistName} — would love your ear`,
-        body: [
-          `Hey ${curatorName},`,
-          "",
-          `Hope your week's been good. Wanted to share my new song — **${trackName}** — for *${playlistName}*.`,
-          "",
-          pitch,
-          "",
-          link,
-          "",
-          "Appreciate you taking a listen.",
-          "",
-          `— ${artistName}`,
-        ].join("\n"),
-      };
-    }
-    return {
-      subject: `Round 2 — new song for ${playlistName}`,
-      body: [
-        `Hey ${curatorName},`,
-        "",
-        `Quick note — thanks again for the **${priorTrack}** add on *${playlistName}*. Really appreciated.`,
-        "",
-        `Just dropped **${trackName}** — ${pitch} Wanted to put it in front of you before anyone else.`,
-        "",
-        link,
-        "",
-        "Hope you dig it.",
-        "",
-        `— ${artistName}`,
-      ].join("\n"),
-    };
-  }
-
-  if (tone === "business_formal") {
-    if (!isWarm) {
-      return {
-        subject: `Pitch: ${artistName} — ${trackName} for ${playlistName}`,
-        body: [
-          `Hello ${curatorName},`,
-          "",
-          `I'd like to submit **${trackName}** by ${artistName} for consideration in *${playlistName}*.`,
-          "",
-          pitch,
-          "",
-          link,
-          "",
-          "Thank you for your time and consideration.",
-          "",
-          "Regards,",
-          artistName,
-        ].join("\n"),
-      };
-    }
-    return {
-      subject: `Follow-up: new release from ${artistName} for ${playlistName}`,
-      body: [
-        `Hello ${curatorName},`,
-        "",
-        `Following up on **${priorTrack}**, which you added to *${playlistName}* — thank you again for that placement.`,
-        "",
-        `I'd like to share my latest release, **${trackName}**, for your consideration. ${pitch}`,
-        "",
-        link,
-        "",
-        "Thank you for your continued support.",
-        "",
-        "Regards,",
-        artistName,
-      ].join("\n"),
-    };
-  }
-
-  // hyped_energetic
-  if (!isWarm) {
-    return {
-      subject: `New heat: ${artistName} — ${trackName}`,
-      body: [
-        `Yo ${curatorName},`,
-        "",
-        `Got something I think is perfect for *${playlistName}*: **${trackName}**.`,
-        "",
-        pitch,
-        "",
-        link,
-        "",
-        "Run it back, let me know what you think.",
-        "",
-        `— ${artistName}`,
-      ].join("\n"),
-    };
-  }
+export function varsFromPitchContext(ctx: PitchContext): PitchTemplateVars {
+  const priorTrack = ctx.priorTrack?.trim() || "your last track";
+  const streamLink = ctx.streamUrl?.trim() ? platformLinkLine(ctx.platform, ctx.streamUrl.trim()) : "";
   return {
-    subject: `Back with another one for ${playlistName}`,
-    body: [
-      `Yo ${curatorName},`,
-      "",
-      `Massive thanks for the **${priorTrack}** add — that played a real part in the wave.`,
-      "",
-      `Got the next one: **${trackName}**. ${pitch} Honestly think it might hit even harder for *${playlistName}*.`,
-      "",
-      link,
-      "",
-      "Lemme know.",
-      "",
-      `— ${artistName}`,
-    ].join("\n"),
+    curator_name: ctx.curatorName,
+    playlist_name: ctx.playlistName,
+    track_name: ctx.trackName,
+    pitch: ctx.shortPitch.trim(),
+    stream_link: streamLink,
+    artist_name: ctx.artistName,
+    prior_track: priorTrack,
   };
+}
+
+export async function loadPitchTemplate(
+  sb: SupabaseClient,
+  opts: { tone: Tone; channel?: string; isWarm: boolean },
+): Promise<PitchTemplateRow | null> {
+  const channel = (opts.channel ?? "email").trim() || "email";
+  const load = async (ch: string) => {
+    const { data } = await sb.from("pitch_templates")
+      .select("id, tone, channel, is_warm, subject_template, body_template, is_active")
+      .eq("tone", opts.tone)
+      .eq("channel", ch)
+      .eq("is_warm", opts.isWarm)
+      .eq("is_active", true)
+      .maybeSingle();
+    return (data as PitchTemplateRow | null) ?? null;
+  };
+  const exact = await load(channel);
+  if (exact?.subject_template && exact?.body_template) return exact;
+  if (channel !== "email") {
+    const fallback = await load("email");
+    if (fallback?.subject_template && fallback?.body_template) return fallback;
+  }
+  return null;
+}
+
+export async function renderPitchBody(
+  sb: SupabaseClient,
+  ctx: PitchContext,
+): Promise<RenderedPitch | { error: string; tone: string; channel: string; is_warm: boolean }> {
+  const channel = (ctx.channel ?? "email").trim() || "email";
+  const tpl = await loadPitchTemplate(sb, { tone: ctx.tone, channel, isWarm: ctx.isWarm });
+  if (!tpl) {
+    return {
+      error: "No pitch template configured",
+      tone: ctx.tone,
+      channel,
+      is_warm: ctx.isWarm,
+    };
+  }
+  return applyPitchTemplate(tpl.subject_template, tpl.body_template, varsFromPitchContext(ctx));
 }
 
 export function trackUrlForPlatform(

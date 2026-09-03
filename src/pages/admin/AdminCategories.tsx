@@ -29,6 +29,9 @@ import {
 import { toast } from "sonner";
 import { Tag, Plus, Pencil, Trash2 } from "lucide-react";
 import { callHubFn } from "@/lib/hubApi";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import AdminLanesPanel from "./AdminLanesPanel";
+import AdminPitchTemplatesPanel from "./AdminPitchTemplatesPanel";
 
 type Category = {
   id: string;
@@ -112,13 +115,24 @@ const AdminCategories: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
+          <Tag className="h-6 w-6" /> Pitching config
+        </h1>
+        <p className="text-sm text-muted-foreground mt-1">
+          Categories, playlist lanes, and the email envelope. Song copy lives on each track in Songs.
+        </p>
+      </div>
+
+      <Tabs defaultValue="categories">
+        <TabsList>
+          <TabsTrigger value="categories">Categories</TabsTrigger>
+          <TabsTrigger value="lanes">Lanes</TabsTrigger>
+          <TabsTrigger value="templates">Email templates</TabsTrigger>
+        </TabsList>
+        <TabsContent value="categories" className="space-y-6 mt-4">
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
-            <Tag className="h-6 w-6" /> Categories
-          </h1>
-          <p className="text-sm text-muted-foreground mt-1">Shared genre/vibe/mood tags for tracks and playlists.</p>
-        </div>
+        <p className="text-sm text-muted-foreground">Shared genre/vibe/mood tags for tracks and playlists.</p>
         <Button onClick={openNew}>
           <Plus className="h-4 w-4 mr-1" /> Add Category
         </Button>
@@ -191,6 +205,14 @@ const AdminCategories: React.FC = () => {
           </div>
         </DialogContent>
       </Dialog>
+        </TabsContent>
+        <TabsContent value="lanes" className="mt-4">
+          <AdminLanesPanel />
+        </TabsContent>
+        <TabsContent value="templates" className="mt-4">
+          <AdminPitchTemplatesPanel />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 };

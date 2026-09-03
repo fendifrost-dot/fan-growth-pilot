@@ -92,8 +92,8 @@ where lower(t.name) like '%designed for me%'
 on conflict do nothing;
 
 -- 6. Authored short_pitch for "Meditate". The composer now REFUSES to draft when
---    short_pitch is missing (it used to substitute hardcoded "melodic rap with a
---    deep-house groove" copy, which would have mis-sold this record), so this
+--    short_pitch is missing (it used to substitute hardcoded house-lane copy
+--    for ANY track, which would have mis-sold this record), so this
 --    field is required for Meditate to be pitchable at all.
 --    Only claims what is known: it is a club record and the title is misleading.
 --    >>> FENDI: review this line and overwrite it if you want different copy. <<<

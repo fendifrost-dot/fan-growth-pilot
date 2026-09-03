@@ -3,6 +3,13 @@ import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { toast } from "sonner";
 import { callHubFn } from "@/lib/hubApi";
 
@@ -130,13 +137,36 @@ function isNew(createdAt: string | null | undefined): boolean {
   return Date.now() - t < 24 * 60 * 60 * 1000;
 }
 
-const TRACK_DEFAULT = "Designed For Me (Control)";
+type TrackOpt = {
+  id: string;
+  name: string;
+  status: string;
+  reference_artists: string[] | null;
+  short_pitch: string | null;
+  pitch_angle: string | null;
+};
+
+type LaneOpt = {
+  key: string;
+  label: string;
+};
+
+function discoveryBlockReason(track: TrackOpt | null): string | null {
+  if (!track) return "Select a track first.";
+  const refs = (track.reference_artists ?? []).map((s) => s.trim()).filter(Boolean);
+  if (!refs.length) {
+    return `No reference artists on "${track.name}". Set them in Admin → Songs before running discovery.`;
+  }
+  return null;
+}
 
 const AdminPlaylistTargets: React.FC = () => {
   const [rows, setRows] = useState<PlaylistRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [trackName, setTrackName] = useState(TRACK_DEFAULT);
-  const [lane, setLane] = useState("deep_house_groove");
+  const [tracks, setTracks] = useState<TrackOpt[]>([]);
+  const [trackId, setTrackId] = useState("");
+  const [lanes, setLanes] = useState<LaneOpt[]>([]);
+  const [lane, setLane] = useState("");
   const [filterLane, setFilterLane] = useState("");
   const [filterTier, setFilterTier] = useState("");
   const [hasEmailOnly, setHasEmailOnly] = useState(false);
@@ -155,6 +185,28 @@ const AdminPlaylistTargets: React.FC = () => {
   const [sfaResolveUrls, setSfaResolveUrls] = useState(false);
   const [sfaDeactivateMissing, setSfaDeactivateMissing] = useState(false);
 
+  const track = useMemo(
+    () => tracks.find((t) => t.id === trackId) ?? null,
+    [tracks, trackId],
+  );
+
+  const loadCatalogue = useCallback(async () => {
+    try {
+      const [t, l] = await Promise.all([
+        callHubFn<{ rows: TrackOpt[] }>("list_tracks"),
+        callHubFn<{ rows: LaneOpt[] }>("list_lanes"),
+      ]);
+      const active = (t.rows ?? []).filter((r) => r.status === "active");
+      setTracks(active);
+      const laneRows = l.rows ?? [];
+      setLanes(laneRows);
+      setTrackId((prev) => prev || active[0]?.id || "");
+      setLane((prev) => prev || laneRows[0]?.key || "");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
   const refreshSpotifyStatus = useCallback(async () => {
     try {
       const s = await callHubFn<{ connected: boolean; reason?: string }>("connect_spotify_status", {});
@@ -167,6 +219,10 @@ const AdminPlaylistTargets: React.FC = () => {
   useEffect(() => {
     refreshSpotifyStatus();
   }, [refreshSpotifyStatus]);
+
+  useEffect(() => {
+    loadCatalogue();
+  }, [loadCatalogue]);
 
   const connectSpotify = async () => {
     setConnecting(true);
@@ -226,6 +282,11 @@ const AdminPlaylistTargets: React.FC = () => {
   }, [filterLane, filterTier, hasEmailOnly, costFilter, pitchableOnly, placementOnly]);
 
   const discoverPlacements = async () => {
+    const blocked = discoveryBlockReason(track);
+    if (blocked) {
+      toast.error(blocked);
+      return;
+    }
     setDiscoveringPlacements(true);
     try {
       const res = await callHubFn<{
@@ -234,9 +295,10 @@ const AdminPlaylistTargets: React.FC = () => {
         ingested: number;
         skipped: Record<string, number>;
       }>("discover_spotify_placements", {
-        track_name: trackName,
+        track_id: track!.id,
+        track_name: track!.name,
         lane,
-        references: ["Kaytranada", "Channel Tres", "SG Lewis"],
+        references: track!.reference_artists ?? [],
       });
       toast.success(
         `Placements: ${res.ingested} ingested (${res.verified} verified / ${res.found} found). Run Enrich → Queue IG batch.`,
@@ -251,6 +313,11 @@ const AdminPlaylistTargets: React.FC = () => {
   };
 
   const importSfaCsv = async (file: File) => {
+    const blocked = discoveryBlockReason(track);
+    if (blocked) {
+      toast.error(blocked);
+      return;
+    }
     setImportingSfa(true);
     try {
       const csv_text = await file.text();
@@ -263,7 +330,8 @@ const AdminPlaylistTargets: React.FC = () => {
         csv_text,
         period_label: sfaPeriod.trim() || "import",
         lane: filterLane || lane,
-        references: ["Kaytranada", "Channel Tres", "SG Lewis"],
+        references: track!.reference_artists ?? [],
+        song_name: track!.name,
         resolve_urls: sfaResolveUrls,
         deactivate_missing: sfaDeactivateMissing,
       });
@@ -287,8 +355,8 @@ const AdminPlaylistTargets: React.FC = () => {
       const res = await callHubFn<{ queued: number; remaining_today: number; skipped?: Record<string, string> }>(
         "queue_ig_outreach_batch",
         {
-          track_name: trackName || undefined,
-          auto_match_track: !trackName,
+          track_name: track?.name || undefined,
+          auto_match_track: !track,
           lane: filterLane || lane,
           placement_only: true,
           engagement_type: "thank_and_pitch",
@@ -316,6 +384,11 @@ const AdminPlaylistTargets: React.FC = () => {
   }, [rows]);
 
   const runResearch = async (quick: boolean) => {
+    const blocked = discoveryBlockReason(track);
+    if (blocked) {
+      toast.error(blocked);
+      return;
+    }
     setResearching(true);
     try {
       const res = await callHubFn<{
@@ -323,12 +396,12 @@ const AdminPlaylistTargets: React.FC = () => {
         new_this_run?: number;
         discovery_skips?: Record<string, number>;
       }>("run_playlist_research", {
-        track_name: trackName,
+        track_id: track!.id,
+        track_name: track!.name,
         lane,
         quick,
-        references: ["Kaytranada", "Channel Tres", "SG Lewis"],
-        user_vibe:
-          "Chicago deep-house influenced melodic rap, late-night luxury, Kaytranada / Channel Tres adjacent.",
+        references: track!.reference_artists ?? [],
+        user_vibe: track!.pitch_angle ?? track!.short_pitch ?? "",
       });
       const n = res.live_api_ingested ?? 0;
       const fresh = res.new_this_run ?? 0;
@@ -429,11 +502,16 @@ const AdminPlaylistTargets: React.FC = () => {
   };
 
   const queueDm = async (playlistId: string) => {
+    if (!track) {
+      toast.error("Select a track first.");
+      return;
+    }
     setBusyId(playlistId);
     try {
       await callHubFn("queue_instagram_pitch", {
         playlist_id: playlistId,
-        track_name: trackName,
+        track_name: track?.name,
+        track_id: track?.id,
       });
       toast.success("DM queued — copy from social queue / IG app");
     } catch (e) {
@@ -444,11 +522,16 @@ const AdminPlaylistTargets: React.FC = () => {
   };
 
   const draftPitch = async (playlistId: string) => {
+    if (!track) {
+      toast.error("Select a track first.");
+      return;
+    }
     setBusyId(playlistId);
     try {
       const res = await callHubFn<{ draft_id: string }>("draft_pitch", {
         playlist_id: playlistId,
-        track_name: trackName,
+        track_id: track.id,
+        track_name: track.name,
         generated_by: "admin:ui",
       });
       toast.success(`Draft created: ${res.draft_id?.slice(0, 8)}…`);
@@ -583,11 +666,29 @@ const AdminPlaylistTargets: React.FC = () => {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <div>
             <label className="text-xs text-muted-foreground">Track to pitch</label>
-            <Input value={trackName} onChange={(e) => setTrackName(e.target.value)} />
+            <Select value={trackId || undefined} onValueChange={setTrackId}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select a track" />
+              </SelectTrigger>
+              <SelectContent>
+                {tracks.map((t) => (
+                  <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div>
             <label className="text-xs text-muted-foreground">Lane (research)</label>
-            <Input value={lane} onChange={(e) => setLane(e.target.value)} placeholder="deep_house_groove" />
+            <Select value={lane || undefined} onValueChange={setLane}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select a lane" />
+              </SelectTrigger>
+              <SelectContent>
+                {lanes.map((l) => (
+                  <SelectItem key={l.key} value={l.key}>{l.label || l.key}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div className="flex flex-wrap items-end gap-2">
             <Button type="button" disabled={researching} onClick={() => runResearch(true)} title="Faster Firecrawl pass">

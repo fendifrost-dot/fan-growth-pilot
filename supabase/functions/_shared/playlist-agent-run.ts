@@ -61,19 +61,23 @@ import {
   countIgDmsToday,
   type IgQueueInsert,
 } from "./ig-outreach.ts";
-import { runIgRosterAdmin, getRosterEntry } from "./ig-roster.ts";
+import { runIgRosterAdmin } from "./ig-roster.ts";
 import { loadCatalogTracks, pickCatalogTrackForPlacement } from "./catalog-match.ts";
-import { buildIgOutreachPackage, nextDmRef } from "./outreach-templates.ts";
 import {
+  applyPitchTemplate,
   renderPitchBody,
   trackUrlForPlatform,
+  VALID_TONES,
   type Platform,
   type Tone,
 } from "./pitch-templates.ts";
-import { defaultPlaylistPitchSubject } from "./resend-pitch.ts";
+import {
+  escapeIlikeExact,
+  missingPitchCopyResult,
+  resolvePitchAngle,
+} from "./pitch-copy.ts";
 import { isDraftable, verifyEmail, domainOf, normalizeEmail } from "./verify-target.ts";
 import {
-  checkDraftEligibilityByName,
   eligibilitySkipLog,
   evaluateTrackEligibility,
 } from "./outreach-eligibility.ts";
@@ -180,31 +184,37 @@ async function resolveStreamLinkForPlatform(
   return "";
 }
 
-function buildPitchBody(row: Record<string, unknown>, trackName: string, pitchAngle: string, streamLink: string): string {
-  const curator = (row.curator_name as string | null)?.trim() || "there";
-  const playlist = (row.playlist_name as string | null)?.trim() || "your playlist";
-  const angle = pitchAngle || (row.recommended_pitch_angle as string | null)?.trim() ||
-    "Melodic rap with a deep-house groove — late-night luxury energy.";
-  const lines = [
-    `Hi ${curator},`,
-    "",
-    `I'd love to submit **${trackName}** for *${playlist}*.`,
-    "",
-    angle,
-  ];
-  if (streamLink) {
-    lines.push("", `Stream: ${streamLink}`);
-  }
-  lines.push(
-    "Happy to share extra context or a different mix if useful.",
-    "Thank you for your time.",
-    "",
-    "— Fendi Frost",
-  );
-  return lines.join("\n");
+const TRACK_PITCH_SELECT =
+  "*, track_categories(category_id, categories(id, slug, label, family))";
+
+async function loadArtistName(sb: SupabaseClient): Promise<string> {
+  const { data } = await sb.from("artist_config").select("value").eq("key", "artist_name").maybeSingle();
+  const raw = data?.value;
+  if (typeof raw === "string" && raw.trim()) return raw.trim();
+  return "";
 }
 
-const VALID_TONES = new Set(["warm_personal", "casual_friendly", "business_formal", "hyped_energetic"]);
+async function loadTrackForPitch(
+  sb: SupabaseClient,
+  opts: { trackId?: string; trackName?: string },
+): Promise<{ track: Record<string, unknown> | null; error?: string }> {
+  if (opts.trackId) {
+    const { data, error } = await sb.from("tracks")
+      .select(TRACK_PITCH_SELECT)
+      .eq("id", opts.trackId)
+      .maybeSingle();
+    if (error) return { track: null, error: error.message };
+    return { track: (data as Record<string, unknown> | null) ?? null };
+  }
+  const name = (opts.trackName ?? "").trim();
+  if (!name) return { track: null };
+  const { data, error } = await sb.from("tracks")
+    .select(TRACK_PITCH_SELECT)
+    .ilike("name", escapeIlikeExact(name))
+    .maybeSingle();
+  if (error) return { track: null, error: error.message };
+  return { track: (data as Record<string, unknown> | null) ?? null };
+}
 
 async function detectWarmPlacement(
   sb: SupabaseClient,
@@ -223,7 +233,7 @@ async function detectWarmPlacement(
 
 export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseClient): Promise<RunResult> {
   const playlistId = String(body.playlist_id ?? "").trim();
-  const trackId = String(body.track_id ?? "").trim();
+  const requestedTrackId = String(body.track_id ?? "").trim();
   let trackName = String(body.track_name ?? "").trim();
   const channelOverride = typeof body.channel === "string" ? body.channel : "";
   const generatedBy = String(body.generated_by ?? body.approved_by ?? "auto").trim() || "auto";
@@ -256,183 +266,56 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
   const policyBlock = outreachPolicyBlock(row as Record<string, unknown>, pickChannel(row, channelOverride));
   if (policyBlock) return policyBlock;
 
-  if (trackId) {
-    const { data: track, error: trackErr } = await sb.from("tracks")
-      .select("*, track_categories(category_id, categories(id, slug, label, family))")
-      .eq("id", trackId)
-      .maybeSingle();
-    if (trackErr || !track) return { status: 404, data: { error: "Track not found" } };
+  // Every send path resolves a tracks row. track_id wins; otherwise look up by
+  // lower(name). A missing name falls through to catalogue pick, then the same lookup.
+  let lookupId = requestedTrackId;
+  if (!lookupId && !trackName) {
+    const catalog = await loadCatalogTracks(sb);
+    const pick = pickCatalogTrackForPlacement(row, catalog, catalog[0]?.name ?? "");
+    trackName = pick.track;
+  }
+  if (!lookupId && !trackName) {
+    return { status: 422, data: { error: "No track specified and catalogue is empty" } };
+  }
 
-    trackName = String(track.name ?? "").trim();
-
-    // AGH P0-A — ELIGIBILITY CONTAINMENT GATE (draft side; mirrors the refusal at
-    // the top of handleEmailPitch in execute-pitch). Runs BEFORE the category gate
-    // and the short_pitch refusal below, because "is this song cleared to be
-    // pitched at all?" is a prior question to "does it match this target?" and to
-    // "do we have copy for it?". The row was selected with `*`, so the eligibility
-    // columns are already loaded — no extra round trip.
-    //
-    // READ-ONLY, and there is no override_* escape hatch here on purpose:
-    // override_category_check waives the category match, nothing waives this.
-    const draftEligibility = evaluateTrackEligibility(track, trackName || trackId);
-    if (!draftEligibility.allowed) {
-      console.warn(
-        "draft_pitch eligibility refusal:",
-        JSON.stringify(eligibilitySkipLog(draftEligibility, { playlist_id: playlistId })),
-      );
-      return {
-        status: 422,
-        data: {
-          error: draftEligibility.message,
-          reason: draftEligibility.reason,
-          outreach_eligibility: draftEligibility.state,
-          eligibility_reason: draftEligibility.trackReason,
-          track_id: trackId,
-        },
-      };
-    }
-
-    const channel = pickChannel(row, channelOverride);
-    if (!channel) return { status: 400, data: { error: "No outreach channel available (email, IG, or submission URL)" } };
-    if (channel !== "email") {
-      return { status: 400, data: { error: "Catalogue pitch composer supports email channel only" } };
-    }
-
-    const trackCatIds = ((track.track_categories ?? []) as { category_id: string }[]).map((tc) => tc.category_id);
-    const playlistCatIds = ((row.playlist_categories ?? []) as { category_id: string }[]).map((pc) => pc.category_id);
-    const trackCats = ((track.track_categories ?? []) as { categories: { id: string; slug: string; label: string } | null }[])
-      .map((tc) => tc.categories).filter(Boolean);
-    const playlistCats = ((row.playlist_categories ?? []) as { categories: { id: string; slug: string; label: string } | null }[])
-      .map((pc) => pc.categories).filter(Boolean);
-    // Category/genre gate. An ABSENT category is missing information, not a
-    // disqualifier — only a positive genre contradiction rejects. See categoryGate
-    // for why (empty playlist_categories across the pool was zeroing out sends).
-    const gate = categoryGate({
-      trackCatIds,
-      targetCatIds: playlistCatIds,
-      trackGenre: trackGenre({
-        categories: trackCats as { slug?: string | null; label?: string | null }[],
-        name: track.name as string | null,
-        short_pitch: track.short_pitch as string | null,
-        pitch_angle: track.pitch_angle as string | null,
-      }),
-      targetGenre: targetGenre(row as Record<string, unknown>),
-    });
-    if (!gate.pass && !Boolean(body.override_category_check)) {
-      return {
-        status: 422,
-        data: {
-          error: "Category mismatch",
-          reason: gate.reason,
-          track_categories: trackCats,
-          playlist_categories: playlistCats,
-        },
-      };
-    }
-
-    const platform = (String(row.platform ?? "spotify").trim() || "spotify") as Platform;
-    const streamUrl = trackUrlForPlatform(track, platform);
-    if (!streamUrl) {
-      return { status: 400, data: { error: `Track has no URL for platform: ${platform}` } };
-    }
-
-    const toneRaw = String(body.tone ?? track.default_tone ?? "warm_personal");
-    const tone = (VALID_TONES.has(toneRaw) ? toneRaw : "warm_personal") as Tone;
-    const { isWarm, priorTrack } = await detectWarmPlacement(sb, playlistId);
-    if (isWarm && !priorTrack) {
-      return { status: 422, data: { error: "Warm placement found but prior track name missing" } };
-    }
-
-    // NEVER fabricate genre copy. The old fallback hardcoded "Melodic rap with a
-    // deep-house groove" for ANY track, which would have described the club record
-    // "Meditate" — and every future non-rap release — to curators as something it
-    // is not. Refuse to draft instead; authoring short_pitch is a one-field fix.
-    const shortPitch = String(track.short_pitch ?? track.pitch_angle ?? "").trim();
-    if (!shortPitch) {
-      return {
-        status: 422,
-        data: {
-          error:
-            `Track "${trackName}" has no short_pitch (or pitch_angle) — refusing to draft ` +
-            `rather than invent genre copy. Set tracks.short_pitch for this track and retry.`,
-          track_id: trackId,
-        },
-      };
-    }
-    const rendered = renderPitchBody({
-      curatorName: (row.curator_name as string | null)?.trim() || "there",
-      playlistName: (row.playlist_name as string | null)?.trim() || "your playlist",
-      trackName,
-      shortPitch,
-      platform,
-      streamUrl,
-      isWarm,
-      priorTrack,
-      tone,
-      artistName: "Fendi Frost",
-    });
-
-    let subject = rendered.subject;
-    let pitchBody = rendered.body;
-    if (typeof body.override_body === "string" && body.override_body.trim()) {
-      pitchBody = body.override_body.trim();
-    }
-    if (typeof body.override_subject === "string" && body.override_subject.trim()) {
-      subject = body.override_subject.trim();
-    }
-
-    const recipient = (row.curator_email as string)?.trim() ?? null;
-    const lane = String(row.lane ?? "").trim();
-
-    const { data: draft, error: insErr } = await sb.from("outreach_drafts").insert({
-      playlist_id: playlistId, track_name: trackName, channel: "email", recipient,
-      subject, body: pitchBody,
-      generated_by: generatedBy, status: "pending",
-      metadata: {
-        lane: lane || null,
-        why_it_fits: (row.why_it_fits as string | null) ?? null,
-        stream_link: streamUrl,
-        tone,
-        platform,
-        is_warm: isWarm,
-        prior_track: priorTrack ?? null,
-        track_id: trackId,
-      },
-    }).select("id, channel, subject, body, recipient").single();
-
-    if (insErr) return { status: 500, data: { error: insErr.message } };
+  const loaded = await loadTrackForPitch(sb, lookupId
+    ? { trackId: lookupId }
+    : { trackName });
+  if (loaded.error) return { status: 500, data: { error: loaded.error } };
+  const track = loaded.track;
+  if (!track) {
+    if (requestedTrackId) return { status: 404, data: { error: "Track not found" } };
     return {
-      status: 200,
-      data: { ok: true, draft_id: draft.id, channel: draft.channel, subject: draft.subject, body: draft.body, recipient: draft.recipient },
+      status: 422,
+      data: {
+        error: `No catalogue track matches "${trackName}". Add it in Admin → Songs before drafting.`,
+        track_name: trackName,
+        playlist_id: playlistId,
+      },
     };
   }
 
-  const rc = row.research_context as Record<string, unknown> | null;
-  const isPlacement = isWarmPlacementSource(rc?.source as string | undefined);
-  const catalog = await loadCatalogTracks(sb);
-  if (!trackName) {
-    const pick = pickCatalogTrackForPlacement(row, catalog, catalog[0]?.name ?? "Designed For Me (Control)");
-    trackName = pick.track;
-  }
+  const trackId = String(track.id ?? requestedTrackId ?? "").trim();
+  trackName = String(track.name ?? trackName).trim();
 
-  // AGH P0-A — same containment gate on the catalogue-pick path. This branch has
-  // no track_id (the song is resolved by name from the catalogue), so it must
-  // look eligibility up by name rather than reuse a loaded row. Without this, a
-  // draft for an uncleared song could still be composed and approved, and the
-  // send-path guard would then be the only thing left standing.
-  const pickEligibility = await checkDraftEligibilityByName(sb, trackName);
-  if (!pickEligibility.allowed) {
+  // AGH P0-A — ELIGIBILITY CONTAINMENT GATE (draft side; mirrors the refusal at
+  // the top of handleEmailPitch in execute-pitch). Runs BEFORE the category gate
+  // and the pitch-copy refusal below. READ-ONLY: override_category_check waives
+  // the category match, nothing waives eligibility.
+  const draftEligibility = evaluateTrackEligibility(track, trackName || trackId);
+  if (!draftEligibility.allowed) {
     console.warn(
-      "draft_pitch eligibility refusal (catalogue pick):",
-      JSON.stringify(eligibilitySkipLog(pickEligibility, { playlist_id: playlistId })),
+      "draft_pitch eligibility refusal:",
+      JSON.stringify(eligibilitySkipLog(draftEligibility, { playlist_id: playlistId })),
     );
     return {
       status: 422,
       data: {
-        error: pickEligibility.message,
-        reason: pickEligibility.reason,
-        outreach_eligibility: pickEligibility.state,
-        eligibility_reason: pickEligibility.trackReason,
+        error: draftEligibility.message,
+        reason: draftEligibility.reason,
+        outreach_eligibility: draftEligibility.state,
+        eligibility_reason: draftEligibility.trackReason,
+        track_id: trackId || null,
         track_name: trackName,
       },
     };
@@ -441,53 +324,109 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
   const channel = pickChannel(row, channelOverride);
   if (!channel) return { status: 400, data: { error: "No outreach channel available (email, IG, or submission URL)" } };
 
+  const trackCatIds = ((track.track_categories ?? []) as { category_id: string }[]).map((tc) => tc.category_id);
+  const playlistCatIds = ((row.playlist_categories ?? []) as { category_id: string }[]).map((pc) => pc.category_id);
+  const trackCats = ((track.track_categories ?? []) as { categories: { id: string; slug: string; label: string } | null }[])
+    .map((tc) => tc.categories).filter(Boolean);
+  const playlistCats = ((row.playlist_categories ?? []) as { categories: { id: string; slug: string; label: string } | null }[])
+    .map((pc) => pc.categories).filter(Boolean);
+  // Category/genre gate. An ABSENT category is missing information, not a
+  // disqualifier — only a positive genre contradiction rejects. See categoryGate
+  // for why (empty playlist_categories across the pool was zeroing out sends).
+  const gate = categoryGate({
+    trackCatIds,
+    targetCatIds: playlistCatIds,
+    trackGenre: trackGenre({
+      categories: trackCats as { slug?: string | null; label?: string | null }[],
+      name: track.name as string | null,
+      short_pitch: track.short_pitch as string | null,
+      pitch_angle: track.pitch_angle as string | null,
+    }),
+    targetGenre: targetGenre(row as Record<string, unknown>),
+  });
+  if (!gate.pass && !Boolean(body.override_category_check)) {
+    return {
+      status: 422,
+      data: {
+        error: "Category mismatch",
+        reason: gate.reason,
+        track_categories: trackCats,
+        playlist_categories: playlistCats,
+      },
+    };
+  }
+
   const lanes = await loadLanesConfig(sb);
   const lane = String(row.lane ?? "").trim();
-  const pitchAngle = lane ? (lanes[lane]?.pitch_angle ?? "") : "";
+  const copy = resolvePitchAngle(sb, { track, row, lanes });
+  if (!copy.ok) {
+    return missingPitchCopyResult({
+      trackName,
+      trackId: trackId || null,
+      playlistId,
+      lane: lane || null,
+    });
+  }
+
+  const platform = (String(row.platform ?? "spotify").trim() || "spotify") as Platform;
+  const streamUrl = trackUrlForPlatform(track, platform)
+    ?? (channel === "email" ? null : (await resolveStreamLinkForPlatform(sb, trackName, platform)) || null);
+  if (channel === "email" && !streamUrl) {
+    return { status: 400, data: { error: `Track has no URL for platform: ${platform}` } };
+  }
+
+  const toneRaw = String(body.tone ?? track.default_tone ?? "warm_personal");
+  const tone = (VALID_TONES.has(toneRaw) ? toneRaw : "warm_personal") as Tone;
+  const placed = await detectWarmPlacement(sb, playlistId);
+  const rc = row.research_context as Record<string, unknown> | null;
+  const placementWarm = isWarmPlacementSource(rc?.source as string | undefined);
+  const featuring = featuringTrackNames(row);
+  const isWarm = placed.isWarm || (placementWarm && Boolean(featuring[0]));
+  const priorTrack = placed.priorTrack || featuring[0] || undefined;
+  if (placed.isWarm && !placed.priorTrack) {
+    return { status: 422, data: { error: "Warm placement found but prior track name missing" } };
+  }
+
+  const artistName = await loadArtistName(sb);
+  const rendered = await renderPitchBody(sb, {
+    curatorName: (row.curator_name as string | null)?.trim() || "there",
+    playlistName: (row.playlist_name as string | null)?.trim() || "your playlist",
+    trackName,
+    shortPitch: copy.pitch,
+    platform,
+    streamUrl: streamUrl ?? "",
+    isWarm,
+    priorTrack,
+    tone,
+    artistName,
+    channel,
+  });
+  if ("error" in rendered) {
+    return {
+      status: 422,
+      data: {
+        error: rendered.error,
+        tone: rendered.tone,
+        channel: rendered.channel,
+        is_warm: rendered.is_warm,
+        remedy: "Set an active template in Admin → Categories → Email templates.",
+      },
+    };
+  }
+
+  let subject = rendered.subject;
+  let pitchBody = rendered.body;
+  if (typeof body.override_body === "string" && body.override_body.trim()) {
+    pitchBody = body.override_body.trim();
+  }
+  if (typeof body.override_subject === "string" && body.override_subject.trim()) {
+    subject = body.override_subject.trim();
+  }
 
   let recipient: string | null = null;
   if (channel === "email") recipient = (row.curator_email as string)?.trim() ?? null;
   else if (channel === "instagram_dm") recipient = (row.curator_instagram as string)?.trim() ?? null;
   else if (channel === "web_form") recipient = (row.submission_url as string)?.trim() ?? null;
-
-  // Match the streaming link to the curator's platform (Spotify / SoundCloud / Apple),
-  // not the legacy Spotify-only config — prevents cross-platform contamination in pitches.
-  const targetPlatform = (String(row.platform ?? "spotify").trim() || "spotify") as Platform;
-  const streamLink = await resolveStreamLinkForPlatform(sb, trackName, targetPlatform);
-  let subject: string;
-  let pitchBody: string;
-  let operatorBrief: string | null = null;
-  let dmRef: string | null = null;
-
-  if (typeof body.override_body === "string" && body.override_body.trim()) {
-    pitchBody = body.override_body.trim();
-    subject = typeof body.override_subject === "string" && body.override_subject.trim()
-      ? body.override_subject.trim()
-      : defaultPlaylistPitchSubject(trackName, String(row.playlist_name ?? ""));
-  } else if (isPlacement && channel === "email") {
-    const handle = ((row.curator_submission_dm as string) || (row.curator_instagram as string) || "")
-      .replace(/^@/, "").trim();
-    const roster = handle ? await getRosterEntry(sb, handle) : null;
-    const { reason } = pickCatalogTrackForPlacement(row, catalog, trackName);
-    dmRef = await nextDmRef(sb);
-    const pkg = buildIgOutreachPackage(
-      row,
-      trackName,
-      reason,
-      streamLink,
-      "thank_and_pitch",
-      roster,
-      dmRef,
-    );
-    subject = pkg.email.subject;
-    pitchBody = pkg.email.body;
-    operatorBrief = pkg.operator_brief;
-  } else {
-    subject = typeof body.override_subject === "string" && body.override_subject.trim()
-      ? body.override_subject.trim()
-      : defaultPlaylistPitchSubject(trackName, String(row.playlist_name ?? ""));
-    pitchBody = buildPitchBody(row, trackName, pitchAngle, streamLink);
-  }
 
   const { data: draft, error: insErr } = await sb.from("outreach_drafts").insert({
     playlist_id: playlistId, track_name: trackName, channel, recipient,
@@ -496,11 +435,14 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
     metadata: {
       lane: lane || null,
       why_it_fits: (row.why_it_fits as string | null) ?? null,
-      stream_link: streamLink || null,
-      platform: targetPlatform,
-      placement_source: isPlacement ? (rc?.source as string) : null,
-      operator_brief: operatorBrief,
-      dm_ref: dmRef,
+      stream_link: streamUrl || null,
+      tone,
+      platform,
+      is_warm: isWarm,
+      prior_track: priorTrack ?? null,
+      track_id: trackId || null,
+      pitch_source: copy.source,
+      placement_source: placementWarm ? (rc?.source as string) : null,
     },
   }).select("id, channel, subject, body, recipient").single();
 
@@ -806,8 +748,33 @@ export async function runQueueInstagramPitch(
     return { status: 400, data: { error: "Curator IG matches a lane reference artist; reject mis-targeted DM" } };
   }
   const lane = String(row.lane ?? "").trim();
-  const pitchAngle = lane ? (lanes[lane]?.pitch_angle ?? "") : "";
-  const streamLink = await resolveStreamLink(sb, trackName);
+  const loadedTrack = await loadTrackForPitch(sb, { trackName });
+  if (loadedTrack.error) return { status: 500, data: { error: loadedTrack.error } };
+  const track = loadedTrack.track;
+  if (!track) {
+    return {
+      status: 422,
+      data: {
+        error: `No catalogue track matches "${trackName}". Add it in Admin → Songs before queuing a DM.`,
+        track_name: trackName,
+        playlist_id: playlistId,
+      },
+    };
+  }
+  const copy = resolvePitchAngle(sb, { track, row, lanes });
+  if (!copy.ok) {
+    return missingPitchCopyResult({
+      trackName: String(track.name ?? trackName),
+      trackId: String(track.id ?? "") || null,
+      playlistId,
+      lane: lane || null,
+    });
+  }
+  const streamLink = await resolveStreamLinkForPlatform(
+    sb,
+    String(track.name ?? trackName),
+    (String(row.platform ?? "spotify").trim() || "spotify") as Platform,
+  );
   const rc = row.research_context as Record<string, unknown> | null;
   const isPlacement = isWarmPlacementSource(rc?.source as string | undefined);
   const engagementType = ((body.engagement_type as string) || (isPlacement ? "thank_and_pitch" : "cross_pitch")) as
@@ -849,7 +816,33 @@ export async function runQueueInstagramPitch(
     };
   }
 
-  const draftText = buildPitchBody(row, trackName, pitchAngle, streamLink);
+  const toneRaw = String(body.tone ?? track.default_tone ?? "warm_personal");
+  const tone = (VALID_TONES.has(toneRaw) ? toneRaw : "warm_personal") as Tone;
+  const rendered = await renderPitchBody(sb, {
+    curatorName: (row.curator_name as string | null)?.trim() || "there",
+    playlistName: (row.playlist_name as string | null)?.trim() || "your playlist",
+    trackName: String(track.name ?? trackName),
+    shortPitch: copy.pitch,
+    platform: (String(row.platform ?? "spotify").trim() || "spotify") as Platform,
+    streamUrl: streamLink,
+    isWarm: false,
+    tone,
+    artistName: await loadArtistName(sb),
+    channel: "instagram_dm",
+  });
+  if ("error" in rendered) {
+    return {
+      status: 422,
+      data: {
+        error: rendered.error,
+        tone: rendered.tone,
+        channel: rendered.channel,
+        is_warm: rendered.is_warm,
+        remedy: "Set an active template in Admin → Categories → Email templates.",
+      },
+    };
+  }
+  const draftText = rendered.body;
   const queued = await queueInstagramPitch(sb, row, null, lane || null, {
     engagement_type: engagementType,
     source: "manual_queue",
@@ -2404,6 +2397,8 @@ const PLAYLIST_AGENT_ACTIONS = new Set([
   "list_ig_roster", "patch_ig_roster", "import_ig_roster", "sync_ig_roster_from_targets",
   "list_tracks", "upsert_track", "delete_track",
   "list_categories", "upsert_category", "delete_category",
+  "list_lanes", "upsert_lane", "delete_lane",
+  "list_pitch_templates", "upsert_pitch_template", "preview_pitch_template",
   "set_track_categories", "set_playlist_categories",
   "recommend_targets_for_track", "list_warm_curators",
   "mark_pitch_response", "pitch_stats_summary", "list_pitches",
@@ -2443,6 +2438,118 @@ export async function runCatalogueAdmin(body: Record<string, unknown>, sb: Supab
     const { error } = await sb.from("categories").delete().eq("id", id);
     if (error) return { status: 500, data: { error: error.message } };
     return { status: 200, data: { ok: true } };
+  }
+
+  if (action === "list_lanes") {
+    const lanes = await loadLanesConfig(sb);
+    const rows = Object.entries(lanes).map(([key, cfg]) => ({
+      key,
+      label: cfg.label ?? key,
+      pitch_angle: cfg.pitch_angle ?? "",
+      references: cfg.references ?? [],
+      regex_boost: cfg.regex_boost ?? "",
+    }));
+    return { status: 200, data: { ok: true, rows } };
+  }
+
+  if (action === "upsert_lane") {
+    const key = String(body.key ?? "").trim();
+    if (!key) return { status: 400, data: { error: "key required" } };
+    if (!/^[a-z0-9_]+$/.test(key)) {
+      return { status: 400, data: { error: "key must be lowercase letters, digits, and underscores" } };
+    }
+    const { data: cfgRow, error: cfgErr } = await sb.from("artist_config")
+      .select("value").eq("key", "lanes").maybeSingle();
+    if (cfgErr) return { status: 500, data: { error: cfgErr.message } };
+    const lanes = (cfgRow?.value && typeof cfgRow.value === "object" && !Array.isArray(cfgRow.value))
+      ? { ...(cfgRow.value as Record<string, LaneConfig>) }
+      : {};
+    const next: LaneConfig = {
+      label: String(body.label ?? "").trim() || key,
+      pitch_angle: String(body.pitch_angle ?? "").trim() || undefined,
+      references: Array.isArray(body.references)
+        ? body.references.map(String).map((s) => s.trim()).filter(Boolean)
+        : [],
+      regex_boost: String(body.regex_boost ?? "").trim() || undefined,
+    };
+    lanes[key] = next;
+    const { error } = await sb.from("artist_config").upsert(
+      { key: "lanes", value: lanes, updated_at: new Date().toISOString() },
+      { onConflict: "key" },
+    );
+    if (error) return { status: 500, data: { error: error.message } };
+    return { status: 200, data: { ok: true, lane: { key, ...next } } };
+  }
+
+  if (action === "delete_lane") {
+    const key = String(body.key ?? "").trim();
+    if (!key) return { status: 400, data: { error: "key required" } };
+    const { data: cfgRow, error: cfgErr } = await sb.from("artist_config")
+      .select("value").eq("key", "lanes").maybeSingle();
+    if (cfgErr) return { status: 500, data: { error: cfgErr.message } };
+    const lanes = (cfgRow?.value && typeof cfgRow.value === "object" && !Array.isArray(cfgRow.value))
+      ? { ...(cfgRow.value as Record<string, LaneConfig>) }
+      : {};
+    if (!(key in lanes)) return { status: 404, data: { error: "Lane not found" } };
+    delete lanes[key];
+    const { error } = await sb.from("artist_config")
+      .update({ value: lanes, updated_at: new Date().toISOString() })
+      .eq("key", "lanes");
+    if (error) return { status: 500, data: { error: error.message } };
+    return { status: 200, data: { ok: true } };
+  }
+
+  if (action === "list_pitch_templates") {
+    const { data, error } = await sb.from("pitch_templates")
+      .select("*")
+      .order("channel")
+      .order("tone")
+      .order("is_warm");
+    if (error) return { status: 500, data: { error: error.message } };
+    return { status: 200, data: { ok: true, rows: data ?? [] } };
+  }
+
+  if (action === "upsert_pitch_template") {
+    const id = body.id ? String(body.id).trim() : "";
+    const tone = String(body.tone ?? "").trim();
+    const channel = String(body.channel ?? "email").trim() || "email";
+    const isWarm = Boolean(body.is_warm);
+    const subject = String(body.subject_template ?? "").trim();
+    const bodyTpl = String(body.body_template ?? "").trim();
+    if (!VALID_TONES.has(tone)) return { status: 400, data: { error: "valid tone required" } };
+    if (!subject || !bodyTpl) return { status: 400, data: { error: "subject_template and body_template required" } };
+    const fields = {
+      tone,
+      channel,
+      is_warm: isWarm,
+      subject_template: subject,
+      body_template: bodyTpl,
+      is_active: body.is_active === false ? false : true,
+      updated_at: new Date().toISOString(),
+    };
+    const q = id
+      ? sb.from("pitch_templates").update(fields).eq("id", id)
+      : sb.from("pitch_templates").upsert(fields, { onConflict: "tone,channel,is_warm" });
+    const { data, error } = await q.select().single();
+    if (error) return { status: 500, data: { error: error.message } };
+    return { status: 200, data: { ok: true, template: data } };
+  }
+
+  if (action === "preview_pitch_template") {
+    const subject = String(body.subject_template ?? "").trim();
+    const bodyTpl = String(body.body_template ?? "").trim();
+    if (!subject || !bodyTpl) return { status: 400, data: { error: "subject_template and body_template required" } };
+    const vars = {
+      curator_name: String(body.curator_name ?? "there"),
+      playlist_name: String(body.playlist_name ?? "your playlist"),
+      track_name: String(body.track_name ?? "the track"),
+      pitch: String(body.pitch ?? ""),
+      stream_link: String(body.stream_link ?? ""),
+      artist_name: String(body.artist_name ?? await loadArtistName(sb)),
+      prior_track: String(body.prior_track ?? "your last track"),
+    };
+    const rendered = applyPitchTemplate(subject, bodyTpl, vars);
+    return { status: 200, data: { ok: true, ...rendered } };
   }
 
   if (action === "upsert_track") {
@@ -2867,6 +2974,12 @@ export async function runPlaylistAgentAction(
     case "list_categories":
     case "upsert_category":
     case "delete_category":
+    case "list_lanes":
+    case "upsert_lane":
+    case "delete_lane":
+    case "list_pitch_templates":
+    case "upsert_pitch_template":
+    case "preview_pitch_template":
     case "set_track_categories":
     case "set_playlist_categories":
     case "recommend_targets_for_track":

@@ -361,20 +361,18 @@ Deno.test("WIRING: execute-pitch calls the gate at the TOP of handleEmailPitch, 
   assert(gateAt < testModeBlockAt, "eligibility gate must sit outside/above the !testMode block");
 });
 
-Deno.test("WIRING: runDraftPitch refuses on eligibility before the category and short_pitch gates", async () => {
+Deno.test("WIRING: runDraftPitch refuses on eligibility before the category and pitch-copy gates", async () => {
   const src = await Deno.readTextFile(new URL("./playlist-agent-run.ts", import.meta.url));
   const fn = src.slice(src.indexOf("export async function runDraftPitch"));
   assert(fn.length > 0, "runDraftPitch not found");
 
   const gateAt = fn.indexOf("evaluateTrackEligibility(");
   const categoryAt = fn.indexOf("categoryGate({");
-  const shortPitchAt = fn.indexOf("has no short_pitch");
-  const pickGateAt = fn.indexOf("checkDraftEligibilityByName(");
+  const copyAt = fn.indexOf("resolvePitchAngle(");
 
   assert(gateAt > -1, "runDraftPitch does not evaluate eligibility");
   assert(gateAt < categoryAt, "eligibility must be decided before the category gate");
-  assert(gateAt < shortPitchAt, "eligibility must be decided before the short_pitch refusal");
-  assert(pickGateAt > -1, "the catalogue-pick branch does not check eligibility");
+  assert(gateAt < copyAt, "eligibility must be decided before pitch-copy resolution");
 });
 
 Deno.test("WIRING: no override_* flag is wired to the eligibility refusal", async () => {

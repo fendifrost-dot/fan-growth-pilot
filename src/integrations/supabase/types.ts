@@ -1821,6 +1821,7 @@ export type Database = {
           approval_required: boolean | null
           approved_at: string | null
           approved_by: string | null
+          campaign_id: string | null
           cooldown_until: string | null
           created_at: string | null
           curator_email: string
@@ -1842,12 +1843,14 @@ export type Database = {
           sent_at: string | null
           status: string
           subject: string | null
+          track_id: string | null
           track_name: string
         }
         Insert: {
           approval_required?: boolean | null
           approved_at?: string | null
           approved_by?: string | null
+          campaign_id?: string | null
           cooldown_until?: string | null
           created_at?: string | null
           curator_email: string
@@ -1869,12 +1872,14 @@ export type Database = {
           sent_at?: string | null
           status?: string
           subject?: string | null
+          track_id?: string | null
           track_name: string
         }
         Update: {
           approval_required?: boolean | null
           approved_at?: string | null
           approved_by?: string | null
+          campaign_id?: string | null
           cooldown_until?: string | null
           created_at?: string | null
           curator_email?: string
@@ -1896,6 +1901,7 @@ export type Database = {
           sent_at?: string | null
           status?: string
           subject?: string | null
+          track_id?: string | null
           track_name?: string
         }
         Relationships: [
@@ -1906,7 +1912,47 @@ export type Database = {
             referencedRelation: "playlist_targets"
             referencedColumns: ["playlist_id"]
           },
+          {
+            foreignKeyName: "pitch_log_track_id_fkey"
+            columns: ["track_id"]
+            isOneToOne: false
+            referencedRelation: "tracks"
+            referencedColumns: ["id"]
+          },
         ]
+      }
+      pitch_templates: {
+        Row: {
+          body_template: string
+          channel: string
+          id: string
+          is_active: boolean
+          is_warm: boolean
+          subject_template: string
+          tone: string
+          updated_at: string
+        }
+        Insert: {
+          body_template: string
+          channel?: string
+          id?: string
+          is_active?: boolean
+          is_warm?: boolean
+          subject_template: string
+          tone: string
+          updated_at?: string
+        }
+        Update: {
+          body_template?: string
+          channel?: string
+          id?: string
+          is_active?: boolean
+          is_warm?: boolean
+          subject_template?: string
+          tone?: string
+          updated_at?: string
+        }
+        Relationships: []
       }
       platform_connections: {
         Row: {
@@ -3395,7 +3441,7 @@ export type Database = {
           soundcloud_url: string | null
           spotify_url: string | null
           status: string
-          sync_eligible: boolean | null
+          sync_eligible: boolean
           updated_at: string
         }
         Insert: {
@@ -3424,7 +3470,7 @@ export type Database = {
           soundcloud_url?: string | null
           spotify_url?: string | null
           status?: string
-          sync_eligible?: boolean | null
+          sync_eligible?: boolean
           updated_at?: string
         }
         Update: {
@@ -3453,7 +3499,7 @@ export type Database = {
           soundcloud_url?: string | null
           spotify_url?: string | null
           status?: string
-          sync_eligible?: boolean | null
+          sync_eligible?: boolean
           updated_at?: string
         }
         Relationships: []
@@ -3740,12 +3786,12 @@ export type Tables<
   DefaultSchemaTableNameOrOptions extends
     | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
         DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -3769,11 +3815,11 @@ export type TablesInsert<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -3794,11 +3840,11 @@ export type TablesUpdate<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -3819,11 +3865,11 @@ export type Enums<
   DefaultSchemaEnumNameOrOptions extends
     | keyof DefaultSchema["Enums"]
     | { schema: keyof DatabaseWithoutInternals },
-  EnumName extends DefaultSchemaEnumNameOrOptions extends {
+  EnumName extends (DefaultSchemaEnumNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaEnumNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -3836,11 +3882,11 @@ export type CompositeTypes<
   PublicCompositeTypeNameOrOptions extends
     | keyof DefaultSchema["CompositeTypes"]
     | { schema: keyof DatabaseWithoutInternals },
-  CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
+  CompositeTypeName extends (PublicCompositeTypeNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
-    : never = never,
+    : never) = never,
 > = PublicCompositeTypeNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }

@@ -130,6 +130,8 @@ export const ACTION_AUTH: Record<string, AuthClass> = {
   upsert_discovery_profile: 'admin-write',
   deactivate_discovery_profile: 'admin-write',
   approve_discovery_profile: 'admin-write',
+  get_lyric_decoder_status: 'public-read',
+  decode_track_lyrics: 'admin-write',
   list_social_queue: 'public-read',
   list_ig_roster: 'public-read',
   list_fan_dm_queue: 'public-read',

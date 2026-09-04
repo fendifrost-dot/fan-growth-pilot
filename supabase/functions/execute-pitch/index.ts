@@ -194,7 +194,7 @@ Deno.serve(async (req) => {
       playlistId,
       lane: String(row.lane ?? "").trim() || null,
     });
-    if (decision.mode === "enforce" && !decision.allow) {
+    if (!decision.allow) {
       return jsonPitch({
         ok: false,
         method_used: "none",

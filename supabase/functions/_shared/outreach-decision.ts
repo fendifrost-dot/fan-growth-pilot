@@ -1,12 +1,14 @@
 /**
  * Shared server-side outreach decision for draft + send paths.
  *
- * Modes (artist_config.outreach_dna_gate_mode or env OUTREACH_DNA_GATE_MODE):
- *   - legacy  — current sender behavior (identity optional); still logs when possible
- *   - shadow  — compute full decision, log to outreach_decision_shadow_log, do NOT block
- *   - enforce — require track_id + approved DNA + campaign + playlist; block on failure
- *
- * Default: shadow (preserves live playlist submissions).
+ * Always enforced (no shadow mode):
+ *   - Exact track_id required (no title-only / guessed identity)
+ *   - Playlist id required
+ *   - Song-specific pitch copy required (track short_pitch / approved DNA short_pitch)
+ *   - Playlist/lane copy never fills {{pitch}} (fit_reason only)
+ *   - If approved Song DNA exists, its lane rules are enforced
+ *   - Campaign id validated only when provided (pitch_campaigns may be absent)
+ *   - General override_category_check is forbidden
  */
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import {
@@ -17,8 +19,6 @@ import {
   type TrackPitchResult,
 } from "./pitch-copy.ts";
 import { loadLanesConfig } from "./playlist-lanes.ts";
-
-export type GateMode = "legacy" | "shadow" | "enforce";
 
 export type OutreachDecisionInput = {
   route: string;
@@ -38,7 +38,6 @@ export type OutreachDecisionInput = {
 export type OutreachDecision = {
   allow: boolean;
   code: string;
-  mode: GateMode;
   trackId: string | null;
   trackName: string | null;
   campaignId: string | null;
@@ -55,25 +54,18 @@ function trim(v: unknown): string {
   return typeof v === "string" ? v.trim() : "";
 }
 
-export async function loadGateMode(sb: SupabaseClient): Promise<GateMode> {
-  const env = (Deno.env.get("OUTREACH_DNA_GATE_MODE") || "").trim().toLowerCase();
-  if (env === "legacy" || env === "shadow" || env === "enforce") return env;
-  const { data } = await sb
-    .from("artist_config")
-    .select("value")
-    .eq("key", "outreach_dna_gate_mode")
-    .maybeSingle();
-  const raw = data?.value;
-  const v = typeof raw === "string"
-    ? raw.replace(/^"|"$/g, "").toLowerCase()
-    : typeof raw === "object" && raw !== null
-    ? String(raw).toLowerCase()
-    : String(raw ?? "shadow").replace(/^"|"$/g, "").toLowerCase();
-  if (v === "legacy" || v === "enforce" || v === "shadow") return v as GateMode;
-  return "shadow";
+async function tableExists(sb: SupabaseClient, table: string): Promise<boolean> {
+  try {
+    const { error } = await sb.from(table).select("*", { count: "exact", head: true }).limit(1);
+    if (!error) return true;
+    const msg = (error.message || "").toLowerCase();
+    return !(msg.includes("does not exist") || msg.includes("could not find") || msg.includes("relation"));
+  } catch {
+    return false;
+  }
 }
 
-async function logShadow(
+async function logDecision(
   sb: SupabaseClient,
   decision: OutreachDecision,
   detail: Record<string, unknown>,
@@ -81,7 +73,7 @@ async function logShadow(
   try {
     await sb.from("outreach_decision_shadow_log").insert({
       route: detail.route ?? decision.code,
-      mode: decision.mode,
+      mode: "enforce",
       would_allow: decision.allow,
       decision_code: decision.code,
       track_id: decision.trackId,
@@ -91,18 +83,18 @@ async function logShadow(
       detail: { ...detail, errors: decision.errors },
     });
   } catch (e) {
-    console.error("shadow log failed:", e instanceof Error ? e.message : e);
+    console.error("outreach decision log failed:", e instanceof Error ? e.message : e);
   }
 }
 
 /**
  * One shared eligibility + copy decision for every operational route.
+ * Always blocks on failure — no shadow/legacy bypass.
  */
 export async function evaluateOutreachDecision(
   sb: SupabaseClient,
   input: OutreachDecisionInput,
 ): Promise<OutreachDecision> {
-  const mode = await loadGateMode(sb);
   const errors: string[] = [];
   const trackId = trim(input.trackId);
   const campaignId = trim(input.campaignId);
@@ -110,10 +102,8 @@ export async function evaluateOutreachDecision(
   let trackName = trim(input.trackName);
   let songDnaVersionId = trim(input.songDnaVersionId);
 
-  // Reject title-only / guessed identity when enforcing or for shadow scoring
-  if (!trackId) {
-    errors.push("missing_track_id");
-  }
+  if (!trackId) errors.push("missing_track_id");
+  if (!playlistId) errors.push("missing_playlist_id");
 
   let trackRow: {
     id: string;
@@ -153,7 +143,8 @@ export async function evaluateOutreachDecision(
     primary_genre: string | null;
   } | null = null;
 
-  if (trackId && !errors.includes("track_id_not_found")) {
+  // Song DNA is optional until Fendi has approved versions. When present, it governs.
+  if (trackId && !errors.includes("track_id_not_found") && await tableExists(sb, "song_dna_versions")) {
     const q = songDnaVersionId
       ? sb.from("song_dna_versions").select(
         "id, short_pitch, approval_state, approved_lanes, excluded_lanes, primary_genre",
@@ -174,30 +165,29 @@ export async function evaluateOutreachDecision(
       songDnaVersionId = String(data.id);
     } else if (songDnaVersionId) {
       errors.push("song_dna_not_approved");
-    } else {
-      errors.push("missing_approved_song_dna");
     }
   }
 
-  if (!campaignId) errors.push("missing_campaign_id");
-  if (!playlistId) errors.push("missing_playlist_id");
-
-  if (campaignId && trackId) {
-    const { data: camp } = await sb
-      .from("pitch_campaigns")
-      .select("id, track_id, status, song_dna_version_id")
-      .eq("id", campaignId)
-      .maybeSingle();
-    if (!camp) {
-      errors.push("campaign_not_found");
+  // Campaign only when the table exists and an id was supplied.
+  if (campaignId) {
+    if (!(await tableExists(sb, "pitch_campaigns"))) {
+      errors.push("campaign_table_missing");
     } else {
-      if (String(camp.track_id) !== trackId) errors.push("campaign_track_mismatch");
-      const st = String(camp.status ?? "").toLowerCase();
-      if (st && st !== "active" && st !== "live") errors.push("campaign_not_active");
+      const { data: camp } = await sb
+        .from("pitch_campaigns")
+        .select("id, track_id, status, song_dna_version_id")
+        .eq("id", campaignId)
+        .maybeSingle();
+      if (!camp) {
+        errors.push("campaign_not_found");
+      } else {
+        if (trackId && String(camp.track_id) !== trackId) errors.push("campaign_track_mismatch");
+        const st = String(camp.status ?? "").toLowerCase();
+        if (st && st !== "active" && st !== "live") errors.push("campaign_not_active");
+      }
     }
   }
 
-  // Playlist row for fit reason + lane contradiction
   let playlistRow: Record<string, unknown> | null = null;
   if (playlistId) {
     const { data } = await sb
@@ -222,10 +212,10 @@ export async function evaluateOutreachDecision(
   const lane = trim(input.lane) || trim(playlistRow?.lane);
   if (approvedDna && lane) {
     const approved = new Set(
-      (approvedDna.approved_lanes ?? []).map((s) => s.toLowerCase()),
+      (approvedDna.approved_lanes ?? []).map((s: string) => s.toLowerCase()),
     );
     const excluded = new Set(
-      (approvedDna.excluded_lanes ?? []).map((s) => s.toLowerCase()),
+      (approvedDna.excluded_lanes ?? []).map((s: string) => s.toLowerCase()),
     );
     if (excluded.has(lane.toLowerCase())) {
       compatible = false;
@@ -240,58 +230,17 @@ export async function evaluateOutreachDecision(
     }
   }
 
-  // Category override — Fendi-only, reason required, audited
   if (input.overrideCategoryCheck) {
-    if (!input.isFendiAdmin || !trim(input.overrideReason) || !trim(input.overrideActorUserId)) {
-      errors.push("override_forbidden");
-      compatible = false;
-    } else if (
-      trackId && songDnaVersionId && campaignId && playlistId && trim(input.overrideReason)
-    ) {
-      await sb.from("outreach_mismatch_overrides").insert({
-        track_id: trackId,
-        song_dna_version_id: songDnaVersionId,
-        campaign_id: campaignId,
-        playlist_id: playlistId,
-        reason: trim(input.overrideReason),
-        actor_user_id: trim(input.overrideActorUserId),
-      });
-      // Strip lane contradiction errors for this scoped override only
-      const filtered = errors.filter((e) =>
-        e !== "dna_excluded_lane" && e !== "dna_lane_not_approved"
-      );
-      errors.length = 0;
-      errors.push(...filtered);
-      compatible = true;
-      contradictionExplanation = null;
-    }
+    errors.push("override_forbidden");
+    compatible = false;
   }
 
-  const hardErrors = errors.filter((e) => e !== "missing_approved_song_dna" || mode === "enforce");
-  // In shadow/legacy, missing DNA is scored but legacy send may continue
-  const enforceErrors = mode === "enforce"
-    ? errors
-    : errors.filter((e) =>
-      [
-        "track_name_mismatch",
-        "override_forbidden",
-      ].includes(e)
-    );
-
-  const allow = mode === "enforce"
-    ? errors.length === 0 && pitch.ok && compatible
-    : mode === "shadow"
-    ? true // never block current sender
-    : true;
-
-  const code = allow
-    ? (errors.length ? "shadow_would_block" : "allow")
-    : errors[0] ?? "blocked";
+  const allow = errors.length === 0 && pitch.ok && compatible;
+  const code = allow ? "allow" : (errors[0] ?? "blocked");
 
   const decision: OutreachDecision = {
-    allow: mode === "enforce" ? (errors.length === 0 && pitch.ok && compatible) : true,
+    allow,
     code,
-    mode,
     trackId: trackId || null,
     trackName: trackName || null,
     campaignId: campaignId || null,
@@ -304,15 +253,7 @@ export async function evaluateOutreachDecision(
     contradictionExplanation,
   };
 
-  if (mode === "shadow" || mode === "enforce") {
-    await logShadow(sb, decision, {
-      route: input.route,
-      hardErrors,
-      enforceErrors,
-      lane,
-    });
-  }
-
+  await logDecision(sb, decision, { route: input.route, lane });
   return decision;
 }
 
@@ -331,19 +272,25 @@ export function draftBlockedByPitch(
   });
 }
 
-/** Cutover readiness report (no mutations). */
+/** Operational readiness report (no mutations). */
 export async function buildCutoverReadinessReport(
   sb: SupabaseClient,
 ): Promise<Record<string, unknown>> {
   const { count: tracks } = await sb.from("tracks").select("*", { count: "exact", head: true });
-  const { count: approvedDna } = await sb
-    .from("song_dna_versions")
-    .select("*", { count: "exact", head: true })
-    .eq("approval_state", "approved");
-  const { count: pendingDna } = await sb
-    .from("song_dna_versions")
-    .select("*", { count: "exact", head: true })
-    .in("approval_state", ["draft", "pending_fendi_review"]);
+  let approvedDna = 0;
+  let pendingDna = 0;
+  if (await tableExists(sb, "song_dna_versions")) {
+    const a = await sb
+      .from("song_dna_versions")
+      .select("*", { count: "exact", head: true })
+      .eq("approval_state", "approved");
+    approvedDna = a.count ?? 0;
+    const p = await sb
+      .from("song_dna_versions")
+      .select("*", { count: "exact", head: true })
+      .in("approval_state", ["draft", "pending_fendi_review"]);
+    pendingDna = p.count ?? 0;
+  }
   const { data: tracksMissingPitch } = await sb
     .from("tracks")
     .select("id, name, short_pitch, pitch_angle")
@@ -353,40 +300,53 @@ export async function buildCutoverReadinessReport(
     const pa = String(t.pitch_angle ?? "").trim();
     return !sp && !pa;
   });
-  const { count: activeCampaigns } = await sb
-    .from("pitch_campaigns")
-    .select("*", { count: "exact", head: true })
-    .in("status", ["active", "live"]);
+  let activeCampaigns = 0;
+  if (await tableExists(sb, "pitch_campaigns")) {
+    const c = await sb
+      .from("pitch_campaigns")
+      .select("*", { count: "exact", head: true })
+      .in("status", ["active", "live"]);
+    activeCampaigns = c.count ?? 0;
+  }
   const { count: legacyDrafts } = await sb
     .from("outreach_drafts")
     .select("*", { count: "exact", head: true })
     .is("track_id", null);
-  const { count: pendingProfiles } = await sb
-    .from("discovery_profiles")
-    .select("*", { count: "exact", head: true })
-    .eq("approval_status", "pending_fendi_review");
-  const { count: approvedProfiles } = await sb
-    .from("discovery_profiles")
-    .select("*", { count: "exact", head: true })
-    .eq("approval_status", "approved");
+  let pendingProfiles = 0;
+  let approvedProfiles = 0;
+  if (await tableExists(sb, "discovery_profiles")) {
+    const p = await sb
+      .from("discovery_profiles")
+      .select("*", { count: "exact", head: true })
+      .eq("approval_status", "pending_fendi_review");
+    pendingProfiles = p.count ?? 0;
+    const a = await sb
+      .from("discovery_profiles")
+      .select("*", { count: "exact", head: true })
+      .eq("approval_status", "approved");
+    approvedProfiles = a.count ?? 0;
+  }
 
   return {
     tracks: tracks ?? 0,
-    approved_song_dna: approvedDna ?? 0,
-    pending_song_dna: pendingDna ?? 0,
+    approved_song_dna: approvedDna,
+    pending_song_dna: pendingDna,
     active_tracks_missing_pitch_copy: missingPitch.map((t) => ({
       id: t.id,
       name: t.name,
     })),
-    active_campaigns: activeCampaigns ?? 0,
+    active_campaigns: activeCampaigns,
     legacy_drafts_without_track_id: legacyDrafts ?? 0,
-    discovery_profiles_pending_fendi: pendingProfiles ?? 0,
-    discovery_profiles_approved: approvedProfiles ?? 0,
-    gate_mode: await loadGateMode(sb),
-    ready_for_enforce:
-      (approvedDna ?? 0) > 0 &&
-      (activeCampaigns ?? 0) > 0 &&
-      missingPitch.length === 0 &&
-      (legacyDrafts ?? 0) === 0,
+    discovery_profiles_pending_fendi: pendingProfiles,
+    discovery_profiles_approved: approvedProfiles,
+    gate_mode: "enforce",
+    operational:
+      missingPitch.length === 0 ||
+      (tracksMissingPitch ?? []).some((t) => String(t.short_pitch ?? "").trim() || String(t.pitch_angle ?? "").trim()),
   };
+}
+
+/** @deprecated Use buildCutoverReadinessReport — kept for hub action name. */
+export async function loadGateMode(_sb: SupabaseClient): Promise<"enforce"> {
+  return "enforce";
 }

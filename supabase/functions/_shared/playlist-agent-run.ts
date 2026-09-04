@@ -388,7 +388,7 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
 
   const lane = String(row.lane ?? "").trim();
 
-  // Shared decision: track-only {{pitch}}, DNA compatibility, identity (shadow by default).
+  // Shared decision: track-only {{pitch}}, DNA compatibility when present, exact track_id.
   const decision = await evaluateOutreachDecision(sb, {
     route: "draft_pitch",
     trackId,
@@ -411,8 +411,8 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
     });
   }
 
-  // Enforce mode blocks incompatible lanes / missing identity at draft time.
-  if (decision.mode === "enforce" && !decision.allow) {
+  // Block incompatible lanes / missing identity / missing pitch.
+  if (!decision.allow) {
     return {
       status: 422,
       data: {
@@ -515,7 +515,7 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
       song_dna_version_id: decision.songDnaVersionId,
       campaign_id: campaignId || null,
       pitch_source: copy.source,
-      decision_mode: decision.mode,
+      decision_mode: "enforce",
       decision_code: decision.code,
       placement_source: placementWarm ? (rc?.source as string) : null,
     },
@@ -577,7 +577,7 @@ export async function runApproveDraft(body: Record<string, unknown>, sb: Supabas
     playlistId: String(draft.playlist_id),
     lane: String((draft.metadata as { lane?: string } | null)?.lane ?? "").trim() || null,
   });
-  if (sendImmediately && sendDecision.mode === "enforce" && !sendDecision.allow) {
+  if (sendImmediately && !sendDecision.allow) {
     return {
       status: 422,
       data: {
@@ -894,7 +894,7 @@ export async function runQueueInstagramPitch(
       missing: decision.pitch.missing,
     });
   }
-  if (decision.mode === "enforce" && !decision.allow) {
+  if (!decision.allow) {
     return {
       status: 422,
       data: { error: decision.errors[0] ?? decision.code, errors: decision.errors },

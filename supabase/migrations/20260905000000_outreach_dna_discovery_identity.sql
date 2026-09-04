@@ -280,11 +280,20 @@ create policy agh_config_audit_admin_select on public.agh_config_audit_events
   for select to authenticated
   using (coalesce((auth.jwt() -> 'app_metadata' ->> 'role'), '') = 'admin');
 
--- Gate mode: legacy | shadow | enforce. Default shadow — does not block live sends.
+-- Gate mode retired: outreach decision is always enforced.
+-- Keep key for operators who still look it up; value must be enforce.
 insert into public.artist_config (key, value)
 values (
   'outreach_dna_gate_mode',
-  '"shadow"'::jsonb
+  '"enforce"'::jsonb
+)
+on conflict (key) do update set value = '"enforce"'::jsonb;
+
+-- Lyric decoder slot (disabled until a provider is chosen).
+insert into public.artist_config (key, value)
+values (
+  'lyric_decoder',
+  '{"provider":"none","enabled":false}'::jsonb
 )
 on conflict (key) do nothing;
 

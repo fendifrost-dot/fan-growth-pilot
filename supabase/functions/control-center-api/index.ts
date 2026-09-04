@@ -7,6 +7,7 @@ import { isSyncRegisterAction, runSyncRegisterAction } from '../_shared/sync-reg
 import { isSongDnaAction, runSongDnaAction } from '../_shared/song-dna.ts';
 import { authorizeAction, type Actor } from '../_shared/outreach-auth.ts';
 import { buildCutoverReadinessReport } from '../_shared/outreach-decision.ts';
+import { isLyricDecoderAction, runLyricDecoderAction } from '../_shared/lyric-decoder.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -112,6 +113,14 @@ Deno.serve(async (req) => {
       const report = await buildCutoverReadinessReport(supabase);
       return new Response(JSON.stringify({ ok: true, report }), {
         status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isLyricDecoderAction(String(action ?? ''))) {
+      const result = await runLyricDecoderAction(String(action), body);
+      return new Response(JSON.stringify(result.data), {
+        status: result.status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }

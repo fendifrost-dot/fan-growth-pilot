@@ -77,6 +77,7 @@ Deno.test("WIRING: execute-pitch and send-pitch-email import evaluateOutreachDec
   assert(agent.includes("evaluateOutreachDecision("), "playlist-agent-run missing decision calls");
   assert(agent.includes('route: "approve_draft"'), "approve_draft must re-evaluate");
   assert(agent.includes("track_id required"), "draft must require track_id");
+  assert(!agent.includes('decision.mode === "enforce"'), "shadow/enforce mode branch must be gone");
 });
 
 Deno.test("WIRING: control-center dispatches Song DNA via authorizeAction", () => {

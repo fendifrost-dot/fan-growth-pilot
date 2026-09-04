@@ -74,7 +74,7 @@ Deno.serve(async (req) => {
       songDnaVersionId: song_dna_version_id ? String(song_dna_version_id) : null,
       playlistId: String(playlist_id),
     });
-    if (decision.mode === "enforce" && !decision.allow) {
+    if (!decision.allow) {
       return json({
         error: decision.errors[0] ?? decision.code,
         decision_code: decision.code,

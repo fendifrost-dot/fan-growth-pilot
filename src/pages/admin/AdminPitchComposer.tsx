@@ -221,14 +221,6 @@ const AdminPitchComposer: React.FC = () => {
         toast.error("Select a track first");
         return;
       }
-      if (!campaignId) {
-        toast.error("Select an active campaign — required for exact operational identity");
-        return;
-      }
-      if (!approvedDna) {
-        toast.error("No Fendi-approved Song DNA for this track — approve DNA before drafting");
-        return;
-      }
       setDrafting(true);
       setStep(4);
       const previews: DraftPreview[] = selectedRows.map((r) => ({
@@ -241,25 +233,27 @@ const AdminPitchComposer: React.FC = () => {
       for (let i = 0; i < selectedRows.length; i++) {
         const r = selectedRows[i];
         const lane = (r as TargetRow & { lane?: string }).lane;
-        const excluded = new Set((approvedDna.excluded_lanes ?? []).map((s) => s.toLowerCase()));
-        const approved = new Set((approvedDna.approved_lanes ?? []).map((s) => s.toLowerCase()));
-        if (lane && excluded.has(String(lane).toLowerCase())) {
-          previews[i] = {
-            ...previews[i],
-            status: "failed",
-            error: `Lane "${lane}" is excluded by approved Song DNA — change DNA, not this request.`,
-          };
-          setDrafts([...previews]);
-          continue;
-        }
-        if (lane && approved.size > 0 && !approved.has(String(lane).toLowerCase())) {
-          previews[i] = {
-            ...previews[i],
-            status: "failed",
-            error: `Lane "${lane}" is not in approved Song DNA approved_lanes.`,
-          };
-          setDrafts([...previews]);
-          continue;
+        if (approvedDna) {
+          const excluded = new Set((approvedDna.excluded_lanes ?? []).map((s) => s.toLowerCase()));
+          const approved = new Set((approvedDna.approved_lanes ?? []).map((s) => s.toLowerCase()));
+          if (lane && excluded.has(String(lane).toLowerCase())) {
+            previews[i] = {
+              ...previews[i],
+              status: "failed",
+              error: `Lane "${lane}" is excluded by approved Song DNA — change DNA, not this request.`,
+            };
+            setDrafts([...previews]);
+            continue;
+          }
+          if (lane && approved.size > 0 && !approved.has(String(lane).toLowerCase())) {
+            previews[i] = {
+              ...previews[i],
+              status: "failed",
+              error: `Lane "${lane}" is not in approved Song DNA approved_lanes.`,
+            };
+            setDrafts([...previews]);
+            continue;
+          }
         }
         try {
           const res = await callHubFn<{
@@ -270,8 +264,8 @@ const AdminPitchComposer: React.FC = () => {
           }>("draft_pitch", {
             track_id: trackId,
             playlist_id: r.playlist_id,
-            campaign_id: campaignId,
-            song_dna_version_id: approvedDna.id,
+            ...(campaignId ? { campaign_id: campaignId } : {}),
+            ...(approvedDna ? { song_dna_version_id: approvedDna.id } : {}),
             tone,
           });
           previews[i] = {
@@ -401,7 +395,8 @@ const AdminPitchComposer: React.FC = () => {
           <Send className="h-6 w-6" /> Pitch Composer
         </h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Track → approved Song DNA → compatible directions → campaign. Exact identities are required.
+          Select exact track (UUID), review Song DNA when approved, pick targets, draft and send.
+          Song pitch comes from the track / approved DNA — never from playlist copy.
         </p>
       </div>
 
@@ -437,16 +432,17 @@ const AdminPitchComposer: React.FC = () => {
                 <div className="pt-1">Pitch: {approvedDna.short_pitch || track.short_pitch || "—"}</div>
               </div>
             ) : (
-              <p className="text-amber-700 text-xs">
-                No approved Song DNA — approve one in{" "}
-                <a className="underline" href="/admin/song-dna">Song DNA</a> before drafting.
+              <p className="text-muted-foreground text-xs">
+                No approved Song DNA yet — drafting uses the track’s short_pitch. Add DNA in{" "}
+                <a className="underline" href="/admin/song-dna">Song DNA</a> when ready.
               </p>
             )}
+            {campaigns.length > 0 && (
             <div className="space-y-1.5 max-w-md">
-              <Label>Campaign (required)</Label>
+              <Label>Campaign (optional until pitch_campaigns is live)</Label>
               <Select value={campaignId || undefined} onValueChange={setCampaignId}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Select active campaign…" />
+                  <SelectValue placeholder="Select campaign…" />
                 </SelectTrigger>
                 <SelectContent>
                   {campaigns.map((c) => (
@@ -458,6 +454,7 @@ const AdminPitchComposer: React.FC = () => {
                 </SelectContent>
               </Select>
             </div>
+            )}
           </div>
         )}
       </Card>

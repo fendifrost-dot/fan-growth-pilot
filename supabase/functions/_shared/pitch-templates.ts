@@ -15,12 +15,16 @@ export const VALID_TONES = new Set<string>([
   "hyped_energetic",
 ]);
 
+/**
+ * Allowed template tokens. {{fit_reason}} is intentionally excluded — lane /
+ * playlist fit copy must not make genre claims about the song in outbound email.
+ * Fit metadata stays on the draft row (metadata.fit_reason) for operators only.
+ */
 export const PITCH_TEMPLATE_PLACEHOLDERS = [
   "curator_name",
   "playlist_name",
   "track_name",
   "pitch",
-  "fit_reason",
   "stream_link",
   "artist_name",
   "prior_track",
@@ -33,7 +37,7 @@ export interface PitchContext {
   playlistName: string;
   trackName: string;
   shortPitch: string;
-  /** Target/playlist/lane fit copy — NEVER used as {{pitch}}. */
+  /** Operator-facing fit metadata only — not a template placeholder. */
   fitReason?: string;
   platform: Platform;
   streamUrl: string;
@@ -98,16 +102,22 @@ export function applyPitchTemplate(
 export function varsFromPitchContext(ctx: PitchContext): PitchTemplateVars {
   const priorTrack = ctx.priorTrack?.trim() || "your last track";
   const streamLink = ctx.streamUrl?.trim() ? platformLinkLine(ctx.platform, ctx.streamUrl.trim()) : "";
+  // fitReason is retained on PitchContext for draft metadata only — never substituted.
+  void ctx.fitReason;
   return {
     curator_name: ctx.curatorName,
     playlist_name: ctx.playlistName,
     track_name: ctx.trackName,
     pitch: ctx.shortPitch.trim(),
-    fit_reason: (ctx.fitReason ?? "").trim(),
     stream_link: streamLink,
     artist_name: ctx.artistName,
     prior_track: priorTrack,
   };
+}
+
+/** Reject templates that still reference the retired {{fit_reason}} token. */
+export function templateUsesForbiddenFitReason(subject: string, body: string): boolean {
+  return /\{\{\s*fit_reason\s*\}\}/i.test(subject) || /\{\{\s*fit_reason\s*\}\}/i.test(body);
 }
 
 export async function loadPitchTemplate(

@@ -1,7 +1,7 @@
 // Deno tests: template substitution + runDraftPitch identity / copy-source.
 // Run: deno test supabase/functions/_shared/pitch-templates.test.ts
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { applyPitchTemplate, varsFromPitchContext, type PitchContext } from "./pitch-templates.ts";
+import { applyPitchTemplate, varsFromPitchContext, UnknownPitchPlaceholderError, type PitchContext } from "./pitch-templates.ts";
 import { runDraftPitch } from "./playlist-agent-run.ts";
 
 const COLD_SUBJECT = "Submission for {{playlist_name}}: {{artist_name}} — {{track_name}}";
@@ -25,7 +25,6 @@ Deno.test("applyPitchTemplate substitutes every documented placeholder", () => {
     playlist_name: "Night Drive",
     track_name: "Example Track",
     pitch: "KNOWN SHORT PITCH",
-    fit_reason: "TARGET FIT",
     stream_link: "Stream: https://open.spotify.com/track/x",
     artist_name: "Test Artist",
     prior_track: "Earlier Cut",
@@ -34,6 +33,24 @@ Deno.test("applyPitchTemplate substitutes every documented placeholder", () => {
   assert(rendered.body.includes("KNOWN SHORT PITCH"));
   assert(rendered.body.includes("Hi Alex,"));
   assert(!rendered.body.includes("{{"));
+});
+
+Deno.test("{{fit_reason}} is a forbidden / unknown placeholder", () => {
+  let threw = false;
+  try {
+    applyPitchTemplate("Hi", "Because {{fit_reason}}", {
+      curator_name: "A",
+      playlist_name: "P",
+      track_name: "T",
+      pitch: "pitch",
+      stream_link: "",
+      artist_name: "X",
+      prior_track: "",
+    });
+  } catch (e) {
+    threw = e instanceof UnknownPitchPlaceholderError;
+  }
+  assertEquals(threw, true);
 });
 
 Deno.test("varsFromPitchContext formats the stream link from platform + url", () => {
@@ -154,9 +171,19 @@ const TEMPLATE_ROW = {
 };
 
 function baseTables(track = TRACK_A, playlist = PLAYLIST): Record<string, Row[]> {
+  const nestedCats = (track.track_categories ?? []) as {
+    category_id: string;
+    categories: { id: string; slug: string; label: string };
+  }[];
   return {
     playlist_targets: [playlist],
     tracks: [track],
+    track_categories: nestedCats.map((tc) => ({
+      track_id: track.id,
+      category_id: tc.category_id,
+      categories: tc.categories,
+    })),
+    song_dna_versions: [],
     artist_config: [
       { key: "lanes", value: LANES_VALUE },
       { key: "artist_name", value: "Test Artist" },
@@ -164,6 +191,7 @@ function baseTables(track = TRACK_A, playlist = PLAYLIST): Record<string, Row[]>
     pitch_templates: [TEMPLATE_ROW],
     pitch_log: [],
     outreach_drafts: [],
+    outreach_decision_shadow_log: [],
   };
 }
 

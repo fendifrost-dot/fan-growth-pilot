@@ -68,15 +68,25 @@ Deno.test("profilesToSweepBuckets uses DB profile allocation not fixed 0.55 lite
   assertEquals(b.houseTerms.includes("tech house"), true);
 });
 
-Deno.test("WIRING: execute-pitch and send-pitch-email import evaluateOutreachDecision", () => {
+Deno.test("WIRING: execute-pitch and send-pitch-email bind to approved draft + integrity", () => {
   const exec = Deno.readTextFileSync(new URL("../execute-pitch/index.ts", import.meta.url));
   const send = Deno.readTextFileSync(new URL("../send-pitch-email/index.ts", import.meta.url));
   const agent = Deno.readTextFileSync(new URL("./playlist-agent-run.ts", import.meta.url));
+  const decision = Deno.readTextFileSync(new URL("./outreach-decision.ts", import.meta.url));
   assert(exec.includes("evaluateOutreachDecision"), "execute-pitch missing shared decision");
+  assert(exec.includes("verifyDraftPitchIntegrity"), "execute-pitch must verify pitch hash");
+  assert(exec.includes("draft_id required"), "execute-pitch must require draft_id");
+  assert(exec.includes('provided !== expected'), "execute-pitch must reject missing/mismatched hub key");
   assert(send.includes("evaluateOutreachDecision"), "send-pitch-email missing shared decision");
+  assert(send.includes("verifyDraftPitchIntegrity"), "send-pitch-email must verify pitch hash");
+  assert(send.includes("draft_id required"), "send-pitch-email must require draft_id");
   assert(agent.includes("evaluateOutreachDecision("), "playlist-agent-run missing decision calls");
   assert(agent.includes('route: "approve_draft"'), "approve_draft must re-evaluate");
   assert(agent.includes("track_id required"), "draft must require track_id");
+  assert(agent.includes("invalidate_stale_drafts") || agent.includes("runInvalidateStaleDrafts"), "stale draft invalidate action required");
+  assert(agent.includes("pitch_copy_hash"), "new drafts must store pitch_copy_hash");
+  assert(decision.includes("song_dna_track_mismatch"), "DNA must bind to selected track");
+  assert(decision.includes("categoryGate"), "shared gate must verify genre/category fit without DNA");
   assert(!agent.includes('decision.mode === "enforce"'), "shadow/enforce mode branch must be gone");
 });
 

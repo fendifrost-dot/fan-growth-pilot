@@ -68,7 +68,9 @@ import { runIgRosterAdmin } from "./ig-roster.ts";
 import { loadCatalogTracks, pickCatalogTrackForPlacement } from "./catalog-match.ts";
 import {
   applyPitchTemplate,
+  loadPitchTemplate,
   renderPitchBody,
+  templateUsesForbiddenFitReason,
   trackUrlForPlatform,
   VALID_TONES,
   type Platform,
@@ -79,6 +81,7 @@ import {
   missingPitchCopyResult,
   resolvePitchAngle,
 } from "./pitch-copy.ts";
+import { hashPitchCopy, findStaleApprovedDrafts } from "./pitch-copy-integrity.ts";
 import {
   buildCutoverReadinessReport,
   evaluateOutreachDecision,
@@ -448,6 +451,7 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
   }
 
   const artistName = await loadArtistName(sb);
+  const tpl = await loadPitchTemplate(sb, { tone, channel, isWarm });
   const rendered = await renderPitchBody(sb, {
     curatorName: (row.curator_name as string | null)?.trim() || "there",
     playlistName: (row.playlist_name as string | null)?.trim() || "your playlist",
@@ -489,6 +493,7 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
   else if (channel === "instagram_dm") recipient = (row.curator_instagram as string)?.trim() ?? null;
   else if (channel === "web_form") recipient = (row.submission_url as string)?.trim() ?? null;
 
+  const pitchHash = await hashPitchCopy(copy.pitch);
   const { data: draft, error: insErr } = await sb.from("outreach_drafts").insert({
     playlist_id: playlistId,
     track_name: trackName,
@@ -501,6 +506,9 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
     body: pitchBody,
     generated_by: generatedBy,
     status: "pending",
+    pitch_copy_source: copy.source,
+    pitch_copy_hash: pitchHash,
+    template_id: tpl?.id ?? null,
     metadata: {
       lane: lane || null,
       why_it_fits: (row.why_it_fits as string | null) ?? null,
@@ -515,6 +523,8 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
       song_dna_version_id: decision.songDnaVersionId,
       campaign_id: campaignId || null,
       pitch_source: copy.source,
+      pitch_copy_hash: pitchHash,
+      template_id: tpl?.id ?? null,
       decision_mode: "enforce",
       decision_code: decision.code,
       placement_source: placementWarm ? (rc?.source as string) : null,
@@ -711,6 +721,79 @@ export async function runApproveDraft(body: Record<string, unknown>, sb: Supabas
   };
 }
 
+/**
+ * One-off maintenance: supersede approved drafts whose stored pitch no longer
+ * matches the live track/DNA copy. Dry-run by default (apply=false).
+ */
+export async function runInvalidateStaleDrafts(
+  body: Record<string, unknown>,
+  sb: SupabaseClient,
+): Promise<RunResult> {
+  const apply = Boolean(body.apply);
+  const dryRun = body.dry_run === undefined ? !apply : Boolean(body.dry_run);
+  const doApply = apply && !dryRun;
+  const trackId = String(body.track_id ?? "").trim() || null;
+  const limit = typeof body.limit === "number" ? body.limit : Number(body.limit ?? 5000);
+
+  let scanned = 0;
+  let stale: Awaited<ReturnType<typeof findStaleApprovedDrafts>>["stale"] = [];
+  try {
+    const result = await findStaleApprovedDrafts(sb, { trackId, limit });
+    scanned = result.scanned;
+    stale = result.stale;
+  } catch (e) {
+    return { status: 500, data: { error: e instanceof Error ? e.message : String(e) } };
+  }
+
+  if (!doApply) {
+    return {
+      status: 200,
+      data: {
+        ok: true,
+        dry_run: true,
+        scanned,
+        stale_count: stale.length,
+        stale_sample: stale.slice(0, 25),
+        remedy:
+          "Pass apply:true (and dry_run:false) to mark these drafts status=superseded. " +
+          "Then regenerate drafts for the same targets with current track pitch copy.",
+      },
+    };
+  }
+
+  let superseded = 0;
+  for (const row of stale) {
+    const { data: current } = await sb
+      .from("outreach_drafts")
+      .select("metadata")
+      .eq("id", row.id)
+      .maybeSingle();
+    const meta = (current?.metadata && typeof current.metadata === "object")
+      ? { ...(current.metadata as Record<string, unknown>) }
+      : {};
+    meta.superseded_reason = row.reason;
+    meta.superseded_at = new Date().toISOString();
+    const { error } = await sb
+      .from("outreach_drafts")
+      .update({ status: "superseded", metadata: meta })
+      .eq("id", row.id)
+      .eq("status", "approved");
+    if (!error) superseded += 1;
+  }
+
+  return {
+    status: 200,
+    data: {
+      ok: true,
+      dry_run: false,
+      scanned,
+      stale_count: stale.length,
+      superseded,
+      stale_sample: stale.slice(0, 25),
+    },
+  };
+}
+
 type Extracted = { curator_instagram?: string; curator_tiktok?: string; curator_twitter?: string; curator_website?: string; curator_linktree?: string; curator_email?: string };
 
 function extractContacts(text: string): Extracted {
@@ -841,8 +924,15 @@ export async function runQueueInstagramPitch(
   const playlistId = String(body.playlist_id ?? "").trim();
   const trackIdReq = String(body.track_id ?? "").trim();
   const trackName = String(body.track_name ?? "").trim();
-  if (!playlistId || (!trackIdReq && !trackName)) {
-    return { status: 400, data: { error: "playlist_id and track_id (or track_name for lookup) required" } };
+  if (!playlistId || !trackIdReq) {
+    return {
+      status: 422,
+      data: {
+        error: "playlist_id and track_id required. Title-only / track_name lookup is not allowed.",
+        playlist_id: playlistId || null,
+        track_name: trackName || null,
+      },
+    };
   }
 
   const { data: row, error } = await sb.from("playlist_targets").select("*").eq("playlist_id", playlistId).maybeSingle();
@@ -861,10 +951,7 @@ export async function runQueueInstagramPitch(
     return { status: 400, data: { error: "Curator IG matches a lane reference artist; reject mis-targeted DM" } };
   }
   const lane = String(row.lane ?? "").trim();
-  const loadedTrack = await loadTrackForPitch(
-    sb,
-    trackIdReq ? { trackId: trackIdReq } : { trackName },
-  );
+  const loadedTrack = await loadTrackForPitch(sb, { trackId: trackIdReq });
   if (loadedTrack.error) return { status: 500, data: { error: loadedTrack.error } };
   const track = loadedTrack.track;
   if (!track) {
@@ -872,7 +959,7 @@ export async function runQueueInstagramPitch(
       status: 422,
       data: {
         error: `No catalogue track matches. Pass exact track_id.`,
-        track_name: trackName,
+        track_id: trackIdReq,
         playlist_id: playlistId,
       },
     };
@@ -2545,6 +2632,7 @@ const PLAYLIST_AGENT_ACTIONS = new Set([
   "list_song_dna", "get_song_dna", "create_song_dna_draft", "update_song_dna_draft",
   "submit_song_dna_for_review", "approve_song_dna", "reject_song_dna", "list_song_dna_audit",
   "list_pitch_templates", "upsert_pitch_template", "preview_pitch_template",
+  "invalidate_stale_drafts",
   "set_track_categories", "set_playlist_categories",
   "recommend_targets_for_track", "list_warm_curators",
   "mark_pitch_response", "pitch_stats_summary", "list_pitches",
@@ -2677,6 +2765,16 @@ export async function runCatalogueAdmin(
     const bodyTpl = String(body.body_template ?? "").trim();
     if (!VALID_TONES.has(tone)) return { status: 400, data: { error: "valid tone required" } };
     if (!subject || !bodyTpl) return { status: 400, data: { error: "subject_template and body_template required" } };
+    if (templateUsesForbiddenFitReason(subject, bodyTpl)) {
+      return {
+        status: 422,
+        data: {
+          error:
+            "{{fit_reason}} is not an allowed template placeholder. " +
+            "Lane/playlist fit copy stays on draft metadata only and must not appear in outbound email.",
+        },
+      };
+    }
     const fields = {
       tone,
       channel,
@@ -2698,18 +2796,34 @@ export async function runCatalogueAdmin(
     const subject = String(body.subject_template ?? "").trim();
     const bodyTpl = String(body.body_template ?? "").trim();
     if (!subject || !bodyTpl) return { status: 400, data: { error: "subject_template and body_template required" } };
+    if (templateUsesForbiddenFitReason(subject, bodyTpl)) {
+      return {
+        status: 422,
+        data: {
+          error:
+            "{{fit_reason}} is not an allowed template placeholder. " +
+            "Use {{pitch}} for song copy only.",
+        },
+      };
+    }
     const vars = {
       curator_name: String(body.curator_name ?? "there"),
       playlist_name: String(body.playlist_name ?? "your playlist"),
       track_name: String(body.track_name ?? "the track"),
       pitch: String(body.pitch ?? ""),
       stream_link: String(body.stream_link ?? ""),
-    fitReason: String(body.fit_reason ?? ""),
-    artist_name: String(body.artist_name ?? await loadArtistName(sb)),
-    prior_track: String(body.prior_track ?? "your last track"),
-  };
-  const rendered = applyPitchTemplate(subject, bodyTpl, vars);
-    return { status: 200, data: { ok: true, ...rendered } };
+      artist_name: String(body.artist_name ?? await loadArtistName(sb)),
+      prior_track: String(body.prior_track ?? "your last track"),
+    };
+    try {
+      const rendered = applyPitchTemplate(subject, bodyTpl, vars);
+      return { status: 200, data: { ok: true, ...rendered } };
+    } catch (e) {
+      return {
+        status: 422,
+        data: { error: e instanceof Error ? e.message : String(e) },
+      };
+    }
   }
 
   if (action === "upsert_track") {
@@ -3054,6 +3168,7 @@ export async function runPlaylistAgentAction(
   switch (action) {
     case "draft_pitch": return runDraftPitch(body, sb);
     case "approve_draft": return runApproveDraft(body, sb, hubKey);
+    case "invalidate_stale_drafts": return runInvalidateStaleDrafts(body, sb);
     case "enrich_curator_contacts": return runEnrichCuratorContacts(body, sb);
     case "schedule_follow_up": return runScheduleFollowUp(body, sb, hubKey);
     case "list_targets":

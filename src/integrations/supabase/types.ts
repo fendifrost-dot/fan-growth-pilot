@@ -1940,6 +1940,8 @@ export type Database = {
           id: string
           is_test: boolean
           metadata: Json | null
+          pitch_copy_hash: string | null
+          pitch_copy_source: string | null
           pitch_log_id: string | null
           platform: string | null
           playlist_id: string
@@ -1949,6 +1951,7 @@ export type Database = {
           status: string
           streaming_link: string | null
           subject: string | null
+          template_id: string | null
           track_id: string | null
           track_name: string
           updated_at: string
@@ -1966,6 +1969,8 @@ export type Database = {
           id?: string
           is_test?: boolean
           metadata?: Json | null
+          pitch_copy_hash?: string | null
+          pitch_copy_source?: string | null
           pitch_log_id?: string | null
           platform?: string | null
           playlist_id: string
@@ -1975,6 +1980,7 @@ export type Database = {
           status?: string
           streaming_link?: string | null
           subject?: string | null
+          template_id?: string | null
           track_id?: string | null
           track_name: string
           updated_at?: string
@@ -1992,6 +1998,8 @@ export type Database = {
           id?: string
           is_test?: boolean
           metadata?: Json | null
+          pitch_copy_hash?: string | null
+          pitch_copy_source?: string | null
           pitch_log_id?: string | null
           platform?: string | null
           playlist_id?: string
@@ -2001,6 +2009,7 @@ export type Database = {
           status?: string
           streaming_link?: string | null
           subject?: string | null
+          template_id?: string | null
           track_id?: string | null
           track_name?: string
           updated_at?: string
@@ -2025,6 +2034,13 @@ export type Database = {
             columns: ["song_dna_version_id"]
             isOneToOne: false
             referencedRelation: "song_dna_versions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "outreach_drafts_template_id_fkey"
+            columns: ["template_id"]
+            isOneToOne: false
+            referencedRelation: "pitch_templates"
             referencedColumns: ["id"]
           },
           {
@@ -2093,10 +2109,14 @@ export type Database = {
           cooldown_until: string | null
           created_at: string | null
           curator_email: string
+          dispatched_via: string | null
+          draft_id: string | null
           email_body: string | null
           follow_up_at: string | null
           id: string
           method: string | null
+          pitch_copy_hash: string | null
+          pitch_copy_source: string | null
           pitched_at: string | null
           placed: boolean | null
           placement_status: string | null
@@ -2123,10 +2143,14 @@ export type Database = {
           cooldown_until?: string | null
           created_at?: string | null
           curator_email: string
+          dispatched_via?: string | null
+          draft_id?: string | null
           email_body?: string | null
           follow_up_at?: string | null
           id?: string
           method?: string | null
+          pitch_copy_hash?: string | null
+          pitch_copy_source?: string | null
           pitched_at?: string | null
           placed?: boolean | null
           placement_status?: string | null
@@ -2153,10 +2177,14 @@ export type Database = {
           cooldown_until?: string | null
           created_at?: string | null
           curator_email?: string
+          dispatched_via?: string | null
+          draft_id?: string | null
           email_body?: string | null
           follow_up_at?: string | null
           id?: string
           method?: string | null
+          pitch_copy_hash?: string | null
+          pitch_copy_source?: string | null
           pitched_at?: string | null
           placed?: boolean | null
           placement_status?: string | null
@@ -2176,6 +2204,13 @@ export type Database = {
           track_name?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "pitch_log_draft_id_fkey"
+            columns: ["draft_id"]
+            isOneToOne: false
+            referencedRelation: "outreach_drafts"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "pitch_log_playlist_id_fkey"
             columns: ["playlist_id"]

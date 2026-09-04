@@ -25,6 +25,7 @@ Deno.test("applyPitchTemplate substitutes every documented placeholder", () => {
     playlist_name: "Night Drive",
     track_name: "Example Track",
     pitch: "KNOWN SHORT PITCH",
+    fit_reason: "TARGET FIT",
     stream_link: "Stream: https://open.spotify.com/track/x",
     artist_name: "Test Artist",
     prior_track: "Earlier Cut",
@@ -166,7 +167,7 @@ function baseTables(track = TRACK_A, playlist = PLAYLIST): Record<string, Row[]>
   };
 }
 
-Deno.test("draft_pitch with track_id and with track_name produce identical subject and body", async () => {
+Deno.test("draft_pitch requires track_id — title-only is rejected", async () => {
   const tables = baseTables();
   const byId = stubSb(tables);
   const byName = stubSb(tables);
@@ -179,12 +180,9 @@ Deno.test("draft_pitch with track_id and with track_name produce identical subje
     byName as never,
   );
   assertEquals(a.status, 200, JSON.stringify(a.data));
-  assertEquals(b.status, 200, JSON.stringify(b.data));
-  const da = a.data as { subject: string; body: string };
-  const db = b.data as { subject: string; body: string };
-  assertEquals(da.subject, db.subject);
-  assertEquals(da.body, db.body);
-  assert(da.body.includes("KNOWN SHORT PITCH FROM TRACK A"));
+  assertEquals(b.status, 422, JSON.stringify(b.data));
+  assertEquals(String((b.data as { error?: string }).error).includes("track_id required"), true);
+  assert((a.data as { body: string }).body.includes("KNOWN SHORT PITCH FROM TRACK A"));
 });
 
 Deno.test("track short_pitch wins over an unrelated lane pitch_angle", async () => {
@@ -221,5 +219,8 @@ Deno.test("missing pitch copy on every source returns 422 and inserts no draft",
   assertEquals(res.status, 422);
   const data = res.data as { error: string };
   assertEquals(data.error, "No pitch copy configured");
-  assertEquals(sb.inserted.length, 0);
+  const draftInserts = sb.inserted.filter((row) =>
+    row && typeof row === "object" && "playlist_id" in (row as object) && "body" in (row as object)
+  );
+  assertEquals(draftInserts.length, 0);
 });

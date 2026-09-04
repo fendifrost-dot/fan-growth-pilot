@@ -35,11 +35,29 @@ type TrackRow = {
   name: string;
   status: string;
   default_tone: string;
+  short_pitch?: string | null;
   spotify_url: string | null;
   apple_music_url: string | null;
   soundcloud_url: string | null;
   track_categories?: { categories: Category | null }[];
 };
+
+type SongDnaRow = {
+  id: string;
+  track_id: string;
+  version_number: number;
+  approval_state: string;
+  primary_genre: string | null;
+  secondary_genres?: string[];
+  approved_lanes?: string[];
+  excluded_lanes?: string[];
+  mood_tags?: string[];
+  context_tags?: string[];
+  reference_artists?: string[];
+  short_pitch?: string | null;
+};
+
+type CampaignOpt = { id: string; name?: string; title?: string; status?: string; track_id?: string };
 
 type TargetRow = {
   playlist_id: string;
@@ -83,6 +101,9 @@ type ModeKey = typeof MODES[number]["key"];
 const AdminPitchComposer: React.FC = () => {
   const [tracks, setTracks] = useState<TrackRow[]>([]);
   const [trackId, setTrackId] = useState("");
+  const [campaignId, setCampaignId] = useState("");
+  const [campaigns, setCampaigns] = useState<CampaignOpt[]>([]);
+  const [approvedDna, setApprovedDna] = useState<SongDnaRow | null>(null);
   const [tone, setTone] = useState("warm_personal");
   const [step, setStep] = useState(1);
   const [targetsByMode, setTargetsByMode] = useState<Record<ModeKey, TargetRow[]>>({
@@ -91,7 +112,6 @@ const AdminPitchComposer: React.FC = () => {
     all_warm: [],
   });
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [mismatchAck, setMismatchAck] = useState<Set<string>>(new Set());
   const [loadingTargets, setLoadingTargets] = useState(false);
   const [drafts, setDrafts] = useState<DraftPreview[]>([]);
   const [drafting, setDrafting] = useState(false);
@@ -115,6 +135,33 @@ const AdminPitchComposer: React.FC = () => {
   useEffect(() => { loadTracks(); }, [loadTracks]);
 
   useEffect(() => {
+    if (!trackId) {
+      setApprovedDna(null);
+      setCampaigns([]);
+      setCampaignId("");
+      return;
+    }
+    void (async () => {
+      try {
+        const [dna, camps] = await Promise.all([
+          callHubFn<{ rows: SongDnaRow[] }>("list_song_dna", { track_id: trackId }),
+          callHubFn<{ campaigns?: CampaignOpt[]; rows?: CampaignOpt[] }>("list_campaigns").catch(() => ({
+            campaigns: [],
+          })),
+        ]);
+        const approved = (dna.rows ?? []).find((r) => r.approval_state === "approved") ?? null;
+        setApprovedDna(approved);
+        const all = camps.campaigns ?? camps.rows ?? [];
+        const forTrack = all.filter((c) => !c.track_id || c.track_id === trackId);
+        setCampaigns(forTrack);
+        setCampaignId((prev) => (forTrack.some((c) => c.id === prev) ? prev : forTrack[0]?.id ?? ""));
+      } catch {
+        setApprovedDna(null);
+      }
+    })();
+  }, [trackId]);
+
+  useEffect(() => {
     if (track?.default_tone) setTone(track.default_tone);
   }, [track?.id, track?.default_tone]);
 
@@ -136,7 +183,6 @@ const AdminPitchComposer: React.FC = () => {
       for (const [k, rows] of results) map[k] = rows;
       setTargetsByMode(map);
       setSelected(new Set());
-      setMismatchAck(new Set());
       setStep(3);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
@@ -145,7 +191,7 @@ const AdminPitchComposer: React.FC = () => {
     }
   };
 
-  const toggleSelect = (row: TargetRow, mode: ModeKey) => {
+  const toggleSelect = (row: TargetRow, _mode: ModeKey) => {
     const id = row.playlist_id;
     setSelected((prev) => {
       const next = new Set(prev);
@@ -153,9 +199,6 @@ const AdminPitchComposer: React.FC = () => {
       else next.add(id);
       return next;
     });
-    if (mode === "new_cold" && row._overlap === 0) {
-      // require explicit ack when checking zero-overlap in new_cold column
-    }
   };
 
   const selectedRows = useMemo(() => {
@@ -170,19 +213,14 @@ const AdminPitchComposer: React.FC = () => {
     return selectedRows.some((r) => warmIds.has(r.playlist_id) && r._overlap === 0);
   }, [selectedRows, targetsByMode.all_warm]);
 
-  const needsMismatchAck = (row: TargetRow) =>
-    row._overlap === 0 && selected.has(row.playlist_id) && !mismatchAck.has(row.playlist_id);
-
   const createDrafts = async () => {
     if (!trackId || !selectedRows.length) return;
 
-    const unacked = selectedRows.filter(needsMismatchAck);
-    if (unacked.length) {
-      toast.error("Acknowledge category mismatch for zero-overlap selections");
-      return;
-    }
-
     const run = async () => {
+      if (!trackId) {
+        toast.error("Select a track first");
+        return;
+      }
       setDrafting(true);
       setStep(4);
       const previews: DraftPreview[] = selectedRows.map((r) => ({
@@ -194,6 +232,29 @@ const AdminPitchComposer: React.FC = () => {
 
       for (let i = 0; i < selectedRows.length; i++) {
         const r = selectedRows[i];
+        const lane = (r as TargetRow & { lane?: string }).lane;
+        if (approvedDna) {
+          const excluded = new Set((approvedDna.excluded_lanes ?? []).map((s) => s.toLowerCase()));
+          const approved = new Set((approvedDna.approved_lanes ?? []).map((s) => s.toLowerCase()));
+          if (lane && excluded.has(String(lane).toLowerCase())) {
+            previews[i] = {
+              ...previews[i],
+              status: "failed",
+              error: `Lane "${lane}" is excluded by approved Song DNA — change DNA, not this request.`,
+            };
+            setDrafts([...previews]);
+            continue;
+          }
+          if (lane && approved.size > 0 && !approved.has(String(lane).toLowerCase())) {
+            previews[i] = {
+              ...previews[i],
+              status: "failed",
+              error: `Lane "${lane}" is not in approved Song DNA approved_lanes.`,
+            };
+            setDrafts([...previews]);
+            continue;
+          }
+        }
         try {
           const res = await callHubFn<{
             draft_id: string;
@@ -203,8 +264,9 @@ const AdminPitchComposer: React.FC = () => {
           }>("draft_pitch", {
             track_id: trackId,
             playlist_id: r.playlist_id,
+            ...(campaignId ? { campaign_id: campaignId } : {}),
+            ...(approvedDna ? { song_dna_version_id: approvedDna.id } : {}),
             tone,
-            override_category_check: r._overlap === 0,
           });
           previews[i] = {
             ...previews[i],
@@ -313,20 +375,9 @@ const AdminPitchComposer: React.FC = () => {
                   <Badge variant={r._overlap > 0 ? "default" : "destructive"}>{r._overlap}/5 overlap</Badge>
                 </div>
                 {mode === "new_cold" && r._overlap === 0 && selected.has(r.playlist_id) && (
-                  <label className="flex items-center gap-2 pl-6 text-amber-600">
-                    <Checkbox
-                      checked={mismatchAck.has(r.playlist_id)}
-                      onCheckedChange={(c) => {
-                        setMismatchAck((prev) => {
-                          const next = new Set(prev);
-                          if (c) next.add(r.playlist_id);
-                          else next.delete(r.playlist_id);
-                          return next;
-                        });
-                      }}
-                    />
-                    Category mismatch — pitch anyway
-                  </label>
+                  <p className="pl-6 text-amber-700 text-[11px]">
+                    Zero category overlap — server still enforces Song DNA compatibility; UI ack does not override.
+                  </p>
                 )}
               </div>
             ))}
@@ -343,12 +394,15 @@ const AdminPitchComposer: React.FC = () => {
         <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
           <Send className="h-6 w-6" /> Pitch Composer
         </h1>
-        <p className="text-sm text-muted-foreground mt-1">Select a track, pick curators, preview drafts, and send.</p>
+        <p className="text-sm text-muted-foreground mt-1">
+          Select exact track (UUID), review Song DNA when approved, pick targets, draft and send.
+          Song pitch comes from the track / approved DNA — never from playlist copy.
+        </p>
       </div>
 
       {/* Step 1 — Select song */}
       <Card className="p-4 space-y-3">
-        <Label>Step 1 — Select song</Label>
+        <Label>Step 1 — Select exact track</Label>
         <Select value={trackId} onValueChange={(v) => { setTrackId(v); setStep(1); }}>
           <SelectTrigger><SelectValue placeholder="Choose an active track…" /></SelectTrigger>
           <SelectContent>
@@ -358,13 +412,49 @@ const AdminPitchComposer: React.FC = () => {
           </SelectContent>
         </Select>
         {track && (
-          <div className="flex flex-wrap gap-2 items-center text-sm">
-            {(track.track_categories ?? []).map((tc, i) =>
-              tc.categories ? <Badge key={i} variant="outline">{tc.categories.label}</Badge> : null,
+          <div className="space-y-2 text-sm">
+            <div className="flex flex-wrap gap-2 items-center">
+              <Badge variant="outline">ID {track.id.slice(0, 8)}…</Badge>
+              {(track.track_categories ?? []).map((tc, i) =>
+                tc.categories ? <Badge key={i} variant="outline">{tc.categories.label}</Badge> : null,
+              )}
+            </div>
+            {approvedDna ? (
+              <div className="rounded-md border p-3 space-y-1 text-xs bg-muted/30">
+                <div className="font-medium">Approved Song DNA v{approvedDna.version_number}</div>
+                <div>Primary genre: {approvedDna.primary_genre || "—"}</div>
+                <div>Secondary: {(approvedDna.secondary_genres ?? []).join(", ") || "—"}</div>
+                <div>Mood: {(approvedDna.mood_tags ?? []).join(", ") || "—"}</div>
+                <div>Context: {(approvedDna.context_tags ?? []).join(", ") || "—"}</div>
+                <div>Refs: {(approvedDna.reference_artists ?? []).join(", ") || "—"}</div>
+                <div>Approved lanes: {(approvedDna.approved_lanes ?? []).join(", ") || "—"}</div>
+                <div>Excluded lanes: {(approvedDna.excluded_lanes ?? []).join(", ") || "—"}</div>
+                <div className="pt-1">Pitch: {approvedDna.short_pitch || track.short_pitch || "—"}</div>
+              </div>
+            ) : (
+              <p className="text-muted-foreground text-xs">
+                No approved Song DNA yet — drafting uses the track’s short_pitch. Add DNA in{" "}
+                <a className="underline" href="/admin/song-dna">Song DNA</a> when ready.
+              </p>
             )}
-            {track.spotify_url && <Badge variant="secondary">Spotify</Badge>}
-            {track.apple_music_url && <Badge variant="secondary">Apple</Badge>}
-            {track.soundcloud_url && <Badge variant="secondary">SoundCloud</Badge>}
+            {campaigns.length > 0 && (
+            <div className="space-y-1.5 max-w-md">
+              <Label>Campaign (optional until pitch_campaigns is live)</Label>
+              <Select value={campaignId || undefined} onValueChange={setCampaignId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select campaign…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {campaigns.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {c.name || c.title || c.id.slice(0, 8)}
+                      {c.status ? ` (${c.status})` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            )}
           </div>
         )}
       </Card>

@@ -67,13 +67,13 @@ type RadioRow = {
   pitch_status: string | null;
 };
 
-const TRACK_DEFAULT = "Designed For Me (Control)";
+const TRACK_DEFAULT = "";
 
 const TG_TEMPLATE = `Hey {{first_name}}\\!
 
-New music from Fendi Frost — *Designed For Me \\(Control\\)* is live\\.
+New music from Fendi Frost is live\\.
 
-Stream: https://rnd\\.fm/track/designed\\-for\\-me\\-control`;
+Stream: {{stream_link}}`;
 
 const TAB_VALUES = ["overview", "fan-email", "fan-telegram", "playlist", "radio", "instagram"] as const;
 

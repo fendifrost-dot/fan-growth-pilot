@@ -1,6 +1,5 @@
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import {
-  defaultPlaylistPitchSubject,
   htmlToPlainText,
   pitchFromHeader,
   pitchReplyTo,
@@ -9,6 +8,7 @@ import {
   checkSendEligibility,
   eligibilitySkipLog,
 } from "../_shared/outreach-eligibility.ts";
+import { evaluateOutreachDecision } from "../_shared/outreach-decision.ts";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-api-key",
@@ -96,6 +96,9 @@ function pitchLogRow(
     subject?: string | null;
     email_body?: string | null;
     sent_at?: string | null;
+    track_id?: string | null;
+    song_dna_version_id?: string | null;
+    campaign_id?: string | null;
   } = {},
 ) {
   // Only attach subject/email_body/sent_at when explicitly provided so error rows keep
@@ -114,6 +117,9 @@ function pitchLogRow(
   if (extra.subject !== undefined) row.subject = extra.subject;
   if (extra.email_body !== undefined) row.email_body = extra.email_body;
   if (extra.sent_at !== undefined) row.sent_at = extra.sent_at;
+  if (extra.track_id) row.track_id = extra.track_id;
+  if (extra.song_dna_version_id) row.song_dna_version_id = extra.song_dna_version_id;
+  if (extra.campaign_id) row.campaign_id = extra.campaign_id;
   return row;
 }
 Deno.serve(async (req) => {
@@ -129,6 +135,9 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const playlistId = String(body.playlist_id || "").trim();
     const trackName = String(body.track_name || "").trim();
+    const trackId = String(body.track_id || "").trim();
+    const campaignId = String(body.campaign_id || "").trim();
+    const songDnaVersionId = String(body.song_dna_version_id || "").trim();
     const methodOverride = typeof body.method_override === "string" ? body.method_override.trim() : "";
     const tierConfirmed = Boolean(body.tier_confirmed);
     const bulk = Boolean(body.bulk);
@@ -138,12 +147,24 @@ Deno.serve(async (req) => {
     const batchOverrideCap = Boolean(body.batch_override_cap);
     // Escape hatch for legitimate off-hours admin sends; defaults to enforcing the window.
     const ignoreSendWindow = Boolean(body.ignore_send_window);
-    if (!playlistId || !trackName) return jsonPitch({ ok:false, method_used:"none", action_taken:"error", cooldown_until:null, message_to_user:"Missing playlist_id or track_name." });
+    if (!playlistId || (!trackName && !trackId && !draftId)) {
+      return jsonPitch({
+        ok: false,
+        method_used: "none",
+        action_taken: "error",
+        cooldown_until: null,
+        message_to_user: "Missing playlist_id and track identity (track_id or draft_id).",
+      });
+    }
     const url = Deno.env.get("SUPABASE_URL")!;
     const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const sb = createClient(url, key);
     let draftOverrides: { email?: string; subject?: string; bodyHtml?: string } | undefined;
     let draftChannel: string | null = null;
+    let resolvedTrackId = trackId;
+    let resolvedTrackName = trackName;
+    let resolvedCampaignId = campaignId;
+    let resolvedDnaId = songDnaVersionId;
     if (draftId) {
       const { data: draft } = await sb.from("outreach_drafts").select("*").eq("id", draftId).maybeSingle();
       if (!draft || draft.status !== "approved") {
@@ -156,9 +177,35 @@ Deno.serve(async (req) => {
         subject: (draft.subject as string | null)?.trim() || undefined,
         bodyHtml: "<p>" + plain + "</p>",
       };
+      if (!resolvedTrackId) resolvedTrackId = String(draft.track_id ?? "").trim();
+      if (!resolvedTrackName) resolvedTrackName = String(draft.track_name ?? "").trim();
+      if (!resolvedCampaignId) resolvedCampaignId = String(draft.campaign_id ?? "").trim();
+      if (!resolvedDnaId) resolvedDnaId = String(draft.song_dna_version_id ?? "").trim();
     }
     const { data: row, error: rowErr } = await sb.from("playlist_targets").select("*").eq("playlist_id", playlistId).maybeSingle();
     if (rowErr || !row) return jsonPitch({ ok:false, method_used:"none", action_taken:"error", cooldown_until:null, message_to_user:"Playlist not found: " + playlistId });
+
+    const decision = await evaluateOutreachDecision(sb, {
+      route: "execute-pitch",
+      trackId: resolvedTrackId || null,
+      trackName: resolvedTrackName || null,
+      campaignId: resolvedCampaignId || null,
+      songDnaVersionId: resolvedDnaId || null,
+      playlistId,
+      lane: String(row.lane ?? "").trim() || null,
+    });
+    if (!decision.allow) {
+      return jsonPitch({
+        ok: false,
+        method_used: "none",
+        action_taken: "skipped",
+        cooldown_until: null,
+        message_to_user: "🚫 " + (decision.errors[0] ?? decision.code),
+      }, 422);
+    }
+    if (!resolvedTrackName && decision.trackName) resolvedTrackName = decision.trackName;
+    if (!resolvedTrackId && decision.trackId) resolvedTrackId = decision.trackId;
+
     const method = (draftChannel === "email" ? "email" : (methodOverride || row.submission_method || "other")).toLowerCase().trim();
     if (bulk && NON_BULK_METHODS.has(method)) return jsonPitch({ ok:true, method_used:method, action_taken:"skipped", cooldown_until:null, message_to_user:"⏭️ Skipped *" + (row.playlist_name ?? playlistId) + "* — method *" + method + "* needs a manual pass." });
     const tierRaw = row.tier;
@@ -166,8 +213,26 @@ Deno.serve(async (req) => {
     if (tier === 3 && !tierConfirmed) return jsonPitch({ ok:false, method_used:method, action_taken:"tier_gate", cooldown_until:null, message_to_user:"⚠️ *Tier 3 playlist* — *" + (row.playlist_name ?? playlistId) + "*\n\nFlagged for verify-first pitching. Reply *confirm* to send." });
     // draftId is threaded through so the eligibility gate applies (and logs)
     // identically for draft-backed and draft-less sends.
-    if (method === "email") return await handleEmailPitch(sb, row, trackName, bulk, draftOverrides, testMode, testEmail, batchOverrideCap, ignoreSendWindow, draftId);
-    return jsonPitch(buildNonEmailMessage(row, method, trackName));
+    if (method === "email") {
+      return await handleEmailPitch(
+        sb,
+        row,
+        resolvedTrackName,
+        bulk,
+        draftOverrides,
+        testMode,
+        testEmail,
+        batchOverrideCap,
+        ignoreSendWindow,
+        draftId,
+        {
+          trackId: resolvedTrackId || decision.trackId,
+          songDnaVersionId: resolvedDnaId || decision.songDnaVersionId,
+          campaignId: resolvedCampaignId || decision.campaignId,
+        },
+      );
+    }
+    return jsonPitch(buildNonEmailMessage(row, method, resolvedTrackName));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return jsonPitch({ ok:false, method_used:"error", action_taken:"error", cooldown_until:null, message_to_user:"❌ " + msg });
@@ -206,6 +271,11 @@ async function handleEmailPitch(
   batchOverrideCap = false,
   ignoreSendWindow = false,
   draftId = "",
+  identity: {
+    trackId?: string | null;
+    songDnaVersionId?: string | null;
+    campaignId?: string | null;
+  } = {},
 ): Promise<Response> {
   const playlistId = String(row.playlist_id);
   // ---------------------------------------------------------------------------
@@ -296,8 +366,18 @@ async function handleEmailPitch(
   const trackUrl = trackUrls[trackName] || trackUrls[trackName.toLowerCase()] || "https://open.spotify.com/artist/" + (artistId || "0000000000000000000000");
   const cooldownDays = await getCooldownDays(sb);
   const cooldownIso = new Date(Date.now() + cooldownDays * 86400000).toISOString();
-  const bodyHtml = draft?.bodyHtml ?? ["<p>Hi,</p>","<p>I'm reaching out to submit <strong>" + escapeHtml(trackName) + "</strong> by <strong>Fendi Frost</strong> for playlist consideration.</p>","<p>Listen: <a href=\"" + escapeHtml(trackUrl) + "\">" + escapeHtml(trackUrl) + "</a></p>",artistId ? "<p>Artist on Spotify: <a href=\"https://open.spotify.com/artist/" + escapeHtml(artistId) + "\">profile</a></p>" : "","<p>Thank you for your time.</p>","<p>— Fendi Frost team</p>"].filter(Boolean).join("\n");
-  const subject = draft?.subject ?? defaultPlaylistPitchSubject(trackName, playlistName);
+  const bodyHtml = draft?.bodyHtml;
+  const subject = draft?.subject;
+  if (!bodyHtml?.trim() || !subject?.trim()) {
+    return jsonPitch({
+      ok: false,
+      method_used: method,
+      action_taken: "error",
+      cooldown_until: null,
+      message_to_user:
+        "❌ No approved draft body/subject. Draft-less inventing of pitch copy is disabled — create a draft with track-specific {{pitch}} first.",
+    });
+  }
   if (!resendKey) {
     if (!testMode) {
       await sb.from("pitch_log").insert(pitchLogRow(playlistId, trackName, email, method, "error", {
@@ -354,6 +434,9 @@ async function handleEmailPitch(
       subject,
       email_body: bodyHtml,
       sent_at: new Date().toISOString(),
+      track_id: identity.trackId ?? null,
+      song_dna_version_id: identity.songDnaVersionId ?? null,
+      campaign_id: identity.campaignId ?? null,
     }))
     .select("id")
     .single();

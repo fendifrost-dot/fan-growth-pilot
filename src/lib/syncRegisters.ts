@@ -1,16 +1,11 @@
 /** Sync / licensing register helpers — operator-only song + pitch bookkeeping.
  *
- * Genre rules (artist-verified):
- * - MEDITATE is Hip-Hop/Rap. Never house / electronic.
- * - House/electronic pool is ONLY Balenciaga (Let Me Freeze), Electrilla,
- *   Designed For Me (Control).
- * - sync_eligible is true only when has_sample === "no".
- * - A DistroKid miss is not "unreleased". Aggregator OPEN means unknown/split.
+ * Genre stamps are operator-entered. Contradictions are enforced against the
+ * track’s current stamp / approved Song DNA primary_genre — never by matching
+ * display titles in source code.
  */
 
 export const EVEN_ARTIST_URL = "https://www.even.biz/artists/fendi-frost";
-
-export const MONTH1_SYNC_DEFAULT_TITLE = "Meditate";
 
 export const AGGREGATORS = ["distrokid", "tunecore", "orchard", "open"] as const;
 export type Aggregator = (typeof AGGREGATORS)[number];
@@ -24,55 +19,35 @@ export type GenreStamp = (typeof GENRE_STAMPS)[number];
 export const LICENSING_RESPONSES = ["awaiting", "replied", "licensed", "declined"] as const;
 export type LicensingResponse = (typeof LICENSING_RESPONSES)[number];
 
-/** House/electronic pool — titles only, matched case-insensitively. */
-export const HOUSE_ELECTRONIC_TITLES = [
-  "Balenciaga (Let Me Freeze)",
-  "Electrilla",
-  "Designed For Me (Control)",
-] as const;
-
-export const CATALOG_SEED_TITLES = [
-  "Meditate",
-  "Balenciaga (Let Me Freeze)",
-  "Electrilla",
-  "Designed For Me (Control)",
-  "Neva Too Much Prada",
-] as const;
-
 export function normalizeTitle(name: string | null | undefined): string {
   return (name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
-}
-
-export function isMeditateTitle(name: string | null | undefined): boolean {
-  return normalizeTitle(name) === "meditate";
-}
-
-export function isHouseElectronicTitle(name: string | null | undefined): boolean {
-  const n = normalizeTitle(name);
-  return (
-    n === "balenciaga (let me freeze)" ||
-    n === "electrilla" ||
-    n.includes("designed for me")
-  );
-}
-
-export function isNevaTooMuchPrada(name: string | null | undefined): boolean {
-  return normalizeTitle(name).includes("neva too much prada");
 }
 
 export function computeSyncEligible(hasSample: SampleFlag | string | null | undefined): boolean {
   return hasSample === "no";
 }
 
-/** Reject house stamps on Meditate. Other titles may be stamped by the operator. */
-export function assertGenreStampAllowed(
-  name: string,
-  genreStamp: string,
-): { ok: true } | { ok: false; error: string } {
-  if (isMeditateTitle(name) && genreStamp === "house_electronic") {
+function isRapPrimary(v: string | null | undefined): boolean {
+  const s = (v ?? "").trim().toLowerCase();
+  return s === "hip_hop_rap" || s === "rap" || s.includes("hip-hop") || s.includes("hip hop");
+}
+
+/**
+ * Reject house stamps that contradict an already-recorded rap identity.
+ * Title matching is intentionally absent — use track_id + DNA / current stamp.
+ */
+export function assertGenreStampAllowed(opts: {
+  genreStamp: string;
+  currentStamp?: string | null;
+  approvedPrimaryGenre?: string | null;
+}): { ok: true } | { ok: false; error: string } {
+  const stamp = opts.genreStamp;
+  if (stamp !== "house_electronic") return { ok: true };
+  if (isRapPrimary(opts.approvedPrimaryGenre) || opts.currentStamp === "hip_hop_rap") {
     return {
       ok: false,
-      error: 'Meditate is Hip-Hop/Rap — never stamp it house / deep house.',
+      error:
+        "house_electronic stamp contradicts this track’s rap / hip-hop identity (current stamp or approved Song DNA). Update Song DNA via AGH if the direction must change.",
     };
   }
   return { ok: true };
@@ -118,6 +93,29 @@ export function licensingResponseFromRow(r: {
   if (r.response_status === "declined") return "declined";
   if (r.reply_received === true || r.response_status === "replied") return "replied";
   return "awaiting";
+}
+
+export function trackSyncFields(
+  body: Record<string, unknown>,
+  opts?: { currentStamp?: string | null; approvedPrimaryGenre?: string | null },
+): Record<string, unknown> | { error: string } {
+  const fields: Record<string, unknown> = {};
+  if (body.aggregator !== undefined) fields.aggregator = parseAggregator(body.aggregator);
+  if (body.genre_stamp !== undefined) {
+    const genre = parseGenreStamp(body.genre_stamp);
+    const gate = assertGenreStampAllowed({
+      genreStamp: genre,
+      currentStamp: opts?.currentStamp ?? null,
+      approvedPrimaryGenre: opts?.approvedPrimaryGenre ?? null,
+    });
+    if (!gate.ok) return { error: gate.error };
+    fields.genre_stamp = genre;
+  }
+  if (body.has_sample !== undefined) fields.has_sample = parseSampleFlag(body.has_sample);
+  if (typeof body.is_month1_sync_default === "boolean") {
+    fields.is_month1_sync_default = body.is_month1_sync_default;
+  }
+  return fields;
 }
 
 export const GENRE_STAMP_LABEL: Record<GenreStamp, string> = {
@@ -173,7 +171,7 @@ export function collectPublicMetadataUrls(meta: Record<string, string> | null | 
 
 /** Attach the locked EVEN artist URL only when a listen-pills stack already exists. */
 export function resolvePublicEvenUrl(
-  slug: string | undefined,
+  _slug: string | undefined,
   meta: Record<string, string> | null | undefined,
 ): string | null {
   if (meta?.even_url?.trim()) return meta.even_url.trim();

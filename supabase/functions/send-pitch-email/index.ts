@@ -1,5 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendResendEmail } from "../_shared/resend-pitch.ts";
+import { evaluateOutreachDecision } from "../_shared/outreach-decision.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -33,45 +34,56 @@ Deno.serve(async (req) => {
       return await handleRadioPitch(payload);
     }
 
-    const { playlist_id, curator_email, curator_name, playlist_name, track_name, subject, body } = payload;
+    const {
+      playlist_id,
+      curator_email,
+      curator_name,
+      playlist_name,
+      track_name,
+      track_id,
+      campaign_id,
+      song_dna_version_id,
+      subject,
+      body,
+    } = payload;
 
-    if (!curator_email || !subject || !body || !track_name || !playlist_id) {
-      return json({ error: "curator_email, subject, body, track_name, and playlist_id are required" }, 400);
+    if (!curator_email || !subject || !body || !playlist_id) {
+      return json({ error: "curator_email, subject, body, and playlist_id are required" }, 400);
+    }
+    if (!track_id && !track_name) {
+      return json({ error: "track_id required (title-only send rejected)" }, 422);
     }
 
     if (!Deno.env.get("RESEND_API_KEY")) return json({ error: "RESEND_API_KEY not configured" }, 500);
 
     const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
-    let finalBody = body;
-
-    // Auto-generate body if requested
+    // body === "auto" inventing is removed — require real drafted body with track pitch.
     if (body === "auto") {
-      const { data: targetData } = await supabase
-        .from("playlist_targets")
-        .select("research_context, overlap_score, matched_artists")
-        .eq("playlist_id", playlist_id)
-        .maybeSingle();
-
-      if (targetData?.research_context) {
-        const ctx = targetData.research_context as any;
-        const artists = Object.values(ctx.neighborhood_artists || {}).slice(0, 3).join(", ");
-        const features = ctx.audio_features || {};
-        const tempo = features.tempo ? `${Math.round(features.tempo)}bpm` : "";
-        const energy = features.energy !== undefined ? `energy ${Math.round(features.energy * 100)}%` : "";
-
-        finalBody = `Hi ${curator_name || "there"},
-
-I came across your playlist "${playlist_name}" and think my track "${track_name}" would be a great fit.
-
-My data shows my audience overlaps heavily with fans of ${artists || "similar artists"} — my track runs at ${tempo} with ${energy}, fitting naturally alongside what you're already curating.
-
-Would love for you to give it a listen. Happy to share any additional info.
-
-Best,
-Fendi Frost`;
-      }
+      return json({
+        error:
+          "body=auto is disabled. Provide a drafted body whose {{pitch}} came from approved track Song DNA / short_pitch.",
+      }, 422);
     }
+
+    const decision = await evaluateOutreachDecision(supabase, {
+      route: "send-pitch-email",
+      trackId: track_id ? String(track_id) : null,
+      trackName: track_name ? String(track_name) : null,
+      campaignId: campaign_id ? String(campaign_id) : null,
+      songDnaVersionId: song_dna_version_id ? String(song_dna_version_id) : null,
+      playlistId: String(playlist_id),
+    });
+    if (!decision.allow) {
+      return json({
+        error: decision.errors[0] ?? decision.code,
+        decision_code: decision.code,
+        errors: decision.errors,
+      }, 422);
+    }
+
+    const finalBody = body;
+    const resolvedTrackName = decision.trackName || String(track_name || "");
 
     const sent = await sendResendEmail({
       to: [curator_email],
@@ -82,10 +94,13 @@ Fendi Frost`;
       return json({ error: `Email send failed: ${sent.status} - ${sent.error}` }, sent.status >= 500 ? 500 : 422);
     }
 
-    // Log the pitch
+    // Log the pitch with exact identity when available
     await supabase.from("pitch_log").insert({
       playlist_id,
-      track_name,
+      track_name: resolvedTrackName,
+      track_id: decision.trackId,
+      song_dna_version_id: decision.songDnaVersionId,
+      campaign_id: decision.campaignId,
       curator_email,
       subject,
       email_body: finalBody,
@@ -103,7 +118,8 @@ Fendi Frost`;
       success: true,
       message_id: sent.id,
       to: curator_email,
-      track: track_name,
+      track: resolvedTrackName,
+      track_id: decision.trackId,
       playlist: playlist_name || playlist_id,
     });
   } catch (err) {
@@ -172,15 +188,12 @@ async function handleRadioPitch(payload: Record<string, unknown>) {
     }
   }
 
-  return json({
-    success: true,
-    kind: "radio",
-    message_id: sent.id,
-    to: curatorEmail,
-    track: trackName,
-    station_id: stationId,
-    pitch_log_id: pitchLogId || null,
-  });
+  await supabase.from("radio_targets").update({
+    pitch_status: "pitched",
+    last_pitched_at: sentAt,
+  }).eq("station_id", stationId);
+
+  return json({ success: true, message_id: sent.id, kind: "radio", station_id: stationId });
 }
 
 function json(data: unknown, status = 200) {

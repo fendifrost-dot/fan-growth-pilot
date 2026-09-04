@@ -23,10 +23,6 @@ function mondayOf(d: Date): string {
   return dt.toISOString().slice(0, 10);
 }
 
-const DEFAULT_STREAM_LINKS: Record<string, string> = {
-  "Designed For Me (Control)": "https://rnd.fm/track/designed-for-me-control",
-};
-
 type PlayedSong = { song_id?: string; song_name?: string | null; spins?: number };
 
 async function syntheticSongIdFromName(songName: string): Promise<string> {
@@ -71,7 +67,7 @@ async function resolveStreamLink(sb: SupabaseClient, trackName: string): Promise
   const urls = data?.value && typeof data.value === "object" && !Array.isArray(data.value)
     ? data.value as Record<string, string>
     : {};
-  return urls[trackName]?.trim() || DEFAULT_STREAM_LINKS[trackName] || "";
+  return urls[trackName]?.trim() || "";
 }
 
 async function resolveAmfaArtistId(sb: SupabaseClient, override?: string): Promise<string> {

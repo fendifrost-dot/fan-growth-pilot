@@ -1,11 +1,32 @@
-// Deno tests for pitch-copy resolution and DB-backed pitch templates.
-// Run: deno test supabase/functions/_shared/pitch-copy.test.ts supabase/functions/_shared/pitch-templates.test.ts
+// Deno tests: track-only {{pitch}}; lane/playlist copy never fills pitch.
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { missingPitchCopyResult, resolvePitchAngle } from "./pitch-copy.ts";
+import {
+  missingPitchCopyResult,
+  resolveFitReason,
+  resolvePitchAngle,
+  resolveTrackPitchCopy,
+} from "./pitch-copy.ts";
 
 const dummySb = {} as never;
 
-Deno.test("resolvePitchAngle prefers tracks.short_pitch over every other source", () => {
+Deno.test("resolveTrackPitchCopy prefers approved DNA short_pitch", () => {
+  const r = resolveTrackPitchCopy({
+    track: { short_pitch: "TRACK SHORT", pitch_angle: "TRACK ANGLE" },
+    approvedDna: {
+      id: "dna-1",
+      short_pitch: "DNA APPROVED PITCH",
+      approval_state: "approved",
+    },
+  });
+  assertEquals(r.ok, true);
+  if (r.ok) {
+    assertEquals(r.pitch, "DNA APPROVED PITCH");
+    assertEquals(r.source, "song_dna_versions.short_pitch");
+    assertEquals(r.songDnaVersionId, "dna-1");
+  }
+});
+
+Deno.test("resolvePitchAngle ignores playlist and lane copy for {{pitch}}", () => {
   const r = resolvePitchAngle(dummySb, {
     track: { short_pitch: "TRACK SHORT PITCH", pitch_angle: "TRACK ANGLE" },
     row: { recommended_pitch_angle: "PLAYLIST ANGLE", lane: "rap_general" },
@@ -18,43 +39,11 @@ Deno.test("resolvePitchAngle prefers tracks.short_pitch over every other source"
   }
 });
 
-Deno.test("resolvePitchAngle falls through short_pitch → pitch_angle → recommended → lane", () => {
-  const laneOnly = resolvePitchAngle(dummySb, {
-    track: { short_pitch: "  ", pitch_angle: null },
-    row: { recommended_pitch_angle: "", lane: "deep_house_groove" },
-    lanes: { deep_house_groove: { pitch_angle: "LANE FALLBACK" } },
-  });
-  assertEquals(laneOnly.ok, true);
-  if (laneOnly.ok) {
-    assertEquals(laneOnly.pitch, "LANE FALLBACK");
-    assertEquals(laneOnly.source, "artist_config.lanes.pitch_angle");
-  }
-
-  const rec = resolvePitchAngle(dummySb, {
-    track: { short_pitch: null, pitch_angle: "  " },
-    row: { recommended_pitch_angle: "PLAYLIST REC", lane: "deep_house_groove" },
-    lanes: { deep_house_groove: { pitch_angle: "LANE FALLBACK" } },
-  });
-  assertEquals(rec.ok, true);
-  if (rec.ok) assertEquals(rec.pitch, "PLAYLIST REC");
-
-  const trackAngle = resolvePitchAngle(dummySb, {
-    track: { short_pitch: null, pitch_angle: "TRACK ANGLE" },
-    row: { recommended_pitch_angle: "PLAYLIST REC", lane: "deep_house_groove" },
-    lanes: { deep_house_groove: { pitch_angle: "LANE FALLBACK" } },
-  });
-  assertEquals(trackAngle.ok, true);
-  if (trackAngle.ok) {
-    assertEquals(trackAngle.pitch, "TRACK ANGLE");
-    assertEquals(trackAngle.source, "tracks.pitch_angle");
-  }
-});
-
-Deno.test("resolvePitchAngle is missing when every source is empty — no invented copy", () => {
+Deno.test("lane/playlist fallback cannot populate {{pitch}} — 422 path", () => {
   const r = resolvePitchAngle(dummySb, {
-    track: { short_pitch: null, pitch_angle: "" },
-    row: { recommended_pitch_angle: null, lane: "rap_general" },
-    lanes: { rap_general: { label: "Rap" } },
+    track: { short_pitch: "  ", pitch_angle: null },
+    row: { recommended_pitch_angle: "PLAYLIST REC", lane: "deep_house_groove" },
+    lanes: { deep_house_groove: { pitch_angle: "LANE FALLBACK" } },
   });
   assertEquals(r.ok, false);
   if (!r.ok) {
@@ -63,16 +52,24 @@ Deno.test("resolvePitchAngle is missing when every source is empty — no invent
   }
 });
 
-Deno.test("missingPitchCopyResult is a 422 and names Admin → Songs as the remedy", () => {
+Deno.test("resolveFitReason uses playlist/lane copy as {{fit_reason}} only", () => {
+  const fit = resolveFitReason({
+    row: { recommended_pitch_angle: "PLAYLIST FIT", lane: "rap_general" },
+    lanes: { rap_general: { pitch_angle: "LANE FIT" } },
+  });
+  assertEquals(fit.fitReason, "PLAYLIST FIT");
+  assertEquals(fit.source, "playlist_targets.recommended_pitch_angle");
+});
+
+Deno.test("missingPitchCopyResult names Song DNA remedy and track fields", () => {
   const res = missingPitchCopyResult({
-    trackName: "Example",
+    trackName: "MEDITATE",
     trackId: "t1",
     playlistId: "spotify:abc",
-    lane: "rap_general",
+    lane: "house_club",
   });
   assertEquals(res.status, 422);
   assertEquals(res.data.error, "No pitch copy configured");
-  assertEquals(res.data.remedy, "Set a short pitch for this track in Admin → Songs.");
-  assertEquals(res.data.track_name, "Example");
-  assertEquals(res.data.playlist_id, "spotify:abc");
+  assertEquals(String(res.data.remedy).includes("{{pitch}}"), true);
+  assertEquals(res.data.track_id, "t1");
 });

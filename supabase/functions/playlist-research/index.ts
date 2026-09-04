@@ -18,6 +18,7 @@ import {
   loadLanesConfig,
   rowMatchesLane,
   scoreLaneBoost,
+  setSweepLaneRoutingFromProfiles,
 } from "../_shared/playlist-lanes.ts";
 import {
   scrapeSpotifyPlaylistDetail,
@@ -33,13 +34,15 @@ import {
   computeRotation,
   dedupeStubs,
   extractPlaylistIdsFromText,
-  HOUSE_SUBGENRES,
   mapPool,
-  RAP_SUBGENRES,
   type SearchHitLike,
   selectHarvestUrls,
   SWEEP_MODIFIERS,
 } from "../_shared/discovery-utils.ts";
+import {
+  loadActiveDiscoveryProfiles,
+  profilesToSweepBuckets,
+} from "../_shared/discovery-profiles.ts";
 import {
   BOT_RISK_THRESHOLD,
   classifyFeel,
@@ -1386,19 +1389,22 @@ export async function mergeCatalogAndLive(
   // it seeds off the total sweep-discovered count rather than a per-lane count.
   const rotation = computeRotation(start, sweep ? sweepDiscoveredCount : laneDiscoveredCount);
 
-  // Mass sweep: replace lane/reference queries with a BALANCED rap+house genre ×
-  // modifier set. buildBalancedSweepQueries splits the budget rap-led and interleaves
-  // the two genres so every run covers rap AND house (no more house-only drift) and
-  // spans many subgenres per run (no more orbiting one). All other machinery —
-  // filtering, de-bot scoring, dedupe, upsert — is shared with normal discovery.
+  const profiles = sweep ? await loadActiveDiscoveryProfiles(supabase) : [];
+  const buckets = profilesToSweepBuckets(profiles);
+  if (sweep) {
+    setSweepLaneRoutingFromProfiles(buckets.laneGenre, buckets.laneBlockPatterns);
+  }
   const sweepQueries = sweep
-    ? buildBalancedSweepQueries(
-      RAP_SUBGENRES,
-      HOUSE_SUBGENRES,
-      SWEEP_MODIFIERS,
-      SWEEP_QUERY_CAP,
-      rotation,
-    )
+    ? (buckets.rapTerms.length || buckets.houseTerms.length
+      ? buildBalancedSweepQueries(
+        buckets.rapTerms,
+        buckets.houseTerms,
+        SWEEP_MODIFIERS,
+        SWEEP_QUERY_CAP,
+        rotation,
+        buckets.rapShare,
+      )
+      : [])
     : undefined;
 
   // SEARCH phase — harvest fresh stubs (bounded by searchDeadline, not the full

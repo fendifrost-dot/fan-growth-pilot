@@ -42,7 +42,7 @@ function topSong(row: RadioTarget): string {
   return name ? `${name} (${spins})` : `— (${spins})`;
 }
 
-const TRACK_DEFAULT = "Designed For Me (Control)";
+const TRACK_DEFAULT = "";
 
 const AdminRadioTargets: React.FC = () => {
   const [targets, setTargets] = useState<RadioTarget[]>([]);

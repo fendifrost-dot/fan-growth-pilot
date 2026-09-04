@@ -368,11 +368,12 @@ Deno.test("WIRING: runDraftPitch refuses on eligibility before the category and 
 
   const gateAt = fn.indexOf("evaluateTrackEligibility(");
   const categoryAt = fn.indexOf("categoryGate({");
-  const copyAt = fn.indexOf("resolvePitchAngle(");
+  const copyAt = fn.indexOf("evaluateOutreachDecision(");
 
   assert(gateAt > -1, "runDraftPitch does not evaluate eligibility");
   assert(gateAt < categoryAt, "eligibility must be decided before the category gate");
-  assert(gateAt < copyAt, "eligibility must be decided before pitch-copy resolution");
+  assert(copyAt > -1, "runDraftPitch must call evaluateOutreachDecision for pitch/DNA");
+  assert(gateAt < copyAt, "eligibility must be decided before pitch-copy / DNA decision");
 });
 
 Deno.test("WIRING: no override_* flag is wired to the eligibility refusal", async () => {

@@ -3,25 +3,32 @@ import {
   isLaneGenreMismatch,
   isSweepLane,
   rowMatchesLane,
+  setSweepLaneRoutingFromProfiles,
   SWEEP_LANE_GENRE,
   sweepLaneTextGenre,
 } from "./playlist-lanes.ts";
 
-// The sweep stamps genre-derived lanes that live outside artist_config.lanes. These
-// tests lock in that reconcile/matching treat them by GENRE, so they aren't nuked as
-// "lane_mismatch" (which would wipe the entire rap/house buffer).
+// Populate routing from discovery-profile-shaped data (not source literals at
+// module load). Mirrors what loadActiveDiscoveryProfiles → profilesToSweepBuckets does.
+setSweepLaneRoutingFromProfiles({
+  rap_trap_hype: "rap",
+  rap_conscious: "rap",
+  rap_general: "rap",
+  house_club: "house",
+  house_general: "house",
+});
 
-Deno.test("isSweepLane recognizes the canonical sweep lanes only", () => {
+Deno.test("isSweepLane recognizes lanes provided by discovery profiles", () => {
   for (const l of Object.keys(SWEEP_LANE_GENRE)) assertEquals(isSweepLane(l), true);
-  assertEquals(isSweepLane("deep_house_groove"), false); // a config lane, not a sweep lane
+  assertEquals(isSweepLane("deep_house_groove"), false);
   assertEquals(isSweepLane(""), false);
 });
 
 Deno.test("sweepLaneTextGenre reads rap vs house, null when ambiguous/none", () => {
   assertEquals(sweepLaneTextGenre("Underground Trap Bangers"), "rap");
   assertEquals(sweepLaneTextGenre("Soulful Deep House"), "house");
-  assertEquals(sweepLaneTextGenre("Chill Weekend Vibes"), null); // no genre token
-  assertEquals(sweepLaneTextGenre("Rap x House Crossover"), null); // both → don't guess
+  assertEquals(sweepLaneTextGenre("Chill Weekend Vibes"), null);
+  assertEquals(sweepLaneTextGenre("Rap x House Crossover"), null);
 });
 
 Deno.test("rowMatchesLane: a rap sweep lane MATCHES a rap-named row (reconcile keeps it)", () => {
@@ -35,7 +42,6 @@ Deno.test("rowMatchesLane: a rap sweep lane on a HOUSE-named row does NOT match 
 });
 
 Deno.test("rowMatchesLane: an ambiguous-name sweep-lane row still matches (assigned from richer evidence)", () => {
-  // No genre token in the name → don't second-guess the lane assigned at ingest.
   const row = { playlist_name: "Late Night Selects", curator_name: "dj", vibe_tags: [] };
   assertEquals(rowMatchesLane(row, "rap_general", null, []), true);
   assertEquals(rowMatchesLane(row, "house_general", null, []), true);
@@ -45,5 +51,5 @@ Deno.test("isLaneGenreMismatch: opposite-genre name flags a sweep lane, ambiguou
   assertEquals(isLaneGenreMismatch("rap_general", "Deep House Top 50", null), true);
   assertEquals(isLaneGenreMismatch("house_general", "Hardest Trap & Drill", null), true);
   assertEquals(isLaneGenreMismatch("rap_general", "Fresh Rap Heat", null), false);
-  assertEquals(isLaneGenreMismatch("rap_general", "Weekend Selects", null), false); // ambiguous
+  assertEquals(isLaneGenreMismatch("rap_general", "Weekend Selects", null), false);
 });

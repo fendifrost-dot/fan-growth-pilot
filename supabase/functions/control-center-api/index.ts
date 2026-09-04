@@ -4,6 +4,10 @@ import { isRadioAction, runRadioAction } from '../_shared/radio-outreach.ts';
 import { isFanEngagementAction, runFanEngagementAction } from '../_shared/fan-engagement-run.ts';
 import { isPitchCampaignAction, runPitchCampaignAction } from '../_shared/pitch-campaigns.ts';
 import { isSyncRegisterAction, runSyncRegisterAction } from '../_shared/sync-registers.ts';
+import { isSongDnaAction, runSongDnaAction } from '../_shared/song-dna.ts';
+import { authorizeAction, type Actor } from '../_shared/outreach-auth.ts';
+import { buildCutoverReadinessReport } from '../_shared/outreach-decision.ts';
+import { isLyricDecoderAction, runLyricDecoderAction } from '../_shared/lyric-decoder.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -82,8 +86,53 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const { action } = body;
 
+    // Resolve actor from JWT when present (Song DNA / discovery approvals).
+    // Existing hub_key / anonymous paths remain for reads and legacy writes.
+    let actor: Actor | null = null;
+    const authDecision = await authorizeAction(String(action ?? ''), req, supabase);
+    if (authDecision.ok) {
+      actor = authDecision.actor;
+    }
+
+    if (isSongDnaAction(String(action ?? ''))) {
+      if (!authDecision.ok && String(action).startsWith('list_') === false && action !== 'get_song_dna') {
+        return new Response(JSON.stringify({ error: authDecision.error }), {
+          status: authDecision.status,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      // Writes always require admin JWT even if classifyAction is still phase3.
+      const result = await runSongDnaAction(String(action), body, supabase, actor);
+      return new Response(JSON.stringify(result.data), {
+        status: result.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (String(action) === 'outreach_cutover_readiness') {
+      const report = await buildCutoverReadinessReport(supabase);
+      return new Response(JSON.stringify({ ok: true, report }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isLyricDecoderAction(String(action ?? ''))) {
+      const result = await runLyricDecoderAction(String(action), body);
+      return new Response(JSON.stringify(result.data), {
+        status: result.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
     if (isPlaylistAgentAction(String(action ?? ''))) {
-      const result = await runPlaylistAgentAction(String(action), body, supabase, expectedKey);
+      const result = await runPlaylistAgentAction(
+        String(action),
+        body,
+        supabase,
+        expectedKey,
+        actor,
+      );
       return new Response(JSON.stringify(result.data), {
         status: result.status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },

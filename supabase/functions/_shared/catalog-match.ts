@@ -8,9 +8,7 @@ export type CatalogTrack = {
   stream_url?: string;
 };
 
-const DEFAULT_TRACKS: CatalogTrack[] = [
-  { name: "Designed For Me (Control)", lane: "deep_house_groove" },
-];
+const DEFAULT_TRACKS: CatalogTrack[] = [];
 
 async function loadTracksFromTable(sb: SupabaseClient): Promise<CatalogTrack[]> {
   const { data: tracks } = await sb
@@ -36,7 +34,7 @@ async function loadTracksFromJson(sb: SupabaseClient): Promise<CatalogTrack[]> {
   const { data } = await sb.from("artist_config").select("value").eq("key", "spotify_track_urls").maybeSingle();
   const lanes = await loadLanesConfig(sb);
   if (!data?.value || typeof data.value !== "object" || Array.isArray(data.value)) {
-    return DEFAULT_TRACKS;
+    return [];
   }
   const urls = data.value as Record<string, string>;
   return Object.entries(urls).map(([name, url]) => ({
@@ -64,7 +62,10 @@ export function pickCatalogTrackForPlacement(
   catalog: CatalogTrack[],
   fallbackTrack: string,
 ): { track: string; reason: string } {
-  const list = catalog.length ? catalog : DEFAULT_TRACKS;
+  const list = catalog.length ? catalog : [];
+  if (!list.length) {
+    return { track: fallbackTrack, reason: "Empty catalogue — no track selected" };
+  }
   const rc = row.research_context as Record<string, unknown> | null;
   // Real song names only — the shared helper drops the legacy SFA placeholder, which is
   // not a track and must never influence which song we pitch.

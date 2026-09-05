@@ -61,4 +61,15 @@ describe("song DNA migration + wiring contracts", () => {
     expect(src).not.toMatch(/TRACK_IDS/);
     expect(src).toMatch(/requires_private_license/);
   });
+
+  it("Song DNA selects use the explicit track_id FK embed alias", () => {
+    const src = readFileSync(
+      join(process.cwd(), "supabase/functions/_shared/song-dna.ts"),
+      "utf8",
+    );
+    expect(src).toContain("tracks:tracks!song_dna_versions_track_id_fkey(name)");
+    expect(src).toContain("SONG_DNA_TRACKS_EMBED");
+    expect(src).not.toMatch(/select\(["'`][^"'`]*tracks\(name\)/);
+    expect(src).not.toMatch(/,\s*tracks\(name\)["'`]/);
+  });
 });

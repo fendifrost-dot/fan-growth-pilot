@@ -34,9 +34,41 @@ type Result = { status: number; data: Record<string, unknown> };
 
 const EDITABLE_STATES = new Set(["draft", "rejected"]);
 
+/** Explicit FK alias — tracks has multiple FKs to song_dna_versions; bare tracks(name) is ambiguous. */
+export const SONG_DNA_TRACKS_EMBED =
+  "tracks:tracks!song_dna_versions_track_id_fkey(name)";
+
 function asStringArray(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
   return v.map((x) => String(x).trim()).filter(Boolean);
+}
+
+function isMissingSchemaError(error: { code?: string; message?: string }): boolean {
+  const code = String(error.code ?? "");
+  const msg = String(error.message ?? "").toLowerCase();
+  return (
+    code === "42P01" ||
+    code === "42703" ||
+    msg.includes("does not exist") ||
+    msg.includes("could not find the table") ||
+    msg.includes("schema cache")
+  );
+}
+
+/** Operator-facing DB error — only nudge migration when the schema object is actually missing. */
+export function formatSongDnaQueryError(error: {
+  code?: string;
+  message?: string;
+}): string {
+  const code = error.code ? ` [${error.code}]` : "";
+  const message = error.message || "unknown database error";
+  if (isMissingSchemaError(error)) {
+    return (
+      `song_dna_versions unavailable${code}: ${message}. ` +
+      `Apply 20260905000000_outreach_dna_discovery_identity.sql via Lovable SQL Editor.`
+    );
+  }
+  return `Song DNA query failed${code}: ${message}`;
 }
 
 function requireAdminActor(actor: Actor | null): Result | null {
@@ -117,25 +149,22 @@ async function nextVersionNumber(sb: SupabaseClient, trackId: string): Promise<n
   return Number(data?.version_number ?? 0) + 1;
 }
 
-function dnaSelectCols(): string {
-  return "id, track_id, version_number, approval_state, primary_genre, secondary_genres, approved_lanes, excluded_lanes, mood_tags, context_tags, reference_artists, short_pitch, bpm_hint, energy_hint, sample_declaration, sync_recommendation, notes, payload, created_by, submitted_at, approved_by, approved_at, rejected_by, rejected_at, rejection_reason, created_at, updated_at, tracks(name)";
+export function dnaSelectCols(): string {
+  return (
+    "id, track_id, version_number, approval_state, primary_genre, secondary_genres, approved_lanes, excluded_lanes, mood_tags, context_tags, reference_artists, short_pitch, bpm_hint, energy_hint, sample_declaration, sync_recommendation, notes, payload, created_by, submitted_at, approved_by, approved_at, rejected_by, rejected_at, rejection_reason, created_at, updated_at, " +
+    SONG_DNA_TRACKS_EMBED
+  );
 }
 
-async function listSongDna(sb: SupabaseClient, body: Record<string, unknown>): Promise<Result> {
-  const trackId = String(body.track_id ?? "").trim();
-  let q = sb
-    .from("song_dna_versions")
-    .select(dnaSelectCols())
-    .order("version_number", { ascending: false });
-  if (trackId) q = q.eq("track_id", trackId);
+export function dnaGetSelectCols(): string {
+  return `*, ${SONG_DNA_TRACKS_EMBED}`;
+}
+...
   const { data, error } = await q.limit(200);
   if (error) {
     return {
-      status: 503,
-      data: {
-        error:
-          `song_dna_versions unavailable (${error.message}). Apply 20260905000000_outreach_dna_discovery_identity.sql via Lovable SQL Editor.`,
-      },
+      status: isMissingSchemaError(error) ? 503 : 500,
+      data: { error: formatSongDnaQueryError(error) },
     };
   }
   const rows = ((data ?? []) as unknown as Record<string, unknown>[]).map((r) => ({
@@ -151,10 +180,15 @@ async function getSongDna(sb: SupabaseClient, body: Record<string, unknown>): Pr
   if (!id) return { status: 400, data: { error: "song_dna_version_id required" } };
   const { data, error } = await sb
     .from("song_dna_versions")
-    .select("*, tracks(name)")
+    .select(dnaGetSelectCols())
     .eq("id", id)
     .maybeSingle();
-  if (error) return { status: 500, data: { error: error.message } };
+  if (error) {
+    return {
+      status: isMissingSchemaError(error) ? 503 : 500,
+      data: { error: formatSongDnaQueryError(error) },
+    };
+  }
   if (!data) return { status: 404, data: { error: "Song DNA version not found" } };
   return {
     status: 200,

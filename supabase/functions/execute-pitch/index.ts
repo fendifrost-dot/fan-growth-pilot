@@ -138,11 +138,9 @@ Deno.serve(async (req) => {
   try {
     const expected = (Deno.env.get("FANFUEL_HUB_KEY") || "").trim();
     const provided = getHubKey(req).trim();
-    // Require hub key whenever it is configured. Missing credentials must not pass.
-    if (expected) {
-      if (!provided || provided !== expected) {
-        return json({ error: "Unauthorized" }, 401);
-      }
+    // Fail closed: missing configured hub key OR missing/wrong presented key => 401.
+    if (!expected || !provided || provided !== expected) {
+      return json({ error: "Unauthorized" }, 401);
     }
     const body = await req.json().catch(() => ({}));
     const methodOverride = typeof body.method_override === "string" ? body.method_override.trim() : "";

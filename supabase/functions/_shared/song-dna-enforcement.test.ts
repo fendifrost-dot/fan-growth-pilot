@@ -107,10 +107,22 @@ function tables(extra: Record<string, Row[]> = {}) {
   };
 }
 
-function req(agent?: string): Request {
-  const headers = new Headers();
-  if (agent) headers.set("x-agh-agent", agent);
+function req(headers: Record<string, string> = {}): Request {
   return new Request("https://example.test", { headers });
+}
+
+function withEnv(vars: Record<string, string>, fn: () => void) {
+  const prev: Record<string, string | undefined> = {};
+  for (const [k, v] of Object.entries(vars)) {
+    prev[k] = Deno.env.get(k);
+    Deno.env.set(k, v);
+  }
+  try { fn(); } finally {
+    for (const [k, v] of Object.entries(prev)) {
+      if (v == null) Deno.env.delete(k);
+      else Deno.env.set(k, v);
+    }
+  }
 }
 
 function user(userId: string): Actor {
@@ -266,35 +278,63 @@ Deno.test("10 caller approved_by ignored", () => {
   assert(src.includes("opsActor.label"));
 });
 
-Deno.test("11 Claude cannot approve/send", () => {
-  const actor = resolveOpsActor(user("admin-1"), req("claude"));
-  assertEquals(can(actor, "approve_playlist_drafts"), false);
-  assertEquals(can(actor, "send_playlist_pitches"), false);
-  assertEquals(can(actor, "generate_playlist_drafts"), true);
+Deno.test("11 Claude credential cannot approve/send", () => {
+  withEnv({ CLAUDE_AGENT_SECRET: "claude-secret", ARTIST_USER_ID: "fendi-exact" }, () => {
+    const actor = resolveOpsActor(null, req({ "x-claude-agent-secret": "claude-secret" }));
+    assertEquals(actor.kind, "claude");
+    assertEquals(can(actor, "approve_playlist_drafts"), false);
+    assertEquals(can(actor, "send_playlist_pitches"), false);
+    assertEquals(can(actor, "generate_playlist_drafts"), true);
+    const spoof = resolveOpsActor(user("admin-1"), req({ "x-agh-agent": "claude" }));
+    assertEquals(spoof.kind, "human_admin");
+    assertEquals(can(spoof, "approve_playlist_drafts"), false);
+  });
 });
 
 Deno.test("12 scheduler cannot approve as Grok", () => {
-  const spoof = resolveOpsActor({ kind: "scheduler" }, req("grok"));
-  assertEquals(spoof.kind, "scheduler");
-  assertEquals(can(spoof, "approve_playlist_drafts"), false);
-  const pure = resolveOpsActor({ kind: "scheduler" }, null);
-  assertEquals(can(pure, "approve_playlist_drafts"), false);
-  const src = Deno.readTextFileSync(new URL("./playlist-agent-run.ts", import.meta.url));
-  assert(src.includes("scheduler cannot approve"));
+  withEnv({
+    OUTREACH_SCHEDULER_SECRET: "sched-secret",
+    GROK_PLAYLIST_CONTROL_SECRET: "grok-secret",
+  }, () => {
+    const spoof = resolveOpsActor({ kind: "scheduler" }, req({ "x-agh-agent": "grok" }));
+    assertEquals(spoof.kind, "scheduler");
+    assertEquals(can(spoof, "approve_playlist_drafts"), false);
+    const pure = resolveOpsActor({ kind: "scheduler" }, null);
+    assertEquals(can(pure, "approve_playlist_drafts"), false);
+    const viaSecret = resolveOpsActor(
+      null,
+      req({ "x-outreach-scheduler-secret": "sched-secret", "x-agh-agent": "grok" }),
+    );
+    assertEquals(viaSecret.kind, "scheduler");
+    assertEquals(can(viaSecret, "approve_playlist_drafts"), false);
+    const src = Deno.readTextFileSync(new URL("./playlist-agent-run.ts", import.meta.url));
+    assert(src.includes("scheduler cannot approve"));
+  });
 });
 
-Deno.test("13 Grok can approve compatible draft", async () => {
-  const grok = resolveOpsActor(user("admin-1"), req("grok"));
-  assertEquals(can(grok, "approve_playlist_drafts"), true);
-  const d = await evaluateOutreachDecision(stubSb(tables()) as never, {
-    route: "approve_draft",
-    trackId: TRACK.id,
-    playlistId: PLAYLIST_RAP.playlist_id,
-    actor: grok,
-  });
-  assertEquals(d.allow, true);
-  assertEquals(d.copySource, "song_dna_versions.short_pitch");
-  if (d.pitch.ok) assertEquals(d.pitch.pitch, MEDITATE_PITCH);
+Deno.test("13 Grok credential can approve compatible draft", async () => {
+  Deno.env.set("GROK_PLAYLIST_CONTROL_SECRET", "grok-secret");
+  Deno.env.set("ARTIST_USER_ID", "fendi-exact");
+  try {
+    const grok = resolveOpsActor(null, req({ "x-grok-playlist-control-secret": "grok-secret" }));
+    assertEquals(grok.kind, "grok_playlist_control");
+    assertEquals(can(grok, "approve_playlist_drafts"), true);
+    const spoof = resolveOpsActor(user("admin-1"), req({ "x-agh-agent": "grok" }));
+    assertEquals(spoof.kind, "human_admin");
+    assertEquals(can(spoof, "approve_playlist_drafts"), false);
+    const d = await evaluateOutreachDecision(stubSb(tables()) as never, {
+      route: "approve_draft",
+      trackId: TRACK.id,
+      playlistId: PLAYLIST_RAP.playlist_id,
+      actor: grok,
+    });
+    assertEquals(d.allow, true);
+    assertEquals(d.copySource, "song_dna_versions.short_pitch");
+    if (d.pitch.ok) assertEquals(d.pitch.pitch, MEDITATE_PITCH);
+  } finally {
+    Deno.env.delete("GROK_PLAYLIST_CONTROL_SECRET");
+    Deno.env.delete("ARTIST_USER_ID");
+  }
 });
 
 // ---- 14–15 hash + senders ----

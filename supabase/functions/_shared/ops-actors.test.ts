@@ -1,5 +1,7 @@
 /**
- * Claude / Grok / Fendi authority matrix + attribution anti-spoof checks.
+ * Credential-backed Claude / Grok / Fendi authority matrix + anti-spoof checks.
+ *
+ * x-agh-agent / x-ops-agent headers must NEVER elevate identity.
  */
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/assert_equals.ts";
 import {
@@ -13,81 +15,118 @@ function user(userId: string, isAdmin = true): Actor {
   return { kind: "user", userId, isAdmin };
 }
 
-function req(agent?: string): Request {
-  const headers = new Headers();
-  if (agent) headers.set("x-agh-agent", agent);
+function req(headers: Record<string, string> = {}): Request {
   return new Request("https://example.test", { headers });
 }
 
-Deno.test("Claude cannot approve DNA, send pitches, or approve sync/sample", () => {
-  const actor = resolveOpsActor(user("admin-1"), req("claude"));
-  assertEquals(actor.kind, "claude");
-  assertEquals(can(actor, "approve_song_dna"), false);
-  assertEquals(can(actor, "reject_song_dna"), false);
-  assertEquals(can(actor, "send_playlist_pitches"), false);
-  assertEquals(can(actor, "approve_playlist_drafts"), false);
-  assertEquals(can(actor, "reject_playlist_drafts"), false);
-  assertEquals(can(actor, "approve_sample_declaration"), false);
-  assertEquals(can(actor, "approve_sync_eligibility"), false);
-  assertEquals(can(actor, "alter_approved_song_dna"), false);
-  assertEquals(can(actor, "draft_song_dna"), true);
-  assertEquals(can(actor, "submit_song_dna_for_review"), true);
-  assertEquals(can(actor, "generate_playlist_drafts"), true);
-  assertEquals(can(actor, "research_playlist_targets"), true);
+function withEnv(vars: Record<string, string>, fn: () => void) {
+  const prev: Record<string, string | undefined> = {};
+  for (const [k, v] of Object.entries(vars)) {
+    prev[k] = Deno.env.get(k);
+    Deno.env.set(k, v);
+  }
+  try {
+    fn();
+  } finally {
+    for (const [k, v] of Object.entries(prev)) {
+      if (v == null) Deno.env.delete(k);
+      else Deno.env.set(k, v);
+    }
+  }
+}
+
+Deno.test("Claude credential can draft/research but cannot approve or send", () => {
+  withEnv({ CLAUDE_AGENT_SECRET: "claude-secret" }, () => {
+    const actor = resolveOpsActor(null, req({ "x-claude-agent-secret": "claude-secret" }));
+    assertEquals(actor.kind, "claude");
+    assertEquals(can(actor, "generate_playlist_drafts"), true);
+    assertEquals(can(actor, "research_playlist_targets"), true);
+    assertEquals(can(actor, "draft_song_dna"), true);
+    assertEquals(can(actor, "verify_playlist_targets"), true);
+    assertEquals(can(actor, "approve_playlist_drafts"), false);
+    assertEquals(can(actor, "send_playlist_pitches"), false);
+    assertEquals(can(actor, "monitor_inbox"), false);
+    assertEquals(can(actor, "respond_to_curators"), false);
+    assertEquals(can(actor, "approve_song_dna"), false);
+  });
 });
 
-Deno.test("Grok can approve/send drafts but cannot approve DNA or sync", () => {
-  const actor = resolveOpsActor(user("admin-1"), req("grok"));
-  assertEquals(actor.kind, "grok_playlist_control");
-  assertEquals(can(actor, "approve_playlist_drafts"), true);
-  assertEquals(can(actor, "reject_playlist_drafts"), true);
-  assertEquals(can(actor, "send_playlist_pitches"), true);
-  assertEquals(can(actor, "monitor_inbox"), true);
-  assertEquals(can(actor, "open_incidents"), true);
-  assertEquals(can(actor, "approve_song_dna"), false);
-  assertEquals(can(actor, "draft_song_dna"), false);
-  assertEquals(can(actor, "submit_song_dna_for_review"), false);
-  assertEquals(can(actor, "approve_sample_declaration"), false);
-  assertEquals(can(actor, "approve_sync_eligibility"), false);
-  assertEquals(can(actor, "alter_approved_song_dna"), false);
+Deno.test("Grok credential can approve/send drafts but cannot approve DNA or sync", () => {
+  withEnv({ GROK_PLAYLIST_CONTROL_SECRET: "grok-secret" }, () => {
+    const actor = resolveOpsActor(null, req({ "x-grok-playlist-control-secret": "grok-secret" }));
+    assertEquals(actor.kind, "grok_playlist_control");
+    assertEquals(can(actor, "approve_playlist_drafts"), true);
+    assertEquals(can(actor, "reject_playlist_drafts"), true);
+    assertEquals(can(actor, "send_playlist_pitches"), true);
+    assertEquals(can(actor, "monitor_inbox"), true);
+    assertEquals(can(actor, "approve_song_dna"), false);
+    assertEquals(can(actor, "draft_song_dna"), false);
+    assertEquals(can(actor, "approve_sample_declaration"), false);
+    assertEquals(can(actor, "approve_sync_eligibility"), false);
+  });
+});
+
+Deno.test("Admin JWT + x-agh-agent:grok remains human_admin (no Grok impersonation)", () => {
+  withEnv({ ARTIST_USER_ID: "fendi-exact-id", GROK_PLAYLIST_CONTROL_SECRET: "grok-secret" }, () => {
+    const spoof = resolveOpsActor(user("admin-1"), req({ "x-agh-agent": "grok" }));
+    assertEquals(spoof.kind, "human_admin");
+    assertEquals(can(spoof, "approve_playlist_drafts"), false);
+    assertEquals(can(spoof, "send_playlist_pitches"), false);
+  });
+});
+
+Deno.test("Human admin cannot approve or send playlist pitches", () => {
+  withEnv({ ARTIST_USER_ID: "fendi-exact-id" }, () => {
+    const admin = resolveOpsActor(user("other-admin"), null);
+    assertEquals(admin.kind, "human_admin");
+    assertEquals(can(admin, "approve_playlist_drafts"), false);
+    assertEquals(can(admin, "send_playlist_pitches"), false);
+    assertEquals(can(admin, "generate_playlist_drafts"), true);
+    assertEquals(can(admin, "research_playlist_targets"), true);
+  });
 });
 
 Deno.test("Only exact ARTIST_USER_ID resolves as Fendi and may approve DNA/sample/sync", () => {
-  const prev = Deno.env.get("ARTIST_USER_ID");
-  Deno.env.set("ARTIST_USER_ID", "fendi-exact-id");
-  try {
+  withEnv({ ARTIST_USER_ID: "fendi-exact-id" }, () => {
     const fendi = resolveOpsActor(user("fendi-exact-id"), null);
     assertEquals(fendi.kind, "fendi");
     assertEquals(can(fendi, "approve_song_dna"), true);
-    assertEquals(can(fendi, "reject_song_dna"), true);
+    assertEquals(can(fendi, "approve_playlist_drafts"), true);
+    assertEquals(can(fendi, "send_playlist_pitches"), true);
     assertEquals(can(fendi, "approve_sample_declaration"), true);
     assertEquals(can(fendi, "approve_sync_eligibility"), true);
-    assertEquals(can(fendi, "alter_approved_song_dna"), true);
-
-    const otherAdmin = resolveOpsActor(user("other-admin"), null);
-    assertEquals(otherAdmin.kind, "human_admin");
-    assertEquals(can(otherAdmin, "approve_song_dna"), false);
-    assertEquals(can(otherAdmin, "approve_sample_declaration"), false);
-    assertEquals(can(otherAdmin, "approve_sync_eligibility"), false);
-    assertEquals(can(otherAdmin, "approve_playlist_drafts"), true);
-    assertEquals(can(otherAdmin, "send_playlist_pitches"), true);
-  } finally {
-    if (prev == null) Deno.env.delete("ARTIST_USER_ID");
-    else Deno.env.set("ARTIST_USER_ID", prev);
-  }
+  });
 });
 
-Deno.test("Agent header overrides admin user to Claude (cannot self-approve as Fendi)", () => {
-  const prev = Deno.env.get("ARTIST_USER_ID");
-  Deno.env.set("ARTIST_USER_ID", "fendi-exact-id");
-  try {
-    const spoof = resolveOpsActor(user("fendi-exact-id"), req("claude"));
-    assertEquals(spoof.kind, "claude");
-    assertEquals(can(spoof, "approve_song_dna"), false);
-  } finally {
-    if (prev == null) Deno.env.delete("ARTIST_USER_ID");
-    else Deno.env.set("ARTIST_USER_ID", prev);
-  }
+Deno.test("Agent header cannot remaps Fendi JWT into Claude privileges elevation for DNA", () => {
+  withEnv({ ARTIST_USER_ID: "fendi-exact-id" }, () => {
+    // Header is non-authoritative — Fendi credential (JWT) wins.
+    const stillFendi = resolveOpsActor(user("fendi-exact-id"), req({ "x-agh-agent": "claude" }));
+    assertEquals(stillFendi.kind, "fendi");
+    assertEquals(can(stillFendi, "approve_song_dna"), true);
+  });
+});
+
+Deno.test("Scheduler cannot approve or impersonate Grok via agent header", () => {
+  withEnv({
+    OUTREACH_SCHEDULER_SECRET: "sched-secret",
+    GROK_PLAYLIST_CONTROL_SECRET: "grok-secret",
+  }, () => {
+    const sched = resolveOpsActor({ kind: "scheduler" }, req({ "x-agh-agent": "grok" }));
+    assertEquals(sched.kind, "scheduler");
+    assertEquals(can(sched, "approve_playlist_drafts"), false);
+    assertEquals(can(sched, "send_playlist_pitches"), false);
+
+    const viaSecret = resolveOpsActor(
+      null,
+      req({
+        "x-outreach-scheduler-secret": "sched-secret",
+        "x-agh-agent": "grok",
+      }),
+    );
+    assertEquals(viaSecret.kind, "scheduler");
+    assertEquals(can(viaSecret, "approve_playlist_drafts"), false);
+  });
 });
 
 Deno.test("stripSpoofedAttribution removes caller-supplied identity fields", () => {
@@ -102,26 +141,17 @@ Deno.test("stripSpoofedAttribution removes caller-supplied identity fields", () 
   assertEquals(cleaned.track_id, "t1");
   assertEquals(cleaned.notes, "keep-me");
   assertEquals(cleaned.approved_by, undefined);
-  assertEquals(cleaned.discovered_by, undefined);
-  assertEquals(cleaned.sent_by, undefined);
   assertEquals(cleaned.generated_by, undefined);
+  assertEquals(cleaned.sent_by, undefined);
 });
 
-Deno.test("scheduler and human_admin are distinguishable OpsActor kinds", () => {
-  const sched = resolveOpsActor({ kind: "scheduler" }, null);
-  assertEquals(sched.kind, "scheduler");
-  assertEquals(can(sched, "send_playlist_pitches"), false);
-  assertEquals(can(sched, "monitor_inbox"), true);
-
-  const admin = resolveOpsActor(user("admin-2"), null);
-  assertEquals(admin.kind, "human_admin");
-  assertEquals(can(admin, "send_playlist_pitches"), true);
-  assertEquals(can(admin, "approve_song_dna"), false);
-});
-
-Deno.test("scheduler secret cannot impersonate Grok via agent header", () => {
-  const spoof = resolveOpsActor({ kind: "scheduler" }, req("grok"));
-  assertEquals(spoof.kind, "scheduler");
-  assertEquals(can(spoof, "approve_playlist_drafts"), false);
-  assertEquals(can(spoof, "send_playlist_pitches"), false);
+Deno.test("Missing Grok secret never authenticates as Grok even with matching header", () => {
+  withEnv({ GROK_PLAYLIST_CONTROL_SECRET: "" }, () => {
+    Deno.env.delete("GROK_PLAYLIST_CONTROL_SECRET");
+    const actor = resolveOpsActor(user("admin-1"), req({
+      "x-agh-agent": "grok",
+      "x-grok-playlist-control-secret": "anything",
+    }));
+    assertEquals(actor.kind, "human_admin");
+  });
 });

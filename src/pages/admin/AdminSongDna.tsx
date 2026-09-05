@@ -53,6 +53,7 @@ const AdminSongDna: React.FC = () => {
   const [rows, setRows] = useState<SongDnaVersion[]>([]);
   const [trackFilter, setTrackFilter] = useState<string>("all");
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [formTrackId, setFormTrackId] = useState("");
   const [form, setForm] = useState(emptyForm);
@@ -60,27 +61,32 @@ const AdminSongDna: React.FC = () => {
   const [rejectReason, setRejectReason] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
-    // Load tracks independently so a Song DNA list failure cannot empty the Track dropdown.
+    setLoading(true);
+    setLoadError(null);
     try {
-      const t = await callHubFn<{ rows: TrackOpt[] }>("list_tracks");
-      setTracks(t.rows ?? []);
-    } catch (e) {
-      toast.error((e as Error).message || "Failed to load tracks");
-    }
-    try {
-      const d = await callHubFn<{ rows: SongDnaVersion[] }>("list_song_dna", {
+      const tracksPromise = callHubFn<{ rows: TrackOpt[] }>("list_tracks").catch((e) => {
+        console.warn("list_tracks failed", e);
+        return { rows: [] as TrackOpt[] };
+      });
+      const dnaPromise = callHubFn<{ rows: SongDnaVersion[] }>("list_song_dna", {
         ...(trackFilter !== "all" ? { track_id: trackFilter } : {}),
       });
+
+      const [t, d] = await Promise.all([tracksPromise, dnaPromise]);
+      setTracks(t.rows ?? []);
       setRows(d.rows ?? []);
+      setLoadError(null);
     } catch (e) {
-      toast.error((e as Error).message || "Failed to load Song DNA");
+      const message = (e as Error).message || "Failed to load Song DNA";
+      setLoadError(message);
+      setRows([]);
+      toast.error(message);
     } finally {
       setLoading(false);
     }
   }, [trackFilter]);
 
   useEffect(() => {
-    setLoading(true);
     void load();
   }, [load]);
 

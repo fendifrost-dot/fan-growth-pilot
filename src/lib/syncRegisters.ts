@@ -23,8 +23,9 @@ export function normalizeTitle(name: string | null | undefined): string {
   return (name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-export function computeSyncEligible(hasSample: SampleFlag | string | null | undefined): boolean {
-  return hasSample === "no";
+export function computeSyncEligible(_hasSample: SampleFlag | string | null | undefined): boolean {
+  // Sample flag alone NEVER grants sync eligibility. Use Sync Gate / Fendi approvals.
+  return false;
 }
 
 function isRapPrimary(v: string | null | undefined): boolean {

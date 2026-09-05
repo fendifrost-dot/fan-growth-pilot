@@ -149,29 +149,57 @@ export async function assertTrackHasActiveCampaign(
   sb: SupabaseClient,
   opts: { trackId?: string | null; trackName?: string | null },
 ): Promise<void> {
-  const trackId = String(opts.trackId ?? '').trim();
+  const trackId = String(opts.trackId ?? "").trim();
   if (trackId) {
     const { data } = await sb
-      .from('pitch_campaigns')
-      .select('id')
-      .eq('track_id', trackId)
-      .eq('status', 'active')
+      .from("pitch_campaigns")
+      .select("id")
+      .eq("track_id", trackId)
+      .eq("status", "active")
       .maybeSingle();
     if (!data) {
       throw new Error(
-        'No active pitch campaign for this track. Create one in the Pitch Portal before pitching it.',
+        "No active pitch campaign for this track. Create one in the Pitch Portal before pitching it.",
       );
     }
     return;
   }
 
-  const trackName = String(opts.trackName ?? '').trim().toLowerCase();
-  if (!trackName) throw new Error('track_id or track_name required to check campaign status');
+  const trackName = String(opts.trackName ?? "").trim().toLowerCase();
+  if (!trackName) throw new Error("track_id or track_name required to check campaign status");
   const active = await activeCampaignTrackNames(sb);
   if (!active.has(trackName)) {
     throw new Error(
       `No active pitch campaign for "${opts.trackName}". Create one in the Pitch Portal before pitching it.`,
     );
+  }
+}
+
+/**
+ * Exact track_id + campaign_id identity check for send paths.
+ * Caller-supplied titles are never sufficient; campaign must be active for that track.
+ */
+export async function assertSendCampaignIdentity(
+  sb: SupabaseClient,
+  opts: { trackId: string; campaignId: string },
+): Promise<void> {
+  const trackId = String(opts.trackId ?? "").trim();
+  const campaignId = String(opts.campaignId ?? "").trim();
+  if (!trackId || !campaignId) {
+    throw new Error("track_id and campaign_id are required (title-only sends are not allowed)");
+  }
+  const { data, error } = await sb
+    .from("pitch_campaigns")
+    .select("id, track_id, status")
+    .eq("id", campaignId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data) throw new Error("campaign_id not found");
+  if (String(data.track_id) !== trackId) {
+    throw new Error("campaign_id does not belong to track_id");
+  }
+  if (String(data.status) !== "active") {
+    throw new Error("campaign is not active");
   }
 }
 

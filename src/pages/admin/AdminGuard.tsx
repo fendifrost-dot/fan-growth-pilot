@@ -15,6 +15,16 @@ const AdminGuard: React.FC = () => {
               <span className="text-muted-foreground text-xs uppercase tracking-wide">Pitching</span>
               <Link to="/admin/pitch-portal" className="hover:underline font-medium text-primary">Pitch Portal</Link>
               <Link to="/admin/catalogue" className="hover:underline">Songs</Link>
+              <Link to="/admin/song-dna" className="hover:underline">Song DNA</Link>
+              <Link to="/admin/lyrics" className="hover:underline">Lyrics</Link>
+              <Link to="/admin/split-sheets" className="hover:underline">Splits</Link>
+              <Link to="/admin/sync-gate" className="hover:underline">Sync gate</Link>
+              <Link to="/admin/ops-metrics" className="hover:underline">Ops metrics</Link>
+              <Link to="/admin/ops-incidents" className="hover:underline">Incidents</Link>
+              <Link to="/admin/private-licenses" className="hover:underline">Private licenses</Link>
+              <Link to="/admin/press-kit" className="hover:underline">Press kit</Link>
+              <Link to="/admin/category-coverage" className="hover:underline">Category coverage</Link>
+              <Link to="/admin/fan-leads" className="hover:underline">Fan leads</Link>
               <Link to="/admin/licensing" className="hover:underline">Licensing</Link>
               <Link to="/admin/categories" className="hover:underline">Categories</Link>
               <Link to="/admin/pitch-composer" className="hover:underline">Pitch Composer</Link>

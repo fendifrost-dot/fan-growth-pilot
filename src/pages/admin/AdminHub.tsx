@@ -59,6 +59,64 @@ const AdminHub: React.FC = () => {
             <Link to="/admin/pitch-composer">Open →</Link>
           </Button>
         </Card>
+
+        <Card className="p-5">
+          <h3 className="font-medium">Lyrics</h3>
+          <p className="text-sm text-muted-foreground mt-1">Manual lyric upload &amp; edit (vendor deferred)</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/lyrics">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">Split sheets</h3>
+          <p className="text-sm text-muted-foreground mt-1">Contributor splits &amp; action items</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/split-sheets">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">Sync gate</h3>
+          <p className="text-sm text-muted-foreground mt-1">Fendi sample/sync approvals + ops readiness</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/sync-gate">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">Private licenses</h3>
+          <p className="text-sm text-muted-foreground mt-1">Evidence vault for restricted clearances</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/private-licenses">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">Ops incidents</h3>
+          <p className="text-sm text-muted-foreground mt-1">Log, ack, resolve operational incidents</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/ops-incidents">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">Press / EPK</h3>
+          <p className="text-sm text-muted-foreground mt-1">Press kit assets and bio blocks</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/press-kit">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">Category coverage</h3>
+          <p className="text-sm text-muted-foreground mt-1">Playlist category audit before arming sends</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/category-coverage">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">Ops metrics</h3>
+          <p className="text-sm text-muted-foreground mt-1">Daily discovery → verify → draft → send ledger</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/ops-metrics">Open →</Link>
+          </Button>
+        </Card>
+
         <Card className="p-5">
           <h3 className="font-medium">Song DNA</h3>
           <p className="text-sm text-muted-foreground mt-1">Approved classification, lanes, song pitch</p>

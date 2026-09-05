@@ -1,0 +1,41 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  typecheck-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - name: Install
+        run: npm install
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit + integration tests
+        run: npm run test -- src/test/catalogRules.test.ts src/test/controlCooldown.test.ts src/test/syncRegisters.test.ts src/test/operator-registers.test.tsx src/test/no-public-isrc.test.tsx src/test/phase0-send-gates.integration.test.ts src/test/songDna.test.ts src/test/lyrics-split-sheets.test.ts src/test/aghTypes.test.ts
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Deno edge-function gate tests
+        run: |
+          deno test --allow-env --allow-read \
+            supabase/functions/_shared/send-identity-gate.test.ts \
+            supabase/functions/_shared/outreach-auth.test.ts \
+            supabase/functions/_shared/pitch-campaigns.test.ts \
+            supabase/functions/_shared/control-cooldown.test.ts \
+            supabase/functions/_shared/song-dna.test.ts \
+            supabase/functions/_shared/lyrics-split.test.ts \
+            supabase/functions/_shared/genre-fit.test.ts \
+            supabase/functions/_shared/draft-identity.test.ts \
+            supabase/functions/_shared/playlist-category-coverage.test.ts \
+            supabase/functions/_shared/sync-eligibility.test.ts
+      - name: Production build
+        run: npm run build

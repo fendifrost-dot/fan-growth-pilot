@@ -33,6 +33,15 @@ import AdminPitchComposer from "./pages/admin/AdminPitchComposer";
 import AdminPitchPortal from "./pages/admin/AdminPitchPortal";
 import AdminSongDna from "./pages/admin/AdminSongDna";
 import AdminDiscoveryProfiles from "./pages/admin/AdminDiscoveryProfiles";
+import AdminLyrics from "./pages/admin/AdminLyrics";
+import AdminSplitSheets from "./pages/admin/AdminSplitSheets";
+import AdminSyncGate from "./pages/admin/AdminSyncGate";
+import AdminPrivateLicenses from "./pages/admin/AdminPrivateLicenses";
+import AdminOpsIncidents from "./pages/admin/AdminOpsIncidents";
+import AdminPressKit from "./pages/admin/AdminPressKit";
+import AdminCategoryCoverage from "./pages/admin/AdminCategoryCoverage";
+import AdminFanLeads from "./pages/admin/AdminFanLeads";
+import AdminOpsMetrics from "./pages/admin/AdminOpsMetrics";
 import AdminOpportunities from "./pages/admin/AdminOpportunities";
 import RegisterPreview from "./pages/dev/RegisterPreview";
 
@@ -93,6 +102,15 @@ const App = () => {
             <Route path="pitch-portal" element={<AdminPitchPortal />} />
             <Route path="song-dna" element={<AdminSongDna />} />
             <Route path="discovery-profiles" element={<AdminDiscoveryProfiles />} />
+            <Route path="lyrics" element={<AdminLyrics />} />
+            <Route path="split-sheets" element={<AdminSplitSheets />} />
+            <Route path="sync-gate" element={<AdminSyncGate />} />
+            <Route path="private-licenses" element={<AdminPrivateLicenses />} />
+            <Route path="ops-incidents" element={<AdminOpsIncidents />} />
+            <Route path="press-kit" element={<AdminPressKit />} />
+            <Route path="category-coverage" element={<AdminCategoryCoverage />} />
+            <Route path="fan-leads" element={<AdminFanLeads />} />
+            <Route path="ops-metrics" element={<AdminOpsMetrics />} />
           </Route>
 
           {/* Public smart link pages (CATCH-ALL — must stay last among meaningful routes) */}

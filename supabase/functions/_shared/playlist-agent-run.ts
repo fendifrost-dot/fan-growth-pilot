@@ -5,6 +5,7 @@
 import { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import { trackSyncFields } from "./sync-registers.ts";
 import type { Actor } from "./outreach-auth.ts";
+import { denyUnlessCan, stripSpoofedAttribution, type OpsActor } from "./ops-actors.ts";
 import { isSongDnaAction, runSongDnaAction } from "./song-dna.ts";
 import {
   confidenceForEmailSource,
@@ -3161,13 +3162,29 @@ export async function runPlaylistAgentAction(
   sb: SupabaseClient,
   hubKey: string,
   actor: Actor | null = null,
+  opsActor: OpsActor | null = null,
 ): Promise<RunResult> {
+  const ops = opsActor ?? { kind: "anonymous" as const, userId: null, label: "anonymous" };
   if (isSongDnaAction(action)) {
-    return runSongDnaAction(action, body, sb, actor);
+    return runSongDnaAction(action, body, sb, actor, ops);
   }
   switch (action) {
     case "draft_pitch": return runDraftPitch(body, sb);
-    case "approve_draft": return runApproveDraft(body, sb, hubKey);
+    case "approve_draft": {
+      const reject = Boolean(body.reject);
+      const sendImmediately = Boolean(body.send_immediately);
+      const cap = reject
+        ? "reject_playlist_drafts"
+        : sendImmediately
+        ? "send_playlist_pitches"
+        : "approve_playlist_drafts";
+      const denied = denyUnlessCan(ops, cap);
+      if (denied) return denied;
+      // Attribution must come from authenticated ops actor, never request body.
+      const cleaned = stripSpoofedAttribution(body);
+      cleaned.approved_by = ops.label;
+      return runApproveDraft(cleaned, sb, hubKey);
+    }
     case "invalidate_stale_drafts": return runInvalidateStaleDrafts(body, sb);
     case "enrich_curator_contacts": return runEnrichCuratorContacts(body, sb);
     case "schedule_follow_up": return runScheduleFollowUp(body, sb, hubKey);
@@ -3191,10 +3208,16 @@ export async function runPlaylistAgentAction(
       return runPlaylistResearchProxy(body, hubKey);
     case "run_playlist_sweep":
       return runPlaylistSweepProxy(body, hubKey);
-    case "send_campaign":
-      return runSendCampaignProxy(body, hubKey);
-    case "send_telegram_campaign":
-      return runSendTelegramCampaignProxy(body, hubKey);
+    case "send_campaign": {
+      const denied = denyUnlessCan(ops, "send_playlist_pitches");
+      if (denied) return denied;
+      return runSendCampaignProxy(stripSpoofedAttribution(body), hubKey);
+    }
+    case "send_telegram_campaign": {
+      const denied = denyUnlessCan(ops, "send_playlist_pitches");
+      if (denied) return denied;
+      return runSendTelegramCampaignProxy(stripSpoofedAttribution(body), hubKey);
+    }
     case "discover_spotify_placements":
       try {
         const trackName = String(body.track_name ?? "").trim();

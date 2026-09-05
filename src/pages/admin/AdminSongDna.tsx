@@ -231,8 +231,6 @@ const AdminSongDna: React.FC = () => {
           sample, or license facts.
         </p>
         <p className="text-xs text-muted-foreground mt-2">
-          Apply migration <code>20260905000000_outreach_dna_discovery_identity.sql</code> via
-          Lovable SQL Editor before using this page in production.{" "}
           <Link to="/admin/discovery-profiles" className="underline">
             Discovery profiles
           </Link>{" "}
@@ -442,38 +440,53 @@ const AdminSongDna: React.FC = () => {
                   </td>
                 </tr>
               )}
-              {!loading && rows.length === 0 && (
+              {!loading && loadError && (
                 <tr>
-                  <td colSpan={6} className="p-3 text-muted-foreground">
-                    No Song DNA versions yet. Create a draft above after the migration is applied.
+                  <td colSpan={6} className="p-3">
+                    <div className="space-y-2">
+                      <p className="font-medium text-destructive">Song DNA could not be loaded</p>
+                      <p className="text-sm text-muted-foreground break-words">{loadError}</p>
+                      <Button size="sm" variant="outline" onClick={() => void load()}>
+                        Retry
+                      </Button>
+                    </div>
                   </td>
                 </tr>
               )}
-              {rows.map((r) => (
-                <tr key={r.id} className="border-t">
-                  <td className="p-3 font-medium">{r.track_name ?? r.track_id.slice(0, 8)}</td>
-                  <td className="p-3 font-mono text-xs">v{r.version_number}</td>
-                  <td className="p-3">
-                    <Badge variant={stateVariant(r.approval_state)}>
-                      {DNA_STATE_LABEL[r.approval_state]}
-                    </Badge>
-                  </td>
-                  <td className="p-3 text-xs">{r.primary_genre || "—"}</td>
-                  <td className="p-3 text-xs">{r.sample_declaration}</td>
-                  <td className="p-3 text-right space-x-2">
-                    {isEditableDnaState(r.approval_state) && (
-                      <>
-                        <Button size="sm" variant="ghost" disabled={busy} onClick={() => startEdit(r)}>
-                          Edit
-                        </Button>
-                        <Button size="sm" variant="outline" disabled={busy} onClick={() => void submit(r.id)}>
-                          Submit
-                        </Button>
-                      </>
-                    )}
+              {!loading && !loadError && rows.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="p-3 text-muted-foreground">
+                    No Song DNA versions yet. Create a draft above.
                   </td>
                 </tr>
-              ))}
+              )}
+              {!loading &&
+                !loadError &&
+                rows.map((r) => (
+                  <tr key={r.id} className="border-t">
+                    <td className="p-3 font-medium">{r.track_name ?? r.track_id.slice(0, 8)}</td>
+                    <td className="p-3 font-mono text-xs">v{r.version_number}</td>
+                    <td className="p-3">
+                      <Badge variant={stateVariant(r.approval_state)}>
+                        {DNA_STATE_LABEL[r.approval_state]}
+                      </Badge>
+                    </td>
+                    <td className="p-3 text-xs">{r.primary_genre || "—"}</td>
+                    <td className="p-3 text-xs">{r.sample_declaration}</td>
+                    <td className="p-3 text-right space-x-2">
+                      {isEditableDnaState(r.approval_state) && (
+                        <>
+                          <Button size="sm" variant="ghost" disabled={busy} onClick={() => startEdit(r)}>
+                            Edit
+                          </Button>
+                          <Button size="sm" variant="outline" disabled={busy} onClick={() => void submit(r.id)}>
+                            Submit
+                          </Button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                ))}
             </tbody>
           </table>
         </Card>

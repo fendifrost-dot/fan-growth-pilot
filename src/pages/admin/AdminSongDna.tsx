@@ -60,14 +60,17 @@ const AdminSongDna: React.FC = () => {
   const [rejectReason, setRejectReason] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
+    // Load tracks independently so a Song DNA list failure cannot empty the Track dropdown.
     try {
-      const [t, d] = await Promise.all([
-        callHubFn<{ rows: TrackOpt[] }>("list_tracks"),
-        callHubFn<{ rows: SongDnaVersion[] }>("list_song_dna", {
-          ...(trackFilter !== "all" ? { track_id: trackFilter } : {}),
-        }),
-      ]);
+      const t = await callHubFn<{ rows: TrackOpt[] }>("list_tracks");
       setTracks(t.rows ?? []);
+    } catch (e) {
+      toast.error((e as Error).message || "Failed to load tracks");
+    }
+    try {
+      const d = await callHubFn<{ rows: SongDnaVersion[] }>("list_song_dna", {
+        ...(trackFilter !== "all" ? { track_id: trackFilter } : {}),
+      });
       setRows(d.rows ?? []);
     } catch (e) {
       toast.error((e as Error).message || "Failed to load Song DNA");

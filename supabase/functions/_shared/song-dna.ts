@@ -160,6 +160,13 @@ export function dnaGetSelectCols(): string {
   return `*, ${SONG_DNA_TRACKS_EMBED}`;
 }
 ...
+async function listSongDna(sb: SupabaseClient, body: Record<string, unknown>): Promise<Result> {
+  const trackId = String(body.track_id ?? "").trim();
+  let q = sb
+    .from("song_dna_versions")
+    .select(dnaSelectCols())
+    .order("version_number", { ascending: false });
+  if (trackId) q = q.eq("track_id", trackId);
   const { data, error } = await q.limit(200);
   if (error) {
     return {

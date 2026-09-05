@@ -268,9 +268,15 @@ async function createDraft(
   sb: SupabaseClient,
   body: Record<string, unknown>,
   actor: Actor | null,
+  opsActor: OpsActor | null = null,
 ): Promise<Result> {
   const authErr = requireAdminActor(actor);
   if (authErr) return authErr;
+  const capErr = denyUnlessCan(
+    opsActor ?? { kind: "anonymous", userId: null, label: "anonymous" },
+    "draft_song_dna",
+  );
+  if (capErr) return capErr;
   const trackId = String(body.track_id ?? "").trim();
   if (!trackId) return { status: 400, data: { error: "track_id required" } };
 
@@ -314,13 +320,20 @@ async function updateDraft(
   if (String(current.approval_state) === "approved") {
     const fendiErr = requireFendiOps(opsActor, "alter_approved_song_dna");
     if (fendiErr) return fendiErr;
-  } else if (!EDITABLE_STATES.has(String(current.approval_state))) {
+  } else {
+    const draftCapErr = denyUnlessCan(
+      opsActor ?? { kind: "anonymous", userId: null, label: "anonymous" },
+      "draft_song_dna",
+    );
+    if (draftCapErr) return draftCapErr;
+    if (!EDITABLE_STATES.has(String(current.approval_state))) {
     return {
       status: 400,
       data: {
         error: `Cannot edit Song DNA in state '${current.approval_state}'. Create a new draft version instead.`,
       },
     };
+    }
   }
 
   const trackId = String(current.track_id);
@@ -379,9 +392,15 @@ async function submitForReview(
   sb: SupabaseClient,
   body: Record<string, unknown>,
   actor: Actor | null,
+  opsActor: OpsActor | null = null,
 ): Promise<Result> {
   const authErr = requireAdminActor(actor);
   if (authErr) return authErr;
+  const capErr = denyUnlessCan(
+    opsActor ?? { kind: "anonymous", userId: null, label: "anonymous" },
+    "submit_song_dna_for_review",
+  );
+  if (capErr) return capErr;
   const id = String(body.song_dna_version_id ?? "").trim();
   if (!id) return { status: 400, data: { error: "song_dna_version_id required" } };
 
@@ -606,11 +625,11 @@ export async function runSongDnaAction(
     case "get_song_dna":
       return await getSongDna(sb, body);
     case "create_song_dna_draft":
-      return await createDraft(sb, stripSpoofedAttribution(body), actor);
+      return await createDraft(sb, stripSpoofedAttribution(body), actor, opsActor);
     case "update_song_dna_draft":
       return await updateDraft(sb, stripSpoofedAttribution(body), actor, opsActor);
     case "submit_song_dna_for_review":
-      return await submitForReview(sb, stripSpoofedAttribution(body), actor);
+      return await submitForReview(sb, stripSpoofedAttribution(body), actor, opsActor);
     case "approve_song_dna":
       return await approveSongDna(sb, body, actor, opsActor);
     case "reject_song_dna":

@@ -32,9 +32,11 @@ const AdminCategoryCoverage: React.FC = () => {
   const [activeOnly, setActiveOnly] = useState(true);
   const [busy, setBusy] = useState(false);
   const [audit, setAudit] = useState<CoverageAudit | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const run = useCallback(async () => {
     setBusy(true);
+    setLoadError(null);
     try {
       const data = await callHubFn<CoverageAudit>("audit_playlist_category_coverage", {
         active_only: activeOnly,
@@ -49,7 +51,10 @@ const AdminCategoryCoverage: React.FC = () => {
         toast.success("All scanned playlists have at least one category");
       }
     } catch (e) {
-      toast.error((e as Error).message || "Audit failed");
+      const msg = (e as Error).message || "Audit failed";
+      setLoadError(msg);
+      setAudit(null);
+      toast.error(msg);
     } finally {
       setBusy(false);
     }
@@ -77,7 +82,14 @@ const AdminCategoryCoverage: React.FC = () => {
         </Button>
       </Card>
 
-      {audit && (
+      {loadError && (
+        <Card className="p-4 space-y-2">
+          <p className="font-medium text-destructive">Coverage audit failed</p>
+          <p className="text-sm text-muted-foreground break-words">{loadError}</p>
+          <Button size="sm" variant="outline" onClick={() => void run()}>Retry</Button>
+        </Card>
+      )}
+      {!loadError && audit && (
         <>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <Card className="p-4">

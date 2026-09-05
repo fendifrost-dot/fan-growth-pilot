@@ -35,8 +35,10 @@ const AdminLyrics: React.FC = () => {
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    setLoadError(null);
     try {
       const [t, l] = await Promise.all([
         callHubFn<{ rows: TrackOpt[] }>("list_tracks"),
@@ -45,7 +47,10 @@ const AdminLyrics: React.FC = () => {
       setTracks(t.rows ?? []);
       setRows(l.rows ?? []);
     } catch (e) {
-      toast.error((e as Error).message || "Failed to load lyrics");
+      const msg = (e as Error).message || "Failed to load lyrics";
+      setLoadError(msg);
+      setRows([]);
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -173,7 +178,25 @@ const AdminLyrics: React.FC = () => {
                 </td>
               </tr>
             )}
-            {rows.map((r) => (
+            {!loading && loadError && (
+              <tr>
+                <td colSpan={8} className="p-3">
+                  <p className="font-medium text-destructive">Lyrics could not be loaded</p>
+                  <p className="text-sm text-muted-foreground break-words">{loadError}</p>
+                  <Button size="sm" variant="outline" className="mt-2" onClick={() => void load()}>
+                    Retry
+                  </Button>
+                </td>
+              </tr>
+            )}
+            {!loading && !loadError && rows.length === 0 && (
+              <tr>
+                <td colSpan={8} className="p-3 text-muted-foreground">
+                  No lyrics rows yet. Save a manual transcription above.
+                </td>
+              </tr>
+            )}
+            {!loading && !loadError && rows.map((r) => (
               <tr key={r.id} className="border-t">
                 <td className="p-3">{r.track_name ?? r.track_id.slice(0, 8)}</td>
                 <td className="p-3 font-mono text-xs">v{r.version_number}</td>

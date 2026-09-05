@@ -26,22 +26,27 @@ Deno.test("Claude cannot approve DNA, send pitches, or approve sync/sample", () 
   assertEquals(can(actor, "reject_song_dna"), false);
   assertEquals(can(actor, "send_playlist_pitches"), false);
   assertEquals(can(actor, "approve_playlist_drafts"), false);
+  assertEquals(can(actor, "reject_playlist_drafts"), false);
   assertEquals(can(actor, "approve_sample_declaration"), false);
   assertEquals(can(actor, "approve_sync_eligibility"), false);
   assertEquals(can(actor, "alter_approved_song_dna"), false);
   assertEquals(can(actor, "draft_song_dna"), true);
+  assertEquals(can(actor, "submit_song_dna_for_review"), true);
   assertEquals(can(actor, "generate_playlist_drafts"), true);
   assertEquals(can(actor, "research_playlist_targets"), true);
 });
 
 Deno.test("Grok can approve/send drafts but cannot approve DNA or sync", () => {
-  const actor = resolveOpsActor(user("admin-1"), req("grok_playlist_control"));
+  const actor = resolveOpsActor(user("admin-1"), req("grok"));
   assertEquals(actor.kind, "grok_playlist_control");
   assertEquals(can(actor, "approve_playlist_drafts"), true);
+  assertEquals(can(actor, "reject_playlist_drafts"), true);
   assertEquals(can(actor, "send_playlist_pitches"), true);
   assertEquals(can(actor, "monitor_inbox"), true);
   assertEquals(can(actor, "open_incidents"), true);
   assertEquals(can(actor, "approve_song_dna"), false);
+  assertEquals(can(actor, "draft_song_dna"), false);
+  assertEquals(can(actor, "submit_song_dna_for_review"), false);
   assertEquals(can(actor, "approve_sample_declaration"), false);
   assertEquals(can(actor, "approve_sync_eligibility"), false);
   assertEquals(can(actor, "alter_approved_song_dna"), false);
@@ -54,6 +59,7 @@ Deno.test("Only exact ARTIST_USER_ID resolves as Fendi and may approve DNA/sampl
     const fendi = resolveOpsActor(user("fendi-exact-id"), null);
     assertEquals(fendi.kind, "fendi");
     assertEquals(can(fendi, "approve_song_dna"), true);
+    assertEquals(can(fendi, "reject_song_dna"), true);
     assertEquals(can(fendi, "approve_sample_declaration"), true);
     assertEquals(can(fendi, "approve_sync_eligibility"), true);
     assertEquals(can(fendi, "alter_approved_song_dna"), true);
@@ -63,6 +69,8 @@ Deno.test("Only exact ARTIST_USER_ID resolves as Fendi and may approve DNA/sampl
     assertEquals(can(otherAdmin, "approve_song_dna"), false);
     assertEquals(can(otherAdmin, "approve_sample_declaration"), false);
     assertEquals(can(otherAdmin, "approve_sync_eligibility"), false);
+    assertEquals(can(otherAdmin, "approve_playlist_drafts"), true);
+    assertEquals(can(otherAdmin, "send_playlist_pitches"), true);
   } finally {
     if (prev == null) Deno.env.delete("ARTIST_USER_ID");
     else Deno.env.set("ARTIST_USER_ID", prev);

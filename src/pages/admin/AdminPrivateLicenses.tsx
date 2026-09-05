@@ -34,9 +34,12 @@ const AdminPrivateLicenses: React.FC = () => {
   const [storagePath, setStoragePath] = useState("");
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [filterTrackId, setFilterTrackId] = useState("all");
 
   const load = useCallback(async () => {
+    setLoadError(null);
     try {
       const [t, lic] = await Promise.all([
         callHubFn<{ rows: TrackRow[] }>("list_tracks"),
@@ -47,7 +50,12 @@ const AdminPrivateLicenses: React.FC = () => {
       setTracks((t.rows ?? []).filter((r) => r.status === "active"));
       setRows(lic.rows ?? []);
     } catch (e) {
-      toast.error((e as Error).message || "Failed to load private licenses");
+      const msg = (e as Error).message || "Failed to load private licenses";
+      setLoadError(msg);
+      setRows([]);
+      toast.error(msg);
+    } finally {
+      setLoading(false);
     }
   }, [filterTrackId]);
 
@@ -158,7 +166,25 @@ const AdminPrivateLicenses: React.FC = () => {
               {!rows.length && (
                 <tr><td colSpan={4} className="p-4 text-muted-foreground">No evidence registered yet.</td></tr>
               )}
-              {rows.map((r) => (
+              {!loading && loadError && (
+              <tr>
+                <td colSpan={8} className="p-3">
+                  <p className="font-medium text-destructive">Private licenses could not be loaded</p>
+                  <p className="text-sm text-muted-foreground break-words">{loadError}</p>
+                  <Button size="sm" variant="outline" className="mt-2" onClick={() => void load()}>
+                    Retry
+                  </Button>
+                </td>
+              </tr>
+            )}
+            {!loading && !loadError && rows.length === 0 && (
+              <tr>
+                <td colSpan={8} className="p-3 text-muted-foreground">
+                  No private license evidence registered yet.
+                </td>
+              </tr>
+            )}
+            {!loading && !loadError && rows.map((r) => (
                 <tr key={r.id} className="border-b">
                   <td className="p-2">{trackName(r.track_id)}</td>
                   <td className="p-2 font-medium">{r.label}</td>

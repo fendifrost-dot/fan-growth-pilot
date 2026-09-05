@@ -2,23 +2,49 @@ import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
   assertGenreStampAllowed,
   computeSyncEligible,
-  isMeditateTitle,
   parseAggregator,
   patchForLicensingResponse,
   trackSyncFields,
 } from "./sync-registers.ts";
-import { TRACK_IDS } from "./catalog-rules.ts";
+import {
+  TRACK_IDS,
+  isMeditateTrackId,
+  assertHouseElectronicStampAllowed,
+} from "./catalog-rules.ts";
 
-Deno.test("Meditate cannot be stamped house by UUID", () => {
-  assertEquals(isMeditateTitle("Meditate"), true);
-  assertEquals(assertGenreStampAllowed("Meditate", "house_electronic", TRACK_IDS.MEDITATE).ok, false);
-  assertEquals(assertGenreStampAllowed("Meditate", "hip_hop_rap", TRACK_IDS.MEDITATE).ok, true);
+Deno.test("Meditate track id is recognized and cannot take house stamp", () => {
+  assertEquals(isMeditateTrackId(TRACK_IDS.MEDITATE), true);
+  assertEquals(
+    assertHouseElectronicStampAllowed(TRACK_IDS.MEDITATE, "house_electronic").ok,
+    false,
+  );
+  assertEquals(
+    assertHouseElectronicStampAllowed(TRACK_IDS.CONTROL, "house_electronic").ok,
+    true,
+  );
+  assertEquals(
+    assertHouseElectronicStampAllowed(TRACK_IDS.NEVA_TOO_MUCH_PRADA, "house_electronic").ok,
+    false,
+  );
 });
 
-Deno.test("house stamp requires allow-listed track_id", () => {
-  assertEquals(assertGenreStampAllowed("Designed For Me (Control)", "house_electronic").ok, false);
-  assertEquals(assertGenreStampAllowed("x", "house_electronic", TRACK_IDS.CONTROL).ok, true);
-  assertEquals(assertGenreStampAllowed("x", "house_electronic", TRACK_IDS.NEVA_TOO_MUCH_PRADA).ok, false);
+Deno.test("house stamp blocked when rap DNA / current stamp contradicts", () => {
+  assertEquals(
+    assertGenreStampAllowed({
+      genreStamp: "house_electronic",
+      currentStamp: "hip_hop_rap",
+    }).ok,
+    false,
+  );
+  assertEquals(
+    assertGenreStampAllowed({
+      genreStamp: "house_electronic",
+      approvedPrimaryGenre: "Hip-Hop/Rap",
+    }).ok,
+    false,
+  );
+  assertEquals(assertGenreStampAllowed({ genreStamp: "house_electronic" }).ok, true);
+  assertEquals(assertGenreStampAllowed({ genreStamp: "hip_hop_rap" }).ok, true);
 });
 
 Deno.test("has_sample=no does not make sync_eligible", () => {
@@ -32,10 +58,16 @@ Deno.test("unknown aggregator is OPEN, not unreleased", () => {
   assertEquals(parseAggregator("tbd"), "open");
 });
 
-Deno.test("trackSyncFields rejects a house stamp without allow-listed track_id", () => {
-  const bad = trackSyncFields({ genre_stamp: "house_electronic" }, "Meditate", TRACK_IDS.MEDITATE);
+Deno.test("trackSyncFields rejects house stamp when rap identity contradicts", () => {
+  const bad = trackSyncFields(
+    { genre_stamp: "house_electronic" },
+    { currentStamp: "hip_hop_rap" },
+  );
   assertEquals("error" in bad, true);
-  const ok = trackSyncFields({ genre_stamp: "hip_hop_rap", has_sample: "no" }, "Meditate", TRACK_IDS.MEDITATE);
+  const ok = trackSyncFields(
+    { genre_stamp: "hip_hop_rap", has_sample: "no" },
+    { currentStamp: null },
+  );
   assertEquals("error" in ok, false);
   if (!("error" in ok)) {
     assertEquals(ok.genre_stamp, "hip_hop_rap");
@@ -44,7 +76,7 @@ Deno.test("trackSyncFields rejects a house stamp without allow-listed track_id",
 });
 
 Deno.test("trackSyncFields refuses writable sync_eligible", () => {
-  const bad = trackSyncFields({ sync_eligible: true }, "Meditate", TRACK_IDS.MEDITATE);
+  const bad = trackSyncFields({ sync_eligible: true });
   assertEquals("error" in bad, true);
 });
 

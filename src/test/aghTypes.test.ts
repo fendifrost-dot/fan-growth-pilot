@@ -13,6 +13,7 @@ describe("supabase types cover AGH Phase 1 tables/columns", () => {
     type Lyrics = PublicTables["lyrics_transcriptions"]["Row"];
     type Split = PublicTables["split_sheets"]["Row"];
     type Contrib = PublicTables["split_sheet_contributors"]["Row"];
+    type PlaylistOps = PublicTables["playlist_ops_ledger"]["Row"];
 
     const keys = [
       null as SongDna | null,
@@ -23,6 +24,7 @@ describe("supabase types cover AGH Phase 1 tables/columns", () => {
       null as Lyrics | null,
       null as Split | null,
       null as Contrib | null,
+      null as PlaylistOps | null,
     ];
     expect(keys.every((k) => k === null)).toBe(true);
   });
@@ -43,5 +45,17 @@ describe("supabase types cover AGH Phase 1 tables/columns", () => {
     expect(draftKeys.length).toBe(2);
     expect(pitchKeys.length).toBe(2);
     expect(trackKeys.length).toBe(4);
+  });
+
+  it("includes playlist ops ledger attribution columns", () => {
+    type Ledger = PublicTables["playlist_ops_ledger"]["Row"];
+    const keys: Array<keyof Ledger> = [
+      "track_id",
+      "approval_result",
+      "approved_by",
+      "sent_by",
+      "drafted_by",
+    ];
+    expect(keys.length).toBe(5);
   });
 });

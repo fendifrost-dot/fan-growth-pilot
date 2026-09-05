@@ -180,6 +180,7 @@ Deno.serve(async (req) => {
         supabase,
         expectedKey,
         actor,
+        opsActor,
       );
       return new Response(JSON.stringify(result.data), {
         status: result.status,

@@ -37,9 +37,11 @@ const AdminFanLeads: React.FC = () => {
   const [stats, setStats] = useState<FanStats | null>(null);
   const [leads, setLeads] = useState<LeadsPayload | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const [s, l] = await Promise.all([
         callHubFn<FanStats>("get_fan_stats", {}),
@@ -48,7 +50,11 @@ const AdminFanLeads: React.FC = () => {
       setStats(s);
       setLeads(l);
     } catch (e) {
-      toast.error((e as Error).message || "Failed to load fan reporting");
+      const msg = (e as Error).message || "Failed to load fan reporting";
+      setLoadError(msg);
+      setStats(null);
+      setLeads(null);
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -72,7 +78,14 @@ const AdminFanLeads: React.FC = () => {
         </Button>
       </div>
 
-      {stats && (
+      {!loading && loadError && (
+        <Card className="p-4 space-y-2">
+          <p className="font-medium text-destructive">Fan leads could not be loaded</p>
+          <p className="text-sm text-muted-foreground break-words">{loadError}</p>
+          <Button size="sm" variant="outline" onClick={() => void load()}>Retry</Button>
+        </Card>
+      )}
+      {!loadError && stats && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <Card className="p-4">
             <p className="text-xs text-muted-foreground">Total leads</p>

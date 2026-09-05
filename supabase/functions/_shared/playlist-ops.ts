@@ -216,12 +216,15 @@ export async function runPlaylistOpsAction(
 
       case "record_playlist_draft_decision":
       case "record_playlist_approval": {
-        assertCan(actor, "approve_playlist_drafts");
         const id = requireUuid(body.id ?? body.ledger_id, "id");
         const result = String(body.approval_result ?? body.decision ?? "").trim();
         if (!["approved", "rejected"].includes(result)) {
           throw new Error("approval_result must be approved or rejected");
         }
+        assertCan(
+          actor,
+          result === "rejected" ? "reject_playlist_drafts" : "approve_playlist_drafts",
+        );
         const now = new Date().toISOString();
         const { data, error } = await supabase
           .from("playlist_ops_ledger")

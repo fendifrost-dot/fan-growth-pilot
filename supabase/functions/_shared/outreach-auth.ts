@@ -51,20 +51,23 @@ export type AuthDecision =
 export const ACTION_AUTH: Record<string, AuthClass> = {
   // ---- Campaign lifecycle (human decisions; admin JWT only) ----------------
   create_campaign_draft: 'admin-write',
+  create_campaign: 'admin-write',
   update_campaign: 'admin-write',
   activate_campaign: 'admin-write',
   pause_campaign: 'admin-write',
   resume_campaign: 'admin-write',
   end_campaign: 'admin-write',
   set_outreach_ceiling: 'admin-write',
+  check_campaign_config: 'authenticated-read',
+  list_campaignable_tracks: 'authenticated-read',
 
   // ---- Campaign reads -----------------------------------------------------
-  list_campaigns: 'public-read',
-  get_campaign: 'public-read',
-  validate_campaign: 'public-read',
-  get_campaign_stats: 'public-read',
-  get_campaign_supply: 'public-read',
-  get_campaign_activity: 'public-read',
+  list_campaigns: 'authenticated-read',
+  get_campaign: 'authenticated-read',
+  validate_campaign: 'authenticated-read',
+  get_campaign_stats: 'authenticated-read',
+  get_campaign_supply: 'authenticated-read',
+  get_campaign_activity: 'authenticated-read',
 
   // ---- Outreach-triggering writes (admin JWT OR scheduler secret) ----------
   // These are what the daily submissions task drives. Locking them without
@@ -87,6 +90,7 @@ export const ACTION_AUTH: Record<string, AuthClass> = {
   queue_fan_dm_batch: 'outreach-write',
   send_fan_dm_via_api: 'outreach-write',
   mark_fan_dm_sent: 'outreach-write',
+  update_fan_dm_draft: 'outreach-write',
   draft_radio_pitch: 'outreach-write',
   send_radio_pitch: 'outreach-write',
 

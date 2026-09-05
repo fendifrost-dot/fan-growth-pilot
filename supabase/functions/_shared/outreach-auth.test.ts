@@ -123,9 +123,26 @@ Deno.test("an unset scheduler secret never authorizes", () => {
   assertEquals(isSchedulerRequest(req({ "x-outreach-scheduler-secret": "" })), false);
 });
 
-Deno.test("reads stay public in Phase 1", async () => {
-  for (const a of ["list_campaigns", "get_pitch_log", "count_targets", "list_targets"]) {
+Deno.test("non-campaign reads stay public in Phase 1; campaign reads require auth", async () => {
+  for (const a of ["get_pitch_log", "count_targets", "list_targets"]) {
     const d = await authorizeAction(a, req(), stubSb(null, false));
     assert(d.ok, `${a} should remain public`);
   }
+  const campaignRead = await authorizeAction("list_campaigns", req(), stubSb(null, false));
+  assertEquals(campaignRead.ok, false);
+  assertEquals((campaignRead as { status: number }).status, 401);
+
+  const authed = await authorizeAction(
+    "list_campaigns",
+    req({ authorization: "Bearer usertoken" }),
+    stubSb({ id: "u1" }, false),
+  );
+  assert(authed.ok, "signed-in user may list campaigns");
+});
+
+Deno.test("Pitch Portal create/check/list actions are classified", () => {
+  assertEquals(classifyAction("create_campaign"), "admin-write");
+  assertEquals(classifyAction("check_campaign_config"), "authenticated-read");
+  assertEquals(classifyAction("list_campaignable_tracks"), "authenticated-read");
+  assertEquals(classifyAction("update_fan_dm_draft"), "outreach-write");
 });

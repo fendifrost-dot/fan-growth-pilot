@@ -1583,6 +1583,71 @@ export type Database = {
           },
         ]
       }
+      lyrics_transcriptions: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          id: string
+          language: string
+          notes: string | null
+          plain_text: string
+          provider_id: string | null
+          provider_job_id: string | null
+          source: string
+          status: string
+          storage_path: string | null
+          timed_lines: Json
+          track_id: string
+          updated_at: string
+          updated_by: string | null
+          version_number: number
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          language?: string
+          notes?: string | null
+          plain_text?: string
+          provider_id?: string | null
+          provider_job_id?: string | null
+          source?: string
+          status?: string
+          storage_path?: string | null
+          timed_lines?: Json
+          track_id: string
+          updated_at?: string
+          updated_by?: string | null
+          version_number: number
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          language?: string
+          notes?: string | null
+          plain_text?: string
+          provider_id?: string | null
+          provider_job_id?: string | null
+          source?: string
+          status?: string
+          storage_path?: string | null
+          timed_lines?: Json
+          track_id?: string
+          updated_at?: string
+          updated_by?: string | null
+          version_number?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "lyrics_transcriptions_track_id_fkey"
+            columns: ["track_id"]
+            isOneToOne: false
+            referencedRelation: "tracks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       marketing_actions: {
         Row: {
           action_payload: Json | null
@@ -1884,6 +1949,68 @@ export type Database = {
           },
         ]
       }
+      ops_incidents: {
+        Row: {
+          acknowledged_by: string | null
+          campaign_id: string | null
+          category: string
+          created_at: string
+          created_by: string | null
+          detail: Json
+          id: string
+          related_entity: string | null
+          related_id: string | null
+          resolved_by: string | null
+          severity: string
+          status: string
+          title: string
+          track_id: string | null
+          updated_at: string
+        }
+        Insert: {
+          acknowledged_by?: string | null
+          campaign_id?: string | null
+          category?: string
+          created_at?: string
+          created_by?: string | null
+          detail?: Json
+          id?: string
+          related_entity?: string | null
+          related_id?: string | null
+          resolved_by?: string | null
+          severity?: string
+          status?: string
+          title: string
+          track_id?: string | null
+          updated_at?: string
+        }
+        Update: {
+          acknowledged_by?: string | null
+          campaign_id?: string | null
+          category?: string
+          created_at?: string
+          created_by?: string | null
+          detail?: Json
+          id?: string
+          related_entity?: string | null
+          related_id?: string | null
+          resolved_by?: string | null
+          severity?: string
+          status?: string
+          title?: string
+          track_id?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ops_incidents_track_id_fkey"
+            columns: ["track_id"]
+            isOneToOne: false
+            referencedRelation: "tracks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       outreach_decision_shadow_log: {
         Row: {
           campaign_id: string | null
@@ -1930,6 +2057,7 @@ export type Database = {
         Row: {
           approved_at: string | null
           approved_by: string | null
+          approved_content_hash: string | null
           body: string
           campaign_id: string | null
           channel: string
@@ -1959,6 +2087,7 @@ export type Database = {
         Insert: {
           approved_at?: string | null
           approved_by?: string | null
+          approved_content_hash?: string | null
           body: string
           campaign_id?: string | null
           channel: string
@@ -1988,6 +2117,7 @@ export type Database = {
         Update: {
           approved_at?: string | null
           approved_by?: string | null
+          approved_content_hash?: string | null
           body?: string
           campaign_id?: string | null
           channel?: string
@@ -2359,6 +2489,158 @@ export type Database = {
           },
         ]
       }
+      playlist_ops_ledger: {
+        Row: {
+          approval_result: string | null
+          approved_at: string | null
+          approved_by: string | null
+          approved_by_label: string | null
+          approved_song_dna_version_id: string | null
+          campaign_id: string | null
+          created_at: string
+          discovered_at: string | null
+          discovered_by: string | null
+          discovered_by_label: string | null
+          discovery_date: string | null
+          discovery_source: string | null
+          draft_id: string | null
+          drafted_at: string | null
+          drafted_by: string | null
+          drafted_by_label: string | null
+          email_message_id: string | null
+          email_thread_id: string | null
+          id: string
+          incident_id: string | null
+          last_inbox_check_at: string | null
+          last_placement_check_at: string | null
+          next_placement_check_at: string | null
+          next_response_check_at: string | null
+          placement_checked_by: string | null
+          placement_checked_by_label: string | null
+          placement_evidence: Json | null
+          placement_status: string | null
+          playlist_target_id: string | null
+          rejection_or_shortfall_reason: string | null
+          response_checked_by: string | null
+          response_checked_by_label: string | null
+          response_draft: string | null
+          response_sent_at: string | null
+          response_status: string | null
+          send_result: string | null
+          sent_at: string | null
+          sent_by: string | null
+          sent_by_label: string | null
+          track_id: string
+          updated_at: string
+          verification_result: string | null
+          verified_at: string | null
+          verified_by: string | null
+          verified_by_label: string | null
+        }
+        Insert: {
+          approval_result?: string | null
+          approved_at?: string | null
+          approved_by?: string | null
+          approved_by_label?: string | null
+          approved_song_dna_version_id?: string | null
+          campaign_id?: string | null
+          created_at?: string
+          discovered_at?: string | null
+          discovered_by?: string | null
+          discovered_by_label?: string | null
+          discovery_date?: string | null
+          discovery_source?: string | null
+          draft_id?: string | null
+          drafted_at?: string | null
+          drafted_by?: string | null
+          drafted_by_label?: string | null
+          email_message_id?: string | null
+          email_thread_id?: string | null
+          id?: string
+          incident_id?: string | null
+          last_inbox_check_at?: string | null
+          last_placement_check_at?: string | null
+          next_placement_check_at?: string | null
+          next_response_check_at?: string | null
+          placement_checked_by?: string | null
+          placement_checked_by_label?: string | null
+          placement_evidence?: Json | null
+          placement_status?: string | null
+          playlist_target_id?: string | null
+          rejection_or_shortfall_reason?: string | null
+          response_checked_by?: string | null
+          response_checked_by_label?: string | null
+          response_draft?: string | null
+          response_sent_at?: string | null
+          response_status?: string | null
+          send_result?: string | null
+          sent_at?: string | null
+          sent_by?: string | null
+          sent_by_label?: string | null
+          track_id: string
+          updated_at?: string
+          verification_result?: string | null
+          verified_at?: string | null
+          verified_by?: string | null
+          verified_by_label?: string | null
+        }
+        Update: {
+          approval_result?: string | null
+          approved_at?: string | null
+          approved_by?: string | null
+          approved_by_label?: string | null
+          approved_song_dna_version_id?: string | null
+          campaign_id?: string | null
+          created_at?: string
+          discovered_at?: string | null
+          discovered_by?: string | null
+          discovered_by_label?: string | null
+          discovery_date?: string | null
+          discovery_source?: string | null
+          draft_id?: string | null
+          drafted_at?: string | null
+          drafted_by?: string | null
+          drafted_by_label?: string | null
+          email_message_id?: string | null
+          email_thread_id?: string | null
+          id?: string
+          incident_id?: string | null
+          last_inbox_check_at?: string | null
+          last_placement_check_at?: string | null
+          next_placement_check_at?: string | null
+          next_response_check_at?: string | null
+          placement_checked_by?: string | null
+          placement_checked_by_label?: string | null
+          placement_evidence?: Json | null
+          placement_status?: string | null
+          playlist_target_id?: string | null
+          rejection_or_shortfall_reason?: string | null
+          response_checked_by?: string | null
+          response_checked_by_label?: string | null
+          response_draft?: string | null
+          response_sent_at?: string | null
+          response_status?: string | null
+          send_result?: string | null
+          sent_at?: string | null
+          sent_by?: string | null
+          sent_by_label?: string | null
+          track_id?: string
+          updated_at?: string
+          verification_result?: string | null
+          verified_at?: string | null
+          verified_by?: string | null
+          verified_by_label?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "playlist_ops_ledger_track_id_fkey"
+            columns: ["track_id"]
+            isOneToOne: false
+            referencedRelation: "tracks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       playlist_targets: {
         Row: {
           authenticity_notes: string | null
@@ -2526,6 +2808,101 @@ export type Database = {
           why_it_fits?: string | null
         }
         Relationships: []
+      }
+      press_kits: {
+        Row: {
+          assets: Json
+          bio_long: string | null
+          bio_short: string | null
+          created_at: string
+          created_by: string | null
+          id: string
+          links: Json
+          notes: string | null
+          one_liner: string | null
+          press_email: string | null
+          published_at: string | null
+          slug: string
+          status: string
+          title: string
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          assets?: Json
+          bio_long?: string | null
+          bio_short?: string | null
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          links?: Json
+          notes?: string | null
+          one_liner?: string | null
+          press_email?: string | null
+          published_at?: string | null
+          slug: string
+          status?: string
+          title: string
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          assets?: Json
+          bio_long?: string | null
+          bio_short?: string | null
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          links?: Json
+          notes?: string | null
+          one_liner?: string | null
+          press_email?: string | null
+          published_at?: string | null
+          slug?: string
+          status?: string
+          title?: string
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Relationships: []
+      }
+      private_license_evidence: {
+        Row: {
+          created_at: string
+          id: string
+          label: string
+          notes: string | null
+          storage_path: string | null
+          track_id: string
+          uploaded_by: string | null
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          label: string
+          notes?: string | null
+          storage_path?: string | null
+          track_id: string
+          uploaded_by?: string | null
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          label?: string
+          notes?: string | null
+          storage_path?: string | null
+          track_id?: string
+          uploaded_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "private_license_evidence_track_id_fkey"
+            columns: ["track_id"]
+            isOneToOne: false
+            referencedRelation: "tracks"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       profiles: {
         Row: {
@@ -3599,6 +3976,112 @@ export type Database = {
           },
         ]
       }
+      split_sheet_contributors: {
+        Row: {
+          created_at: string
+          id: string
+          ipi_number: string | null
+          legal_name: string | null
+          notes: string | null
+          pro_affiliation: string | null
+          role: string
+          sort_order: number
+          split_percent: number | null
+          split_sheet_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          ipi_number?: string | null
+          legal_name?: string | null
+          notes?: string | null
+          pro_affiliation?: string | null
+          role?: string
+          sort_order?: number
+          split_percent?: number | null
+          split_sheet_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          ipi_number?: string | null
+          legal_name?: string | null
+          notes?: string | null
+          pro_affiliation?: string | null
+          role?: string
+          sort_order?: number
+          split_percent?: number | null
+          split_sheet_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "split_sheet_contributors_split_sheet_id_fkey"
+            columns: ["split_sheet_id"]
+            isOneToOne: false
+            referencedRelation: "split_sheets"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      split_sheets: {
+        Row: {
+          action_items: Json
+          created_at: string
+          created_by: string | null
+          document_mime: string | null
+          document_storage_path: string | null
+          generated_html: string | null
+          id: string
+          notes: string | null
+          status: string
+          title: string | null
+          track_id: string
+          updated_at: string
+          updated_by: string | null
+          version_number: number
+        }
+        Insert: {
+          action_items?: Json
+          created_at?: string
+          created_by?: string | null
+          document_mime?: string | null
+          document_storage_path?: string | null
+          generated_html?: string | null
+          id?: string
+          notes?: string | null
+          status?: string
+          title?: string | null
+          track_id: string
+          updated_at?: string
+          updated_by?: string | null
+          version_number: number
+        }
+        Update: {
+          action_items?: Json
+          created_at?: string
+          created_by?: string | null
+          document_mime?: string | null
+          document_storage_path?: string | null
+          generated_html?: string | null
+          id?: string
+          notes?: string | null
+          status?: string
+          title?: string | null
+          track_id?: string
+          updated_at?: string
+          updated_by?: string | null
+          version_number?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "split_sheets_track_id_fkey"
+            columns: ["track_id"]
+            isOneToOne: false
+            referencedRelation: "tracks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       system_logs: {
         Row: {
           created_at: string | null
@@ -3884,6 +4367,7 @@ export type Database = {
           aggregator: string
           apple_music_url: string | null
           approved_song_dna_version_id: string | null
+          assets_ready: boolean
           created_at: string
           default_tone: string
           duration_seconds: number | null
@@ -3901,19 +4385,30 @@ export type Database = {
           notes: string | null
           outreach_eligibility: Database["public"]["Enums"]["outreach_eligibility"]
           pitch_angle: string | null
+          publishing_ready: boolean
           reference_artists: string[]
           release_date: string | null
+          sample_declaration_approved_at: string | null
+          sample_declaration_approved_by: string | null
+          sample_exception_resolved: boolean
           short_pitch: string | null
           soundcloud_url: string | null
+          splits_ready: boolean
           spotify_url: string | null
           status: string
+          sync_approved_at: string | null
+          sync_approved_by: string | null
           sync_eligible: boolean
+          sync_eligible_blockers: string[]
+          sync_eligible_computed_at: string | null
+          unresolved_rights_exception: boolean
           updated_at: string
         }
         Insert: {
           aggregator?: string
           apple_music_url?: string | null
           approved_song_dna_version_id?: string | null
+          assets_ready?: boolean
           created_at?: string
           default_tone?: string
           duration_seconds?: number | null
@@ -3931,19 +4426,30 @@ export type Database = {
           notes?: string | null
           outreach_eligibility?: Database["public"]["Enums"]["outreach_eligibility"]
           pitch_angle?: string | null
+          publishing_ready?: boolean
           reference_artists?: string[]
           release_date?: string | null
+          sample_declaration_approved_at?: string | null
+          sample_declaration_approved_by?: string | null
+          sample_exception_resolved?: boolean
           short_pitch?: string | null
           soundcloud_url?: string | null
+          splits_ready?: boolean
           spotify_url?: string | null
           status?: string
+          sync_approved_at?: string | null
+          sync_approved_by?: string | null
           sync_eligible?: boolean
+          sync_eligible_blockers?: string[]
+          sync_eligible_computed_at?: string | null
+          unresolved_rights_exception?: boolean
           updated_at?: string
         }
         Update: {
           aggregator?: string
           apple_music_url?: string | null
           approved_song_dna_version_id?: string | null
+          assets_ready?: boolean
           created_at?: string
           default_tone?: string
           duration_seconds?: number | null
@@ -3961,13 +4467,23 @@ export type Database = {
           notes?: string | null
           outreach_eligibility?: Database["public"]["Enums"]["outreach_eligibility"]
           pitch_angle?: string | null
+          publishing_ready?: boolean
           reference_artists?: string[]
           release_date?: string | null
+          sample_declaration_approved_at?: string | null
+          sample_declaration_approved_by?: string | null
+          sample_exception_resolved?: boolean
           short_pitch?: string | null
           soundcloud_url?: string | null
+          splits_ready?: boolean
           spotify_url?: string | null
           status?: string
+          sync_approved_at?: string | null
+          sync_approved_by?: string | null
           sync_eligible?: boolean
+          sync_eligible_blockers?: string[]
+          sync_eligible_computed_at?: string | null
+          unresolved_rights_exception?: boolean
           updated_at?: string
         }
         Relationships: [

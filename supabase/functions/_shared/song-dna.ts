@@ -159,7 +159,7 @@ export function dnaSelectCols(): string {
 export function dnaGetSelectCols(): string {
   return `*, ${SONG_DNA_TRACKS_EMBED}`;
 }
-...
+
 async function listSongDna(sb: SupabaseClient, body: Record<string, unknown>): Promise<Result> {
   const trackId = String(body.track_id ?? "").trim();
   let q = sb

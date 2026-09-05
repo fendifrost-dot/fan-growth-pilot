@@ -9,7 +9,10 @@ import {
   eligibilitySkipLog,
 } from "../_shared/outreach-eligibility.ts";
 import { evaluateOutreachDecision } from "../_shared/outreach-decision.ts";
-import { verifyDraftPitchIntegrity } from "../_shared/pitch-copy-integrity.ts";
+import {
+  verifyApprovedContentHash,
+  verifyDraftPitchIntegrity,
+} from "../_shared/pitch-copy-integrity.ts";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-api-key",
@@ -178,6 +181,17 @@ Deno.serve(async (req) => {
         cooldown_until: null,
         message_to_user: "Draft not found or not approved: " + draftId,
       });
+    }
+
+    const approvalSeal = await verifyApprovedContentHash(draft);
+    if (!approvalSeal.ok) {
+      return jsonPitch({
+        ok: false,
+        method_used: "none",
+        action_taken: "skipped",
+        cooldown_until: null,
+        message_to_user: "🚫 " + approvalSeal.message,
+      }, 422);
     }
 
     // Bind exclusively to the approved draft — reject caller overrides that diverge.
@@ -357,7 +371,7 @@ async function handleEmailPitch(
   // This asks "is this SONG cleared to be pitched at all?", which no other
   // control on this path asks: the send window, the cooldown, and the per-song /
   // global caps are all capacity controls, and the target-side gates are about
-  // the curator. AGH-001 ("Meditate": no category, no genre signal) walked
+  // the curator. AGH-001 (uncleared track with no category / genre signal) walked
   // straight through all of them.
   //
   // Deliberately placed ABOVE and OUTSIDE the `if (!testMode)` block below.

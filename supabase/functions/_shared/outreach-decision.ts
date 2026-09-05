@@ -1,15 +1,16 @@
 /**
- * Shared server-side outreach decision for draft + send paths.
+ * Shared server-side outreach decision — single choke point for automated
+ * playlist targeting, drafting, approval, and send.
  *
- * Always enforced (no shadow mode):
- *   - Exact track_id required (no title-only / guessed identity)
- *   - Playlist id required
- *   - Song-specific pitch copy required (track short_pitch / approved DNA short_pitch)
- *   - Playlist/lane copy never fills {{pitch}} (fit metadata only — not a template token)
- *   - If a song_dna_version_id is supplied, it must belong to the selected track and be approved
- *   - Genre/category fit: DNA lane rules when DNA present; categoryGate otherwise
- *   - Campaign id validated only when provided (pitch_campaigns may be absent)
+ * Always enforced (no shadow mode, no legacy genre authorization):
+ *   - Exact track_id + playlist_id required
+ *   - Current Fendi-approved Song DNA required (tracks.approved_song_dna_version_id)
+ *   - DNA must belong to the track, approval_state=approved, and match the pointer
+ *   - Target lane required, verified, in DNA approved_lanes, not in excluded_lanes
+ *   - Pitch copy exclusively from approved DNA short_pitch (no track/legacy fallback)
+ *   - Playlist/lane copy is fit metadata only — never {{pitch}}
  *   - General override_category_check is forbidden
+ *   - Legacy track_categories / trackGenre have zero authorization power
  */
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import {
@@ -20,7 +21,7 @@ import {
   type TrackPitchResult,
 } from "./pitch-copy.ts";
 import { loadLanesConfig } from "./playlist-lanes.ts";
-import { categoryGate, targetGenre, trackGenre } from "./placement-match.ts";
+import type { OpsActor } from "./ops-actors.ts";
 
 export type OutreachDecisionInput = {
   route: string;
@@ -35,6 +36,8 @@ export type OutreachDecisionInput = {
   overrideReason?: string | null;
   overrideActorUserId?: string | null;
   isFendiAdmin?: boolean;
+  /** Server-derived actor only — never from request-body identity fields. */
+  actor?: OpsActor | null;
 };
 
 export type OutreachDecision = {
@@ -45,16 +48,31 @@ export type OutreachDecision = {
   campaignId: string | null;
   songDnaVersionId: string | null;
   playlistId: string | null;
+  targetLane: string | null;
+  targetVerificationStatus: string | null;
+  targetClassificationVerified: boolean;
+  laneInApprovedSet: boolean | null;
+  laneInExcludedSet: boolean | null;
   pitch: TrackPitchResult;
   fitReason: FitReasonResult;
+  copySource: string | null;
+  actor: string | null;
   errors: string[];
   compatible: boolean;
   contradictionExplanation: string | null;
+  auditEvidence: Record<string, unknown>;
 };
 
 function trim(v: unknown): string {
   return typeof v === "string" ? v.trim() : "";
 }
+
+function lower(v: unknown): string {
+  return trim(v).toLowerCase();
+}
+
+/** Matches verify-target.ts VERIFIED_STATUSES. */
+const VERIFIED_STATUSES = new Set(["auto_verified", "manually_verified"]);
 
 async function tableExists(sb: SupabaseClient, table: string): Promise<boolean> {
   try {
@@ -82,7 +100,14 @@ async function logDecision(
       song_dna_version_id: decision.songDnaVersionId,
       campaign_id: decision.campaignId,
       playlist_id: decision.playlistId,
-      detail: { ...detail, errors: decision.errors },
+      detail: {
+        ...detail,
+        errors: decision.errors,
+        audit: decision.auditEvidence,
+        actor: decision.actor,
+        target_lane: decision.targetLane,
+        copy_source: decision.copySource,
+      },
     });
   } catch (e) {
     console.error("outreach decision log failed:", e instanceof Error ? e.message : e);
@@ -90,8 +115,8 @@ async function logDecision(
 }
 
 /**
- * One shared eligibility + copy decision for every operational route.
- * Always blocks on failure — no shadow/legacy bypass.
+ * One shared eligibility + DNA envelope + copy decision for every operational route.
+ * Always blocks on failure — no shadow/legacy authorization bypass.
  */
 export async function evaluateOutreachDecision(
   sb: SupabaseClient,
@@ -103,6 +128,7 @@ export async function evaluateOutreachDecision(
   const playlistId = trim(input.playlistId);
   let trackName = trim(input.trackName);
   let songDnaVersionId = trim(input.songDnaVersionId);
+  const actorLabel = input.actor?.label ?? null;
 
   if (!trackId) errors.push("missing_track_id");
   if (!playlistId) errors.push("missing_playlist_id");
@@ -112,12 +138,13 @@ export async function evaluateOutreachDecision(
     name: string;
     short_pitch: string | null;
     pitch_angle: string | null;
+    approved_song_dna_version_id: string | null;
   } | null = null;
 
   if (trackId) {
     const { data } = await sb
       .from("tracks")
-      .select("id, name, short_pitch, pitch_angle")
+      .select("id, name, short_pitch, pitch_angle, approved_song_dna_version_id")
       .eq("id", trackId)
       .maybeSingle();
     if (!data) {
@@ -128,9 +155,10 @@ export async function evaluateOutreachDecision(
         name: string;
         short_pitch: string | null;
         pitch_angle: string | null;
+        approved_song_dna_version_id: string | null;
       };
       trackName = String(data.name);
-      if (input.trackName && trim(input.trackName).toLowerCase() !== trackName.toLowerCase()) {
+      if (input.trackName && lower(input.trackName) !== lower(trackName)) {
         errors.push("track_name_mismatch");
       }
     }
@@ -147,35 +175,35 @@ export async function evaluateOutreachDecision(
   };
   let approvedDna: ApprovedDnaRow | null = null;
 
-  // Song DNA is optional until Fendi has approved versions. When present, it governs.
-  // A supplied song_dna_version_id MUST belong to the selected track (never another song's DNA).
+  // Approved Song DNA is MANDATORY for automated playlist outreach.
+  // No fallback to track_categories, short_pitch, pitch_angle, or genre inference.
   if (trackId && !errors.includes("track_id_not_found") && await tableExists(sb, "song_dna_versions")) {
-    if (songDnaVersionId) {
+    const currentApprovedId = trim(trackRow?.approved_song_dna_version_id);
+    if (!currentApprovedId) {
+      errors.push("missing_approved_song_dna");
+    } else {
+      const requestedId = songDnaVersionId || currentApprovedId;
       const { data } = await sb.from("song_dna_versions").select(
         "id, track_id, short_pitch, approval_state, approved_lanes, excluded_lanes, primary_genre",
-      ).eq("id", songDnaVersionId).maybeSingle();
+      ).eq("id", requestedId).maybeSingle();
+
       if (!data) {
         errors.push("song_dna_not_found");
       } else if (String(data.track_id) !== trackId) {
         errors.push("song_dna_track_mismatch");
       } else if (String(data.approval_state) !== "approved") {
         errors.push("song_dna_not_approved");
+      } else if (String(data.id) !== currentApprovedId) {
+        errors.push("song_dna_not_current");
       } else {
         approvedDna = data as unknown as ApprovedDnaRow;
         songDnaVersionId = String(data.id);
       }
-    } else {
-      const { data } = await sb.from("song_dna_versions").select(
-        "id, track_id, short_pitch, approval_state, approved_lanes, excluded_lanes, primary_genre",
-      ).eq("track_id", trackId).eq("approval_state", "approved").maybeSingle();
-      if (data && String(data.approval_state) === "approved") {
-        approvedDna = data as unknown as ApprovedDnaRow;
-        songDnaVersionId = String(data.id);
-      }
     }
+  } else if (trackId && !errors.includes("track_id_not_found")) {
+    errors.push("missing_approved_song_dna");
   }
 
-  // Campaign only when the table exists and an id was supplied.
   if (campaignId) {
     if (!(await tableExists(sb, "pitch_campaigns"))) {
       errors.push("campaign_table_missing");
@@ -196,46 +224,31 @@ export async function evaluateOutreachDecision(
   }
 
   let playlistRow: Record<string, unknown> | null = null;
+  let targetVerificationStatus: string | null = null;
   if (playlistId) {
     const { data } = await sb
       .from("playlist_targets")
       .select(
-        "playlist_id, lane, recommended_pitch_angle, playlist_name, curator_name, vibe_tags, playlist_categories(category_id, categories(id, slug, label, family))",
+        "playlist_id, lane, recommended_pitch_angle, playlist_name, curator_name, vibe_tags, verification_status, playlist_categories(category_id, categories(id, slug, label, family))",
       )
       .eq("playlist_id", playlistId)
       .maybeSingle();
     playlistRow = (data as Record<string, unknown> | null) ?? null;
-  }
-
-  let trackCategories: { id: string; slug: string; label: string }[] = [];
-  let trackCatIds: string[] = [];
-  if (trackId && !errors.includes("track_id_not_found")) {
-    const { data: tCats } = await sb
-      .from("track_categories")
-      .select("category_id, categories(id, slug, label, family)")
-      .eq("track_id", trackId);
-    for (const tc of tCats ?? []) {
-      const row = tc as unknown as {
-        category_id?: string;
-        categories?: { id: string; slug: string; label: string } | null;
-      };
-      const cat = row.categories;
-      if (cat?.id) {
-        trackCategories.push(cat);
-        trackCatIds.push(String(row.category_id ?? cat.id));
-      } else if (row.category_id) {
-        trackCatIds.push(String(row.category_id));
-      }
+    if (!playlistRow) {
+      errors.push("playlist_not_found");
+    } else {
+      targetVerificationStatus = trim(playlistRow.verification_status) || null;
     }
   }
 
-  const playlistCatIds = ((playlistRow?.playlist_categories ?? []) as {
-    category_id: string;
-    categories?: { id: string; slug: string; label: string } | null;
-  }[]).map((pc) => String(pc.category_id));
-
   const lanes = await loadLanesConfig(sb);
-  const pitch = resolveTrackPitchCopy({ track: trackRow, approvedDna });
+
+  // DNA-only pitch — refuse track/legacy carriers for automated outreach.
+  const pitch: TrackPitchResult = resolveTrackPitchCopy({
+    track: null,
+    approvedDna,
+    requireApprovedDna: true,
+  });
   if (!pitch.ok) errors.push("missing_track_pitch_copy");
 
   const fitReason = resolveFitReason({
@@ -245,7 +258,27 @@ export async function evaluateOutreachDecision(
 
   let compatible = true;
   let contradictionExplanation: string | null = null;
+  let laneInApprovedSet: boolean | null = null;
+  let laneInExcludedSet: boolean | null = null;
+  let targetClassificationVerified = false;
+
   const lane = trim(input.lane) || trim(playlistRow?.lane);
+
+  // Fail closed: null / empty lane cannot enter automated drafting.
+  if (!lane) {
+    compatible = false;
+    contradictionExplanation =
+      "Target lane/classification is null — unclassified targets cannot enter automated drafting.";
+    errors.push("target_lane_null");
+  } else if (!targetVerificationStatus || !VERIFIED_STATUSES.has(lower(targetVerificationStatus))) {
+    compatible = false;
+    contradictionExplanation =
+      `Target classification is unverified (verification_status=${targetVerificationStatus ?? "null"}).`;
+    errors.push("target_classification_unverified");
+  } else {
+    targetClassificationVerified = true;
+  }
+
   if (approvedDna && lane) {
     const approved = new Set(
       (approvedDna.approved_lanes ?? []).map((s: string) => s.toLowerCase()),
@@ -253,12 +286,16 @@ export async function evaluateOutreachDecision(
     const excluded = new Set(
       (approvedDna.excluded_lanes ?? []).map((s: string) => s.toLowerCase()),
     );
-    if (excluded.has(lane.toLowerCase())) {
+    const laneKey = lane.toLowerCase();
+    laneInExcludedSet = excluded.has(laneKey);
+    laneInApprovedSet = approved.size === 0 ? null : approved.has(laneKey);
+
+    if (laneInExcludedSet) {
       compatible = false;
       contradictionExplanation =
         `Lane "${lane}" is on the approved Song DNA excluded_lanes list.`;
       errors.push("dna_excluded_lane");
-    } else if (approved.size > 0 && !approved.has(lane.toLowerCase())) {
+    } else if (approved.size > 0 && !approved.has(laneKey)) {
       compatible = false;
       contradictionExplanation =
         `Lane "${lane}" is not in the approved Song DNA approved_lanes set.`;
@@ -266,50 +303,17 @@ export async function evaluateOutreachDecision(
     }
   }
 
-  // Genre/category fit when no approved DNA lane rules applied.
-  // Without DNA, compare song categories / genre signals to the playlist (same
-  // categoryGate used at draft time). With DNA, lane allow/exclude above is the fit check.
-  if (
-    !approvedDna &&
-    compatible &&
-    trackId &&
-    playlistId &&
-    !errors.includes("track_id_not_found")
-  ) {
-    const tGenre = trackGenre({
-      categories: trackCategories,
-      name: trackRow?.name ?? trackName,
-      short_pitch: trackRow?.short_pitch ?? null,
-      pitch_angle: trackRow?.pitch_angle ?? null,
-    });
-    const pGenre = targetGenre({
-      lane: lane || null,
-      playlist_name: playlistRow?.playlist_name as string | null,
-      curator_name: playlistRow?.curator_name as string | null,
-      vibe_tags: playlistRow?.vibe_tags,
-    });
-    const gate = categoryGate({
-      trackCatIds,
-      targetCatIds: playlistCatIds,
-      trackGenre: tGenre,
-      targetGenre: pGenre,
-    });
-    if (!gate.pass) {
-      compatible = false;
-      contradictionExplanation =
-        contradictionExplanation ??
-        `Category/genre gate failed (${gate.reason}).`;
-      errors.push(gate.reason === "genre_conflict" ? "genre_conflict" : "category_mismatch");
-    }
-  }
+  // Intentionally NO legacy categoryGate / trackGenre authorization path.
+  // Missing DNA already failed closed above; categories retain display/analytics only.
 
   if (input.overrideCategoryCheck) {
     errors.push("override_forbidden");
     compatible = false;
   }
 
-  const allow = errors.length === 0 && pitch.ok && compatible;
-  const code = allow ? "allow" : (errors[0] ?? "blocked");
+  const uniqueErrors = [...new Set(errors)];
+  const allow = uniqueErrors.length === 0 && pitch.ok && compatible;
+  const code = allow ? "allow" : (uniqueErrors[0] ?? "blocked");
 
   const decision: OutreachDecision = {
     allow,
@@ -319,11 +323,28 @@ export async function evaluateOutreachDecision(
     campaignId: campaignId || null,
     songDnaVersionId: songDnaVersionId || null,
     playlistId: playlistId || null,
+    targetLane: lane || null,
+    targetVerificationStatus,
+    targetClassificationVerified,
+    laneInApprovedSet,
+    laneInExcludedSet,
     pitch,
     fitReason,
-    errors,
+    copySource: pitch.ok ? pitch.source : null,
+    actor: actorLabel,
+    errors: uniqueErrors,
     compatible,
     contradictionExplanation,
+    auditEvidence: {
+      route: input.route,
+      current_approved_song_dna_version_id: trackRow?.approved_song_dna_version_id ?? null,
+      dna_primary_genre: approvedDna?.primary_genre ?? null,
+      dna_approved_lanes: approvedDna?.approved_lanes ?? null,
+      dna_excluded_lanes: approvedDna?.excluded_lanes ?? null,
+      legacy_track_short_pitch_ignored: Boolean(trim(trackRow?.short_pitch)),
+      legacy_track_pitch_angle_ignored: Boolean(trim(trackRow?.pitch_angle)),
+      fit_reason_internal_only: fitReason.fitReason || null,
+    },
   };
 
   await logDecision(sb, decision, { route: input.route, lane });
@@ -340,12 +361,12 @@ export function draftBlockedByPitch(
     trackName: decision.trackName ?? "",
     trackId: decision.trackId,
     playlistId,
-    lane: null,
+    lane: decision.targetLane,
     missing: decision.pitch.ok ? undefined : decision.pitch.missing,
   });
 }
 
-/** Operational readiness report (no mutations). */
+/** Operational readiness report (no mutations). Alias kept for hub callers. */
 export async function buildCutoverReadinessReport(
   sb: SupabaseClient,
 ): Promise<Record<string, unknown>> {
@@ -364,58 +385,37 @@ export async function buildCutoverReadinessReport(
       .in("approval_state", ["draft", "pending_fendi_review"]);
     pendingDna = p.count ?? 0;
   }
-  const { data: tracksMissingPitch } = await sb
+  const { count: pointed } = await sb
     .from("tracks")
-    .select("id, name, short_pitch, pitch_angle")
-    .eq("status", "active");
-  const missingPitch = (tracksMissingPitch ?? []).filter((t) => {
-    const sp = String(t.short_pitch ?? "").trim();
-    const pa = String(t.pitch_angle ?? "").trim();
-    return !sp && !pa;
-  });
-  let activeCampaigns = 0;
-  if (await tableExists(sb, "pitch_campaigns")) {
-    const c = await sb
-      .from("pitch_campaigns")
-      .select("*", { count: "exact", head: true })
-      .in("status", ["active", "live"]);
-    activeCampaigns = c.count ?? 0;
-  }
-  const { count: legacyDrafts } = await sb
-    .from("outreach_drafts")
     .select("*", { count: "exact", head: true })
-    .is("track_id", null);
-  let pendingProfiles = 0;
-  let approvedProfiles = 0;
-  if (await tableExists(sb, "discovery_profiles")) {
-    const p = await sb
-      .from("discovery_profiles")
-      .select("*", { count: "exact", head: true })
-      .eq("approval_status", "pending_fendi_review");
-    pendingProfiles = p.count ?? 0;
-    const a = await sb
-      .from("discovery_profiles")
-      .select("*", { count: "exact", head: true })
-      .eq("approval_status", "approved");
-    approvedProfiles = a.count ?? 0;
-  }
+    .not("approved_song_dna_version_id", "is", null);
+
+  const { count: activeTargets } = await sb
+    .from("playlist_targets")
+    .select("*", { count: "exact", head: true })
+    .eq("is_active", true);
+  const { count: verifiedTargets } = await sb
+    .from("playlist_targets")
+    .select("*", { count: "exact", head: true })
+    .eq("is_active", true)
+    .in("verification_status", [...VERIFIED_STATUSES]);
+  const { count: nullLaneTargets } = await sb
+    .from("playlist_targets")
+    .select("*", { count: "exact", head: true })
+    .eq("is_active", true)
+    .or("lane.is.null,lane.eq.");
 
   return {
     tracks: tracks ?? 0,
     approved_song_dna: approvedDna,
     pending_song_dna: pendingDna,
-    active_tracks_missing_pitch_copy: missingPitch.map((t) => ({
-      id: t.id,
-      name: t.name,
-    })),
-    active_campaigns: activeCampaigns,
-    legacy_drafts_without_track_id: legacyDrafts ?? 0,
-    discovery_profiles_pending_fendi: pendingProfiles,
-    discovery_profiles_approved: approvedProfiles,
+    tracks_with_current_approved_dna: pointed ?? 0,
+    active_targets: activeTargets ?? 0,
+    verified_classified_targets: verifiedTargets ?? 0,
+    active_targets_null_lane: nullLaneTargets ?? 0,
     gate_mode: "enforce",
-    operational:
-      missingPitch.length === 0 ||
-      (tracksMissingPitch ?? []).some((t) => String(t.short_pitch ?? "").trim() || String(t.pitch_angle ?? "").trim()),
+    dna_authority: "approved_song_dna_only",
+    legacy_genre_authorization: false,
   };
 }
 

@@ -19,6 +19,134 @@ export async function hashPitchCopy(pitch: string): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/** Canonical fields covered by the Grok/Fendi approval artefact hash. */
+export type ApprovalArtifactFields = {
+  track_id?: unknown;
+  song_dna_version_id?: unknown;
+  playlist_id?: unknown;
+  campaign_id?: unknown;
+  channel?: unknown;
+  recipient?: unknown;
+  subject?: unknown;
+  body?: unknown;
+  template_id?: unknown;
+};
+
+function artifactField(value: unknown): string {
+  if (value == null) return "";
+  return String(value).trim();
+}
+
+/**
+ * Stable SHA-256 over the exact outbound artefact Grok/Fendi approved.
+ * Covers track_id, song_dna_version_id, playlist_id, campaign_id, channel,
+ * recipient, subject, full body, template_id. Fit-reason metadata is excluded.
+ */
+export async function hashApprovalArtifact(
+  fields: ApprovalArtifactFields,
+): Promise<string> {
+  const canonical = [
+    "track_id",
+    artifactField(fields.track_id),
+    "song_dna_version_id",
+    artifactField(fields.song_dna_version_id),
+    "playlist_id",
+    artifactField(fields.playlist_id),
+    "campaign_id",
+    artifactField(fields.campaign_id),
+    "channel",
+    artifactField(fields.channel),
+    "recipient",
+    artifactField(fields.recipient),
+    "subject",
+    artifactField(fields.subject),
+    "body",
+    // Full body — do not whitespace-collapse; outbound text is the artefact.
+    String(fields.body ?? ""),
+    "template_id",
+    artifactField(fields.template_id),
+  ].join("\n");
+  const data = new TextEncoder().encode(canonical);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Labels that may appear in outreach_drafts.approved_by after server attribution. */
+export const AUTHORIZED_DRAFT_APPROVERS = new Set([
+  "grok_playlist_control",
+  "fendi",
+]);
+
+export type ApprovalArtifactCheckOk = {
+  ok: true;
+  hash: string;
+};
+
+export type ApprovalArtifactCheckFail = {
+  ok: false;
+  code: string;
+  message: string;
+};
+
+/**
+ * Recompute the approval artefact hash and require an exact match with the
+ * stored approved_content_hash. Also requires status=approved, approved_at,
+ * and an authorized Grok/Fendi approver label.
+ */
+export async function verifyApprovedContentHash(
+  draft: ApprovalArtifactFields & {
+    id?: unknown;
+    status?: unknown;
+    approved_at?: unknown;
+    approved_by?: unknown;
+    approved_content_hash?: unknown;
+  },
+): Promise<ApprovalArtifactCheckOk | ApprovalArtifactCheckFail> {
+  const draftId = artifactField(draft.id) || "(unknown)";
+  const status = artifactField(draft.status).toLowerCase();
+  if (status !== "approved") {
+    return {
+      ok: false,
+      code: "draft_not_approved",
+      message: `Draft ${draftId} is not approved (status=${status || "null"}).`,
+    };
+  }
+  if (!artifactField(draft.approved_at)) {
+    return {
+      ok: false,
+      code: "missing_approved_at",
+      message: `Draft ${draftId} is missing approved_at.`,
+    };
+  }
+  const approvedBy = artifactField(draft.approved_by).toLowerCase();
+  if (!approvedBy || !AUTHORIZED_DRAFT_APPROVERS.has(approvedBy)) {
+    return {
+      ok: false,
+      code: "unauthorized_approver",
+      message:
+        `Draft ${draftId} approved_by="${draft.approved_by ?? ""}" is not an authorized Grok/Fendi identity.`,
+    };
+  }
+  const stored = artifactField(draft.approved_content_hash);
+  if (!stored) {
+    return {
+      ok: false,
+      code: "missing_approved_content_hash",
+      message: `Draft ${draftId} is missing approved_content_hash — re-approve before send.`,
+    };
+  }
+  const current = await hashApprovalArtifact(draft);
+  if (current !== stored) {
+    return {
+      ok: false,
+      code: "approved_content_hash_mismatch",
+      message:
+        `Draft ${draftId}: approved content changed after approval. Re-approve the exact artefact before send.`,
+    };
+  }
+  return { ok: true, hash: current };
+}
+
 export type DraftPitchIntegrityOk = {
   ok: true;
   pitch: string;
@@ -39,7 +167,7 @@ export type DraftPitchIntegrityFail = {
 /**
  * Re-resolve live pitch for the draft's track and verify the approved artefact
  * still matches. Legacy drafts without pitch_copy_hash must contain the current
- * pitch text in body (so correct DFM drafts can still send; stale Meditate
+ * pitch text in body (so correct DFM drafts can still send; stale contaminated
  * house-copy drafts refuse).
  */
 export async function verifyDraftPitchIntegrity(

@@ -123,3 +123,38 @@ Deno.test("hashed draft refuses when live pitch hash diverges", async () => {
   assertEquals(result.ok, false);
   if (!result.ok) assertEquals(result.code, "pitch_copy_changed");
 });
+
+Deno.test("hashApprovalArtifact seals full outbound artefact", async () => {
+  const { hashApprovalArtifact, verifyApprovedContentHash } = await import("./pitch-copy-integrity.ts");
+  const fields = {
+    track_id: "t1",
+    song_dna_version_id: "dna1",
+    playlist_id: "pl1",
+    campaign_id: null,
+    channel: "email",
+    recipient: "c@example.com",
+    subject: "Sub",
+    body: "Full body text",
+    template_id: "tpl",
+  };
+  const hash = await hashApprovalArtifact(fields);
+  assertEquals(hash.length, 64);
+  const ok = await verifyApprovedContentHash({
+    ...fields,
+    id: "d1",
+    status: "approved",
+    approved_at: "2026-09-05T00:00:00Z",
+    approved_by: "fendi",
+    approved_content_hash: hash,
+  });
+  assertEquals(ok.ok, true);
+  const denied = await verifyApprovedContentHash({
+    ...fields,
+    id: "d1",
+    status: "approved",
+    approved_at: "2026-09-05T00:00:00Z",
+    approved_by: "claude",
+    approved_content_hash: hash,
+  });
+  assertEquals(denied.ok, false);
+});

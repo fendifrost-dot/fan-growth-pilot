@@ -81,11 +81,22 @@ import {
   missingPitchCopyResult,
   resolvePitchAngle,
 } from "./pitch-copy.ts";
-import { hashPitchCopy, findStaleApprovedDrafts } from "./pitch-copy-integrity.ts";
+import {
+  AUTHORIZED_DRAFT_APPROVERS,
+  findStaleApprovedDrafts,
+  hashApprovalArtifact,
+  hashPitchCopy,
+  verifyApprovedContentHash,
+} from "./pitch-copy-integrity.ts";
 import {
   buildCutoverReadinessReport,
   evaluateOutreachDecision,
 } from "./outreach-decision.ts";
+import {
+  denyUnlessCan,
+  resolveOpsActor,
+  stripSpoofedAttribution,
+} from "./ops-actors.ts";
 import {
   handleDiscoveryProfileAction,
   isDiscoveryProfileAction,
@@ -247,12 +258,47 @@ async function detectWarmPlacement(
   return { isWarm: true, priorTrack: String(warm.track_name ?? "").trim() || undefined };
 }
 
-export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseClient): Promise<RunResult> {
-  const playlistId = String(body.playlist_id ?? "").trim();
-  const requestedTrackId = String(body.track_id ?? "").trim();
-  let trackName = String(body.track_name ?? "").trim();
-  const channelOverride = typeof body.channel === "string" ? body.channel : "";
-  const generatedBy = String(body.generated_by ?? body.approved_by ?? "auto").trim() || "auto";
+export async function runDraftPitch(
+  body: Record<string, unknown>,
+  sb: SupabaseClient,
+  actor: Actor | null = null,
+  req: Request | null = null,
+): Promise<RunResult> {
+  // Attribution / approval identity is server-derived only.
+  const safeBody = stripSpoofedAttribution(body);
+  const opsActor = resolveOpsActor(actor, req);
+  const draftDenied = denyUnlessCan(opsActor, "generate_playlist_drafts");
+  if (draftDenied) return draftDenied;
+
+  // Automated drafts must never accept free-written override copy.
+  if (typeof body.override_body === "string" && body.override_body.trim()) {
+    return {
+      status: 422,
+      data: {
+        error:
+          "override_body is rejected for automated draft creation. " +
+          "Compose from approved Song DNA pitch only; fit_reason stays metadata.",
+        code: "override_body_rejected",
+      },
+    };
+  }
+  if (typeof body.override_subject === "string" && body.override_subject.trim()) {
+    return {
+      status: 422,
+      data: {
+        error:
+          "override_subject is rejected for automated draft creation. " +
+          "Use the rendered template subject from approved DNA pitch.",
+        code: "override_subject_rejected",
+      },
+    };
+  }
+
+  const playlistId = String(safeBody.playlist_id ?? "").trim();
+  const requestedTrackId = String(safeBody.track_id ?? "").trim();
+  let trackName = String(safeBody.track_name ?? "").trim();
+  const channelOverride = typeof safeBody.channel === "string" ? safeBody.channel : "";
+  const generatedBy = opsActor.label;
   if (!playlistId) return { status: 400, data: { error: "playlist_id required" } };
 
   const { data: row, error: rowErr } = await sb.from("playlist_targets")
@@ -285,7 +331,7 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
   // Exact track identity required. Title-only / catalogue guessing is not allowed
   // for operational drafts — repair legacy rows before send.
   let lookupId = requestedTrackId;
-  const campaignId = String(body.campaign_id ?? "").trim();
+  const campaignId = String(safeBody.campaign_id ?? "").trim();
   if (!lookupId) {
     return {
       status: 422,
@@ -368,7 +414,8 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
   if (!gate.pass) {
     // General override_category_check removed from operational drafts.
     // Fendi-only scoped override goes through evaluateOutreachDecision.
-    if (Boolean(body.override_category_check)) {
+    // Legacy categories cannot authorize or override DNA lane decisions.
+    if (Boolean(safeBody.override_category_check) || Boolean(body.override_category_check)) {
       return {
         status: 403,
         data: {
@@ -378,15 +425,9 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
         },
       };
     }
-    return {
-      status: 422,
-      data: {
-        error: "Category mismatch",
-        reason: gate.reason,
-        track_categories: trackCats,
-        playlist_categories: playlistCats,
-      },
-    };
+    // Soft display signal only — DNA envelope below is the authorization path.
+    // Do not hard-block here when categories contradict; evaluateOutreachDecision
+    // fails closed on missing/incompatible DNA lanes.
   }
 
   const lane = String(row.lane ?? "").trim();
@@ -397,11 +438,12 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
     trackId,
     trackName,
     campaignId: campaignId || null,
-    songDnaVersionId: String(body.song_dna_version_id ?? "").trim() || null,
+    songDnaVersionId: String(safeBody.song_dna_version_id ?? "").trim() || null,
     playlistId,
     lane,
     overrideCategoryCheck: false,
-    isFendiAdmin: false,
+    isFendiAdmin: opsActor.kind === "fendi",
+    actor: opsActor,
   });
 
   if (!decision.pitch.ok) {
@@ -438,7 +480,7 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
     return { status: 400, data: { error: `Track has no URL for platform: ${platform}` } };
   }
 
-  const toneRaw = String(body.tone ?? track.default_tone ?? "warm_personal");
+  const toneRaw = String(safeBody.tone ?? track.default_tone ?? "warm_personal");
   const tone = (VALID_TONES.has(toneRaw) ? toneRaw : "warm_personal") as Tone;
   const placed = await detectWarmPlacement(sb, playlistId);
   const rc = row.research_context as Record<string, unknown> | null;
@@ -479,14 +521,9 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
     };
   }
 
-  let subject = rendered.subject;
-  let pitchBody = rendered.body;
-  if (typeof body.override_body === "string" && body.override_body.trim()) {
-    pitchBody = body.override_body.trim();
-  }
-  if (typeof body.override_subject === "string" && body.override_subject.trim()) {
-    subject = body.override_subject.trim();
-  }
+  // Fit reason is metadata only — never inject into outbound body via overrides.
+  const subject = rendered.subject;
+  const pitchBody = rendered.body;
 
   let recipient: string | null = null;
   if (channel === "email") recipient = (row.curator_email as string)?.trim() ?? null;
@@ -509,11 +546,15 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
     pitch_copy_source: copy.source,
     pitch_copy_hash: pitchHash,
     template_id: tpl?.id ?? null,
+    approved_by: null,
+    approved_at: null,
+    approved_content_hash: null,
     metadata: {
       lane: lane || null,
       why_it_fits: (row.why_it_fits as string | null) ?? null,
       fit_reason: fit.fitReason || null,
       fit_reason_source: fit.source,
+      fit_reason_internal_only: true,
       stream_link: streamUrl || null,
       tone,
       platform,
@@ -527,7 +568,9 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
       template_id: tpl?.id ?? null,
       decision_mode: "enforce",
       decision_code: decision.code,
+      category_gate_display: gate.reason,
       placement_source: placementWarm ? (rc?.source as string) : null,
+      generated_by_label: generatedBy,
     },
   }).select("id, channel, subject, body, recipient").single();
 
@@ -538,14 +581,29 @@ export async function runDraftPitch(body: Record<string, unknown>, sb: SupabaseC
   };
 }
 
-export async function runApproveDraft(body: Record<string, unknown>, sb: SupabaseClient, hubKey: string): Promise<RunResult> {
-  const draftId = String(body.draft_id ?? "").trim();
-  const approvedBy = String(body.approved_by ?? "admin").trim();
-  const sendImmediately = Boolean(body.send_immediately);
-  const testMode = Boolean(body.test_mode);
-  const batchOverrideCap = Boolean(body.batch_override_cap);
-  const reject = Boolean(body.reject);
+export async function runApproveDraft(
+  body: Record<string, unknown>,
+  sb: SupabaseClient,
+  hubKey: string,
+  actor: Actor | null = null,
+  req: Request | null = null,
+): Promise<RunResult> {
+  const safeBody = stripSpoofedAttribution(body);
+  const opsActor = resolveOpsActor(actor, req);
+  const draftId = String(safeBody.draft_id ?? body.draft_id ?? "").trim();
+  const sendImmediately = Boolean(safeBody.send_immediately ?? body.send_immediately);
+  const testMode = Boolean(safeBody.test_mode ?? body.test_mode);
+  const batchOverrideCap = Boolean(safeBody.batch_override_cap ?? body.batch_override_cap);
+  const reject = Boolean(safeBody.reject ?? body.reject);
   if (!draftId) return { status: 400, data: { error: "draft_id required" } };
+
+  // Scheduler cannot approve as Grok; Claude cannot approve/send.
+  if (opsActor.kind === "scheduler") {
+    return {
+      status: 403,
+      data: { error: "scheduler cannot approve playlist drafts (including as Grok)" },
+    };
+  }
 
   const { data: draft, error: dErr } = await sb.from("outreach_drafts")
     .select("*, playlist_targets(playlist_name, curator_name, curator_email, curator_instagram, tier)")
@@ -558,9 +616,32 @@ export async function runApproveDraft(body: Record<string, unknown>, sb: Supabas
   const actionable = draftStatus === "pending" || draftStatus === "approved";
 
   if (reject) {
+    const rejectDenied = denyUnlessCan(opsActor, "reject_playlist_drafts");
+    if (rejectDenied) return rejectDenied;
     if (!actionable) return { status: 400, data: { error: `Draft is already ${draftStatus} — nothing to reject.` } };
-    await sb.from("outreach_drafts").update({ status: "rejected", approved_at: new Date().toISOString(), approved_by: approvedBy }).eq("id", draftId);
-    return { status: 200, data: { ok: true, status: "rejected" } };
+    await sb.from("outreach_drafts").update({
+      status: "rejected",
+      approved_at: new Date().toISOString(),
+      approved_by: opsActor.label,
+      approved_content_hash: null,
+    }).eq("id", draftId);
+    return { status: 200, data: { ok: true, status: "rejected", approved_by: opsActor.label } };
+  }
+
+  const approveDenied = denyUnlessCan(opsActor, "approve_playlist_drafts");
+  if (approveDenied) return approveDenied;
+  // Only grok_playlist_control or Fendi may approve playlist drafts (not human_admin alone
+  // unless they are Fendi). human_admin has the capability in the matrix for UI ops —
+  // tighten to Grok/Fendi labels as required by systemic enforcement.
+  if (opsActor.kind !== "grok_playlist_control" && opsActor.kind !== "fendi") {
+    return {
+      status: 403,
+      data: {
+        error:
+          `${opsActor.label} is not permitted to approve playlist drafts. ` +
+          "Only grok_playlist_control or Fendi may approve.",
+      },
+    };
   }
 
   if (!actionable) return { status: 400, data: { error: `Draft is already ${draftStatus} — nothing to approve or send.` } };
@@ -577,6 +658,11 @@ export async function runApproveDraft(body: Record<string, unknown>, sb: Supabas
     };
   }
 
+  if (sendImmediately) {
+    const sendDenied = denyUnlessCan(opsActor, "send_playlist_pitches");
+    if (sendDenied) return sendDenied;
+  }
+
   const sendDecision = await evaluateOutreachDecision(sb, {
     route: "approve_draft",
     trackId: draftTrackId || null,
@@ -586,8 +672,9 @@ export async function runApproveDraft(body: Record<string, unknown>, sb: Supabas
       null,
     playlistId: String(draft.playlist_id),
     lane: String((draft.metadata as { lane?: string } | null)?.lane ?? "").trim() || null,
+    actor: opsActor,
   });
-  if (sendImmediately && !sendDecision.allow) {
+  if (!sendDecision.allow) {
     return {
       status: 422,
       data: {
@@ -606,12 +693,51 @@ export async function runApproveDraft(body: Record<string, unknown>, sb: Supabas
     return { status: 400, data: { error: `Draft is marked env="${draftEnv}" (test/staging) and will not be sent to a real recipient.` } };
   }
 
+  const contentHash = await hashApprovalArtifact({
+    track_id: draftTrackId,
+    song_dna_version_id: (draft as { song_dna_version_id?: string | null }).song_dna_version_id,
+    playlist_id: draft.playlist_id,
+    campaign_id: (draft as { campaign_id?: string | null }).campaign_id,
+    channel: draft.channel,
+    recipient: draft.recipient,
+    subject: draft.subject,
+    body: draft.body,
+    template_id: (draft as { template_id?: string | null }).template_id,
+  });
+
   // Only flip pending → approved. An already-approved draft skips re-approval and proceeds
   // straight to send (this is what lets the UI "Send" an approved draft).
   if (draftStatus === "pending") {
-    await sb.from("outreach_drafts").update({ status: "approved", approved_at: new Date().toISOString(), approved_by: approvedBy }).eq("id", draftId);
+    await sb.from("outreach_drafts").update({
+      status: "approved",
+      approved_at: new Date().toISOString(),
+      approved_by: opsActor.label,
+      approved_content_hash: contentHash,
+    }).eq("id", draftId);
+  } else if (draftStatus === "approved") {
+    // Re-seal hash if missing so send can verify; do not trust caller approved_by.
+    const existingHash = String((draft as { approved_content_hash?: string | null }).approved_content_hash ?? "").trim();
+    const existingBy = String((draft as { approved_by?: string | null }).approved_by ?? "").trim().toLowerCase();
+    if (!existingHash || !AUTHORIZED_DRAFT_APPROVERS.has(existingBy)) {
+      await sb.from("outreach_drafts").update({
+        approved_at: (draft as { approved_at?: string | null }).approved_at ?? new Date().toISOString(),
+        approved_by: opsActor.label,
+        approved_content_hash: contentHash,
+      }).eq("id", draftId);
+    }
   }
-  if (!sendImmediately) return { status: 200, data: { ok: true, status: "approved", sent: false } };
+  if (!sendImmediately) {
+    return {
+      status: 200,
+      data: {
+        ok: true,
+        status: "approved",
+        sent: false,
+        approved_by: opsActor.label,
+        approved_content_hash: contentHash,
+      },
+    };
+  }
 
   const pl = draft.playlist_targets as Record<string, unknown> | null;
   const playlistName = (pl?.playlist_name as string) ?? draft.playlist_id;
@@ -790,6 +916,176 @@ export async function runInvalidateStaleDrafts(
       stale_count: stale.length,
       superseded,
       stale_sample: stale.slice(0, 25),
+    },
+  };
+}
+
+type InvalidDraftReason =
+  | "missing_track"
+  | "missing_dna"
+  | "non_current_dna"
+  | "unapproved_dna"
+  | "missing_classification"
+  | "incompatible_lane"
+  | "missing_approval"
+  | "unauthorized_approver"
+  | "hash_mismatch"
+  | "legacy_free_written_body";
+
+/**
+ * Audit pending/approved drafts for Song-DNA enforcement violations.
+ * Dry-run by default. With apply=true, reject/supersede ONLY invalid drafts;
+ * preserve valid ones and pitch history.
+ */
+export async function runAuditInvalidDrafts(
+  body: Record<string, unknown>,
+  sb: SupabaseClient,
+): Promise<RunResult> {
+  const apply = Boolean(body.apply);
+  const dryRun = body.dry_run === undefined ? !apply : Boolean(body.dry_run);
+  const doApply = apply && !dryRun;
+  const limit = Math.min(Math.max(Number(body.limit ?? 5000) || 5000, 1), 10000);
+  const statuses = Array.isArray(body.statuses)
+    ? body.statuses.map(String)
+    : ["pending", "approved"];
+
+  const { data, error } = await sb
+    .from("outreach_drafts")
+    .select(
+      "id, status, track_id, track_name, playlist_id, campaign_id, channel, recipient, subject, body, " +
+        "song_dna_version_id, template_id, approved_at, approved_by, approved_content_hash, " +
+        "pitch_copy_hash, pitch_copy_source, metadata, generated_at",
+    )
+    .in("status", statuses)
+    .order("generated_at", { ascending: false })
+    .limit(limit);
+  if (error) return { status: 500, data: { error: error.message } };
+
+  const rows = (data ?? []) as Array<Record<string, unknown>>;
+  const byReason: Record<string, string[]> = {};
+  const invalid: { id: string; status: string; reasons: InvalidDraftReason[] }[] = [];
+  let validCount = 0;
+
+  for (const row of rows) {
+    const reasons: InvalidDraftReason[] = [];
+    const draftId = String(row.id ?? "");
+    const trackId = String(row.track_id ?? "").trim();
+    const playlistId = String(row.playlist_id ?? "").trim();
+    const status = String(row.status ?? "");
+
+    if (!trackId) reasons.push("missing_track");
+
+    const decision = await evaluateOutreachDecision(sb, {
+      route: "audit_invalid_drafts",
+      trackId: trackId || null,
+      trackName: String(row.track_name ?? ""),
+      campaignId: String(row.campaign_id ?? "").trim() || null,
+      songDnaVersionId: String(row.song_dna_version_id ?? "").trim() || null,
+      playlistId: playlistId || null,
+      lane: String((row.metadata as { lane?: string } | null)?.lane ?? "").trim() || null,
+    });
+
+    for (const err of decision.errors) {
+      if (err === "missing_track_id" || err === "track_id_not_found") {
+        if (!reasons.includes("missing_track")) reasons.push("missing_track");
+      } else if (err === "missing_approved_song_dna" || err === "song_dna_not_found") {
+        reasons.push("missing_dna");
+      } else if (err === "song_dna_not_current") {
+        reasons.push("non_current_dna");
+      } else if (err === "song_dna_not_approved" || err === "song_dna_track_mismatch") {
+        reasons.push("unapproved_dna");
+      } else if (err === "target_lane_null") {
+        reasons.push("missing_classification");
+      } else if (
+        err === "dna_excluded_lane" ||
+        err === "dna_lane_not_approved" ||
+        err === "target_classification_unverified"
+      ) {
+        reasons.push("incompatible_lane");
+      }
+    }
+
+    if (status === "approved") {
+      if (!row.approved_at) reasons.push("missing_approval");
+      const approvedBy = String(row.approved_by ?? "").trim().toLowerCase();
+      if (!approvedBy || !AUTHORIZED_DRAFT_APPROVERS.has(approvedBy)) {
+        reasons.push("unauthorized_approver");
+      }
+      const hashCheck = await verifyApprovedContentHash(row);
+      if (!hashCheck.ok) {
+        if (hashCheck.code === "approved_content_hash_mismatch" || hashCheck.code === "missing_approved_content_hash") {
+          reasons.push("hash_mismatch");
+        } else if (hashCheck.code === "unauthorized_approver" && !reasons.includes("unauthorized_approver")) {
+          reasons.push("unauthorized_approver");
+        } else if (hashCheck.code === "missing_approved_at" && !reasons.includes("missing_approval")) {
+          reasons.push("missing_approval");
+        }
+      }
+    }
+
+    const pitchSource = String(row.pitch_copy_source ?? "").trim();
+    const bodyText = String(row.body ?? "");
+    const dnaPitch = decision.pitch.ok ? decision.pitch.pitch : "";
+    if (
+      pitchSource !== "song_dna_versions.short_pitch" ||
+      (dnaPitch && !bodyText.includes(dnaPitch))
+    ) {
+      reasons.push("legacy_free_written_body");
+    }
+
+    const uniqueReasons = [...new Set(reasons)];
+    if (uniqueReasons.length === 0) {
+      validCount += 1;
+      continue;
+    }
+    invalid.push({ id: draftId, status, reasons: uniqueReasons });
+    for (const r of uniqueReasons) {
+      if (!byReason[r]) byReason[r] = [];
+      byReason[r].push(draftId);
+    }
+  }
+
+  let applied = 0;
+  if (doApply) {
+    for (const row of invalid) {
+      const nextStatus = row.status === "approved" ? "superseded" : "rejected";
+      const { data: current } = await sb
+        .from("outreach_drafts")
+        .select("metadata")
+        .eq("id", row.id)
+        .maybeSingle();
+      const meta = (current?.metadata && typeof current.metadata === "object")
+        ? { ...(current.metadata as Record<string, unknown>) }
+        : {};
+      meta.audit_invalid_reasons = row.reasons;
+      meta.audit_invalid_at = new Date().toISOString();
+      const { error: upErr } = await sb
+        .from("outreach_drafts")
+        .update({
+          status: nextStatus,
+          approved_content_hash: null,
+          metadata: meta,
+        })
+        .eq("id", row.id)
+        .in("status", ["pending", "approved"]);
+      if (!upErr) applied += 1;
+    }
+  }
+
+  return {
+    status: 200,
+    data: {
+      ok: true,
+      dry_run: !doApply,
+      scanned: rows.length,
+      valid_count: validCount,
+      invalid_count: invalid.length,
+      by_reason: Object.fromEntries(
+        Object.entries(byReason).map(([k, ids]) => [k, { count: ids.length, draft_ids: ids.slice(0, 50) }]),
+      ),
+      invalid_sample: invalid.slice(0, 50),
+      applied: doApply ? applied : 0,
+      note: "Draft IDs only — no ISRCs. Pitch history preserved. Valid drafts untouched.",
     },
   };
 }
@@ -1759,8 +2055,7 @@ export async function runScheduleFollowUp(body: Record<string, unknown>, sb: Sup
         campaign_id: (row as { campaign_id?: string | null }).campaign_id ?? undefined,
         song_dna_version_id: (row as { song_dna_version_id?: string | null }).song_dna_version_id ?? undefined,
         channel,
-        generated_by: "schedule-follow-up:cron",
-      }, sb);
+      }, sb, { kind: "service" }, null);
       if (draftResult.status !== 200) {
         errors.push(`${row.id}: ${(draftResult.data as { error?: string }).error ?? draftResult.status}`);
         continue;
@@ -2393,14 +2688,66 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
   if (action === "update_draft") {
     const draftId = String(body.draft_id ?? "").trim();
     if (!draftId) return { status: 400, data: { error: "draft_id required" } };
+
+    // Callers must NOT set approval status/fields directly.
+    for (const forbidden of [
+      "approved_by",
+      "approved_at",
+      "approved_content_hash",
+      "status",
+    ]) {
+      if (body[forbidden] !== undefined) {
+        return {
+          status: 403,
+          data: {
+            error:
+              `Callers cannot set ${forbidden} via update_draft. ` +
+              "Use approve_draft / reject, or edit content (which revokes approval).",
+            code: "approval_fields_forbidden",
+          },
+        };
+      }
+    }
+
     const patch: Record<string, unknown> = {};
-    if (body.subject !== undefined) patch.subject = body.subject;
-    if (body.body !== undefined) patch.body = body.body;
-    if (body.recipient !== undefined) patch.recipient = body.recipient;
-    if (body.status !== undefined) patch.status = body.status;
+    let contentChanged = false;
+    for (const key of [
+      "subject",
+      "body",
+      "recipient",
+      "track_id",
+      "track_name",
+      "playlist_id",
+      "template_id",
+      "channel",
+      "campaign_id",
+      "song_dna_version_id",
+    ] as const) {
+      if (body[key] !== undefined) {
+        patch[key] = body[key];
+        contentChanged = true;
+      }
+    }
+    if (!contentChanged && Object.keys(patch).length === 0) {
+      return { status: 400, data: { error: "No updatable fields provided" } };
+    }
+    // Any content change clears approval seal and returns to pending.
+    if (contentChanged) {
+      patch.approved_by = null;
+      patch.approved_at = null;
+      patch.approved_content_hash = null;
+      patch.status = "pending";
+    }
     const { error } = await sb.from("outreach_drafts").update(patch).eq("id", draftId);
     if (error) return { status: 500, data: { error: error.message } };
-    return { status: 200, data: { ok: true } };
+    return {
+      status: 200,
+      data: {
+        ok: true,
+        approval_revoked: contentChanged,
+        status: contentChanged ? "pending" : undefined,
+      },
+    };
   }
   if (action === "delete_draft") {
     const draftId = String(body.draft_id ?? "").trim();
@@ -2633,6 +2980,7 @@ const PLAYLIST_AGENT_ACTIONS = new Set([
   "submit_song_dna_for_review", "approve_song_dna", "reject_song_dna", "list_song_dna_audit",
   "list_pitch_templates", "upsert_pitch_template", "preview_pitch_template",
   "invalidate_stale_drafts",
+  "audit_invalid_drafts",
   "set_track_categories", "set_playlist_categories",
   "recommend_targets_for_track", "list_warm_curators",
   "mark_pitch_response", "pitch_stats_summary", "list_pitches",
@@ -2912,13 +3260,13 @@ export async function runCatalogueAdmin(
     if (!trackId) return { status: 400, data: { error: "track_id required" } };
     const mode = String(body.mode ?? "warm_aligned");
     const limit = Math.min(200, Math.max(1, Number(body.limit) || 50));
+    const includeResearch = Boolean(body.include_research);
 
     const { data: track } = await sb.from("tracks")
       .select("*, track_categories(category_id, categories(slug, label))").eq("id", trackId).single();
     if (!track) return { status: 404, data: { error: "Track not found" } };
     const trackCatIds = (track.track_categories ?? []).map((tc: { category_id: string }) => tc.category_id);
-    // Genre the TRACK declares — used as the fallback when category columns are
-    // empty, so an uncategorised pool no longer selects to nothing.
+    // Genre/categories retained for display/analytics only — NOT authorization.
     const tGenre = trackGenre({
       categories: ((track.track_categories ?? []) as { categories: { slug?: string; label?: string } | null }[])
         .map((tc) => tc.categories).filter(Boolean) as { slug?: string; label?: string }[],
@@ -2926,6 +3274,45 @@ export async function runCatalogueAdmin(
       short_pitch: track.short_pitch as string | null,
       pitch_angle: track.pitch_angle as string | null,
     });
+
+    // Authorization envelope: current approved Song DNA lanes only.
+    const approvedDnaId = String(track.approved_song_dna_version_id ?? "").trim();
+    let dnaApproved = new Set<string>();
+    let dnaExcluded = new Set<string>();
+    let dnaPrimaryGenre: string | null = null;
+    let dnaVersionId: string | null = null;
+    if (!approvedDnaId) {
+      return {
+        status: 422,
+        data: {
+          error: "missing_approved_song_dna",
+          track_id: trackId,
+          message:
+            "recommend_targets_for_track requires a current Fendi-approved Song DNA. " +
+            "Legacy trackGenre / track_categories cannot authorize targets.",
+        },
+      };
+    }
+    {
+      const { data: dna } = await sb.from("song_dna_versions")
+        .select("id, track_id, approval_state, approved_lanes, excluded_lanes, primary_genre")
+        .eq("id", approvedDnaId)
+        .maybeSingle();
+      if (!dna || String(dna.track_id) !== trackId || String(dna.approval_state) !== "approved") {
+        return {
+          status: 422,
+          data: {
+            error: "song_dna_not_current_or_approved",
+            track_id: trackId,
+            approved_song_dna_version_id: approvedDnaId,
+          },
+        };
+      }
+      dnaVersionId = String(dna.id);
+      dnaPrimaryGenre = dna.primary_genre ? String(dna.primary_genre) : null;
+      dnaApproved = new Set((dna.approved_lanes ?? []).map((s: string) => s.toLowerCase()));
+      dnaExcluded = new Set((dna.excluded_lanes ?? []).map((s: string) => s.toLowerCase()));
+    }
 
     const availablePlatforms: string[] = [];
     if (track.spotify_url) availablePlatforms.push("spotify");
@@ -2956,12 +3343,16 @@ export async function runCatalogueAdmin(
     const rows = targets ?? [];
 
     const trackName = String(track.name ?? "");
+    const VERIFIED = new Set(["auto_verified", "manually_verified"]);
 
     type Scored = {
       row: Record<string, unknown>;
       overlap: number;
       categoryOk: boolean;
       gateReason: string;
+      dnaLaneOk: boolean;
+      dnaLaneReason: string;
+      draftable: boolean;
       warm: boolean;
       placement: boolean;
       placementTrack: string | null;
@@ -2972,24 +3363,39 @@ export async function runCatalogueAdmin(
       const pcs = (r.playlist_categories ?? []) as { category_id: string }[];
       const targetCatIds = pcs.map((pc) => pc.category_id);
       const overlap = categoryOverlapCount(trackCatIds, targetCatIds);
-      // Same gate the composer uses, so the recommender can't hand downstream a
-      // target that draft_pitch would then 422 on (and vice versa).
+      // Display only — never authorizes draftability.
       const gate = categoryGate({
         trackCatIds,
         targetCatIds,
         trackGenre: tGenre,
         targetGenre: targetGenre(r),
       });
-      // PRIMARY warm signal: this playlist already features THIS track. Matched
-      // case- and whitespace-insensitively against research_context.featuring_tracks,
-      // ignoring the SFA CSV placeholder. This is what makes the recommender
-      // actually per-track ("reach the curators who already supported it first").
+      const lane = String(r.lane ?? "").trim().toLowerCase();
+      const vStatus = String(r.verification_status ?? "").trim().toLowerCase();
+      let dnaLaneOk = true;
+      let dnaLaneReason = "ok";
+      if (!lane) {
+        dnaLaneOk = false;
+        dnaLaneReason = "target_lane_null";
+      } else if (!VERIFIED.has(vStatus)) {
+        dnaLaneOk = false;
+        dnaLaneReason = "target_classification_unverified";
+      } else if (dnaExcluded.has(lane)) {
+        dnaLaneOk = false;
+        dnaLaneReason = "dna_excluded_lane";
+      } else if (dnaApproved.size > 0 && !dnaApproved.has(lane)) {
+        dnaLaneOk = false;
+        dnaLaneReason = "dna_lane_not_approved";
+      }
       const pm = placementMatch(r, trackName);
       return {
         row: r,
         overlap,
         categoryOk: gate.pass,
         gateReason: gate.reason,
+        dnaLaneOk,
+        dnaLaneReason,
+        draftable: dnaLaneOk && !isAutomatedPitchBlocked(r),
         warm: warmPids.has(r.playlist_id as string),
         placement: pm.matched,
         placementTrack: pm.matchedName,
@@ -3002,27 +3408,27 @@ export async function runCatalogueAdmin(
     // (pay-to-play vendors + portal_only / declined / blocked / submitted rows).
     const eligible = scored.filter((s) => !isAutomatedPitchBlocked(s.row));
 
+    // Draftable candidates: DNA lane envelope + verified classification.
+    // Research-only (null/unverified/incompatible) listed separately when requested.
+    const draftablePool = eligible.filter((s) => s.draftable);
+    const researchOnly = eligible.filter((s) => !s.draftable);
+
     let filtered: Scored[];
     if (mode === "warm_aligned") {
-      // A direct placement qualifies a row on its own — no longer hard-require
-      // category overlap (warm placements carry empty playlist_categories).
-      filtered = eligible.filter((s) => s.warm && (s.placement || s.categoryOk));
+      filtered = draftablePool.filter((s) => s.warm && (s.placement || s.dnaLaneOk));
     } else if (mode === "new_cold") {
-      // Exclude already-pitched rows and inactive rows. Gated on categoryOk, NOT
-      // on `overlap > 0`: the verified pool carries empty playlist_categories, so
-      // requiring a positive overlap here selected zero cold targets.
-      filtered = eligible.filter((s) =>
-        !s.warm && s.categoryOk &&
+      filtered = draftablePool.filter((s) =>
+        !s.warm &&
         (s.row.pitch_status !== "pitched") &&
         (s.row.is_active !== false)
       );
     } else if (mode === "all_warm") {
-      filtered = eligible.filter((s) => s.warm);
+      filtered = draftablePool.filter((s) => s.warm);
     } else {
       return { status: 400, data: { error: "mode must be warm_aligned | new_cold | all_warm" } };
     }
 
-    // Rank: direct placement → category overlap → tier → follower_count.
+    // Rank: direct placement → category overlap (display) → tier → follower_count.
     filtered.sort((a, b) => compareTargets(a, b));
     return {
       status: 200,
@@ -3031,15 +3437,34 @@ export async function runCatalogueAdmin(
         mode,
         track_id: trackId,
         track_name: trackName,
+        song_dna_version_id: dnaVersionId,
+        dna_primary_genre: dnaPrimaryGenre,
+        dna_approved_lanes: [...dnaApproved],
+        dna_excluded_lanes: [...dnaExcluded],
         available_platforms: availablePlatforms,
+        authorization: "approved_song_dna_lanes",
+        legacy_genre_authorization: false,
         rows: filtered.slice(0, limit).map((s) => ({
           ...s.row,
           _overlap: s.overlap,
-          _category_gate: s.gateReason,
+          _category_gate_display: s.gateReason,
+          _dna_lane_ok: s.dnaLaneOk,
+          _dna_lane_reason: s.dnaLaneReason,
+          _draftable: s.draftable,
           _warm: s.warm,
           _placement_match: s.placement,
           _placement_track: s.placementTrack,
         })),
+        research_only: includeResearch
+          ? researchOnly.slice(0, limit).map((s) => ({
+            playlist_id: s.row.playlist_id,
+            playlist_name: s.row.playlist_name,
+            lane: s.row.lane,
+            verification_status: s.row.verification_status,
+            _dna_lane_reason: s.dnaLaneReason,
+            _draftable: false,
+          }))
+          : undefined,
       },
     };
   }
@@ -3161,14 +3586,16 @@ export async function runPlaylistAgentAction(
   sb: SupabaseClient,
   hubKey: string,
   actor: Actor | null = null,
+  req: Request | null = null,
 ): Promise<RunResult> {
   if (isSongDnaAction(action)) {
     return runSongDnaAction(action, body, sb, actor);
   }
   switch (action) {
-    case "draft_pitch": return runDraftPitch(body, sb);
-    case "approve_draft": return runApproveDraft(body, sb, hubKey);
+    case "draft_pitch": return runDraftPitch(body, sb, actor, req);
+    case "approve_draft": return runApproveDraft(body, sb, hubKey, actor, req);
     case "invalidate_stale_drafts": return runInvalidateStaleDrafts(body, sb);
+    case "audit_invalid_drafts": return runAuditInvalidDrafts(body, sb);
     case "enrich_curator_contacts": return runEnrichCuratorContacts(body, sb);
     case "schedule_follow_up": return runScheduleFollowUp(body, sb, hubKey);
     case "list_targets":

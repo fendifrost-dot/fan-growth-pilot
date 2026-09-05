@@ -66,8 +66,15 @@ export function resolveTrackPitchCopy(args: {
     short_pitch?: unknown;
     approval_state?: unknown;
   } | null;
+  /**
+   * When true (automated playlist outreach), only approved DNA short_pitch may
+   * authorize copy. Track/legacy carriers are ignored and missing DNA fails closed.
+   */
+  requireApprovedDna?: boolean;
 }): TrackPitchResult {
-  const missing: string[] = [...TRACK_PITCH_MISSING_FIELDS];
+  const missing: string[] = args.requireApprovedDna
+    ? ["song_dna_versions.short_pitch (approved)"]
+    : [...TRACK_PITCH_MISSING_FIELDS];
 
   const dnaState = trimText(args.approvedDna?.approval_state);
   const dnaPitch = trimText(args.approvedDna?.short_pitch);
@@ -80,9 +87,21 @@ export function resolveTrackPitchCopy(args: {
     };
   }
 
+  // Automated playlist outreach: never fall back to track/legacy carriers.
+  if (args.requireApprovedDna) {
+    return {
+      ok: false,
+      pitch: null,
+      source: null,
+      songDnaVersionId: null,
+      missing,
+    };
+  }
+
   // tracks.short_pitch is the operator-editable song description.
   // tracks.pitch_angle is treated as a legacy alias for the same song-level field
   // (not lane/playlist copy) until fully migrated into Song DNA.
+  // Display/analytics only — not an authorization path for automated drafting.
   const shortPitch = trimText(args.track?.short_pitch);
   if (shortPitch) {
     return {

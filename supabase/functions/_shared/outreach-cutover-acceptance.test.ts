@@ -86,8 +86,14 @@ Deno.test("WIRING: execute-pitch and send-pitch-email bind to approved draft + i
   assert(agent.includes("invalidate_stale_drafts") || agent.includes("runInvalidateStaleDrafts"), "stale draft invalidate action required");
   assert(agent.includes("pitch_copy_hash"), "new drafts must store pitch_copy_hash");
   assert(decision.includes("song_dna_track_mismatch"), "DNA must bind to selected track");
-  assert(decision.includes("categoryGate"), "shared gate must verify genre/category fit without DNA");
+  assert(decision.includes("Intentionally NO legacy categoryGate"), "legacy categoryGate must not authorize");
+  assert(decision.includes("requireApprovedDna: true"), "automated outreach requires approved DNA pitch");
   assert(!agent.includes('decision.mode === "enforce"'), "shadow/enforce mode branch must be gone");
+  assert(agent.includes("hashApprovalArtifact"), "approve must seal approved_content_hash");
+  assert(agent.includes("audit_invalid_drafts"), "audit_invalid_drafts action required");
+  assert(agent.includes("override_body_rejected"), "override_body must be rejected");
+  assert(exec.includes("verifyApprovedContentHash"), "execute-pitch must verify approval artefact hash");
+  assert(send.includes("verifyApprovedContentHash"), "send-pitch-email must verify approval artefact hash");
 });
 
 Deno.test("WIRING: control-center dispatches Song DNA via authorizeAction", () => {

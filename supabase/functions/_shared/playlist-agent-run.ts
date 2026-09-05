@@ -598,11 +598,36 @@ export async function runApproveDraft(
   if (!draftId) return { status: 400, data: { error: "draft_id required" } };
 
   // Scheduler cannot approve as Grok; Claude cannot approve/send.
+  // Capability checks run BEFORE draft fetch so missing credentials never
+  // probe draft existence and authz failures always surface as 403.
   if (opsActor.kind === "scheduler") {
     return {
       status: 403,
       data: { error: "scheduler cannot approve playlist drafts (including as Grok)" },
     };
+  }
+
+  if (reject) {
+    const rejectDenied = denyUnlessCan(opsActor, "reject_playlist_drafts");
+    if (rejectDenied) return rejectDenied;
+  } else {
+    const approveDenied = denyUnlessCan(opsActor, "approve_playlist_drafts");
+    if (approveDenied) return approveDenied;
+    // Only grok_playlist_control or Fendi may approve playlist drafts.
+    if (opsActor.kind !== "grok_playlist_control" && opsActor.kind !== "fendi") {
+      return {
+        status: 403,
+        data: {
+          error:
+            `${opsActor.label} is not permitted to approve playlist drafts. ` +
+            "Only grok_playlist_control or Fendi may approve.",
+        },
+      };
+    }
+    if (sendImmediately) {
+      const sendDenied = denyUnlessCan(opsActor, "send_playlist_pitches");
+      if (sendDenied) return sendDenied;
+    }
   }
 
   const { data: draft, error: dErr } = await sb.from("outreach_drafts")
@@ -616,8 +641,6 @@ export async function runApproveDraft(
   const actionable = draftStatus === "pending" || draftStatus === "approved";
 
   if (reject) {
-    const rejectDenied = denyUnlessCan(opsActor, "reject_playlist_drafts");
-    if (rejectDenied) return rejectDenied;
     if (!actionable) return { status: 400, data: { error: `Draft is already ${draftStatus} — nothing to reject.` } };
     await sb.from("outreach_drafts").update({
       status: "rejected",
@@ -626,22 +649,6 @@ export async function runApproveDraft(
       approved_content_hash: null,
     }).eq("id", draftId);
     return { status: 200, data: { ok: true, status: "rejected", approved_by: opsActor.label } };
-  }
-
-  const approveDenied = denyUnlessCan(opsActor, "approve_playlist_drafts");
-  if (approveDenied) return approveDenied;
-  // Only grok_playlist_control or Fendi may approve playlist drafts (not human_admin alone
-  // unless they are Fendi). human_admin has the capability in the matrix for UI ops —
-  // tighten to Grok/Fendi labels as required by systemic enforcement.
-  if (opsActor.kind !== "grok_playlist_control" && opsActor.kind !== "fendi") {
-    return {
-      status: 403,
-      data: {
-        error:
-          `${opsActor.label} is not permitted to approve playlist drafts. ` +
-          "Only grok_playlist_control or Fendi may approve.",
-      },
-    };
   }
 
   if (!actionable) return { status: 400, data: { error: `Draft is already ${draftStatus} — nothing to approve or send.` } };

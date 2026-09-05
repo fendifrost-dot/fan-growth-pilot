@@ -18,6 +18,12 @@
 // and lets the secret be rotated without touching anyone's login.
 
 import type { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1';
+import {
+  isClaudeCredential,
+  isGrokCredential,
+  isHubServiceCredential,
+  isSchedulerCredential,
+} from './ops-actors.ts';
 
 export type AuthClass =
   | 'public-read'
@@ -31,6 +37,8 @@ export type Actor =
   | { kind: 'user'; userId: string; isAdmin: boolean }
   | { kind: 'scheduler' }
   | { kind: 'service' }
+  | { kind: 'claude' }
+  | { kind: 'grok_playlist_control' }
   | { kind: 'anonymous' };
 
 export type AuthDecision =
@@ -105,25 +113,26 @@ export const ACTION_AUTH: Record<string, AuthClass> = {
   // ---- Reads (stay public for now, per Phase 1 scope) ----------------------
   list_targets: 'public-read',
   count_targets: 'public-read',
-  list_drafts: 'public-read',
-  list_pitches: 'public-read',
-  get_pitch_log: 'public-read',
-  pitch_stats_summary: 'public-read',
-  list_unverified_targets: 'public-read',
-  list_warm_curators: 'public-read',
-  recommend_targets_for_track: 'public-read',
-  list_tracks: 'public-read',
-  list_music_supervisors: 'public-read',
-  list_licensing_pitches: 'public-read',
+  // Protected operator reads — fan PII, outreach, Song DNA, licenses/sync.
+  list_drafts: 'authenticated-read',
+  list_pitches: 'authenticated-read',
+  get_pitch_log: 'authenticated-read',
+  pitch_stats_summary: 'authenticated-read',
+  list_unverified_targets: 'authenticated-read',
+  list_warm_curators: 'authenticated-read',
+  recommend_targets_for_track: 'authenticated-read',
+  list_tracks: 'authenticated-read',
+  list_music_supervisors: 'authenticated-read',
+  list_licensing_pitches: 'authenticated-read',
   list_categories: 'public-read',
   list_lanes: 'public-read',
-  list_pitch_templates: 'public-read',
-  preview_pitch_template: 'public-read',
-  list_song_dna: 'public-read',
-  get_song_dna: 'public-read',
-  list_song_dna_audit: 'public-read',
-  list_discovery_profiles: 'public-read',
-  outreach_cutover_readiness: 'public-read',
+  list_pitch_templates: 'authenticated-read',
+  preview_pitch_template: 'authenticated-read',
+  list_song_dna: 'authenticated-read',
+  get_song_dna: 'authenticated-read',
+  list_song_dna_audit: 'authenticated-read',
+  list_discovery_profiles: 'authenticated-read',
+  outreach_cutover_readiness: 'authenticated-read',
   create_song_dna_draft: 'admin-write',
   update_song_dna_draft: 'admin-write',
   submit_song_dna_for_review: 'admin-write',
@@ -132,23 +141,41 @@ export const ACTION_AUTH: Record<string, AuthClass> = {
   upsert_discovery_profile: 'admin-write',
   deactivate_discovery_profile: 'admin-write',
   approve_discovery_profile: 'admin-write',
-  get_lyric_decoder_status: 'public-read',
+  get_lyric_decoder_status: 'authenticated-read',
   decode_track_lyrics: 'admin-write',
-  list_social_queue: 'public-read',
-  list_ig_roster: 'public-read',
-  list_fan_dm_queue: 'public-read',
-  list_fan_roster: 'public-read',
-  get_fan_stats: 'public-read',
-  get_leads: 'public-read',
-  get_momentum_alerts: 'public-read',
-  get_marketing_actions: 'public-read',
-  get_platform_metrics: 'public-read',
-  get_radio_targets: 'public-read',
-  get_radio_pitch_log: 'public-read',
-  get_outreach_stats: 'public-read',
-  get_instagram_messaging_status: 'public-read',
-  connect_spotify_status: 'public-read',
+  list_social_queue: 'authenticated-read',
+  list_ig_roster: 'authenticated-read',
+  list_fan_dm_queue: 'authenticated-read',
+  list_fan_roster: 'authenticated-read',
+  get_fan_stats: 'authenticated-read',
+  get_leads: 'authenticated-read',
+  get_momentum_alerts: 'authenticated-read',
+  get_marketing_actions: 'authenticated-read',
+  get_platform_metrics: 'authenticated-read',
+  get_radio_targets: 'authenticated-read',
+  get_radio_pitch_log: 'authenticated-read',
+  get_outreach_stats: 'authenticated-read',
+  get_instagram_messaging_status: 'authenticated-read',
+  connect_spotify_status: 'authenticated-read',
+  ingest_apple_spins: 'admin-write',
 };
+
+/**
+ * Explicit public-action allowlist for unauthenticated smart-link / capture flows.
+ * Anything else requires credentials. Keep this narrow.
+ */
+export const PUBLIC_ACTION_ALLOWLIST = new Set<string>([
+  'list_categories',
+  'list_lanes',
+  'list_campaigns',
+  'get_campaign',
+  'validate_campaign',
+  'get_campaign_stats',
+  'get_campaign_supply',
+  'get_campaign_activity',
+  'list_targets',
+  'count_targets',
+]);
 
 /**
  * PHASE 3 — committed follow-on, not indefinite. Legacy WRITE actions that do
@@ -174,7 +201,6 @@ export const PHASE_3_PENDING_WRITES = [
   'upsert_pitch_template',
   'set_track_categories',
   'set_playlist_categories',
-  'ingest_apple_spins',
   'enrich_curator_contacts',
   'enrich_radio_contacts',
   'run_playlist_research',
@@ -222,8 +248,7 @@ function secretsMatch(a: string, b: string): boolean {
 }
 
 export function isSchedulerRequest(req: Request): boolean {
-  const expected = (Deno.env.get('OUTREACH_SCHEDULER_SECRET') || '').trim();
-  return Boolean(expected) && secretsMatch(schedulerSecretPresented(req), expected);
+  return isSchedulerCredential(req);
 }
 
 async function resolveUser(
@@ -246,9 +271,53 @@ async function resolveUser(
   return { userId: data.user.id, isAdmin: Boolean(role) };
 }
 
+/**
+ * Resolve a credential-backed Actor from the request (secrets + JWT).
+ * Agent headers are never consulted here.
+ */
+export function resolveCredentialActor(req: Request): Actor | null {
+  if (isSchedulerCredential(req)) return { kind: 'scheduler' };
+  if (isGrokCredential(req)) return { kind: 'grok_playlist_control' };
+  if (isClaudeCredential(req)) return { kind: 'claude' };
+  if (isHubServiceCredential(req)) return { kind: 'service' };
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // The gate
 // ---------------------------------------------------------------------------
+
+function artistUserId(): string {
+  return (Deno.env.get('ARTIST_USER_ID') || Deno.env.get('FENDI_USER_ID') || '').trim();
+}
+
+/**
+ * Machine credentials may pass the control-center door for write classes;
+ * fine-grained approve/send/DNA caps are enforced in ops-actors + handlers.
+ * Agent headers are never consulted.
+ */
+function machineWriteAllowed(cred: Actor | null, cls: AuthClass): boolean {
+  if (!cred) return false;
+  if (cls === 'internal-scheduler') return cred.kind === 'scheduler';
+  if (cls === 'outreach-write') {
+    return (
+      cred.kind === 'scheduler' ||
+      cred.kind === 'claude' ||
+      cred.kind === 'grok_playlist_control' ||
+      cred.kind === 'service'
+    );
+  }
+  if (cls === 'admin-write') {
+    // Claude drafts Song DNA / research writes; Grok audits drafts; service for hub ops.
+    // Scheduler must NOT reach admin-write (campaign create/activate, etc.).
+    return (
+      cred.kind === 'claude' ||
+      cred.kind === 'grok_playlist_control' ||
+      cred.kind === 'service'
+    );
+  }
+  return false;
+}
 
 export async function authorizeAction(
   action: string,
@@ -258,29 +327,42 @@ export async function authorizeAction(
   const cls = classifyAction(action);
 
   if (cls === 'unknown') {
-    return { ok: false, status: 400, error: `Unknown action: ${action}`, cls: 'unknown' };
+    return { ok: false, status: 403, error: `Unknown action: ${action}`, cls: 'unknown' };
   }
 
-  // Phase 3 debt: still open, but explicitly acknowledged rather than
-  // accidentally open because it fell through a default-allow branch.
+  // Phase 3 / legacy writes: fail closed until explicitly classified.
   if (cls === 'phase3-legacy') {
-    return { ok: true, actor: { kind: 'anonymous' }, cls: 'public-read' };
+    return {
+      ok: false,
+      status: 403,
+      error: `Action "${action}" is not authorized (legacy write fail-closed)`,
+      cls: 'unknown',
+    };
   }
 
+  // Public reads only when explicitly allowlisted.
   if (cls === 'public-read') {
+    if (!PUBLIC_ACTION_ALLOWLIST.has(action)) {
+      return { ok: false, status: 401, error: 'Authentication required', cls };
+    }
     return { ok: true, actor: { kind: 'anonymous' }, cls };
   }
 
-  const scheduler = isSchedulerRequest(req);
+  // Credential-backed machine actors (never via agent headers).
+  const credActor = resolveCredentialActor(req);
 
   if (cls === 'internal-scheduler') {
-    return scheduler
-      ? { ok: true, actor: { kind: 'scheduler' }, cls }
+    return credActor?.kind === 'scheduler'
+      ? { ok: true, actor: credActor, cls }
       : { ok: false, status: 401, error: 'Scheduler credential required', cls };
   }
 
-  if (cls === 'outreach-write' && scheduler) {
-    return { ok: true, actor: { kind: 'scheduler' }, cls };
+  if ((cls === 'outreach-write' || cls === 'admin-write') && machineWriteAllowed(credActor, cls)) {
+    return { ok: true, actor: credActor!, cls };
+  }
+
+  if (cls === 'authenticated-read' && credActor) {
+    return { ok: true, actor: credActor, cls };
   }
 
   const user = await resolveUser(req, sb);
@@ -291,10 +373,20 @@ export async function authorizeAction(
       : { ok: false, status: 401, error: 'Sign-in required', cls };
   }
 
-  // admin-write and outreach-write both require an admin user from here.
+  // admin-write / outreach-write: JWT user — Fendi (exact ARTIST_USER_ID) or admin.
   if (!user) {
     return { ok: false, status: 401, error: 'Sign-in required for this action', cls };
   }
+
+  const fendiId = artistUserId();
+  if (fendiId && user.userId === fendiId) {
+    return {
+      ok: true,
+      actor: { kind: 'user', userId: user.userId, isAdmin: user.isAdmin || true },
+      cls,
+    };
+  }
+
   if (!user.isAdmin) {
     return { ok: false, status: 403, error: 'Admin role required for this action', cls };
   }

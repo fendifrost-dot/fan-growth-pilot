@@ -5,13 +5,24 @@ import { isFanEngagementAction, runFanEngagementAction } from '../_shared/fan-en
 import { isPitchCampaignAction, runPitchCampaignAction } from '../_shared/pitch-campaigns.ts';
 import { isSyncRegisterAction, runSyncRegisterAction } from '../_shared/sync-registers.ts';
 import { isSongDnaAction, runSongDnaAction } from '../_shared/song-dna.ts';
-import { authorizeAction, type Actor } from '../_shared/outreach-auth.ts';
+import {
+  authorizeAction,
+  PUBLIC_ACTION_ALLOWLIST,
+  type Actor,
+} from '../_shared/outreach-auth.ts';
+import {
+  isClaudeCredential,
+  isGrokCredential,
+  isHubServiceCredential,
+  secretsEqual,
+} from '../_shared/ops-actors.ts';
 import { buildCutoverReadinessReport } from '../_shared/outreach-decision.ts';
 import { isLyricDecoderAction, runLyricDecoderAction } from '../_shared/lyric-decoder.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-api-key',
+  'Access-Control-Allow-Headers':
+    'authorization, x-client-info, apikey, content-type, x-api-key, x-fanfuel-hub-key, x-outreach-scheduler-secret, x-grok-playlist-control-secret, x-grok-agent-secret, x-claude-agent-secret, x-claude-agent-key, x-agh-agent, x-ops-agent',
 };
 
 const PLATFORM_STAT_IDENTIFIERS = [
@@ -28,28 +39,32 @@ const PLATFORM_STAT_IDENTIFIERS = [
   'pandora_stats',
 ];
 
-type AuthResult =
-  | { ok: true; via: 'hub_key' }
-  | { ok: true; via: 'browser' }
+type HubGateResult =
+  | { ok: true; via: 'hub_key' | 'no_key_presented' }
   | { ok: false; reason: string };
 
-// Auth is optional and only validated if a key is explicitly provided.
-// - If a Supabase user JWT path were wired here it would also be accepted.
-// - If NO x-api-key header is sent, allow (internal tool).
-// - If an x-api-key header IS sent and FANFUEL_HUB_KEY is configured,
-//   require it to match; otherwise reject as 'bad key explicitly sent'.
-// - If x-api-key is sent but no FANFUEL_HUB_KEY is configured, still allow
-//   (treat as best-effort token; we have no truth to compare against).
-function authenticate(req: Request): AuthResult {
-  const hubKey = (Deno.env.get('FANFUEL_HUB_KEY') || '').trim();
-  const xApiKey = (req.headers.get('x-api-key') || '').trim();
-  if (xApiKey && hubKey && xApiKey === hubKey) {
+/**
+ * Hub-key gate (fail-closed):
+ * - Missing FANFUEL_HUB_KEY means a presented x-api-key can NEVER authenticate as hub.
+ * - Dedicated Claude/Grok secrets may still pass when presented (via dedicated headers
+ *   or as x-api-key matching those secrets) — identity is resolved later.
+ * - Wrong/arbitrary keys are rejected.
+ * - No key presented is allowed through to authorizeAction (public allowlist / JWT / secrets).
+ */
+function gateHubKey(req: Request): HubGateResult {
+  const xApiKey = (req.headers.get('x-api-key') || req.headers.get('x-fanfuel-hub-key') || '').trim();
+  if (!xApiKey) return { ok: true, via: 'no_key_presented' };
+  if (isHubServiceCredential(req) || isGrokCredential(req) || isClaudeCredential(req)) {
     return { ok: true, via: 'hub_key' };
   }
-  if (xApiKey && hubKey && xApiKey !== hubKey) {
-    return { ok: false, reason: 'bad x-api-key' };
+  const hubKey = (Deno.env.get('FANFUEL_HUB_KEY') || '').trim();
+  if (!hubKey) {
+    return { ok: false, reason: 'FANFUEL_HUB_KEY not configured; presented x-api-key rejected' };
   }
-  return { ok: true, via: 'browser' };
+  if (secretsEqual(xApiKey, hubKey)) {
+    return { ok: true, via: 'hub_key' };
+  }
+  return { ok: false, reason: 'bad x-api-key' };
 }
 
 async function resolveArtistUserId(supabase: ReturnType<typeof createClient>): Promise<string> {
@@ -68,15 +83,14 @@ Deno.serve(async (req) => {
 
   try {
     const expectedKey = (Deno.env.get('FANFUEL_HUB_KEY') || '').trim();
-    const authResult = authenticate(req);
-    if (!authResult.ok) {
-      console.warn('control-center-api auth rejected:', authResult.reason);
+    const hubGate = gateHubKey(req);
+    if (!hubGate.ok) {
+      console.warn('control-center-api hub gate rejected:', hubGate.reason);
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
         status: 401,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
-    console.log('control-center-api auth via:', authResult.via);
 
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
@@ -84,32 +98,38 @@ Deno.serve(async (req) => {
     );
 
     const body = await req.json().catch(() => ({}));
-    const { action } = body;
+    const action = String(body.action ?? '');
 
-    // Resolve actor from JWT when present (Song DNA / discovery approvals).
-    // Existing hub_key / anonymous paths remain for reads and legacy writes.
-    let actor: Actor | null = null;
-    const authDecision = await authorizeAction(String(action ?? ''), req, supabase);
-    if (authDecision.ok) {
-      actor = authDecision.actor;
+    // Central authorization — missing credentials cannot authorize protected
+    // reads or any write. Unknown / legacy writes fail closed.
+    // Public smart-link / catalog actions are explicit in PUBLIC_ACTION_ALLOWLIST.
+    const authDecision = await authorizeAction(action, req, supabase);
+    if (!authDecision.ok) {
+      return new Response(JSON.stringify({ error: authDecision.error }), {
+        status: authDecision.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
     }
+    if (
+      authDecision.actor.kind === 'anonymous' &&
+      !PUBLIC_ACTION_ALLOWLIST.has(action)
+    ) {
+      return new Response(JSON.stringify({ error: 'Authentication required' }), {
+        status: 401,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+    const actor: Actor = authDecision.actor;
 
-    if (isSongDnaAction(String(action ?? ''))) {
-      if (!authDecision.ok && String(action).startsWith('list_') === false && action !== 'get_song_dna') {
-        return new Response(JSON.stringify({ error: authDecision.error }), {
-          status: authDecision.status,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
-      }
-      // Writes always require admin JWT even if classifyAction is still phase3.
-      const result = await runSongDnaAction(String(action), body, supabase, actor);
+    if (isSongDnaAction(action)) {
+      const result = await runSongDnaAction(action, body, supabase, actor);
       return new Response(JSON.stringify(result.data), {
         status: result.status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
 
-    if (String(action) === 'outreach_cutover_readiness') {
+    if (action === 'outreach_cutover_readiness') {
       const report = await buildCutoverReadinessReport(supabase);
       return new Response(JSON.stringify({ ok: true, report }), {
         status: 200,
@@ -117,17 +137,17 @@ Deno.serve(async (req) => {
       });
     }
 
-    if (isLyricDecoderAction(String(action ?? ''))) {
-      const result = await runLyricDecoderAction(String(action), body);
+    if (isLyricDecoderAction(action)) {
+      const result = await runLyricDecoderAction(action, body);
       return new Response(JSON.stringify(result.data), {
         status: result.status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
 
-    if (isPlaylistAgentAction(String(action ?? ''))) {
+    if (isPlaylistAgentAction(action)) {
       const result = await runPlaylistAgentAction(
-        String(action),
+        action,
         body,
         supabase,
         expectedKey,
@@ -140,32 +160,32 @@ Deno.serve(async (req) => {
       });
     }
 
-    if (isRadioAction(String(action ?? ''))) {
-      const result = await runRadioAction(String(action), body, supabase, expectedKey);
+    if (isRadioAction(action)) {
+      const result = await runRadioAction(action, body, supabase, expectedKey);
       return new Response(JSON.stringify(result.data), {
         status: result.status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
 
-    if (isFanEngagementAction(String(action ?? ''))) {
-      const result = await runFanEngagementAction(String(action), body, supabase);
+    if (isFanEngagementAction(action)) {
+      const result = await runFanEngagementAction(action, body, supabase);
       return new Response(JSON.stringify(result.data), {
         status: result.status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
 
-    if (isPitchCampaignAction(String(action ?? ''))) {
-      const result = await runPitchCampaignAction(String(action), body, supabase);
+    if (isPitchCampaignAction(action)) {
+      const result = await runPitchCampaignAction(action, body, supabase);
       return new Response(JSON.stringify(result.data), {
         status: result.status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
 
-    if (isSyncRegisterAction(String(action ?? ''))) {
-      const result = await runSyncRegisterAction(String(action), body, supabase);
+    if (isSyncRegisterAction(action)) {
+      const result = await runSyncRegisterAction(action, body, supabase);
       return new Response(JSON.stringify(result.data), {
         status: result.status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },

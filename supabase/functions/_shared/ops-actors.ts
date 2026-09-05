@@ -1,9 +1,18 @@
 /**
  * AGH operating-actor identities and Claude / Grok / Fendi authority matrix.
  *
- * Identity is ALWAYS derived from authenticated credentials (JWT / agent header /
- * scheduler secret). Request-body fields like approved_by / generated_by /
- * performed_by are ignored for authorization and attribution.
+ * Identity is ALWAYS derived from authenticated credentials:
+ *   - dedicated agent secrets (Claude / Grok)
+ *   - scheduler secret
+ *   - hub/service key
+ *   - JWT user id (Fendi = exact ARTIST_USER_ID; human_admin = admin role)
+ *
+ * Headers `x-agh-agent` / `x-ops-agent` are NEVER identity. They may only be
+ * retained as non-authoritative labels after the credential itself maps to
+ * that actor. Admin JWT + x-agh-agent:grok remains human_admin.
+ *
+ * Request-body fields like approved_by / generated_by / performed_by are
+ * ignored for authorization and attribution.
  */
 
 import type { Actor } from "./outreach-auth.ts";
@@ -113,6 +122,7 @@ const FENDI_CAPS = new Set<OpsCapability>([
   "record_placement_evidence",
 ]);
 
+/** Human admins: ops reads/writes except playlist approve/send (Grok/Fendi only). */
 const HUMAN_ADMIN_CAPS = new Set<OpsCapability>([
   "research_playlist_targets",
   "verify_playlist_targets",
@@ -120,9 +130,7 @@ const HUMAN_ADMIN_CAPS = new Set<OpsCapability>([
   "submit_song_dna_for_review",
   "generate_playlist_drafts",
   "review_playlist_drafts",
-  "approve_playlist_drafts",
   "reject_playlist_drafts",
-  "send_playlist_pitches",
   "monitor_inbox",
   "classify_replies",
   "respond_to_curators",
@@ -162,43 +170,111 @@ function artistUserId(): string {
   return (Deno.env.get("ARTIST_USER_ID") || Deno.env.get("FENDI_USER_ID") || "").trim();
 }
 
-function agentHeader(req: Request | null): string {
-  if (!req) return "";
-  return (req.headers.get("x-agh-agent") || req.headers.get("x-ops-agent") || "").trim().toLowerCase();
+/** Constant-time-ish compare to avoid leaking secret length/prefix by timing. */
+export function secretsEqual(a: string, b: string): boolean {
+  if (!a || !b || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
 }
 
-/** Derive operating actor from authenticated credentials only. */
+function header(req: Request | null, name: string): string {
+  if (!req) return "";
+  return (req.headers.get(name) || "").trim();
+}
+
+function presentedApiKey(req: Request | null): string {
+  if (!req) return "";
+  return header(req, "x-api-key") || header(req, "x-fanfuel-hub-key");
+}
+
+/** Non-authoritative agent label header — never used for identity. */
+export function agentLabelHeader(req: Request | null): string {
+  if (!req) return "";
+  return (header(req, "x-agh-agent") || header(req, "x-ops-agent")).toLowerCase();
+}
+
+export function isGrokCredential(req: Request | null): boolean {
+  const expected = (Deno.env.get("GROK_PLAYLIST_CONTROL_SECRET") || "").trim();
+  if (!expected || !req) return false;
+  const presented =
+    header(req, "x-grok-playlist-control-secret") ||
+    header(req, "x-grok-agent-secret") ||
+    presentedApiKey(req);
+  return secretsEqual(presented, expected);
+}
+
+export function isClaudeCredential(req: Request | null): boolean {
+  const expected = (Deno.env.get("CLAUDE_AGENT_SECRET") || "").trim();
+  if (!expected || !req) return false;
+  const presented =
+    header(req, "x-claude-agent-secret") ||
+    header(req, "x-claude-agent-key") ||
+    presentedApiKey(req);
+  // Do not treat FANFUEL_HUB_KEY as Claude — require the dedicated secret match
+  // against the Claude-specific headers OR against x-api-key only when the
+  // presented key equals CLAUDE_AGENT_SECRET (not the hub key).
+  const hub = (Deno.env.get("FANFUEL_HUB_KEY") || "").trim();
+  if (hub && secretsEqual(presented, hub) && !secretsEqual(presented, expected)) {
+    return false;
+  }
+  return secretsEqual(presented, expected);
+}
+
+export function isHubServiceCredential(req: Request | null): boolean {
+  const expected = (Deno.env.get("FANFUEL_HUB_KEY") || "").trim();
+  if (!expected || !req) return false;
+  // Missing configured secret must never authorize. Arbitrary keys fail closed.
+  return secretsEqual(presentedApiKey(req), expected);
+}
+
+export function isSchedulerCredential(req: Request | null): boolean {
+  const expected = (Deno.env.get("OUTREACH_SCHEDULER_SECRET") || "").trim();
+  if (!expected || !req) return false;
+  return secretsEqual(header(req, "x-outreach-scheduler-secret"), expected);
+}
+
+/**
+ * Derive operating actor from authenticated credentials only.
+ * Agent headers never elevate privileges.
+ */
 export function resolveOpsActor(actor: Actor | null, req: Request | null = null): OpsActor {
-  // Scheduler secret must never impersonate Grok/Claude via agent headers.
-  if (actor?.kind === "scheduler") {
+  // 1) Dedicated credentials win — order: scheduler → Grok → Claude → service.
+  if (actor?.kind === "scheduler" || isSchedulerCredential(req)) {
     return { kind: "scheduler", userId: null, label: "scheduler" };
   }
-
-  const header = agentHeader(req);
-  if (header === "claude" || header === "claude_research") {
+  if (actor?.kind === "grok_playlist_control" || isGrokCredential(req)) {
+    const labelHint = agentLabelHeader(req);
+    const label =
+      labelHint === "grok" || labelHint === "grok_playlist_control"
+        ? "grok_playlist_control"
+        : "grok_playlist_control";
+    return { kind: "grok_playlist_control", userId: null, label };
+  }
+  if (actor?.kind === "claude" || isClaudeCredential(req)) {
     return { kind: "claude", userId: actor?.kind === "user" ? actor.userId : null, label: "claude" };
   }
-  if (header === "grok" || header === "grok_playlist_control") {
-    return {
-      kind: "grok_playlist_control",
-      userId: actor?.kind === "user" ? actor.userId : null,
-      label: "grok_playlist_control",
-    };
+  if (actor?.kind === "service" || isHubServiceCredential(req)) {
+    return { kind: "service", userId: null, label: "service" };
+  }
+
+  // 2) JWT-backed users — Fendi exact id, else human_admin, else anonymous.
+  // Agent headers MUST NOT remap these identities.
+  if (actor?.kind === "user") {
+    const fendiId = artistUserId();
+    if (fendiId && actor.userId === fendiId) {
+      return { kind: "fendi", userId: actor.userId, label: "fendi" };
+    }
+    if (actor.isAdmin) {
+      return { kind: "human_admin", userId: actor.userId, label: "human_admin" };
+    }
+    return { kind: "anonymous", userId: actor.userId, label: "user" };
   }
 
   if (!actor || actor.kind === "anonymous") {
     return { kind: "anonymous", userId: null, label: "anonymous" };
   }
-  if (actor.kind === "service") return { kind: "service", userId: null, label: "service" };
-
-  const fendiId = artistUserId();
-  if (fendiId && actor.userId === fendiId) {
-    return { kind: "fendi", userId: actor.userId, label: "fendi" };
-  }
-  if (actor.kind === "user" && actor.isAdmin) {
-    return { kind: "human_admin", userId: actor.userId, label: "human_admin" };
-  }
-  return { kind: "anonymous", userId: actor.userId, label: "user" };
+  return { kind: "anonymous", userId: null, label: "anonymous" };
 }
 
 export function capabilitiesFor(kind: OpsActorKind): ReadonlySet<OpsCapability> {

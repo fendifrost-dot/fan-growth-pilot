@@ -72,6 +72,7 @@ export const ACTION_AUTH: Record<string, AuthClass> = {
   draft_pitch: 'outreach-write',
   approve_draft: 'outreach-write',
   invalidate_stale_drafts: 'admin-write',
+  audit_invalid_drafts: 'admin-write',
   update_draft: 'outreach-write',
   delete_draft: 'outreach-write',
   log_pitch_sent: 'outreach-write',

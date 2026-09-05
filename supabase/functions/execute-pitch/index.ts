@@ -9,7 +9,10 @@ import {
   eligibilitySkipLog,
 } from "../_shared/outreach-eligibility.ts";
 import { evaluateOutreachDecision } from "../_shared/outreach-decision.ts";
-import { verifyDraftPitchIntegrity } from "../_shared/pitch-copy-integrity.ts";
+import {
+  verifyApprovedContentHash,
+  verifyDraftPitchIntegrity,
+} from "../_shared/pitch-copy-integrity.ts";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-api-key",
@@ -19,11 +22,10 @@ const NON_BULK_METHODS = new Set(["algorithmic", "distributor_pitch"]);
 // this is keyed by track_name so one song's sends NEVER consume another's budget. There
 // is deliberately NO aggregate "N songs × 20" ceiling — N (songs pitched per day) grows
 // over time, and per-song budgets must add capacity, not split a fixed pool.
-// Raised 20 -> 35 to clear the backlog the category-matching bug created: 31 eligible
-// deep-house targets for "Designed For Me (Control)" were rejected rather than sent, and
-// all 31 are meant to go out in one catch-up run. This is a deliberate raise of the
-// PRODUCT cap, not a bypass — both this cap and MAX_DAILY_PITCHES_GLOBAL below are still
-// enforced on every send. Drop back to 20 once the backlog is clear.
+// Raised 20 -> 35 to clear a category-matching backlog (eligible targets were
+// rejected rather than sent). Deliberate PRODUCT-cap raise, not a bypass — both
+// this cap and MAX_DAILY_PITCHES_GLOBAL remain enforced on every send. Drop back
+// to 20 once the backlog is clear.
 const PER_SONG_DAILY_PITCHES = 35;
 // GLOBAL deliverability guardrail — NOT a product cap. Cold email from one sending domain
 // has a hard reputation ceiling regardless of per-song logic; this protects
@@ -178,6 +180,17 @@ Deno.serve(async (req) => {
         cooldown_until: null,
         message_to_user: "Draft not found or not approved: " + draftId,
       });
+    }
+
+    const approvalSeal = await verifyApprovedContentHash(draft);
+    if (!approvalSeal.ok) {
+      return jsonPitch({
+        ok: false,
+        method_used: "none",
+        action_taken: "skipped",
+        cooldown_until: null,
+        message_to_user: "🚫 " + approvalSeal.message,
+      }, 422);
     }
 
     // Bind exclusively to the approved draft — reject caller overrides that diverge.
@@ -357,7 +370,7 @@ async function handleEmailPitch(
   // This asks "is this SONG cleared to be pitched at all?", which no other
   // control on this path asks: the send window, the cooldown, and the per-song /
   // global caps are all capacity controls, and the target-side gates are about
-  // the curator. AGH-001 ("Meditate": no category, no genre signal) walked
+  // the curator. AGH-001 (uncleared track with no category / genre signal) walked
   // straight through all of them.
   //
   // Deliberately placed ABOVE and OUTSIDE the `if (!testMode)` block below.

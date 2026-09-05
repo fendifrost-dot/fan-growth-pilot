@@ -20,7 +20,8 @@ Deno.serve(async (req) => {
     }
     const body = await req.json().catch(() => ({}));
     const sb = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
-    const result = await runDraftPitch(body, sb);
+    // Hub-key callers are service actors; agent header still selects Claude/Grok when present.
+    const result = await runDraftPitch(body, sb, { kind: "service" }, req);
     return new Response(JSON.stringify(result.data), { status: result.status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

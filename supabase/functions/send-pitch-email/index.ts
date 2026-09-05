@@ -1,7 +1,10 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendResendEmail } from "../_shared/resend-pitch.ts";
 import { evaluateOutreachDecision } from "../_shared/outreach-decision.ts";
-import { verifyDraftPitchIntegrity } from "../_shared/pitch-copy-integrity.ts";
+import {
+  verifyApprovedContentHash,
+  verifyDraftPitchIntegrity,
+} from "../_shared/pitch-copy-integrity.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -54,6 +57,15 @@ Deno.serve(async (req) => {
     }
     if (String(draft.channel ?? "").toLowerCase() !== "email") {
       return json({ error: "Draft channel is not email", draft_id: draftId, channel: draft.channel }, 422);
+    }
+
+    const approvalSeal = await verifyApprovedContentHash(draft);
+    if (!approvalSeal.ok) {
+      return json({
+        error: approvalSeal.message,
+        code: approvalSeal.code,
+        draft_id: draftId,
+      }, 422);
     }
 
     const playlistId = String(draft.playlist_id ?? "").trim();

@@ -136,7 +136,18 @@ const TRACK_A = {
   spotify_url: "https://open.spotify.com/track/aaa",
   apple_music_url: null,
   soundcloud_url: null,
+  approved_song_dna_version_id: "dna-a",
   track_categories: [{ category_id: "cat-1", categories: { id: "cat-1", slug: "rap_general", label: "Rap" } }],
+};
+
+const DNA_A = {
+  id: "dna-a",
+  track_id: "track-a",
+  short_pitch: "KNOWN SHORT PITCH FROM TRACK A",
+  approval_state: "approved",
+  approved_lanes: ["rap_general"],
+  excluded_lanes: ["house_club", "deep_house_groove"],
+  primary_genre: "rap",
 };
 
 const PLAYLIST = {
@@ -147,7 +158,7 @@ const PLAYLIST = {
   lane: "rap_general",
   platform: "spotify",
   recommended_pitch_angle: null,
-  verification_status: null,
+  verification_status: "auto_verified",
   pitch_status: "not_pitched",
   fraud_verdict: "safe",
   submission_method: "email",
@@ -170,11 +181,11 @@ const TEMPLATE_ROW = {
   body_template: COLD_BODY,
 };
 
-function baseTables(track = TRACK_A, playlist = PLAYLIST): Record<string, Row[]> {
-  const nestedCats = (track.track_categories ?? []) as {
+function baseTables(track: Row = TRACK_A, playlist: Row = PLAYLIST): Record<string, Row[]> {
+  const nestedCats = ((track.track_categories ?? []) as {
     category_id: string;
     categories: { id: string; slug: string; label: string };
-  }[];
+  }[]);
   return {
     playlist_targets: [playlist],
     tracks: [track],
@@ -183,7 +194,7 @@ function baseTables(track = TRACK_A, playlist = PLAYLIST): Record<string, Row[]>
       category_id: tc.category_id,
       categories: tc.categories,
     })),
-    song_dna_versions: [],
+    song_dna_versions: track.approved_song_dna_version_id === "dna-a" ? [DNA_A] : [],
     artist_config: [
       { key: "lanes", value: LANES_VALUE },
       { key: "artist_name", value: "Test Artist" },
@@ -195,17 +206,21 @@ function baseTables(track = TRACK_A, playlist = PLAYLIST): Record<string, Row[]>
   };
 }
 
+const SERVICE = { kind: "service" as const };
+
 Deno.test("draft_pitch requires track_id — title-only is rejected", async () => {
   const tables = baseTables();
   const byId = stubSb(tables);
   const byName = stubSb(tables);
   const a = await runDraftPitch(
-    { playlist_id: "spotify:pl1", track_id: "track-a", generated_by: "test" },
+    { playlist_id: "spotify:pl1", track_id: "track-a", generated_by: "spoof-ignored" },
     byId as never,
+    SERVICE,
   );
   const b = await runDraftPitch(
     { playlist_id: "spotify:pl1", track_name: "Example Track A", generated_by: "test" },
     byName as never,
+    SERVICE,
   );
   assertEquals(a.status, 200, JSON.stringify(a.data));
   assertEquals(b.status, 422, JSON.stringify(b.data));
@@ -219,6 +234,7 @@ Deno.test("track short_pitch wins over an unrelated lane pitch_angle", async () 
   const res = await runDraftPitch(
     { playlist_id: "spotify:pl1", track_id: "track-a" },
     sb as never,
+    SERVICE,
   );
   assertEquals(res.status, 200, JSON.stringify(res.data));
   const body = (res.data as { body: string }).body;
@@ -232,9 +248,16 @@ Deno.test("missing pitch copy on every source returns 422 and inserts no draft",
     ...TRACK_A,
     short_pitch: null,
     pitch_angle: null,
+    approved_song_dna_version_id: "dna-empty",
+  };
+  const dnaEmpty = {
+    ...DNA_A,
+    id: "dna-empty",
+    short_pitch: null,
   };
   const playlist = { ...PLAYLIST, recommended_pitch_angle: null, lane: "rap_trap_hype" };
   const tables = baseTables(track, playlist);
+  tables.song_dna_versions = [dnaEmpty];
   tables.artist_config = [
     { key: "lanes", value: { rap_trap_hype: { label: "Trap" } } },
     { key: "artist_name", value: "Test Artist" },
@@ -243,6 +266,7 @@ Deno.test("missing pitch copy on every source returns 422 and inserts no draft",
   const res = await runDraftPitch(
     { playlist_id: "spotify:pl1", track_id: "track-a" },
     sb as never,
+    SERVICE,
   );
   assertEquals(res.status, 422);
   const data = res.data as { error: string };

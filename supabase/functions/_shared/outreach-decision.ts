@@ -5,8 +5,9 @@
  *   - Exact track_id required (no title-only / guessed identity)
  *   - Playlist id required
  *   - Song-specific pitch copy required (track short_pitch / approved DNA short_pitch)
- *   - Playlist/lane copy never fills {{pitch}} (fit_reason only)
- *   - If approved Song DNA exists, its lane rules are enforced
+ *   - Playlist/lane copy never fills {{pitch}} (fit metadata only — not a template token)
+ *   - If a song_dna_version_id is supplied, it must belong to the selected track and be approved
+ *   - Genre/category fit: DNA lane rules when DNA present; categoryGate otherwise
  *   - Campaign id validated only when provided (pitch_campaigns may be absent)
  *   - General override_category_check is forbidden
  */
@@ -19,6 +20,7 @@ import {
   type TrackPitchResult,
 } from "./pitch-copy.ts";
 import { loadLanesConfig } from "./playlist-lanes.ts";
+import { categoryGate, targetGenre, trackGenre } from "./placement-match.ts";
 
 export type OutreachDecisionInput = {
   route: string;
@@ -134,37 +136,42 @@ export async function evaluateOutreachDecision(
     }
   }
 
-  let approvedDna: {
+  type ApprovedDnaRow = {
     id: string;
+    track_id?: string;
     short_pitch: string | null;
     approval_state: string;
     approved_lanes: string[] | null;
     excluded_lanes: string[] | null;
     primary_genre: string | null;
-  } | null = null;
+  };
+  let approvedDna: ApprovedDnaRow | null = null;
 
   // Song DNA is optional until Fendi has approved versions. When present, it governs.
+  // A supplied song_dna_version_id MUST belong to the selected track (never another song's DNA).
   if (trackId && !errors.includes("track_id_not_found") && await tableExists(sb, "song_dna_versions")) {
-    const q = songDnaVersionId
-      ? sb.from("song_dna_versions").select(
-        "id, short_pitch, approval_state, approved_lanes, excluded_lanes, primary_genre",
-      ).eq("id", songDnaVersionId).maybeSingle()
-      : sb.from("song_dna_versions").select(
-        "id, short_pitch, approval_state, approved_lanes, excluded_lanes, primary_genre",
+    if (songDnaVersionId) {
+      const { data } = await sb.from("song_dna_versions").select(
+        "id, track_id, short_pitch, approval_state, approved_lanes, excluded_lanes, primary_genre",
+      ).eq("id", songDnaVersionId).maybeSingle();
+      if (!data) {
+        errors.push("song_dna_not_found");
+      } else if (String(data.track_id) !== trackId) {
+        errors.push("song_dna_track_mismatch");
+      } else if (String(data.approval_state) !== "approved") {
+        errors.push("song_dna_not_approved");
+      } else {
+        approvedDna = data as unknown as ApprovedDnaRow;
+        songDnaVersionId = String(data.id);
+      }
+    } else {
+      const { data } = await sb.from("song_dna_versions").select(
+        "id, track_id, short_pitch, approval_state, approved_lanes, excluded_lanes, primary_genre",
       ).eq("track_id", trackId).eq("approval_state", "approved").maybeSingle();
-    const { data } = await q;
-    if (data && String(data.approval_state) === "approved") {
-      approvedDna = data as {
-        id: string;
-        short_pitch: string | null;
-        approval_state: string;
-        approved_lanes: string[] | null;
-        excluded_lanes: string[] | null;
-        primary_genre: string | null;
-      };
-      songDnaVersionId = String(data.id);
-    } else if (songDnaVersionId) {
-      errors.push("song_dna_not_approved");
+      if (data && String(data.approval_state) === "approved") {
+        approvedDna = data as unknown as ApprovedDnaRow;
+        songDnaVersionId = String(data.id);
+      }
     }
   }
 
@@ -192,11 +199,40 @@ export async function evaluateOutreachDecision(
   if (playlistId) {
     const { data } = await sb
       .from("playlist_targets")
-      .select("playlist_id, lane, recommended_pitch_angle")
+      .select(
+        "playlist_id, lane, recommended_pitch_angle, playlist_name, curator_name, vibe_tags, playlist_categories(category_id, categories(id, slug, label, family))",
+      )
       .eq("playlist_id", playlistId)
       .maybeSingle();
     playlistRow = (data as Record<string, unknown> | null) ?? null;
   }
+
+  let trackCategories: { id: string; slug: string; label: string }[] = [];
+  let trackCatIds: string[] = [];
+  if (trackId && !errors.includes("track_id_not_found")) {
+    const { data: tCats } = await sb
+      .from("track_categories")
+      .select("category_id, categories(id, slug, label, family)")
+      .eq("track_id", trackId);
+    for (const tc of tCats ?? []) {
+      const row = tc as unknown as {
+        category_id?: string;
+        categories?: { id: string; slug: string; label: string } | null;
+      };
+      const cat = row.categories;
+      if (cat?.id) {
+        trackCategories.push(cat);
+        trackCatIds.push(String(row.category_id ?? cat.id));
+      } else if (row.category_id) {
+        trackCatIds.push(String(row.category_id));
+      }
+    }
+  }
+
+  const playlistCatIds = ((playlistRow?.playlist_categories ?? []) as {
+    category_id: string;
+    categories?: { id: string; slug: string; label: string } | null;
+  }[]).map((pc) => String(pc.category_id));
 
   const lanes = await loadLanesConfig(sb);
   const pitch = resolveTrackPitchCopy({ track: trackRow, approvedDna });
@@ -227,6 +263,43 @@ export async function evaluateOutreachDecision(
       contradictionExplanation =
         `Lane "${lane}" is not in the approved Song DNA approved_lanes set.`;
       errors.push("dna_lane_not_approved");
+    }
+  }
+
+  // Genre/category fit when no approved DNA lane rules applied.
+  // Without DNA, compare song categories / genre signals to the playlist (same
+  // categoryGate used at draft time). With DNA, lane allow/exclude above is the fit check.
+  if (
+    !approvedDna &&
+    compatible &&
+    trackId &&
+    playlistId &&
+    !errors.includes("track_id_not_found")
+  ) {
+    const tGenre = trackGenre({
+      categories: trackCategories,
+      name: trackRow?.name ?? trackName,
+      short_pitch: trackRow?.short_pitch ?? null,
+      pitch_angle: trackRow?.pitch_angle ?? null,
+    });
+    const pGenre = targetGenre({
+      lane: lane || null,
+      playlist_name: playlistRow?.playlist_name as string | null,
+      curator_name: playlistRow?.curator_name as string | null,
+      vibe_tags: playlistRow?.vibe_tags,
+    });
+    const gate = categoryGate({
+      trackCatIds,
+      targetCatIds: playlistCatIds,
+      trackGenre: tGenre,
+      targetGenre: pGenre,
+    });
+    if (!gate.pass) {
+      compatible = false;
+      contradictionExplanation =
+        contradictionExplanation ??
+        `Category/genre gate failed (${gate.reason}).`;
+      errors.push(gate.reason === "genre_conflict" ? "genre_conflict" : "category_mismatch");
     }
   }
 

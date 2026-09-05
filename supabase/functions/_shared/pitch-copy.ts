@@ -3,7 +3,7 @@
  *
  * {{pitch}} MUST NEVER be filled from playlist_targets.recommended_pitch_angle
  * or artist_config.lanes[lane].pitch_angle — those are target-fit copy only
- * (see resolveFitReason → {{fit_reason}}).
+ * (see resolveFitReason — operator metadata only; not a template placeholder).
  */
 import { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
@@ -112,7 +112,7 @@ export function resolveTrackPitchCopy(args: {
   };
 }
 
-/** Target-fit explanation for {{fit_reason}} — never used as {{pitch}}. */
+/** Target-fit explanation for draft metadata — never used as {{pitch}} or a template token. */
 export function resolveFitReason(args: {
   row?: {
     recommended_pitch_angle?: unknown;

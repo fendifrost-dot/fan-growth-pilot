@@ -27,7 +27,7 @@ Deno.test("playlist/lane copy cannot populate {{pitch}} vars", () => {
     lanes: { deep_house_groove: { pitch_angle: "LANE FALLBACK" } },
   });
   assertEquals(fit.fitReason, "PLAYLIST REC");
-  assertEquals(fit.source === "playlist" || fit.source === "playlist_targets.recommended_pitch_angle", true);
+  assertEquals(fit.source, "playlist_targets.recommended_pitch_angle");
 });
 
 Deno.test("unknown template placeholders are rejected", () => {
@@ -38,7 +38,24 @@ Deno.test("unknown template placeholders are rejected", () => {
       playlist_name: "P",
       track_name: "T",
       pitch: "pitch",
-      fit_reason: "",
+      stream_link: "",
+      artist_name: "X",
+      prior_track: "",
+    });
+  } catch (e) {
+    threw = e instanceof UnknownPitchPlaceholderError;
+  }
+  assertEquals(threw, true);
+});
+
+Deno.test("{{fit_reason}} is rejected as an unknown placeholder", () => {
+  let threw = false;
+  try {
+    applyPitchTemplate("Hi", "{{fit_reason}}", {
+      curator_name: "A",
+      playlist_name: "P",
+      track_name: "T",
+      pitch: "pitch",
       stream_link: "",
       artist_name: "X",
       prior_track: "",

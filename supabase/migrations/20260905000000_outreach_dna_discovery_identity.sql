@@ -77,13 +77,13 @@ alter table public.song_dna_audit_events enable row level security;
 drop policy if exists song_dna_versions_admin_all on public.song_dna_versions;
 create policy song_dna_versions_admin_all on public.song_dna_versions
   for all to authenticated
-  using (coalesce((auth.jwt() -> 'app_metadata' ->> 'role'), '') = 'admin')
-  with check (coalesce((auth.jwt() -> 'app_metadata' ->> 'role'), '') = 'admin');
+  using (public.has_role(auth.uid(), 'admin'))
+  with check (public.has_role(auth.uid(), 'admin'));
 
 drop policy if exists song_dna_audit_admin_select on public.song_dna_audit_events;
 create policy song_dna_audit_admin_select on public.song_dna_audit_events
   for select to authenticated
-  using (coalesce((auth.jwt() -> 'app_metadata' ->> 'role'), '') = 'admin');
+  using (public.has_role(auth.uid(), 'admin'));
 
 -- ---------------------------------------------------------------------------
 -- Discovery profiles (replace hardcoded RAP/HOUSE subgenre arrays)
@@ -136,13 +136,13 @@ alter table public.discovery_profile_audit_events enable row level security;
 drop policy if exists discovery_profiles_admin_all on public.discovery_profiles;
 create policy discovery_profiles_admin_all on public.discovery_profiles
   for all to authenticated
-  using (coalesce((auth.jwt() -> 'app_metadata' ->> 'role'), '') = 'admin')
-  with check (coalesce((auth.jwt() -> 'app_metadata' ->> 'role'), '') = 'admin');
+  using (public.has_role(auth.uid(), 'admin'))
+  with check (public.has_role(auth.uid(), 'admin'));
 
 drop policy if exists discovery_profile_audit_admin_select on public.discovery_profile_audit_events;
 create policy discovery_profile_audit_admin_select on public.discovery_profile_audit_events
   for select to authenticated
-  using (coalesce((auth.jwt() -> 'app_metadata' ->> 'role'), '') = 'admin');
+  using (public.has_role(auth.uid(), 'admin'));
 
 -- Soft-delete protection: no hard delete of referenced profiles (app enforces deactivate).
 -- Seed pending profiles from former source literals (historical migrate → pending review).
@@ -273,12 +273,12 @@ alter table public.agh_config_audit_events enable row level security;
 drop policy if exists outreach_shadow_admin_select on public.outreach_decision_shadow_log;
 create policy outreach_shadow_admin_select on public.outreach_decision_shadow_log
   for select to authenticated
-  using (coalesce((auth.jwt() -> 'app_metadata' ->> 'role'), '') = 'admin');
+  using (public.has_role(auth.uid(), 'admin'));
 
 drop policy if exists agh_config_audit_admin_select on public.agh_config_audit_events;
 create policy agh_config_audit_admin_select on public.agh_config_audit_events
   for select to authenticated
-  using (coalesce((auth.jwt() -> 'app_metadata' ->> 'role'), '') = 'admin');
+  using (public.has_role(auth.uid(), 'admin'));
 
 -- Gate mode retired: outreach decision is always enforced.
 -- Keep key for operators who still look it up; value must be enforce.
@@ -313,7 +313,7 @@ alter table public.outreach_mismatch_overrides enable row level security;
 drop policy if exists outreach_mismatch_overrides_admin_all on public.outreach_mismatch_overrides;
 create policy outreach_mismatch_overrides_admin_all on public.outreach_mismatch_overrides
   for all to authenticated
-  using (coalesce((auth.jwt() -> 'app_metadata' ->> 'role'), '') = 'admin')
-  with check (coalesce((auth.jwt() -> 'app_metadata' ->> 'role'), '') = 'admin');
+  using (public.has_role(auth.uid(), 'admin'))
+  with check (public.has_role(auth.uid(), 'admin'));
 
 commit;

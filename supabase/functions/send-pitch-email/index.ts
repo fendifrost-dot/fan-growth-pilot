@@ -1,6 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendResendEmail } from "../_shared/resend-pitch.ts";
 import { evaluateOutreachDecision } from "../_shared/outreach-decision.ts";
+import { verifyDraftPitchIntegrity } from "../_shared/pitch-copy-integrity.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -34,45 +35,87 @@ Deno.serve(async (req) => {
       return await handleRadioPitch(payload);
     }
 
-    const {
-      playlist_id,
-      curator_email,
-      curator_name,
-      playlist_name,
-      track_name,
-      track_id,
-      campaign_id,
-      song_dna_version_id,
-      subject,
-      body,
-    } = payload;
-
-    if (!curator_email || !subject || !body || !playlist_id) {
-      return json({ error: "curator_email, subject, body, and playlist_id are required" }, 400);
-    }
-    if (!track_id && !track_name) {
-      return json({ error: "track_id required (title-only send rejected)" }, 422);
+    // Playlist pitches must dispatch the exact Grok-approved draft artefact.
+    const draftId = String(payload.draft_id ?? "").trim();
+    if (!draftId) {
+      return json({
+        error:
+          "draft_id required. send-pitch-email dispatches only the approved draft's recipient, subject, and body — caller-supplied message fields are not accepted.",
+      }, 422);
     }
 
     if (!Deno.env.get("RESEND_API_KEY")) return json({ error: "RESEND_API_KEY not configured" }, 500);
 
     const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
-    // body === "auto" inventing is removed — require real drafted body with track pitch.
-    if (body === "auto") {
+    const { data: draft } = await supabase.from("outreach_drafts").select("*").eq("id", draftId).maybeSingle();
+    if (!draft || String(draft.status) !== "approved") {
+      return json({ error: "Draft not found or not approved", draft_id: draftId }, 422);
+    }
+    if (String(draft.channel ?? "").toLowerCase() !== "email") {
+      return json({ error: "Draft channel is not email", draft_id: draftId, channel: draft.channel }, 422);
+    }
+
+    const playlistId = String(draft.playlist_id ?? "").trim();
+    const curatorEmail = String(draft.recipient ?? "").trim();
+    const subject = String(draft.subject ?? "").trim();
+    const body = String(draft.body ?? "").trim();
+    const trackId = String(draft.track_id ?? "").trim();
+    const trackName = String(draft.track_name ?? "").trim();
+    const campaignId = String(draft.campaign_id ?? "").trim();
+    const songDnaVersionId = String(draft.song_dna_version_id ?? "").trim();
+
+    if (!curatorEmail || !subject || !body || !playlistId) {
       return json({
-        error:
-          "body=auto is disabled. Provide a drafted body whose {{pitch}} came from approved track Song DNA / short_pitch.",
+        error: "Approved draft is missing recipient, subject, body, or playlist_id",
+        draft_id: draftId,
+      }, 400);
+    }
+    if (!trackId) {
+      return json({ error: "Approved draft missing track_id", draft_id: draftId }, 422);
+    }
+
+    // Reject caller attempts to mix approved draft with different message fields.
+    const callerEmail = payload.curator_email != null ? String(payload.curator_email).trim() : "";
+    const callerSubject = payload.subject != null ? String(payload.subject).trim() : "";
+    const callerBody = payload.body != null ? String(payload.body).trim() : "";
+    if (callerEmail && callerEmail.toLowerCase() !== curatorEmail.toLowerCase()) {
+      return json({
+        error: "curator_email does not match the approved draft. Re-approve a changed submission with Grok.",
+      }, 422);
+    }
+    if (callerSubject && callerSubject !== subject) {
+      return json({
+        error: "subject does not match the approved draft. Re-approve a changed submission with Grok.",
+      }, 422);
+    }
+    if (callerBody && callerBody !== "auto" && callerBody !== body) {
+      return json({
+        error: "body does not match the approved draft. Re-approve a changed submission with Grok.",
+      }, 422);
+    }
+    if (payload.body === "auto") {
+      return json({
+        error: "body=auto is disabled. Dispatch the exact approved draft body.",
+      }, 422);
+    }
+
+    const integrity = await verifyDraftPitchIntegrity(supabase, draft);
+    if (!integrity.ok) {
+      return json({
+        error: integrity.message,
+        code: integrity.code,
+        draft_id: draftId,
       }, 422);
     }
 
     const decision = await evaluateOutreachDecision(supabase, {
       route: "send-pitch-email",
-      trackId: track_id ? String(track_id) : null,
-      trackName: track_name ? String(track_name) : null,
-      campaignId: campaign_id ? String(campaign_id) : null,
-      songDnaVersionId: song_dna_version_id ? String(song_dna_version_id) : null,
-      playlistId: String(playlist_id),
+      trackId,
+      trackName: trackName || null,
+      campaignId: campaignId || null,
+      songDnaVersionId: songDnaVersionId || null,
+      playlistId,
     });
     if (!decision.allow) {
       return json({
@@ -82,45 +125,54 @@ Deno.serve(async (req) => {
       }, 422);
     }
 
-    const finalBody = body;
-    const resolvedTrackName = decision.trackName || String(track_name || "");
+    const resolvedTrackName = decision.trackName || trackName;
 
     const sent = await sendResendEmail({
-      to: [curator_email],
+      to: [curatorEmail],
       subject,
-      text: finalBody,
+      text: body,
     });
     if (!sent.ok) {
       return json({ error: `Email send failed: ${sent.status} - ${sent.error}` }, sent.status >= 500 ? 500 : 422);
     }
 
-    // Log the pitch with exact identity when available
     await supabase.from("pitch_log").insert({
-      playlist_id,
+      playlist_id: playlistId,
       track_name: resolvedTrackName,
       track_id: decision.trackId,
       song_dna_version_id: decision.songDnaVersionId,
       campaign_id: decision.campaignId,
-      curator_email,
+      curator_email: curatorEmail,
       subject,
-      email_body: finalBody,
+      email_body: body,
       sent_at: new Date().toISOString(),
       resend_message_id: sent.id,
+      draft_id: draftId,
+      pitch_copy_source: integrity.source,
+      pitch_copy_hash: integrity.hash,
+      dispatched_via: "send-pitch-email",
     });
 
-    // Update playlist target status
     await supabase
       .from("playlist_targets")
       .update({ pitch_status: "pitched", pitched_at: new Date().toISOString() })
-      .eq("playlist_id", playlist_id);
+      .eq("playlist_id", playlistId);
+
+    await supabase.from("outreach_drafts").update({
+      status: "sent",
+      sent_at: new Date().toISOString(),
+    }).eq("id", draftId);
 
     return json({
       success: true,
       message_id: sent.id,
-      to: curator_email,
+      to: curatorEmail,
       track: resolvedTrackName,
       track_id: decision.trackId,
-      playlist: playlist_name || playlist_id,
+      playlist: payload.playlist_name || playlistId,
+      draft_id: draftId,
+      pitch_copy_source: integrity.source,
+      pitch_copy_hash: integrity.hash,
     });
   } catch (err) {
     console.error("send-pitch-email error:", err);

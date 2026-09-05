@@ -9,6 +9,7 @@ import {
   eligibilitySkipLog,
 } from "../_shared/outreach-eligibility.ts";
 import { evaluateOutreachDecision } from "../_shared/outreach-decision.ts";
+import { verifyDraftPitchIntegrity } from "../_shared/pitch-copy-integrity.ts";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-api-key",
@@ -99,6 +100,10 @@ function pitchLogRow(
     track_id?: string | null;
     song_dna_version_id?: string | null;
     campaign_id?: string | null;
+    draft_id?: string | null;
+    pitch_copy_source?: string | null;
+    pitch_copy_hash?: string | null;
+    dispatched_via?: string | null;
   } = {},
 ) {
   // Only attach subject/email_body/sent_at when explicitly provided so error rows keep
@@ -120,6 +125,10 @@ function pitchLogRow(
   if (extra.track_id) row.track_id = extra.track_id;
   if (extra.song_dna_version_id) row.song_dna_version_id = extra.song_dna_version_id;
   if (extra.campaign_id) row.campaign_id = extra.campaign_id;
+  if (extra.draft_id) row.draft_id = extra.draft_id;
+  if (extra.pitch_copy_source) row.pitch_copy_source = extra.pitch_copy_source;
+  if (extra.pitch_copy_hash) row.pitch_copy_hash = extra.pitch_copy_hash;
+  if (extra.dispatched_via) row.dispatched_via = extra.dispatched_via;
   return row;
 }
 Deno.serve(async (req) => {
@@ -127,17 +136,13 @@ Deno.serve(async (req) => {
   try {
     const expected = (Deno.env.get("FANFUEL_HUB_KEY") || "").trim();
     const provided = getHubKey(req).trim();
-    // Auth is optional and only validated when both sides provide a value.
-    // - No env configured -> allow (internal-only deployment).
-    // - No header provided -> allow.
-    // - Both present but mismatched -> reject as bad explicit key.
-    if (expected && provided && provided !== expected) return json({ error: "Unauthorized" }, 401);
+    // Require hub key whenever it is configured. Missing credentials must not pass.
+    if (expected) {
+      if (!provided || provided !== expected) {
+        return json({ error: "Unauthorized" }, 401);
+      }
+    }
     const body = await req.json().catch(() => ({}));
-    const playlistId = String(body.playlist_id || "").trim();
-    const trackName = String(body.track_name || "").trim();
-    const trackId = String(body.track_id || "").trim();
-    const campaignId = String(body.campaign_id || "").trim();
-    const songDnaVersionId = String(body.song_dna_version_id || "").trim();
     const methodOverride = typeof body.method_override === "string" ? body.method_override.trim() : "";
     const tierConfirmed = Boolean(body.tier_confirmed);
     const bulk = Boolean(body.bulk);
@@ -147,41 +152,106 @@ Deno.serve(async (req) => {
     const batchOverrideCap = Boolean(body.batch_override_cap);
     // Escape hatch for legitimate off-hours admin sends; defaults to enforcing the window.
     const ignoreSendWindow = Boolean(body.ignore_send_window);
-    if (!playlistId || (!trackName && !trackId && !draftId)) {
+
+    // Email sends require an approved draft — dispatch the exact Grok-approved artefact.
+    if (!draftId) {
       return jsonPitch({
         ok: false,
         method_used: "none",
         action_taken: "error",
         cooldown_until: null,
-        message_to_user: "Missing playlist_id and track identity (track_id or draft_id).",
-      });
+        message_to_user:
+          "draft_id required. Dispatch the exact approved draft — caller-supplied recipient/subject/body/track are not accepted without Grok approval.",
+      }, 422);
     }
+
     const url = Deno.env.get("SUPABASE_URL")!;
     const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const sb = createClient(url, key);
-    let draftOverrides: { email?: string; subject?: string; bodyHtml?: string } | undefined;
-    let draftChannel: string | null = null;
-    let resolvedTrackId = trackId;
-    let resolvedTrackName = trackName;
-    let resolvedCampaignId = campaignId;
-    let resolvedDnaId = songDnaVersionId;
-    if (draftId) {
-      const { data: draft } = await sb.from("outreach_drafts").select("*").eq("id", draftId).maybeSingle();
-      if (!draft || draft.status !== "approved") {
-        return jsonPitch({ ok:false, method_used:"none", action_taken:"error", cooldown_until:null, message_to_user:"Draft not found or not approved: " + draftId });
-      }
-      draftChannel = String(draft.channel ?? "").toLowerCase();
-      const plain = String(draft.body ?? "").replace(/\n/g, "<br>");
-      draftOverrides = {
-        email: (draft.recipient as string | null)?.trim() || undefined,
-        subject: (draft.subject as string | null)?.trim() || undefined,
-        bodyHtml: "<p>" + plain + "</p>",
-      };
-      if (!resolvedTrackId) resolvedTrackId = String(draft.track_id ?? "").trim();
-      if (!resolvedTrackName) resolvedTrackName = String(draft.track_name ?? "").trim();
-      if (!resolvedCampaignId) resolvedCampaignId = String(draft.campaign_id ?? "").trim();
-      if (!resolvedDnaId) resolvedDnaId = String(draft.song_dna_version_id ?? "").trim();
+
+    const { data: draft } = await sb.from("outreach_drafts").select("*").eq("id", draftId).maybeSingle();
+    if (!draft || draft.status !== "approved") {
+      return jsonPitch({
+        ok: false,
+        method_used: "none",
+        action_taken: "error",
+        cooldown_until: null,
+        message_to_user: "Draft not found or not approved: " + draftId,
+      });
     }
+
+    // Bind exclusively to the approved draft — reject caller overrides that diverge.
+    const playlistId = String(draft.playlist_id || "").trim();
+    const resolvedTrackId = String(draft.track_id ?? "").trim();
+    const resolvedTrackName = String(draft.track_name ?? "").trim();
+    const resolvedCampaignId = String(draft.campaign_id ?? "").trim();
+    const resolvedDnaId = String(draft.song_dna_version_id ?? "").trim();
+    const callerPlaylist = String(body.playlist_id || "").trim();
+    const callerTrackId = String(body.track_id || "").trim();
+    const callerTrackName = String(body.track_name || "").trim();
+    if (callerPlaylist && callerPlaylist !== playlistId) {
+      return jsonPitch({
+        ok: false,
+        method_used: "none",
+        action_taken: "error",
+        cooldown_until: null,
+        message_to_user:
+          "playlist_id does not match the approved draft. Changing song/recipient/message requires a new Grok-approved draft.",
+      }, 422);
+    }
+    if (callerTrackId && resolvedTrackId && callerTrackId !== resolvedTrackId) {
+      return jsonPitch({
+        ok: false,
+        method_used: "none",
+        action_taken: "error",
+        cooldown_until: null,
+        message_to_user:
+          "track_id does not match the approved draft. Changing song/recipient/message requires a new Grok-approved draft.",
+      }, 422);
+    }
+    if (
+      callerTrackName && resolvedTrackName &&
+      callerTrackName.toLowerCase() !== resolvedTrackName.toLowerCase()
+    ) {
+      return jsonPitch({
+        ok: false,
+        method_used: "none",
+        action_taken: "error",
+        cooldown_until: null,
+        message_to_user:
+          "track_name does not match the approved draft. Changing song/recipient/message requires a new Grok-approved draft.",
+      }, 422);
+    }
+
+    if (!playlistId || (!resolvedTrackName && !resolvedTrackId)) {
+      return jsonPitch({
+        ok: false,
+        method_used: "none",
+        action_taken: "error",
+        cooldown_until: null,
+        message_to_user: "Approved draft is missing playlist_id or track identity.",
+      }, 422);
+    }
+
+    const integrity = await verifyDraftPitchIntegrity(sb, draft);
+    if (!integrity.ok) {
+      return jsonPitch({
+        ok: false,
+        method_used: "none",
+        action_taken: "skipped",
+        cooldown_until: null,
+        message_to_user: "🚫 " + integrity.message,
+      }, 422);
+    }
+
+    const draftChannel = String(draft.channel ?? "").toLowerCase();
+    const plain = String(draft.body ?? "").replace(/\n/g, "<br>");
+    const draftOverrides = {
+      email: (draft.recipient as string | null)?.trim() || undefined,
+      subject: (draft.subject as string | null)?.trim() || undefined,
+      bodyHtml: "<p>" + plain + "</p>",
+    };
+
     const { data: row, error: rowErr } = await sb.from("playlist_targets").select("*").eq("playlist_id", playlistId).maybeSingle();
     if (rowErr || !row) return jsonPitch({ ok:false, method_used:"none", action_taken:"error", cooldown_until:null, message_to_user:"Playlist not found: " + playlistId });
 
@@ -203,21 +273,19 @@ Deno.serve(async (req) => {
         message_to_user: "🚫 " + (decision.errors[0] ?? decision.code),
       }, 422);
     }
-    if (!resolvedTrackName && decision.trackName) resolvedTrackName = decision.trackName;
-    if (!resolvedTrackId && decision.trackId) resolvedTrackId = decision.trackId;
+    const trackNameOut = resolvedTrackName || decision.trackName || "";
+    const trackIdOut = resolvedTrackId || decision.trackId || "";
 
     const method = (draftChannel === "email" ? "email" : (methodOverride || row.submission_method || "other")).toLowerCase().trim();
     if (bulk && NON_BULK_METHODS.has(method)) return jsonPitch({ ok:true, method_used:method, action_taken:"skipped", cooldown_until:null, message_to_user:"⏭️ Skipped *" + (row.playlist_name ?? playlistId) + "* — method *" + method + "* needs a manual pass." });
     const tierRaw = row.tier;
     const tier = typeof tierRaw === "number" ? tierRaw : tierRaw != null && tierRaw !== "" ? Number(tierRaw) : null;
     if (tier === 3 && !tierConfirmed) return jsonPitch({ ok:false, method_used:method, action_taken:"tier_gate", cooldown_until:null, message_to_user:"⚠️ *Tier 3 playlist* — *" + (row.playlist_name ?? playlistId) + "*\n\nFlagged for verify-first pitching. Reply *confirm* to send." });
-    // draftId is threaded through so the eligibility gate applies (and logs)
-    // identically for draft-backed and draft-less sends.
     if (method === "email") {
       return await handleEmailPitch(
         sb,
         row,
-        resolvedTrackName,
+        trackNameOut,
         bulk,
         draftOverrides,
         testMode,
@@ -226,13 +294,15 @@ Deno.serve(async (req) => {
         ignoreSendWindow,
         draftId,
         {
-          trackId: resolvedTrackId || decision.trackId,
-          songDnaVersionId: resolvedDnaId || decision.songDnaVersionId,
+          trackId: trackIdOut || decision.trackId,
+          songDnaVersionId: resolvedDnaId || decision.songDnaVersionId || integrity.songDnaVersionId,
           campaignId: resolvedCampaignId || decision.campaignId,
+          pitchCopySource: integrity.source,
+          pitchCopyHash: integrity.hash,
         },
       );
     }
-    return jsonPitch(buildNonEmailMessage(row, method, resolvedTrackName));
+    return jsonPitch(buildNonEmailMessage(row, method, trackNameOut));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return jsonPitch({ ok:false, method_used:"error", action_taken:"error", cooldown_until:null, message_to_user:"❌ " + msg });
@@ -275,6 +345,8 @@ async function handleEmailPitch(
     trackId?: string | null;
     songDnaVersionId?: string | null;
     campaignId?: string | null;
+    pitchCopySource?: string | null;
+    pitchCopyHash?: string | null;
   } = {},
 ): Promise<Response> {
   const playlistId = String(row.playlist_id);
@@ -437,6 +509,10 @@ async function handleEmailPitch(
       track_id: identity.trackId ?? null,
       song_dna_version_id: identity.songDnaVersionId ?? null,
       campaign_id: identity.campaignId ?? null,
+      draft_id: draftId || null,
+      pitch_copy_source: identity.pitchCopySource ?? null,
+      pitch_copy_hash: identity.pitchCopyHash ?? null,
+      dispatched_via: "execute-pitch",
     }))
     .select("id")
     .single();

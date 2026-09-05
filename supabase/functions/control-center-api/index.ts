@@ -8,10 +8,17 @@ import { isSongDnaAction, runSongDnaAction } from '../_shared/song-dna.ts';
 import { authorizeAction, type Actor } from '../_shared/outreach-auth.ts';
 import { buildCutoverReadinessReport } from '../_shared/outreach-decision.ts';
 import { isLyricDecoderAction, runLyricDecoderAction } from '../_shared/lyric-decoder.ts';
+import { isLyricsAction, runLyricsAction } from '../_shared/lyrics.ts';
+import { isSplitSheetAction, runSplitSheetAction } from '../_shared/split-sheets.ts';
+import { isOpsPressAction, runOpsPressAction } from '../_shared/ops-press.ts';
+import { auditPlaylistCategoryCoverage } from '../_shared/playlist-category-coverage.ts';
+import { isPlaylistOpsAction, runPlaylistOpsAction } from '../_shared/playlist-ops.ts';
+import { resolveOpsActor } from '../_shared/ops-actors.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-api-key',
+  'Access-Control-Allow-Headers':
+    'authorization, x-client-info, apikey, content-type, x-api-key, x-agh-agent, x-ops-agent, x-outreach-scheduler-secret',
 };
 
 const PLATFORM_STAT_IDENTIFIERS = [
@@ -86,23 +93,64 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const { action } = body;
 
-    // Resolve actor from JWT when present (Song DNA / discovery approvals).
-    // Existing hub_key / anonymous paths remain for reads and legacy writes.
+    // Resolve actor from JWT when present (Song DNA / discovery / ops approvals).
+    // Existing hub_key / anonymous paths remain for explicitly public-read actions.
     let actor: Actor | null = null;
     const authDecision = await authorizeAction(String(action ?? ''), req, supabase);
-    if (authDecision.ok) {
-      actor = authDecision.actor;
+    if (!authDecision.ok) {
+      return new Response(JSON.stringify({ error: authDecision.error }), {
+        status: authDecision.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
     }
+    actor = authDecision.actor;
+    const opsActor = resolveOpsActor(actor, req);
 
     if (isSongDnaAction(String(action ?? ''))) {
-      if (!authDecision.ok && String(action).startsWith('list_') === false && action !== 'get_song_dna') {
-        return new Response(JSON.stringify({ error: authDecision.error }), {
-          status: authDecision.status,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
-      }
-      // Writes always require admin JWT even if classifyAction is still phase3.
-      const result = await runSongDnaAction(String(action), body, supabase, actor);
+      const result = await runSongDnaAction(String(action), body, supabase, actor, opsActor);
+      return new Response(JSON.stringify(result.data), {
+        status: result.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isLyricsAction(String(action ?? ''))) {
+      const result = await runLyricsAction(String(action), body, supabase, actor);
+      return new Response(JSON.stringify(result.data), {
+        status: result.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isSplitSheetAction(String(action ?? ''))) {
+      const result = await runSplitSheetAction(String(action), body, supabase, actor);
+      return new Response(JSON.stringify(result.data), {
+        status: result.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isOpsPressAction(String(action ?? ''))) {
+      const result = await runOpsPressAction(String(action), body, supabase, actor);
+      return new Response(JSON.stringify(result.data), {
+        status: result.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (String(action) === 'audit_playlist_category_coverage') {
+      const audit = await auditPlaylistCategoryCoverage(supabase, {
+        activeOnly: body.active_only !== false,
+        sampleLimit: Number(body.sample_limit ?? 25) || 25,
+      });
+      return new Response(JSON.stringify(audit), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isPlaylistOpsAction(String(action ?? ''))) {
+      const result = await runPlaylistOpsAction(String(action), body, supabase, opsActor);
       return new Response(JSON.stringify(result.data), {
         status: result.status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -164,7 +212,7 @@ Deno.serve(async (req) => {
     }
 
     if (isSyncRegisterAction(String(action ?? ''))) {
-      const result = await runSyncRegisterAction(String(action), body, supabase);
+      const result = await runSyncRegisterAction(String(action), body, supabase, opsActor);
       return new Response(JSON.stringify(result.data), {
         status: result.status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },

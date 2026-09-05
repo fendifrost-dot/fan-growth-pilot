@@ -4,6 +4,7 @@
 // Genre stamps are never gated by display-title literals.
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import { denyUnlessCan, type OpsActor } from "./ops-actors.ts";
 
 export type RunResult = { status: number; data: Record<string, unknown> };
 
@@ -21,6 +22,9 @@ export const SYNC_REGISTER_ACTIONS = [
   "list_licensing_pitches",
   "log_licensing_pitch",
   "mark_licensing_response",
+  "get_track_sync_gate",
+  "update_track_sync_gate",
+  "recompute_track_sync_eligible",
 ] as const;
 
 export function isSyncRegisterAction(action: string): boolean {
@@ -31,8 +35,9 @@ export function normalizeTitle(name: string | null | undefined): string {
   return (name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-export function computeSyncEligible(hasSample: string | null | undefined): boolean {
-  return hasSample === "no";
+/** Sample alone never grants sync eligibility — use the Sync Gate / Fendi path. */
+export function computeSyncEligible(_hasSample: string | null | undefined): boolean {
+  return false;
 }
 
 function isRapPrimary(v: string | null | undefined): boolean {
@@ -105,6 +110,9 @@ export function trackSyncFields(
     fields.genre_stamp = genre;
   }
   if (body.has_sample !== undefined) fields.has_sample = parseSampleFlag(body.has_sample);
+  if (body.sync_eligible !== undefined) {
+    return { error: "sync_eligible is not writable from catalogue upsert; use the sync gate / Fendi approval path." };
+  }
   if (typeof body.is_month1_sync_default === "boolean") {
     fields.is_month1_sync_default = body.is_month1_sync_default;
   }
@@ -122,6 +130,7 @@ export async function runSyncRegisterAction(
   action: string,
   body: Record<string, unknown>,
   sb: SupabaseClient,
+  opsActor: OpsActor | null = null,
 ): Promise<RunResult> {
   if (action === "list_music_supervisors") {
     const { data, error } = await sb
@@ -245,6 +254,124 @@ export async function runSyncRegisterAction(
     const { data, error } = await sb.from("licensing_pitch_log").update(patch).eq("id", id).select().single();
     if (error) return { status: 500, data: { error: error.message } };
     return { status: 200, data: { ok: true, row: data } };
+  }
+
+  if (action === "get_track_sync_gate") {
+    const trackId = String(body.track_id ?? "").trim();
+    if (!trackId) return { status: 400, data: { error: "track_id required" } };
+    const { data: track, error } = await sb
+      .from("tracks")
+      .select(
+        "id, name, has_sample, sync_eligible, approved_song_dna_version_id, sample_declaration_approved_at, sync_approved_at, splits_ready, publishing_ready, assets_ready, unresolved_rights_exception, sample_exception_resolved, sync_eligible_blockers, sync_eligible_computed_at",
+      )
+      .eq("id", trackId)
+      .maybeSingle();
+    if (error) return { status: 500, data: { error: error.message } };
+    if (!track) return { status: 404, data: { error: "track not found" } };
+    return { status: 200, data: { ok: true, track } };
+  }
+
+  if (action === "update_track_sync_gate") {
+    const trackId = String(body.track_id ?? "").trim();
+    if (!trackId) return { status: 400, data: { error: "track_id required" } };
+    const now = new Date().toISOString();
+    const patch: Record<string, unknown> = {};
+
+    const wantsSampleDecision = body.sample_declaration_approved === true || body.sample_declaration_approved === false;
+    const wantsSyncDecision = body.sync_approved === true || body.sync_approved === false;
+
+    if (wantsSampleDecision) {
+      const denied = denyUnlessCan(opsActor ?? { kind: "anonymous", userId: null, label: "anonymous" }, "approve_sample_declaration");
+      if (denied) return denied;
+      if (!opsActor || opsActor.kind !== "fendi") {
+        return {
+          status: 403,
+          data: { error: "Only Fendi's exact ARTIST_USER_ID may approve sample declarations" },
+        };
+      }
+      if (body.sample_declaration_approved === true) {
+        patch.sample_declaration_approved_at = now;
+        patch.sample_declaration_approved_by = opsActor.userId;
+      } else {
+        patch.sample_declaration_approved_at = null;
+        patch.sample_declaration_approved_by = null;
+      }
+    }
+
+    if (wantsSyncDecision) {
+      const denied = denyUnlessCan(opsActor ?? { kind: "anonymous", userId: null, label: "anonymous" }, "approve_sync_eligibility");
+      if (denied) return denied;
+      if (!opsActor || opsActor.kind !== "fendi") {
+        return {
+          status: 403,
+          data: { error: "Only Fendi's exact ARTIST_USER_ID may approve sync eligibility" },
+        };
+      }
+      if (body.sync_approved === true) {
+        patch.sync_approved_at = now;
+        patch.sync_approved_by = opsActor.userId;
+      } else {
+        patch.sync_approved_at = null;
+        patch.sync_approved_by = null;
+      }
+    }
+
+    const wantsOpsFlags =
+      typeof body.splits_ready === "boolean" ||
+      typeof body.publishing_ready === "boolean" ||
+      typeof body.assets_ready === "boolean" ||
+      typeof body.unresolved_rights_exception === "boolean" ||
+      typeof body.sample_exception_resolved === "boolean";
+
+    if (wantsOpsFlags) {
+      const denied = denyUnlessCan(
+        opsActor ?? { kind: "anonymous", userId: null, label: "anonymous" },
+        "update_sync_gate_ops_flags",
+      );
+      if (denied) return denied;
+      if (typeof body.splits_ready === "boolean") patch.splits_ready = body.splits_ready;
+      if (typeof body.publishing_ready === "boolean") patch.publishing_ready = body.publishing_ready;
+      if (typeof body.assets_ready === "boolean") patch.assets_ready = body.assets_ready;
+      if (typeof body.unresolved_rights_exception === "boolean") {
+        patch.unresolved_rights_exception = body.unresolved_rights_exception;
+      }
+      if (typeof body.sample_exception_resolved === "boolean") {
+        patch.sample_exception_resolved = body.sample_exception_resolved;
+      }
+    }
+
+    if (!Object.keys(patch).length) {
+      return {
+        status: 400,
+        data: {
+          error:
+            "Provide at least one gate field (sample_declaration_approved | sync_approved | splits_ready | publishing_ready | assets_ready | unresolved_rights_exception | sample_exception_resolved)",
+        },
+      };
+    }
+
+    const { error: upErr } = await sb.from("tracks").update(patch).eq("id", trackId);
+    if (upErr) return { status: 500, data: { error: upErr.message } };
+
+    try {
+      const { recomputeTrackSyncEligible } = await import("./sync-eligibility.ts");
+      const result = await recomputeTrackSyncEligible(sb, trackId);
+      return { status: 200, data: { ok: true, ...result } };
+    } catch (e) {
+      return { status: 500, data: { error: e instanceof Error ? e.message : String(e) } };
+    }
+  }
+
+  if (action === "recompute_track_sync_eligible") {
+    const trackId = String(body.track_id ?? "").trim();
+    if (!trackId) return { status: 400, data: { error: "track_id required" } };
+    try {
+      const { recomputeTrackSyncEligible } = await import("./sync-eligibility.ts");
+      const result = await recomputeTrackSyncEligible(sb, trackId);
+      return { status: 200, data: { ok: true, ...result } };
+    } catch (e) {
+      return { status: 500, data: { error: e instanceof Error ? e.message : String(e) } };
+    }
   }
 
   return { status: 400, data: { error: `Unknown sync-register action: ${action}` } };

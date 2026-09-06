@@ -58,6 +58,7 @@ vi.mock("@/integrations/supabase/client", () => ({
       insert: vi.fn(() => Promise.resolve(mockInsertResult)),
     })),
     rpc: vi.fn().mockResolvedValue({ data: null, error: null }),
+    functions: { invoke: vi.fn().mockResolvedValue({ data: {}, error: null }) },
     storage: {
       from: vi.fn(() => ({
         createSignedUrl: vi.fn().mockResolvedValue({ data: null, error: "no-op" }),

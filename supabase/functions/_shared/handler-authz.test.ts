@@ -7,6 +7,7 @@
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { runDraftPitch, runApproveDraft } from "./playlist-agent-run.ts";
 import type { Actor } from "./outreach-auth.ts";
+import { authorizeAction } from "./outreach-auth.ts";
 
 type Row = Record<string, unknown>;
 
@@ -203,4 +204,76 @@ Deno.test("missing credentials cannot draft (anonymous denied)", async () => {
     req(),
   );
   assertEquals(res.status, 403);
+});
+
+
+function authStubSb(): { auth: { getUser: (t: string) => Promise<{ data: { user: null }; error: Error }> }; from: () => unknown } {
+  return {
+    auth: {
+      getUser: () => Promise.resolve({ data: { user: null }, error: new Error("no jwt") }),
+    },
+    from: () => {
+      const chain = {
+        select: () => chain,
+        eq: () => chain,
+        maybeSingle: () => Promise.resolve({ data: null, error: null }),
+      };
+      return chain;
+    },
+  };
+}
+
+Deno.test("authorizeAction Claude research / verify / categorize / draft allowed", async () => {
+  await withEnv({ CLAUDE_AGENT_SECRET: "claude-secret" }, async () => {
+    const headers = { "x-claude-agent-secret": "claude-secret" };
+    for (const action of [
+      "run_playlist_research",
+      "run_playlist_sweep",
+      "reconcile_lane_targets",
+      "discover_spotify_placements",
+      "import_spotify_for_artists_csv",
+      "enrich_curator_contacts",
+      "verify_targets",
+      "set_playlist_categories",
+      "draft_pitch",
+    ]) {
+      const d = await authorizeAction(action, req(headers), authStubSb() as never);
+      assert(d.ok, `${action} ${JSON.stringify(d)}`);
+    }
+  });
+});
+
+Deno.test("authorizeAction Claude approve/send/campaign denied", async () => {
+  await withEnv({ CLAUDE_AGENT_SECRET: "claude-secret" }, async () => {
+    const headers = { "x-claude-agent-secret": "claude-secret" };
+    for (const action of ["approve_draft", "send_campaign", "activate_campaign", "approve_song_dna"]) {
+      const d = await authorizeAction(action, req(headers), authStubSb() as never);
+      assertEquals(d.ok, false, action);
+    }
+  });
+});
+
+Deno.test("authorizeAction service cannot unrestricted admin writes", async () => {
+  await withEnv({ FANFUEL_HUB_KEY: "hub-key" }, async () => {
+    const headers = { "x-api-key": "hub-key" };
+    const draft = await authorizeAction("draft_pitch", req(headers), authStubSb() as never);
+    assert(draft.ok);
+    for (const action of ["activate_campaign", "approve_draft", "upsert_smart_link", "approve_song_dna"]) {
+      const d = await authorizeAction(action, req(headers), authStubSb() as never);
+      assertEquals(d.ok, false, action);
+    }
+  });
+});
+
+Deno.test("authorizeAction unknown action fails closed", async () => {
+  const d = await authorizeAction("not_a_real_action", req(), authStubSb() as never);
+  assertEquals(d.ok, false);
+  assert(!d.ok && d.status === 403);
+});
+
+Deno.test("authorizeAction public capture allowlist works without credentials", async () => {
+  for (const action of ["list_campaigns", "list_targets", "count_targets"]) {
+    const d = await authorizeAction(action, req(), authStubSb() as never);
+    assert(d.ok, action);
+  }
 });

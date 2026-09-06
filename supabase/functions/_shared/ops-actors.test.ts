@@ -155,3 +155,54 @@ Deno.test("Missing Grok secret never authenticates as Grok even with matching he
     assertEquals(actor.kind, "human_admin");
   });
 });
+
+
+Deno.test("manage_* admin surfaces denied to Claude / Grok / service / scheduler", () => {
+  withEnv({
+    CLAUDE_AGENT_SECRET: "claude-secret",
+    GROK_PLAYLIST_CONTROL_SECRET: "grok-secret",
+    FANFUEL_HUB_KEY: "hub-key",
+    OUTREACH_SCHEDULER_SECRET: "sched-secret",
+    ARTIST_USER_ID: "fendi-exact-id",
+  }, () => {
+    const surfaces = [
+      "manage_campaigns",
+      "manage_catalog",
+      "manage_smart_links",
+      "manage_sync_registers",
+      "manage_radio",
+      "manage_fan_engagement",
+    ] as const;
+
+    const claude = resolveOpsActor(null, req({ "x-claude-agent-secret": "claude-secret" }));
+    const grok = resolveOpsActor(null, req({ "x-grok-playlist-control-secret": "grok-secret" }));
+    const service = resolveOpsActor(null, req({ "x-api-key": "hub-key" }));
+    const sched = resolveOpsActor(null, req({ "x-outreach-scheduler-secret": "sched-secret" }));
+    const human = resolveOpsActor(user("other-admin"), null);
+    const fendi = resolveOpsActor(user("fendi-exact-id"), null);
+
+    for (const cap of surfaces) {
+      assertEquals(can(claude, cap), false, `claude must lack ${cap}`);
+      assertEquals(can(grok, cap), false, `grok must lack ${cap}`);
+      assertEquals(can(service, cap), false, `service must lack ${cap}`);
+      assertEquals(can(sched, cap), false, `scheduler must lack ${cap}`);
+      assertEquals(can(human, cap), true, `human_admin must have ${cap}`);
+      assertEquals(can(fendi, cap), true, `fendi must have ${cap}`);
+    }
+  });
+});
+
+Deno.test("Claude retains research / verify / draft / evidence capabilities", () => {
+  withEnv({ CLAUDE_AGENT_SECRET: "claude-secret" }, () => {
+    const actor = resolveOpsActor(null, req({ "x-claude-agent-secret": "claude-secret" }));
+    assertEquals(can(actor, "research_playlist_targets"), true);
+    assertEquals(can(actor, "verify_playlist_targets"), true);
+    assertEquals(can(actor, "generate_playlist_drafts"), true);
+    assertEquals(can(actor, "run_placement_discovery"), true);
+    assertEquals(can(actor, "record_research_evidence"), true);
+    assertEquals(can(actor, "draft_song_dna"), true);
+    assertEquals(can(actor, "approve_playlist_drafts"), false);
+    assertEquals(can(actor, "send_playlist_pitches"), false);
+    assertEquals(can(actor, "monitor_inbox"), false);
+  });
+});

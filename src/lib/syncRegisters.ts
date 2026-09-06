@@ -108,7 +108,7 @@ export function trackSyncFields(
       currentStamp: opts?.currentStamp ?? null,
       approvedPrimaryGenre: opts?.approvedPrimaryGenre ?? null,
     });
-    if (!gate.ok) return { error: gate.error };
+    if (gate.ok === false) return { error: gate.error };
     fields.genre_stamp = genre;
   }
   if (body.has_sample !== undefined) fields.has_sample = parseSampleFlag(body.has_sample);

@@ -145,9 +145,9 @@ const AdminPitchComposer: React.FC = () => {
       try {
         const [dna, camps] = await Promise.all([
           callHubFn<{ rows: SongDnaRow[] }>("list_song_dna", { track_id: trackId }),
-          callHubFn<{ campaigns?: CampaignOpt[]; rows?: CampaignOpt[] }>("list_campaigns").catch(() => ({
-            campaigns: [],
-          })),
+          callHubFn<{ campaigns?: CampaignOpt[]; rows?: CampaignOpt[] }>("list_campaigns").catch(
+            (): { campaigns?: CampaignOpt[]; rows?: CampaignOpt[] } => ({ campaigns: [] }),
+          ),
         ]);
         const approved = (dna.rows ?? []).find((r) => r.approval_state === "approved") ?? null;
         setApprovedDna(approved);

@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
 
+const LIVE = process.env.RUN_LIVE_OG_TESTS === "1";
+const describeLive = LIVE ? describe : describe.skip;
+
 /**
  * Deterministic tests for get-og-metadata edge function.
  * These call the deployed edge function directly (no Cloudflare Worker dependency)
@@ -8,7 +11,7 @@ import { describe, it, expect } from "vitest";
 
 const EDGE_FN_URL = "https://vsemrziqxrrfcquxfnwd.supabase.co/functions/v1/get-og-metadata";
 
-describe("get-og-metadata: deterministic per-slug validation", () => {
+describeLive("get-og-metadata: deterministic per-slug validation", () => {
   it("runwaymusic returns correct title, canonical, and og:image", async () => {
     const res = await fetch(`${EDGE_FN_URL}?slug=runwaymusic`);
     expect(res.status).toBe(200);
@@ -60,7 +63,7 @@ describe("get-og-metadata: deterministic per-slug validation", () => {
   });
 });
 
-describe("HTML injection simulation: og:image per slug", () => {
+describeLive("HTML injection simulation: og:image per slug", () => {
   /**
    * Simulates the Cloudflare Worker's HTML injection logic.
    * Given metadata from the edge function, verify correct OG tags would be produced.

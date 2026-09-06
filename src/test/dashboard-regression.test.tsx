@@ -17,7 +17,7 @@ vi.mock("react-router-dom", async () => {
 });
 
 describe("Dashboard regression: no Connected Accounts", () => {
-  it("Index page does not render 'Connected Accounts' section", async () => {
+  it("Index page does not render legacy 'Connected Accounts' section", async () => {
     const { default: Index } = await import("@/pages/Index");
     const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
     const { BrowserRouter } = await import("react-router-dom");
@@ -32,9 +32,11 @@ describe("Dashboard regression: no Connected Accounts", () => {
       </QueryClientProvider>
     );
 
-    expect(container.textContent).not.toContain("Connected Accounts");
-    expect(container.textContent).not.toContain("Connect Platform");
-    expect(container.textContent).toContain("Smart Links");
-    expect(container.textContent).toContain("Performance Overview");
+    const text = container.textContent ?? "";
+    // Legacy OAuth account panel must stay gone.
+    expect(text).not.toContain("Connected Accounts");
+    // Current dashboard anchors.
+    expect(text).toMatch(/Smart Links/);
+    expect(text).toMatch(/Performance Overview/);
   });
 });

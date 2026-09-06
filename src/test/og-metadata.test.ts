@@ -1,8 +1,11 @@
 import { describe, it, expect } from "vitest";
 
+const LIVE = process.env.RUN_LIVE_OG_TESTS === "1";
+const describeLive = LIVE ? describe : describe.skip;
+
 const EDGE_FN_URL = `https://vsemrziqxrrfcquxfnwd.supabase.co/functions/v1/get-og-metadata`;
 
-describe("get-og-metadata edge function", () => {
+describeLive("get-og-metadata edge function", () => {
   it("returns different metadata for runwaymusic vs heartchakra", async () => {
     const [runwayRes, chakraRes] = await Promise.all([
       fetch(`${EDGE_FN_URL}?slug=runwaymusic`),
@@ -65,7 +68,7 @@ describe("get-og-metadata edge function", () => {
  * 
  * NOTE: These will fail until the Cloudflare Worker is deployed and the app is published.
  */
-describe("Integration: live URL metadata delivery", () => {
+describeLive("Integration: live URL metadata delivery", () => {
   const LINKS_DOMAIN = "https://links.fendifrost.com";
 
   it("GET /runwaymusic returns correct OG tags in HTML", async () => {

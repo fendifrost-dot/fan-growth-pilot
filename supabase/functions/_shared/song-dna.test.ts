@@ -156,6 +156,30 @@ function stubSb(state: {
 
 const admin: Actor = { kind: "user", userId: "fendi-admin", isAdmin: true };
 
+function withEnv(vars: Record<string, string>, fn: () => void | Promise<void>) {
+  const prev: Record<string, string | undefined> = {};
+  for (const [k, v] of Object.entries(vars)) {
+    prev[k] = Deno.env.get(k);
+    Deno.env.set(k, v);
+  }
+  const finish = () => {
+    for (const [k, v] of Object.entries(prev)) {
+      if (v == null) Deno.env.delete(k);
+      else Deno.env.set(k, v);
+    }
+  };
+  const out = fn();
+  if (out && typeof (out as Promise<void>).then === "function") {
+    return (out as Promise<void>).finally(finish);
+  }
+  finish();
+}
+
+function req(headers: Record<string, string> = {}): Request {
+  return new Request("https://example.test", { headers });
+}
+
+
 Deno.test("isSongDnaAction claims DNA actions only", () => {
   assert(isSongDnaAction("approve_song_dna"));
   assertEquals(isSongDnaAction("create_campaign"), false);
@@ -225,7 +249,7 @@ Deno.test("Song DNA query errors surface DB code/message; migration only when mi
   assertEquals(String(listed.data.error).includes("Apply 20260905000000"), false);
 });
 
-Deno.test("create draft requires admin actor", async () => {
+Deno.test("create draft requires draft_song_dna capability (Claude or admin)", async () => {
   const sb = stubSb({ versions: [] });
   const denied = await runSongDnaAction(
     "create_song_dna_draft",
@@ -233,7 +257,7 @@ Deno.test("create draft requires admin actor", async () => {
     sb,
     null,
   );
-  assertEquals(denied.status, 401);
+  assertEquals(denied.status, 403);
 
   const ok = await runSongDnaAction(
     "create_song_dna_draft",
@@ -248,39 +272,57 @@ Deno.test("create draft requires admin actor", async () => {
   );
   assertEquals(ok.status, 200);
   assertEquals((ok.data.version as { approval_state: string }).approval_state, "draft");
+
+  await withEnv({ CLAUDE_AGENT_SECRET: "claude-secret" }, async () => {
+    const claudeOk = await runSongDnaAction(
+      "create_song_dna_draft",
+      {
+        track_id: "t1",
+        primary_genre: "hip_hop_rap",
+        approved_lanes: ["rap_general"],
+        short_pitch: "Claude-drafted pitch",
+      },
+      stubSb({ versions: [] }),
+      { kind: "claude" },
+      req({ "x-claude-agent-secret": "claude-secret" }),
+    );
+    assertEquals(claudeOk.status, 200);
+  });
 });
 
-Deno.test("approve requires pending state and records admin user id", async () => {
-  const sb = stubSb({
-    versions: [{
-      id: "dna1",
-      track_id: "t1",
-      version_number: 1,
-      approval_state: "pending_fendi_review",
-      primary_genre: "hip_hop_rap",
-      approved_lanes: ["rap_general"],
-      short_pitch: "Approved pitch",
-      sample_declaration: "no",
-      sync_recommendation: "blocked",
-    }],
-  });
-  const spoof = await runSongDnaAction(
-    "approve_song_dna",
-    { song_dna_version_id: "dna1", approved_by: "spoofed" },
-    sb,
-    null,
-  );
-  assertEquals(spoof.status, 401);
+Deno.test("approve requires pending state and Fendi capability", async () => {
+  await withEnv({ ARTIST_USER_ID: "fendi-admin" }, async () => {
+    const sb = stubSb({
+      versions: [{
+        id: "dna1",
+        track_id: "t1",
+        version_number: 1,
+        approval_state: "pending_fendi_review",
+        primary_genre: "hip_hop_rap",
+        approved_lanes: ["rap_general"],
+        short_pitch: "Approved pitch",
+        sample_declaration: "no",
+        sync_recommendation: "blocked",
+      }],
+    });
+    const spoof = await runSongDnaAction(
+      "approve_song_dna",
+      { song_dna_version_id: "dna1", approved_by: "spoofed" },
+      sb,
+      null,
+    );
+    assertEquals(spoof.status, 403);
 
-  const ok = await runSongDnaAction(
-    "approve_song_dna",
-    { song_dna_version_id: "dna1" },
-    sb,
-    admin,
-  );
-  assertEquals(ok.status, 200);
-  assertEquals((ok.data.version as { approved_by: string }).approved_by, "fendi-admin");
-  assertEquals((ok.data.version as { approval_state: string }).approval_state, "approved");
+    const ok = await runSongDnaAction(
+      "approve_song_dna",
+      { song_dna_version_id: "dna1" },
+      sb,
+      admin,
+    );
+    assertEquals(ok.status, 200);
+    assertEquals((ok.data.version as { approved_by: string }).approved_by, "fendi-admin");
+    assertEquals((ok.data.version as { approval_state: string }).approval_state, "approved");
+  });
 });
 
 Deno.test("payload.requires_private_license blocks sync candidate without evidence", async () => {
@@ -300,24 +342,35 @@ Deno.test("payload.requires_private_license blocks sync candidate without eviden
   assertEquals(String(r.data.error).includes("license"), true);
 });
 
-Deno.test("ordinary admin actor still required — anonymous cannot approve", async () => {
-  const sb = stubSb({
-    versions: [{
-      id: "dna2",
-      track_id: "t1",
-      version_number: 1,
-      approval_state: "pending_fendi_review",
-      primary_genre: "house",
-      approved_lanes: ["house_general"],
-      short_pitch: "House pitch",
-    }],
+Deno.test("human admin and anonymous cannot approve Song DNA (Fendi only)", async () => {
+  await withEnv({ ARTIST_USER_ID: "fendi-admin" }, async () => {
+    const sb = stubSb({
+      versions: [{
+        id: "dna2",
+        track_id: "t1",
+        version_number: 1,
+        approval_state: "pending_fendi_review",
+        primary_genre: "house",
+        approved_lanes: ["house_general"],
+        short_pitch: "House pitch",
+      }],
+    });
+    const ordinary: Actor = { kind: "user", userId: "not-admin", isAdmin: false };
+    const denied = await runSongDnaAction(
+      "approve_song_dna",
+      { song_dna_version_id: "dna2" },
+      sb,
+      ordinary,
+    );
+    assertEquals(denied.status, 403);
+
+    const humanAdmin: Actor = { kind: "user", userId: "other-admin", isAdmin: true };
+    const adminDenied = await runSongDnaAction(
+      "approve_song_dna",
+      { song_dna_version_id: "dna2" },
+      sb,
+      humanAdmin,
+    );
+    assertEquals(adminDenied.status, 403);
   });
-  const ordinary: Actor = { kind: "user", userId: "not-admin", isAdmin: false };
-  const denied = await runSongDnaAction(
-    "approve_song_dna",
-    { song_dna_version_id: "dna2" },
-    sb,
-    ordinary,
-  );
-  assertEquals(denied.status, 401);
 });

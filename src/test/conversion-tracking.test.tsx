@@ -10,6 +10,7 @@ let existingLeadResponse: any = { data: null, error: null };
 
 vi.mock("@/integrations/supabase/client", () => ({
   supabase: {
+    functions: { invoke: vi.fn().mockResolvedValue({ data: {}, error: null }) },
     from: (table: string) => {
       if (table === "smart_links") {
         return {

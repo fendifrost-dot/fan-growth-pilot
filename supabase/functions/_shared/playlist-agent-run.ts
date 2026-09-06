@@ -121,6 +121,18 @@ export type RunResult = { status: number; data: unknown };
 
 const RATE_MS = 2000;
 
+/**
+ * Install sweep-lane → genre routing from *approved* discovery profiles before any
+ * request-path use of targetGenre() / categoryGate(). Imported but previously never
+ * called here, which left SWEEP_LANE_GENRE empty and forced underscore-blind text
+ * fallback. Safe to call repeatedly; empty profile set leaves the map empty (fail closed).
+ */
+export async function ensureSweepLaneRouting(sb: SupabaseClient): Promise<void> {
+  const profiles = await loadActiveDiscoveryProfiles(sb, { requireApproved: true });
+  const buckets = profilesToSweepBuckets(profiles);
+  setSweepLaneRoutingFromProfiles(buckets.laneGenre, buckets.laneBlockPatterns);
+}
+
 function rowDiscoveryReferences(
   row: { research_context?: unknown; similar_artists?: unknown; lane?: string | null },
   lanesConfig: Record<string, LaneConfig>,
@@ -264,6 +276,7 @@ export async function runDraftPitch(
   actor: Actor | null = null,
   req: Request | null = null,
 ): Promise<RunResult> {
+  await ensureSweepLaneRouting(sb);
   // Attribution / approval identity is server-derived only.
   const safeBody = stripSpoofedAttribution(body);
   const opsActor = resolveOpsActor(actor, req);
@@ -1978,6 +1991,7 @@ export async function runReconcileLaneTargets(
   body: Record<string, unknown>,
   sb: SupabaseClient,
 ): Promise<RunResult> {
+  await ensureSweepLaneRouting(sb);
   const laneFilter = typeof body.lane === "string" ? body.lane.trim() : "";
   const dryRun = Boolean(body.dry_run);
   const lanesConfig = await loadLanesConfig(sb);
@@ -3265,6 +3279,7 @@ export async function runCatalogueAdmin(
   }
 
   if (action === "recommend_targets_for_track") {
+    await ensureSweepLaneRouting(sb);
     const trackId = String(body.track_id ?? "").trim();
     if (!trackId) return { status: 400, data: { error: "track_id required" } };
     const mode = String(body.mode ?? "warm_aligned");
@@ -3597,6 +3612,8 @@ export async function runPlaylistAgentAction(
   actor: Actor | null = null,
   req: Request | null = null,
 ): Promise<RunResult> {
+  // Ensure lane→genre routing is warm for every agent request path.
+  await ensureSweepLaneRouting(sb);
   if (isSongDnaAction(action)) {
     return runSongDnaAction(action, body, sb, actor);
   }

@@ -12,6 +12,7 @@ import {
   trackGenre,
   targetGenre,
 } from "./placement-match.ts";
+import { setSweepLaneRoutingFromProfiles } from "./playlist-lanes.ts";
 
 const rowWith = (featuring: unknown) => ({ research_context: { featuring_tracks: featuring } });
 
@@ -205,8 +206,13 @@ Deno.test("categoryOverlapCount counts shared ids", () => {
 });
 
 Deno.test("targetGenre reads the stamped sweep lane first", () => {
+  // Empty map: structured slug normalization must still resolve underscored lanes.
+  // (Previously SWEEP_LANE_GENRE was empty on request paths and \b failed on `_`.)
+  setSweepLaneRoutingFromProfiles({});
   assertEquals(targetGenre({ lane: "house_club", playlist_name: "Untitled" }), "house");
   assertEquals(targetGenre({ lane: "rap_trap_hype", playlist_name: "Untitled" }), "rap");
+  assertEquals(targetGenre({ lane: "deep_house_groove", playlist_name: "Untitled" }), "house");
+  assertEquals(targetGenre({ lane: "rap_general", playlist_name: "Untitled" }), "rap");
 });
 
 Deno.test("targetGenre falls back to the row's own text when lane is absent", () => {

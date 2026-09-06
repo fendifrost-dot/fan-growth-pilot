@@ -36,16 +36,21 @@ jobs:
         with:
           deno-version: v2.x
 
-      - name: Deno auth + Song DNA enforcement tests
+      - name: Deno shared unit tests (deterministic)
         run: |
           set -euo pipefail
-          deno test --no-check --allow-env --allow-read \
-            supabase/functions/_shared/song-dna-enforcement.test.ts \
-            supabase/functions/_shared/ops-actors.test.ts \
-            supabase/functions/_shared/handler-authz.test.ts \
-            supabase/functions/_shared/outreach-auth.test.ts \
-            supabase/functions/_shared/pitch-copy-integrity.test.ts \
-            supabase/functions/_shared/outreach-cutover-acceptance.test.ts
+          # Run every deterministic _shared Deno unit test. Opt-in live/network suites
+          # must be named *.live.test.ts (or live/) and are intentionally excluded.
+          mapfile -t SHARED_TESTS < <(
+            find supabase/functions/_shared -maxdepth 1 -type f -name '*.test.ts' ! -name '*.live.test.ts' | sort
+          )
+          if [ "${#SHARED_TESTS[@]}" -eq 0 ]; then
+            echo "No deterministic Deno tests found under supabase/functions/_shared" >&2
+            exit 1
+          fi
+          echo "Running ${#SHARED_TESTS[@]} Deno shared test files (includes placement-match):"
+          printf '  %s\n' "${SHARED_TESTS[@]}"
+          deno test --no-check --allow-env --allow-read "${SHARED_TESTS[@]}"
 
 
       - name: Production build

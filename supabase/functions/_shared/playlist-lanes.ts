@@ -100,6 +100,25 @@ export function sweepLaneTextGenre(text: string): "rap" | "house" | null {
   return null;
 }
 
+/**
+ * Resolve genre from a *structured* lane slug (e.g. house_club, deep_house_groove,
+ * rap_general, rap_trap_hype). Underscores/hyphens are token separators — word-boundary
+ * matchers treat `_` as a word character, so raw slugs must be normalized before
+ * family detection. Returns null for unknown/empty/ambiguous slugs (fail closed).
+ * Never consults playlist free text and never hard-codes song titles.
+ */
+export function genreFromLaneSlug(lane: string | null | undefined): "rap" | "house" | null {
+  const raw = String(lane ?? "").trim().toLowerCase();
+  if (!raw) return null;
+  // Prefer the discovery-profile map when it has been initialized.
+  const fromMap = SWEEP_LANE_GENRE[raw];
+  if (fromMap) return fromMap;
+  // Structured slug → whitespace tokens so \b family detectors can see "house"/"rap".
+  const normalized = raw.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!normalized) return null;
+  return sweepLaneTextGenre(normalized);
+}
+
 function normalizeTags(raw: unknown): string[] {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw.map((t) => String(t).toLowerCase());

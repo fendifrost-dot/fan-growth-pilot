@@ -271,27 +271,29 @@ export async function runDraftPitch(
   if (draftDenied) return draftDenied;
 
   // Automated drafts must never accept free-written override copy.
-  if (typeof body.override_body === "string" && body.override_body.trim()) {
-    return {
-      status: 422,
-      data: {
-        error:
-          "override_body is rejected for automated draft creation. " +
-          "Compose from approved Song DNA pitch only; fit_reason stays metadata.",
-        code: "override_body_rejected",
-      },
-    };
-  }
-  if (typeof body.override_subject === "string" && body.override_subject.trim()) {
-    return {
-      status: 422,
-      data: {
-        error:
-          "override_subject is rejected for automated draft creation. " +
-          "Use the rendered template subject from approved DNA pitch.",
-        code: "override_subject_rejected",
-      },
-    };
+  // Reject both override_* aliases and plain body/subject fields — silent ignore
+  // is not acceptable (caller-written pitch copy must fail closed with 422).
+  const callerCopyFields: Array<{ key: string; code: string }> = [
+    { key: "override_body", code: "override_body_rejected" },
+    { key: "override_subject", code: "override_subject_rejected" },
+    { key: "body", code: "caller_body_rejected" },
+    { key: "subject", code: "caller_subject_rejected" },
+    { key: "email_body", code: "caller_body_rejected" },
+    { key: "pitch_body", code: "caller_body_rejected" },
+  ];
+  for (const { key, code } of callerCopyFields) {
+    const raw = body[key];
+    if (typeof raw === "string" && raw.trim()) {
+      return {
+        status: 422,
+        data: {
+          error:
+            `${key} is rejected for automated draft creation. ` +
+            "Compose from approved Song DNA pitch only; fit_reason stays metadata.",
+          code,
+        },
+      };
+    }
   }
 
   const playlistId = String(safeBody.playlist_id ?? "").trim();

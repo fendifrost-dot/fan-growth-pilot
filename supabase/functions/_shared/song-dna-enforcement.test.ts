@@ -252,9 +252,14 @@ Deno.test("8 override_body rejected (wiring)", () => {
   const src = Deno.readTextFileSync(new URL("./playlist-agent-run.ts", import.meta.url));
   assert(src.includes("override_body_rejected"));
   assert(src.includes("override_subject_rejected"));
+  assert(src.includes("caller_body_rejected"));
+  assert(src.includes("caller_subject_rejected"));
   const fn = src.slice(src.indexOf("export async function runDraftPitch"));
   const overrideInject = fn.indexOf("pitchBody = body.override_body");
   assertEquals(overrideInject, -1, "must not inject override_body into outbound body");
+  // Plain body/subject must be hard-rejected, not silently ignored.
+  assert(fn.includes('key: "body"') || fn.includes('"body"'), "must gate plain body field");
+  assert(fn.includes('key: "subject"') || fn.includes('"subject"'), "must gate plain subject field");
 });
 
 Deno.test("9 edits revoke approval (wiring)", () => {

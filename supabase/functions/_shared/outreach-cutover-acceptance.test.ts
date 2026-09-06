@@ -92,6 +92,8 @@ Deno.test("WIRING: execute-pitch and send-pitch-email bind to approved draft + i
   assert(agent.includes("hashApprovalArtifact"), "approve must seal approved_content_hash");
   assert(agent.includes("audit_invalid_drafts"), "audit_invalid_drafts action required");
   assert(agent.includes("override_body_rejected"), "override_body must be rejected");
+  assert(agent.includes("caller_body_rejected"), "plain body field must be rejected");
+  assert(agent.includes("caller_subject_rejected"), "plain subject field must be rejected");
   assert(exec.includes("verifyApprovedContentHash"), "execute-pitch must verify approval artefact hash");
   assert(send.includes("verifyApprovedContentHash"), "send-pitch-email must verify approval artefact hash");
 });

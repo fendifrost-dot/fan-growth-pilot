@@ -276,3 +276,54 @@ Deno.test("missing pitch copy on every source returns 422 and inserts no draft",
   );
   assertEquals(draftInserts.length, 0);
 });
+
+Deno.test("caller-supplied body is hard-rejected with 422", async () => {
+  const sb = stubSb(baseTables(TRACK_A, PLAYLIST));
+  const res = await runDraftPitch(
+    {
+      playlist_id: "spotify:pl1",
+      track_id: "track-a",
+      body: "Caller-written pitch that must not be accepted",
+    },
+    sb as never,
+    SERVICE,
+  );
+  assertEquals(res.status, 422);
+  const data = res.data as { code?: string };
+  assertEquals(data.code, "caller_body_rejected");
+  assertEquals(sb.inserted.length, 0);
+});
+
+Deno.test("caller-supplied subject is hard-rejected with 422", async () => {
+  const sb = stubSb(baseTables(TRACK_A, PLAYLIST));
+  const res = await runDraftPitch(
+    {
+      playlist_id: "spotify:pl1",
+      track_id: "track-a",
+      subject: "Caller subject override",
+    },
+    sb as never,
+    SERVICE,
+  );
+  assertEquals(res.status, 422);
+  const data = res.data as { code?: string };
+  assertEquals(data.code, "caller_subject_rejected");
+  assertEquals(sb.inserted.length, 0);
+});
+
+Deno.test("override_body is hard-rejected with 422", async () => {
+  const sb = stubSb(baseTables(TRACK_A, PLAYLIST));
+  const res = await runDraftPitch(
+    {
+      playlist_id: "spotify:pl1",
+      track_id: "track-a",
+      override_body: "Legacy override path must also fail",
+    },
+    sb as never,
+    SERVICE,
+  );
+  assertEquals(res.status, 422);
+  const data = res.data as { code?: string };
+  assertEquals(data.code, "override_body_rejected");
+  assertEquals(sb.inserted.length, 0);
+});

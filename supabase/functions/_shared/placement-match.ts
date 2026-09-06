@@ -65,12 +65,16 @@ export function placementMatch(
 // blocked, submitted and verification-status exclusions are separate gates
 // (outreachPolicyBlock / isAutomatedPitchBlocked / isDraftable) and still apply.
 
-import { SWEEP_LANE_GENRE, sweepLaneTextGenre } from "./playlist-lanes.ts";
+import { genreFromLaneSlug, sweepLaneTextGenre } from "./playlist-lanes.ts";
 
 export type Genre = "rap" | "house";
 
 /** Genre a TARGET declares, from its stamped sweep lane first, then its own text.
- * null = no clear signal (or a contradictory one) — deliberately not a guess. */
+ * null = no clear signal (or a contradictory one) — deliberately not a guess.
+ *
+ * Prefer explicit normalized lane/profile data over free-text inference. When a
+ * lane slug is present but unrecognized, fail closed (null) — do not let playlist
+ * title text invent a genre that could override approved Song DNA routing. */
 export function targetGenre(row: {
   lane?: string | null;
   playlist_name?: string | null;
@@ -78,10 +82,14 @@ export function targetGenre(row: {
   vibe_tags?: unknown;
 }): Genre | null {
   const lane = String(row.lane ?? "").trim();
-  const fromLane = SWEEP_LANE_GENRE[lane];
-  if (fromLane) return fromLane;
+  if (lane) {
+    const fromLane = genreFromLaneSlug(lane);
+    if (fromLane) return fromLane;
+    // Structured lane present but unresolvable → fail closed (no free-text override).
+    return null;
+  }
   const tags = Array.isArray(row.vibe_tags) ? row.vibe_tags.map((t) => String(t)).join(" ") : "";
-  return sweepLaneTextGenre(`${row.playlist_name ?? ""} ${row.curator_name ?? ""} ${tags} ${lane}`);
+  return sweepLaneTextGenre(`${row.playlist_name ?? ""} ${row.curator_name ?? ""} ${tags}`);
 }
 
 /** Genre a TRACK declares, from its category slugs/labels first, then its own copy. */

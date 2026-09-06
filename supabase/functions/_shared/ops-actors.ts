@@ -58,7 +58,14 @@ export type OpsCapability =
   | "write_playlist_ops"
   | "read_playlist_ops"
   | "read_ops_metrics"
-  | "update_sync_gate_ops_flags";
+  | "update_sync_gate_ops_flags"
+  // Human/Fendi admin surfaces — never granted to Claude/Grok/service/scheduler.
+  | "manage_campaigns"
+  | "manage_catalog"
+  | "manage_smart_links"
+  | "manage_sync_registers"
+  | "manage_radio"
+  | "manage_fan_engagement";
 
 const CLAUDE_CAPS = new Set<OpsCapability>([
   "research_playlist_targets",
@@ -103,8 +110,18 @@ const FENDI_ONLY = new Set<OpsCapability>([
   "authorize_monetary_decisions",
 ]);
 
+const ADMIN_SURFACE = new Set<OpsCapability>([
+  "manage_campaigns",
+  "manage_catalog",
+  "manage_smart_links",
+  "manage_sync_registers",
+  "manage_radio",
+  "manage_fan_engagement",
+]);
+
 const FENDI_CAPS = new Set<OpsCapability>([
   ...FENDI_ONLY,
+  ...ADMIN_SURFACE,
   "draft_song_dna",
   "submit_song_dna_for_review",
   "review_playlist_drafts",
@@ -120,10 +137,16 @@ const FENDI_CAPS = new Set<OpsCapability>([
   "classify_replies",
   "respond_to_curators",
   "record_placement_evidence",
+  "research_playlist_targets",
+  "verify_playlist_targets",
+  "generate_playlist_drafts",
+  "run_placement_discovery",
+  "record_research_evidence",
 ]);
 
 /** Human admins: ops reads/writes except playlist approve/send (Grok/Fendi only). */
 const HUMAN_ADMIN_CAPS = new Set<OpsCapability>([
+  ...ADMIN_SURFACE,
   "research_playlist_targets",
   "verify_playlist_targets",
   "draft_song_dna",
@@ -153,7 +176,10 @@ const SCHEDULER_CAPS = new Set<OpsCapability>([
   "read_ops_metrics",
 ]);
 
-/** Hub-key / service callers may draft + research; never approve/send as Grok. */
+/**
+ * Hub-key / service callers may draft + research; never approve/send, and never
+ * unrestricted admin surfaces (campaigns, sync approvals, monetization).
+ */
 const SERVICE_CAPS = new Set<OpsCapability>([
   "research_playlist_targets",
   "verify_playlist_targets",
@@ -244,12 +270,7 @@ export function resolveOpsActor(actor: Actor | null, req: Request | null = null)
     return { kind: "scheduler", userId: null, label: "scheduler" };
   }
   if (actor?.kind === "grok_playlist_control" || isGrokCredential(req)) {
-    const labelHint = agentLabelHeader(req);
-    const label =
-      labelHint === "grok" || labelHint === "grok_playlist_control"
-        ? "grok_playlist_control"
-        : "grok_playlist_control";
-    return { kind: "grok_playlist_control", userId: null, label };
+    return { kind: "grok_playlist_control", userId: null, label: "grok_playlist_control" };
   }
   if (actor?.kind === "claude" || isClaudeCredential(req)) {
     return { kind: "claude", userId: actor?.kind === "user" ? actor.userId : null, label: "claude" };

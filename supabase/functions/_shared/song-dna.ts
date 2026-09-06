@@ -1,13 +1,18 @@
 /**
  * Song DNA — versioned music identity for campaign activation + outreach routing.
  *
- * Approval is Fendi-only (admin JWT). Migrations / agents never invent approvals
+ * Approval is Fendi-only (approve_song_dna capability). Claude may draft/submit; migrations / agents never invent approvals
  * or music facts. Catalog-specific titles/UUIDs are NOT used for routing —
  * approved_lanes / primary_genre / short_pitch on the DNA row are the source of truth.
  */
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import type { Actor } from "./outreach-auth.ts";
+import {
+  type OpsCapability,
+  denyUnlessCan,
+  resolveOpsActor,
+} from "./ops-actors.ts";
 
 export const SONG_DNA_ACTIONS = [
   "list_song_dna",
@@ -71,17 +76,25 @@ export function formatSongDnaQueryError(error: {
   return `Song DNA query failed${code}: ${message}`;
 }
 
-function requireAdminActor(actor: Actor | null): Result | null {
-  if (!actor || actor.kind !== "user" || !actor.isAdmin) {
-    return {
-      status: 401,
-      data: {
-        error:
-          "Song DNA writes require Fendi’s authenticated admin JWT. Caller-supplied identity is ignored.",
-      },
-    };
-  }
-  return null;
+const SONG_DNA_WRITE_CAPS: Record<string, OpsCapability> = {
+  create_song_dna_draft: "draft_song_dna",
+  update_song_dna_draft: "draft_song_dna",
+  submit_song_dna_for_review: "submit_song_dna_for_review",
+  approve_song_dna: "approve_song_dna",
+  reject_song_dna: "reject_song_dna",
+};
+
+function requireSongDnaCapability(
+  action: string,
+  actor: Actor | null,
+  req: Request | null,
+): Result | null {
+  const capability = SONG_DNA_WRITE_CAPS[action];
+  if (!capability) return null;
+  const opsActor = resolveOpsActor(actor, req);
+  const denied = denyUnlessCan(opsActor, capability);
+  if (!denied) return null;
+  return { status: denied.status, data: denied.data };
 }
 
 async function audit(
@@ -197,13 +210,16 @@ async function getSongDna(sb: SupabaseClient, body: Record<string, unknown>): Pr
     };
   }
   if (!data) return { status: 404, data: { error: "Song DNA version not found" } };
+  const row = data as Record<string, unknown> & {
+    tracks?: { name?: string } | null;
+  };
   return {
     status: 200,
     data: {
       ok: true,
       version: {
-        ...data,
-        track_name: (data.tracks as { name?: string } | null)?.name ?? null,
+        ...row,
+        track_name: row.tracks?.name ?? null,
         tracks: undefined,
       },
     },
@@ -244,8 +260,9 @@ async function createDraft(
   sb: SupabaseClient,
   body: Record<string, unknown>,
   actor: Actor | null,
+  req: Request | null = null,
 ): Promise<Result> {
-  const authErr = requireAdminActor(actor);
+  const authErr = requireSongDnaCapability("create_song_dna_draft", actor, req);
   if (authErr) return authErr;
   const trackId = String(body.track_id ?? "").trim();
   if (!trackId) return { status: 400, data: { error: "track_id required" } };
@@ -278,8 +295,9 @@ async function updateDraft(
   sb: SupabaseClient,
   body: Record<string, unknown>,
   actor: Actor | null,
+  req: Request | null = null,
 ): Promise<Result> {
-  const authErr = requireAdminActor(actor);
+  const authErr = requireSongDnaCapability("update_song_dna_draft", actor, req);
   if (authErr) return authErr;
   const id = String(body.song_dna_version_id ?? "").trim();
   if (!id) return { status: 400, data: { error: "song_dna_version_id required" } };
@@ -351,8 +369,9 @@ async function submitForReview(
   sb: SupabaseClient,
   body: Record<string, unknown>,
   actor: Actor | null,
+  req: Request | null = null,
 ): Promise<Result> {
-  const authErr = requireAdminActor(actor);
+  const authErr = requireSongDnaCapability("submit_song_dna_for_review", actor, req);
   if (authErr) return authErr;
   const id = String(body.song_dna_version_id ?? "").trim();
   if (!id) return { status: 400, data: { error: "song_dna_version_id required" } };
@@ -407,8 +426,9 @@ async function approveSongDna(
   sb: SupabaseClient,
   body: Record<string, unknown>,
   actor: Actor | null,
+  req: Request | null = null,
 ): Promise<Result> {
-  const authErr = requireAdminActor(actor);
+  const authErr = requireSongDnaCapability("approve_song_dna", actor, req);
   if (authErr) return authErr;
   const id = String(body.song_dna_version_id ?? "").trim();
   if (!id) return { status: 400, data: { error: "song_dna_version_id required" } };
@@ -495,8 +515,9 @@ async function rejectSongDna(
   sb: SupabaseClient,
   body: Record<string, unknown>,
   actor: Actor | null,
+  req: Request | null = null,
 ): Promise<Result> {
-  const authErr = requireAdminActor(actor);
+  const authErr = requireSongDnaCapability("reject_song_dna", actor, req);
   if (authErr) return authErr;
   const id = String(body.song_dna_version_id ?? "").trim();
   if (!id) return { status: 400, data: { error: "song_dna_version_id required" } };
@@ -562,6 +583,7 @@ export async function runSongDnaAction(
   body: Record<string, unknown>,
   sb: SupabaseClient,
   actor: Actor | null = null,
+  req: Request | null = null,
 ): Promise<Result> {
   switch (action) {
     case "list_song_dna":
@@ -569,15 +591,15 @@ export async function runSongDnaAction(
     case "get_song_dna":
       return await getSongDna(sb, body);
     case "create_song_dna_draft":
-      return await createDraft(sb, body, actor);
+      return await createDraft(sb, body, actor, req);
     case "update_song_dna_draft":
-      return await updateDraft(sb, body, actor);
+      return await updateDraft(sb, body, actor, req);
     case "submit_song_dna_for_review":
-      return await submitForReview(sb, body, actor);
+      return await submitForReview(sb, body, actor, req);
     case "approve_song_dna":
-      return await approveSongDna(sb, body, actor);
+      return await approveSongDna(sb, body, actor, req);
     case "reject_song_dna":
-      return await rejectSongDna(sb, body, actor);
+      return await rejectSongDna(sb, body, actor, req);
     case "list_song_dna_audit":
       return await listAudit(sb, body);
     default:

@@ -122,7 +122,7 @@ Deno.serve(async (req) => {
     const actor: Actor = authDecision.actor;
 
     if (isSongDnaAction(action)) {
-      const result = await runSongDnaAction(action, body, supabase, actor);
+      const result = await runSongDnaAction(action, body, supabase, actor, req);
       return new Response(JSON.stringify(result.data), {
         status: result.status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },

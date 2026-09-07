@@ -459,7 +459,7 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
   },
   get_daily_station_run: {
     cls: 'capability',
-    capability: 'read_daily_ops',
+    capability: 'run_daily_station',
     surface: 'admin-write',
   },
   get_daily_ops_dashboard: {
@@ -501,12 +501,12 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
   },
   list_handoff_batches: {
     cls: 'capability',
-    capability: 'read_daily_ops',
+    capability: 'create_handoff_batch',
     surface: 'admin-write',
   },
   get_handoff_batch: {
     cls: 'capability',
-    capability: 'read_daily_ops',
+    capability: 'create_handoff_batch',
     surface: 'admin-write',
   },
   mark_manual_form_submitted: {

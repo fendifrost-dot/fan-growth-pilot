@@ -152,6 +152,11 @@ create table if not exists public.daily_ops_station_runs (
   error_summary text,
   dependency_failure text,
   metrics jsonb not null default '{}'::jsonb,
+  completed_by text,
+  completed_by_label text,
+  last_resumed_by text,
+  last_resumed_by_label text,
+  last_resumed_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (station_id, business_date_ct, run_key)

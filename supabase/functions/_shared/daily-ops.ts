@@ -123,16 +123,16 @@ export async function startDailyStationRun(
   const upstream = await loadUpstream(sb, stationId, businessDate);
 
   if (existing) {
-    // Resume / refresh — do not reset counters if already past running unless forced.
+    // Resume — preserve original authenticated actor attribution (no overwrite).
     const patch: Record<string, unknown> = {
       updated_at: new Date().toISOString(),
-      actor_kind: attr.actor_kind,
-      actor_label: attr.actor_label,
-      actor_user_id: attr.actor_user_id,
       upstream_station_id: upstream.upstream_station_id,
       upstream_run_id: upstream.upstream_run_id,
       input_batch_id: existing.input_batch_id ?? upstream.input_batch_id,
       dependency_failure: upstream.dependency_failure,
+      last_resumed_by: attr.actor_kind,
+      last_resumed_by_label: attr.actor_label,
+      last_resumed_at: new Date().toISOString(),
     };
     if (existing.status === "completed" && !clean.force_reopen) {
       return {
@@ -148,7 +148,7 @@ export async function startDailyStationRun(
     }
     if (existing.status !== "running") {
       patch.status = "running";
-      patch.started_at = new Date().toISOString();
+      patch.started_at = existing.started_at ?? new Date().toISOString();
       patch.completed_at = null;
     }
     const { data, error } = await sb
@@ -248,9 +248,9 @@ export async function completeDailyStationRun(
     status: statusRaw,
     completed_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
-    actor_kind: attr.actor_kind,
-    actor_label: attr.actor_label,
-    actor_user_id: attr.actor_user_id,
+    // Do not overwrite original actor_* — stamp completer separately.
+    completed_by: attr.actor_kind,
+    completed_by_label: attr.actor_label,
     raw_discoveries: asInt(clean.raw_discoveries),
     unique_discoveries: asInt(clean.unique_discoveries),
     verified_targets: asInt(clean.verified_targets),

@@ -13,6 +13,7 @@ import {
   stripSpoofedAttribution,
 } from "./ops-actors.ts";
 import { assertKnownChannel } from "./handoff-queues.ts";
+import { requireApprovedSongDna } from "./handoff-queues.ts";
 import { verifyEmail } from "./verify-target.ts";
 
 export type RunResult = { status: number; data: Record<string, unknown> };
@@ -252,8 +253,8 @@ export function buildInstagramDmPacket(
 }
 
 /**
- * Song-DNA gate for form/DM packets: must carry an approved DNA version id
- * when the caller claims a lane envelope. Never invent eligibility.
+ * Song-DNA gate for form/DM packets: must carry an approved DNA version id.
+ * Never optional — form/DM paths cannot bypass genre/sample/campaign gates.
  */
 export function assertPacketDnaEnvelope(packet: Record<string, unknown>): string | null {
   const dna = packet.song_dna_version_id;
@@ -294,6 +295,16 @@ export async function runMultichannelAction(
       { sb, bounceCount: Number(row.bounce_count ?? 0) },
     );
     if (playlistId && verdict.path_verified) {
+      // Form/DM path verification requires approved Song DNA on the target.
+      if (verdict.channel === "web_form" || verdict.channel === "instagram_dm") {
+        const dnaErr = await requireApprovedSongDna(
+          sb,
+          (row.song_dna_version_id ?? clean.song_dna_version_id) as string,
+        );
+        if (dnaErr) {
+          return { status: 422, data: { ok: false, error: dnaErr, code: "dna_required", ...verdict } };
+        }
+      }
       const patch: Record<string, unknown> = {
         path_verified: true,
         path_verification_notes: verdict.reason,
@@ -322,6 +333,7 @@ export async function runMultichannelAction(
         patch.ig_verified_at = new Date().toISOString();
       }
       if (row.song_dna_version_id != null) patch.song_dna_version_id = row.song_dna_version_id;
+      else if (clean.song_dna_version_id != null) patch.song_dna_version_id = clean.song_dna_version_id;
       await sb.from("playlist_targets").update(patch).eq("playlist_id", playlistId);
     }
     return { status: 200, data: { ...verdict, ok: verdict.ok } };
@@ -334,10 +346,9 @@ export async function runMultichannelAction(
     if (error) return { status: 500, data: { error: error.message } };
     if (!data) return { status: 404, data: { error: "target not found" } };
     const packet = buildWebFormPacket(data as Record<string, unknown>);
-    if (clean.require_dna) {
-      const dnaErr = assertPacketDnaEnvelope(packet);
-      if (dnaErr) return { status: 422, data: { error: dnaErr, code: "dna_required" } };
-    }
+    const dnaErr = assertPacketDnaEnvelope(packet) ??
+      await requireApprovedSongDna(sb, packet.song_dna_version_id as string);
+    if (dnaErr) return { status: 422, data: { error: dnaErr, code: "dna_required" } };
     return {
       status: 200,
       data: { ok: true, packet, automated_submit: false, auto_form_post: false },
@@ -361,10 +372,9 @@ export async function runMultichannelAction(
         .eq("playlist_id", playlistId);
     }
     const packet = buildInstagramDmPacket(data as Record<string, unknown>, draftBody);
-    if (clean.require_dna) {
-      const dnaErr = assertPacketDnaEnvelope(packet);
-      if (dnaErr) return { status: 422, data: { error: dnaErr, code: "dna_required" } };
-    }
+    const dnaErr = assertPacketDnaEnvelope(packet) ??
+      await requireApprovedSongDna(sb, packet.song_dna_version_id as string);
+    if (dnaErr) return { status: 422, data: { error: dnaErr, code: "dna_required" } };
     return {
       status: 200,
       data: {

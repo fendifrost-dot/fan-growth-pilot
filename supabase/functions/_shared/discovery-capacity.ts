@@ -57,6 +57,13 @@ export async function loadDiscoveryCapacitySettings(
   };
 }
 
+/**
+ * Trailing verified→draft conversion:
+ *   (# distinct playlist targets verified in window that have ≥1 outreach draft)
+ *   ÷ (# playlist targets verified in window)
+ *
+ * Not drafts_created / verified_count as independent global counts.
+ */
 export async function estimateVerifiedToDraftConversion(
   sb: SupabaseClient,
   lookbackDays: number,
@@ -65,21 +72,46 @@ export async function estimateVerifiedToDraftConversion(
   since.setUTCDate(since.getUTCDate() - Math.max(1, lookbackDays));
   const sinceIso = since.toISOString();
 
-  const { count: drafts } = await sb
-    .from("outreach_drafts")
-    .select("id", { count: "exact", head: true })
-    .gte("created_at", sinceIso);
-
-  const { count: verified } = await sb
+  const { data: verifiedRows, error: vErr } = await sb
     .from("playlist_targets")
-    .select("playlist_id", { count: "exact", head: true })
+    .select("playlist_id")
     .in("verification_status", ["auto_verified", "manually_verified"])
     .gte("last_verified_at", sinceIso);
+  if (vErr) {
+    console.error("estimateVerifiedToDraftConversion verified:", vErr.message);
+    return 0;
+  }
+  const verifiedIds = [...new Set((verifiedRows ?? []).map((r) => String(r.playlist_id)).filter(Boolean))];
+  if (verifiedIds.length === 0) return 0;
 
-  const d = drafts ?? 0;
-  const v = verified ?? 0;
-  if (v <= 0) return 0;
-  return Math.min(1, d / v);
+  // Chunk IN queries to avoid PostgREST URL limits.
+  const drafted = new Set<string>();
+  const chunkSize = 100;
+  for (let i = 0; i < verifiedIds.length; i += chunkSize) {
+    const chunk = verifiedIds.slice(i, i + chunkSize);
+    const { data: draftRows, error: dErr } = await sb
+      .from("outreach_drafts")
+      .select("playlist_id")
+      .in("playlist_id", chunk)
+      .gte("created_at", sinceIso);
+    if (dErr) {
+      console.error("estimateVerifiedToDraftConversion drafts:", dErr.message);
+      continue;
+    }
+    for (const d of draftRows ?? []) {
+      if (d.playlist_id) drafted.add(String(d.playlist_id));
+    }
+  }
+
+  return Math.min(1, drafted.size / verifiedIds.length);
+}
+
+/** Pure helper for tests — same formula without I/O. */
+export function verifiedToDraftRate(verifiedIds: string[], draftedIds: string[]): number {
+  const verified = new Set(verifiedIds.filter(Boolean));
+  if (verified.size === 0) return 0;
+  const drafted = new Set(draftedIds.filter((id) => verified.has(id)));
+  return Math.min(1, drafted.size / verified.size);
 }
 
 export async function buildDiscoveryCapacityPlan(

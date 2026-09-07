@@ -110,6 +110,7 @@ Deno.test("Claude can create playlist/sync research but cannot approve or send",
     assertEquals(can(actor, "draft_sync_pitch"), true);
     assertEquals(can(actor, "read_own_sync_batches"), true);
     assertEquals(can(actor, "run_daily_station"), true);
+    assertEquals(can(actor, "read_daily_ops"), false);
     assertEquals(can(actor, "approve_playlist_drafts"), false);
     assertEquals(can(actor, "send_playlist_pitches"), false);
     assertEquals(can(actor, "review_handoff_batch"), false);
@@ -211,6 +212,10 @@ Deno.test("form/DM packets cannot bypass Song-DNA enforcement", () => {
 
   const igBare = buildInstagramDmPacket({ ig_curator_account: "@x" });
   assert(assertPacketDnaEnvelope(igBare) != null);
+
+  // Gate is mandatory in handlers (no optional require_dna flag).
+  const multi = Deno.readTextFileSync(new URL("./multichannel-path.ts", import.meta.url));
+  assert(!multi.includes("if (clean.require_dna)"));
 });
 
 Deno.test("no automated form submission or bulk DM path exists in packets", () => {

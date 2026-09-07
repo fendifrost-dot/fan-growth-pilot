@@ -189,19 +189,68 @@ export async function verifySyncTargets(
     : [];
   if (!ids.length) return { status: 400, data: { error: "ids[] or id required" } };
   const attr = attributionFrom(ops);
-  const { data, error } = await sb
+
+  const { data: rows, error: loadErr } = await sb
     .from("sync_research_targets")
-    .update({
-      status: "verified",
-      date_verified: new Date().toISOString(),
-      verified_by: attr.actor_kind,
-      verified_by_label: attr.actor_label,
-      updated_at: new Date().toISOString(),
-    })
-    .in("id", ids)
-    .select();
-  if (error) return { status: 500, data: { error: error.message } };
-  return { status: 200, data: { ok: true, verified: (data ?? []).length, rows: data ?? [] } };
+    .select("*")
+    .in("id", ids);
+  if (loadErr) return { status: 500, data: { error: loadErr.message } };
+
+  const verified: Record<string, unknown>[] = [];
+  const rejected: { id: string; reason: string }[] = [];
+
+  for (const row of rows ?? []) {
+    // Own-scope: Claude/service may only verify targets they discovered.
+    if (
+      (ops.kind === "claude" || ops.kind === "service") &&
+      row.discovered_by &&
+      row.discovered_by !== ops.kind
+    ) {
+      rejected.push({ id: String(row.id), reason: "not_own_record" });
+      continue;
+    }
+    const path = String(row.verified_contact_path ?? "").trim();
+    const evidence = String(row.source_evidence ?? "").trim();
+    const url = String(row.official_url ?? "").trim();
+    if (!path) {
+      rejected.push({ id: String(row.id), reason: "missing_verified_contact_path" });
+      continue;
+    }
+    if (!evidence) {
+      rejected.push({ id: String(row.id), reason: "missing_source_evidence" });
+      continue;
+    }
+    if (!url && !path.startsWith("http") && !path.includes("@")) {
+      rejected.push({ id: String(row.id), reason: "no_official_url_or_contact_path" });
+      continue;
+    }
+    const { data: updated, error } = await sb
+      .from("sync_research_targets")
+      .update({
+        status: "verified",
+        date_verified: new Date().toISOString(),
+        verified_by: attr.actor_kind,
+        verified_by_label: attr.actor_label,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", row.id)
+      .select()
+      .maybeSingle();
+    if (error) return { status: 500, data: { error: error.message } };
+    if (updated) verified.push(updated);
+  }
+
+  return {
+    status: 200,
+    data: {
+      ok: true,
+      verified: verified.length,
+      rejected: rejected.length,
+      rows: verified,
+      rejected_rows: rejected,
+      false_verify: false,
+    },
+  };
 }
 
 export async function createSyncOpportunity(
@@ -402,6 +451,10 @@ export async function researchSyncTargets(
   };
 }
 
+function unscopedSyncReader(ops: OpsActor): boolean {
+  return ops.kind === "fendi" || ops.kind === "human_admin" || ops.kind === "grok_playlist_control";
+}
+
 export async function readOwnSyncBatches(
   sb: SupabaseClient,
   body: Record<string, unknown>,
@@ -416,13 +469,16 @@ export async function readOwnSyncBatches(
     .eq("batch_kind", "sync")
     .order("created_at", { ascending: false })
     .limit(limit);
-  // Claude only sees batches it discovered; admins/Fendi see all.
-  if (ops.kind === "claude") {
-    q = q.eq("discovered_by", "claude");
+  // Default: own discoveries only. Unscoped only for Fendi / human_admin / Grok.
+  if (!unscopedSyncReader(ops)) {
+    q = q.eq("discovered_by", ops.kind);
   }
   const { data, error } = await q;
   if (error) return { status: 500, data: { error: error.message } };
-  return { status: 200, data: { ok: true, rows: data ?? [] } };
+  return {
+    status: 200,
+    data: { ok: true, rows: data ?? [], scoped: !unscopedSyncReader(ops) },
+  };
 }
 
 export async function runSyncResearchAction(
@@ -447,22 +503,36 @@ export async function runSyncResearchAction(
     case "read_own_sync_batches":
       return readOwnSyncBatches(sb, body, ops);
     case "list_sync_research_targets": {
-      const { data, error } = await sb
+      let q = sb
         .from("sync_research_targets")
         .select("*")
         .order("updated_at", { ascending: false })
         .limit(Math.min(Number(body.limit) || 50, 200));
+      if (!unscopedSyncReader(ops)) {
+        q = q.eq("discovered_by", ops.kind);
+      }
+      const { data, error } = await q;
       if (error) return { status: 500, data: { error: error.message } };
-      return { status: 200, data: { ok: true, rows: data ?? [] } };
+      return {
+        status: 200,
+        data: { ok: true, rows: data ?? [], scoped: !unscopedSyncReader(ops) },
+      };
     }
     case "list_sync_research_opportunities": {
-      const { data, error } = await sb
+      let q = sb
         .from("sync_research_opportunities")
         .select("*")
         .order("updated_at", { ascending: false })
         .limit(Math.min(Number(body.limit) || 50, 200));
+      if (!unscopedSyncReader(ops)) {
+        q = q.eq("discovered_by", ops.kind);
+      }
+      const { data, error } = await q;
       if (error) return { status: 500, data: { error: error.message } };
-      return { status: 200, data: { ok: true, rows: data ?? [] } };
+      return {
+        status: 200,
+        data: { ok: true, rows: data ?? [], scoped: !unscopedSyncReader(ops) },
+      };
     }
     default:
       return { status: 400, data: { error: `Unknown sync research action: ${action}` } };

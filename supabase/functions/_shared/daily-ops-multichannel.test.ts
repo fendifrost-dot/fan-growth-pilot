@@ -79,6 +79,8 @@ Deno.test("station ids and upstream continuity map", () => {
   assertEquals(STATION_UPSTREAM.playlist_tranche_first, "playlist_discovery_begin");
   assertEquals(STATION_UPSTREAM.playlist_tranche_final, "playlist_tranche_first");
   assertEquals(STATION_UPSTREAM.sync_batch_ready, "playlist_tranche_final");
+  assertEquals(STATION_UPSTREAM.grok_playlist_review, "playlist_tranche_final");
+  assertEquals(STATION_UPSTREAM.grok_playlist_send, "grok_playlist_review");
 });
 
 // ---- Idempotency key contract (pure) --------------------------------------
@@ -203,11 +205,10 @@ Deno.test("unknown submission channels fail closed", async () => {
 Deno.test("form/DM packets cannot bypass Song-DNA enforcement", () => {
   const bare = buildWebFormPacket({ form_url: "https://x.test/f", playlist_id: "p1" });
   assert(assertPacketDnaEnvelope(bare) != null);
-  const withDna = buildWebFormPacket({
-    form_url: "https://x.test/f",
-    playlist_id: "p1",
-    song_dna_version_id: "00000000-0000-0000-0000-000000000001",
-  });
+  const withDna = buildWebFormPacket(
+    { form_url: "https://x.test/f", playlist_id: "p1" },
+    { track_id: "t1", song_dna_version_id: "00000000-0000-0000-0000-000000000001" },
+  );
   assertEquals(assertPacketDnaEnvelope(withDna), null);
 
   const igBare = buildInstagramDmPacket({ ig_curator_account: "@x" });

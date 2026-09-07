@@ -13,6 +13,7 @@ import {
   stripSpoofedAttribution,
   type OpsActor,
 } from "./ops-actors.ts";
+import { resolveCurrentApprovedDna } from "./track-dna-envelope.ts";
 
 export type RunResult = { status: number; data: Record<string, unknown> };
 
@@ -263,6 +264,17 @@ export async function createSyncOpportunity(
   const clean = stripSpoofedAttribution(body);
   const brief = String(clean.project_brief ?? "").trim();
   if (!brief) return { status: 400, data: { error: "project_brief required" } };
+  const sourceUrl = clean.source_url != null ? String(clean.source_url).trim() : "";
+  const sourceEvidence = clean.source_evidence != null ? String(clean.source_evidence).trim() : "";
+  if (!sourceUrl && !sourceEvidence) {
+    return {
+      status: 422,
+      data: {
+        error: "source_url or source_evidence required before opportunity can be open for pitching",
+        code: "missing_sync_provenance",
+      },
+    };
+  }
   const attr = attributionFrom(ops);
   const eligible = await loadSyncEligibleTrackIds(sb);
   const requested = Array.isArray(clean.recommended_track_ids)
@@ -301,8 +313,8 @@ export async function createSyncOpportunity(
     submission_requirements: clean.submission_requirements != null
       ? String(clean.submission_requirements)
       : null,
-    source_url: clean.source_url != null ? String(clean.source_url) : null,
-    source_evidence: clean.source_evidence != null ? String(clean.source_evidence) : null,
+    source_url: sourceUrl || null,
+    source_evidence: sourceEvidence || null,
     recommended_track_ids: recommended,
     no_eligible_track: noEligible,
     no_eligible_track_reason: noEligible ? "no eligible track" : null,
@@ -380,11 +392,37 @@ export async function draftSyncPitch(
     };
   }
 
+  const { data: opp } = await sb
+    .from("sync_research_opportunities")
+    .select("id, source_url, source_evidence, status")
+    .eq("id", opportunityId)
+    .maybeSingle();
+  if (!opp) return { status: 404, data: { error: "opportunity not found" } };
+  const hasProvenance =
+    String(opp.source_url ?? "").trim() !== "" || String(opp.source_evidence ?? "").trim() !== "";
+  if (!hasProvenance) {
+    return {
+      status: 422,
+      data: { error: "opportunity missing source provenance", code: "missing_sync_provenance" },
+    };
+  }
+
+  const dna = await resolveCurrentApprovedDna(sb, {
+    trackId,
+    callerSongDnaVersionId: clean.song_dna_version_id != null ? String(clean.song_dna_version_id) : null,
+  });
+  if (!dna.ok) {
+    return {
+      status: 422,
+      data: { error: dna.errors[0] ?? "dna_rejected", code: dna.errors[0], errors: dna.errors },
+    };
+  }
+
   const attr = attributionFrom(ops);
   const row = {
     opportunity_id: opportunityId,
     track_id: trackId,
-    song_dna_version_id: clean.song_dna_version_id ? String(clean.song_dna_version_id) : null,
+    song_dna_version_id: dna.songDnaVersionId,
     subject: clean.subject != null ? String(clean.subject) : null,
     body: bodyText,
     status: "draft",

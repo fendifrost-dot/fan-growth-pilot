@@ -17,6 +17,7 @@ import {
   type OpsActor,
 } from "./ops-actors.ts";
 import { chicagoBusinessDate } from "./chicago-time.ts";
+import { enforceTrackDnaLaneEnvelope, resolveCurrentApprovedDna } from "./track-dna-envelope.ts";
 
 export type RunResult = { status: number; data: Record<string, unknown> };
 
@@ -68,13 +69,13 @@ export const FINAL_AUTHORITY_STATES = new Set<HandoffQueueState>([
   "IMPORTED_TO_AGH",
 ]);
 
-/** Allowed single-step transitions (no skipping). */
+/** Allowed single-step transitions — strict ordered playlist chain (no shortcuts). */
 export const HANDOFF_TRANSITIONS: Record<HandoffQueueState, readonly HandoffQueueState[]> = {
-  CLAUDE_BATCH_READY: ["CLAUDE_PLAYLIST_COMPLETE", "AWAITING_GROK_REVIEW"],
+  CLAUDE_BATCH_READY: ["CLAUDE_PLAYLIST_COMPLETE"],
   CLAUDE_PLAYLIST_COMPLETE: ["AWAITING_GROK_REVIEW"],
-  AWAITING_GROK_REVIEW: ["GROK_REVIEWED", "APPROVED_FOR_SEND", "REJECTED_BY_GROK"],
-  GROK_REVIEWED: ["APPROVED_FOR_SEND", "REJECTED_BY_GROK", "AWAITING_AGH_IMPORT"],
-  APPROVED_FOR_SEND: ["AWAITING_AGH_IMPORT", "IMPORTED_TO_AGH"],
+  AWAITING_GROK_REVIEW: ["GROK_REVIEWED"],
+  GROK_REVIEWED: ["APPROVED_FOR_SEND", "REJECTED_BY_GROK"],
+  APPROVED_FOR_SEND: ["AWAITING_AGH_IMPORT"],
   REJECTED_BY_GROK: [],
   AWAITING_AGH_IMPORT: ["IMPORTED_TO_AGH"],
   IMPORTED_TO_AGH: [],
@@ -249,9 +250,23 @@ export async function createHandoffBatch(
   const authErr = authorizeHandoffState(ops, queueState);
   if (authErr) return { status: 403, data: { error: authErr } };
 
-  if (clean.song_dna_version_id) {
-    const dnaErr = await requireApprovedSongDna(sb, String(clean.song_dna_version_id));
-    if (dnaErr) return { status: 422, data: { error: dnaErr, code: "dna_required" } };
+  const trackId = clean.track_id != null ? String(clean.track_id).trim() : "";
+  let resolvedDnaId: string | null = null;
+  if (batchKind === "playlist") {
+    if (!trackId) {
+      return { status: 422, data: { error: "track_id required for playlist handoff batches", code: "missing_track_id" } };
+    }
+    const resolved = await resolveCurrentApprovedDna(sb, {
+      trackId,
+      callerSongDnaVersionId: clean.song_dna_version_id != null ? String(clean.song_dna_version_id) : null,
+    });
+    if (!resolved.ok) {
+      return {
+        status: 422,
+        data: { error: resolved.errors[0] ?? "dna_rejected", code: resolved.errors[0], errors: resolved.errors },
+      };
+    }
+    resolvedDnaId = resolved.songDnaVersionId;
   }
 
   const discover = stampDiscover(ops);
@@ -264,7 +279,9 @@ export async function createHandoffBatch(
         : chicagoBusinessDate(),
     station_run_id: clean.station_run_id ? String(clean.station_run_id) : null,
     upstream_batch_id: clean.upstream_batch_id ? String(clean.upstream_batch_id) : null,
-    song_dna_version_id: clean.song_dna_version_id ? String(clean.song_dna_version_id) : null,
+    track_id: trackId || null,
+    // Server-resolved current approved DNA only — never a foreign/stale caller UUID.
+    song_dna_version_id: resolvedDnaId,
     discovery_profile_ids: Array.isArray(clean.discovery_profile_ids)
       ? clean.discovery_profile_ids.map(String)
       : [],
@@ -292,7 +309,7 @@ export async function addHandoffRecords(
 
   const { data: batch } = await sb
     .from("agh_handoff_batches")
-    .select("id, discovered_by, song_dna_version_id")
+    .select("id, discovered_by, song_dna_version_id, track_id, batch_kind")
     .eq("id", batchId)
     .maybeSingle();
   if (!batch) return { status: 404, data: { error: "batch not found" } };
@@ -314,17 +331,66 @@ export async function addHandoffRecords(
     const channelErr = assertKnownChannel(channel);
     if (channelErr) return { status: 422, data: { error: channelErr, code: "unknown_channel" } };
 
-    const dnaId =
-      (r.song_dna_version_id != null ? String(r.song_dna_version_id) : null) ||
-      (batch.song_dna_version_id != null ? String(batch.song_dna_version_id) : null) ||
-      (typeof r.packet === "object" && r.packet && (r.packet as Record<string, unknown>).song_dna_version_id != null
-        ? String((r.packet as Record<string, unknown>).song_dna_version_id)
-        : null);
+    const trackId = String(r.track_id ?? batch.track_id ?? "").trim();
+    const playlistId = r.playlist_target_id != null ? String(r.playlist_target_id) : "";
 
-    // Form / DM records always require approved Song DNA.
-    if (channel === "web_form" || channel === "instagram_dm") {
-      const dnaErr = await requireApprovedSongDna(sb, dnaId);
-      if (dnaErr) return { status: 422, data: { error: dnaErr, code: "dna_required" } };
+    // Playlist form/DM/email handoff records must carry track_id and pass lane envelope.
+    if (batch.batch_kind === "playlist" || channel === "web_form" || channel === "instagram_dm" || channel === "email") {
+      if (!trackId) {
+        return { status: 422, data: { error: "track_id required on every playlist handoff record", code: "missing_track_id" } };
+      }
+      if (!playlistId) {
+        return { status: 422, data: { error: "playlist_target_id required", code: "missing_playlist_id" } };
+      }
+      const envelope = await enforceTrackDnaLaneEnvelope(sb, {
+        route: "add_handoff_records",
+        trackId,
+        playlistId,
+        callerSongDnaVersionId: r.song_dna_version_id != null ? String(r.song_dna_version_id) : null,
+        actor: ops,
+      });
+      if (!envelope.ok) {
+        return {
+          status: 422,
+          data: {
+            error: envelope.errors[0] ?? "dna_lane_rejected",
+            code: envelope.errors[0] ?? "dna_lane_rejected",
+            errors: envelope.errors,
+          },
+        };
+      }
+
+      const recordState = String(r.queue_state ?? "CLAUDE_BATCH_READY");
+      if (!isHandoffQueueState(recordState) || !CLAUDE_SIDE_STATES.has(recordState)) {
+        return {
+          status: 403,
+          data: { error: "Handoff records must enter in a Claude-side state", code: "invalid_record_state" },
+        };
+      }
+
+      const packet = typeof r.packet === "object" && r.packet ? { ...(r.packet as Record<string, unknown>) } : {};
+      packet.track_id = trackId;
+      packet.song_dna_version_id = envelope.songDnaVersionId;
+      // Never persist playlist_targets.song_dna_version_id as authoritative.
+      delete packet.playlist_target_song_dna_version_id;
+
+      rows.push({
+        batch_id: batchId,
+        record_kind: String(r.record_kind ?? "playlist_target"),
+        queue_state: recordState,
+        track_id: trackId,
+        playlist_target_id: playlistId,
+        outreach_draft_id: r.outreach_draft_id != null ? String(r.outreach_draft_id) : null,
+        sync_target_id: r.sync_target_id != null ? String(r.sync_target_id) : null,
+        sync_opportunity_id: r.sync_opportunity_id != null ? String(r.sync_opportunity_id) : null,
+        submission_channel: channel,
+        dedupe_key: r.dedupe_key != null ? String(r.dedupe_key) : null,
+        song_dna_version_id: envelope.songDnaVersionId,
+        packet,
+        ...discover,
+        updated_at: new Date().toISOString(),
+      });
+      continue;
     }
 
     const recordState = String(r.queue_state ?? "CLAUDE_BATCH_READY");
@@ -339,13 +405,14 @@ export async function addHandoffRecords(
       batch_id: batchId,
       record_kind: String(r.record_kind ?? "playlist_target"),
       queue_state: recordState,
-      playlist_target_id: r.playlist_target_id != null ? String(r.playlist_target_id) : null,
+      track_id: trackId || null,
+      playlist_target_id: playlistId || null,
       outreach_draft_id: r.outreach_draft_id != null ? String(r.outreach_draft_id) : null,
       sync_target_id: r.sync_target_id != null ? String(r.sync_target_id) : null,
       sync_opportunity_id: r.sync_opportunity_id != null ? String(r.sync_opportunity_id) : null,
       submission_channel: channel,
       dedupe_key: r.dedupe_key != null ? String(r.dedupe_key) : null,
-      song_dna_version_id: dnaId,
+      song_dna_version_id: null,
       packet: typeof r.packet === "object" && r.packet ? r.packet : {},
       ...discover,
       updated_at: new Date().toISOString(),
@@ -413,37 +480,86 @@ export async function advanceHandoffBatch(
         code: "illegal_transition",
         from,
         to: next,
-        allowed: isHandoffQueueState(from) ? HANDOFF_TRANSITIONS[from] : [],
+        allowed: isHandoffQueueState(from) ? [...HANDOFF_TRANSITIONS[from]] : [],
       },
     };
+  }
+  // Idempotent same-state is ok; otherwise must be a real forward step.
+  if (from === next) {
+    return { status: 200, data: { ok: true, batch: existing, noop: true } };
+  }
+
+  const stamps: Record<string, string> = {};
+  if (next === "CLAUDE_PLAYLIST_COMPLETE" || next === "AWAITING_GROK_REVIEW") {
+    Object.assign(stamps, stampDraft(ops));
+  }
+  if (FINAL_AUTHORITY_STATES.has(next)) Object.assign(stamps, stampReview(ops));
+  if (next === "APPROVED_FOR_SEND") Object.assign(stamps, stampApprove(ops));
+  if (next === "REJECTED_BY_GROK") {
+    Object.assign(stamps, stampReject(ops));
+    if (clean.rejection_reason != null) stamps.notes = String(clean.rejection_reason);
+  }
+
+  // Prefer atomic Postgres RPC (compare-and-set on batch_id + expected state).
+  // Stamps never overwrite discovered_by / discovered_by_label (create-time only).
+  const { data: rpcData, error: rpcErr } = await sb.rpc("advance_agh_handoff_batch", {
+    p_batch_id: batchId,
+    p_expected_state: from,
+    p_next_state: next,
+    p_stamps: stamps,
+  });
+
+  if (!rpcErr && rpcData && typeof rpcData === "object") {
+    const result = rpcData as Record<string, unknown>;
+    if (result.ok === false && result.code === "conflict") {
+      return {
+        status: 409,
+        data: {
+          error: String(result.error ?? "conflict"),
+          code: "conflict",
+          expected: from,
+          attempted: next,
+        },
+      };
+    }
+    if (result.ok === true) {
+      return { status: 200, data: { ok: true, batch: result.batch, records_updated: result.records_updated, atomic: true } };
+    }
+    if (result.ok === false) {
+      return { status: 422, data: { error: String(result.error ?? "advance_failed"), code: String(result.code ?? "advance_failed") } };
+    }
+  }
+
+  // Fallback compare-and-set when RPC is not yet applied (still fail-closed on races).
+  if (rpcErr && !String(rpcErr.message || "").includes("Could not find the function")) {
+    return { status: 500, data: { error: `advance_agh_handoff_batch RPC failed: ${rpcErr.message}` } };
   }
 
   const patch: Record<string, unknown> = {
     queue_state: next,
     updated_at: new Date().toISOString(),
+    ...stamps,
   };
-  // Attribution: additive stage stamps only — never overwrite discovered_by.
-  if (next === "CLAUDE_PLAYLIST_COMPLETE" || next === "AWAITING_GROK_REVIEW") {
-    if (!existing.drafted_by) Object.assign(patch, stampDraft(ops));
-  }
-  if (FINAL_AUTHORITY_STATES.has(next)) {
-    Object.assign(patch, stampReview(ops));
-  }
-  if (next === "APPROVED_FOR_SEND") Object.assign(patch, stampApprove(ops));
-  if (next === "REJECTED_BY_GROK") {
-    Object.assign(patch, stampReject(ops));
-    if (clean.rejection_reason != null) patch.notes = String(clean.rejection_reason);
-  }
-
   const { data, error } = await sb
     .from("agh_handoff_batches")
     .update(patch)
     .eq("id", batchId)
+    .eq("queue_state", from)
     .select()
-    .single();
+    .maybeSingle();
   if (error) return { status: 500, data: { error: error.message } };
+  if (!data) {
+    return {
+      status: 409,
+      data: {
+        error: "queue_state changed by another request",
+        code: "conflict",
+        expected: from,
+        attempted: next,
+      },
+    };
+  }
 
-  // Records: update queue_state + review stamps only (preserve discovered_*/drafted_*).
   const recordPatch: Record<string, unknown> = {
     queue_state: next,
     updated_at: new Date().toISOString(),
@@ -451,9 +567,23 @@ export async function advanceHandoffBatch(
   if (FINAL_AUTHORITY_STATES.has(next)) Object.assign(recordPatch, stampReview(ops));
   if (next === "APPROVED_FOR_SEND") Object.assign(recordPatch, stampApprove(ops));
   if (next === "REJECTED_BY_GROK") Object.assign(recordPatch, stampReject(ops));
-  await sb.from("agh_handoff_records").update(recordPatch).eq("batch_id", batchId);
 
-  return { status: 200, data: { ok: true, batch: data } };
+  const { error: recErr } = await sb
+    .from("agh_handoff_records")
+    .update(recordPatch)
+    .eq("batch_id", batchId);
+  if (recErr) {
+    return {
+      status: 500,
+      data: {
+        error: `batch advanced but record update failed: ${recErr.message}`,
+        code: "record_update_failed",
+        batch: data,
+      },
+    };
+  }
+
+  return { status: 200, data: { ok: true, batch: data, atomic: false } };
 }
 
 export async function reviewHandoffBatch(
@@ -475,13 +605,14 @@ export async function reviewHandoffBatch(
     if (!can(ops, "approve_playlist_drafts")) {
       return { status: 403, data: { error: `${ops.label} cannot approve handoff batches` } };
     }
+    // Strict chain: must already be GROK_REVIEWED before APPROVED_FOR_SEND.
     next = "APPROVED_FOR_SEND";
   } else if (decision === "reject") {
     if (!can(ops, "reject_playlist_drafts")) {
       return { status: 403, data: { error: `${ops.label} cannot reject handoff batches` } };
     }
     next = "REJECTED_BY_GROK";
-  } else if (decision === "reviewed") {
+  } else if (decision === "reviewed" || decision === "") {
     next = "GROK_REVIEWED";
   }
   return advanceHandoffBatch(sb, { ...clean, queue_state: next }, ops);
@@ -492,31 +623,7 @@ export async function markManualFormSubmitted(
   body: Record<string, unknown>,
   ops: OpsActor,
 ): Promise<RunResult> {
-  if (!can(ops, "send_playlist_pitches")) {
-    return { status: 403, data: { error: `${ops.label} cannot mark form submissions` } };
-  }
-  if (ops.kind === "claude" || ops.kind === "service" || ops.kind === "human_admin") {
-    return { status: 403, data: { error: `${ops.label} cannot mark form submissions as sent` } };
-  }
-  const clean = stripSpoofedAttribution(body);
-  const playlistId = String(clean.playlist_id ?? clean.playlist_target_id ?? "").trim();
-  if (!playlistId) return { status: 400, data: { error: "playlist_id required" } };
-  const result = String(clean.result ?? "submitted").trim();
-  const attr = attributionFrom(ops);
-  const { data, error } = await sb
-    .from("playlist_targets")
-    .update({
-      form_manual_submitted_at: new Date().toISOString(),
-      form_manual_submit_result: result,
-      form_manual_submitted_by: attr.actor_label,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("playlist_id", playlistId)
-    .select("playlist_id, form_url, form_manual_submitted_at, form_manual_submit_result")
-    .maybeSingle();
-  if (error) return { status: 500, data: { error: error.message } };
-  if (!data) return { status: 404, data: { error: "playlist target not found" } };
-  return { status: 200, data: { ok: true, row: data, automated_submit: false } };
+  return markManualHandoffSubmission(sb, body, ops, "web_form");
 }
 
 export async function markManualIgDmSubmitted(
@@ -524,31 +631,161 @@ export async function markManualIgDmSubmitted(
   body: Record<string, unknown>,
   ops: OpsActor,
 ): Promise<RunResult> {
-  if (!can(ops, "send_playlist_pitches") && !can(ops, "respond_to_curators")) {
-    return { status: 403, data: { error: `${ops.label} cannot mark IG DM submissions` } };
+  return markManualHandoffSubmission(sb, body, ops, "instagram_dm");
+}
+
+async function markManualHandoffSubmission(
+  sb: SupabaseClient,
+  body: Record<string, unknown>,
+  ops: OpsActor,
+  channel: "web_form" | "instagram_dm",
+): Promise<RunResult> {
+  if (ops.kind !== "grok_playlist_control" && ops.kind !== "fendi") {
+    return {
+      status: 403,
+      data: { error: `${ops.label} cannot mark manual submissions — Grok Playlist Control or Fendi only` },
+    };
   }
-  if (ops.kind === "claude" || ops.kind === "service" || ops.kind === "human_admin") {
-    return { status: 403, data: { error: `${ops.label} cannot mark IG DMs as sent` } };
+  if (!can(ops, "send_playlist_pitches") && ops.kind !== "fendi") {
+    return { status: 403, data: { error: `${ops.label} lacks send authority for manual submission` } };
   }
+
   const clean = stripSpoofedAttribution(body);
-  const playlistId = String(clean.playlist_id ?? clean.playlist_target_id ?? "").trim();
-  if (!playlistId) return { status: 400, data: { error: "playlist_id required" } };
-  const responseStatus = String(clean.response_status ?? "submitted").trim();
+  const recordId = String(clean.handoff_record_id ?? clean.outreach_draft_id ?? "").trim();
+  if (!recordId) {
+    return {
+      status: 400,
+      data: {
+        error: "handoff_record_id (or outreach_draft_id) required — playlist_id alone is not sufficient",
+        code: "missing_handoff_record_id",
+      },
+    };
+  }
+
+  let record: Record<string, unknown> | null = null;
+  if (clean.handoff_record_id) {
+    const { data, error } = await sb
+      .from("agh_handoff_records")
+      .select("*")
+      .eq("id", recordId)
+      .maybeSingle();
+    if (error) return { status: 500, data: { error: error.message } };
+    record = data as Record<string, unknown> | null;
+  } else {
+    const { data, error } = await sb
+      .from("agh_handoff_records")
+      .select("*")
+      .eq("outreach_draft_id", recordId)
+      .maybeSingle();
+    if (error) return { status: 500, data: { error: error.message } };
+    record = data as Record<string, unknown> | null;
+  }
+  if (!record) return { status: 404, data: { error: "handoff record not found" } };
+
+  if (String(record.queue_state) !== "APPROVED_FOR_SEND") {
+    return {
+      status: 422,
+      data: {
+        error: `manual submit requires queue_state=APPROVED_FOR_SEND (got ${record.queue_state})`,
+        code: "not_approved_for_send",
+      },
+    };
+  }
+
+  const trackId = String(record.track_id ?? "").trim();
+  const playlistId = String(record.playlist_target_id ?? "").trim();
+  if (!trackId) {
+    return { status: 422, data: { error: "missing track identity on handoff record", code: "missing_track_id" } };
+  }
+  if (!playlistId) {
+    return { status: 422, data: { error: "missing playlist_target_id on handoff record", code: "missing_playlist_id" } };
+  }
+
+  const envelope = await enforceTrackDnaLaneEnvelope(sb, {
+    route: `mark_manual_${channel}`,
+    trackId,
+    playlistId,
+    callerSongDnaVersionId: record.song_dna_version_id != null ? String(record.song_dna_version_id) : null,
+    actor: ops,
+  });
+  if (!envelope.ok) {
+    return {
+      status: 422,
+      data: {
+        error: envelope.errors[0] ?? "dna_lane_rejected",
+        code: envelope.errors[0] ?? "stale_or_incompatible",
+        errors: envelope.errors,
+      },
+    };
+  }
+
   const attr = attributionFrom(ops);
-  const { data, error } = await sb
-    .from("playlist_targets")
+  const result = String(clean.result ?? clean.response_status ?? "submitted").trim();
+  const { data: updated, error: updErr } = await sb
+    .from("agh_handoff_records")
     .update({
-      ig_manual_submitted_at: new Date().toISOString(),
-      ig_manual_response_status: responseStatus,
-      ig_manual_submitted_by: attr.actor_label,
+      submitted_at: new Date().toISOString(),
+      submitted_by: attr.actor_kind,
+      submitted_by_label: attr.actor_label,
+      manual_submit_channel: channel,
+      manual_submit_result: result,
+      song_dna_version_id: envelope.songDnaVersionId,
       updated_at: new Date().toISOString(),
     })
-    .eq("playlist_id", playlistId)
-    .select("playlist_id, ig_curator_account, ig_manual_submitted_at, ig_manual_response_status")
+    .eq("id", record.id)
+    .eq("queue_state", "APPROVED_FOR_SEND")
+    .select()
     .maybeSingle();
-  if (error) return { status: 500, data: { error: error.message } };
-  if (!data) return { status: 404, data: { error: "playlist target not found" } };
-  return { status: 200, data: { ok: true, row: data, bulk_dm: false, unattended_send: false } };
+  if (updErr) return { status: 500, data: { error: updErr.message } };
+  if (!updated) {
+    return { status: 409, data: { error: "record state changed before submit stamp", code: "conflict" } };
+  }
+
+  // Mirror optional playlist_targets manual markers (non-authoritative path metadata).
+  if (channel === "web_form") {
+    const { error: ptErr } = await sb
+      .from("playlist_targets")
+      .update({
+        form_manual_submitted_at: updated.submitted_at,
+        form_manual_submit_result: result,
+        form_manual_submitted_by: attr.actor_label,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("playlist_id", playlistId);
+    if (ptErr) {
+      return {
+        status: 500,
+        data: { error: `handoff stamped but playlist_targets mirror failed: ${ptErr.message}`, record: updated },
+      };
+    }
+  } else {
+    const { error: ptErr } = await sb
+      .from("playlist_targets")
+      .update({
+        ig_manual_submitted_at: updated.submitted_at,
+        ig_manual_response_status: result,
+        ig_manual_submitted_by: attr.actor_label,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("playlist_id", playlistId);
+    if (ptErr) {
+      return {
+        status: 500,
+        data: { error: `handoff stamped but playlist_targets mirror failed: ${ptErr.message}`, record: updated },
+      };
+    }
+  }
+
+  return {
+    status: 200,
+    data: {
+      ok: true,
+      record: updated,
+      automated_submit: false,
+      bulk_dm: false,
+      unattended_send: false,
+    },
+  };
 }
 
 export async function runHandoffAction(

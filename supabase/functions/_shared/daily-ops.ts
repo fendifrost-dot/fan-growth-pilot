@@ -11,10 +11,13 @@ import {
   type OpsActor,
 } from "./ops-actors.ts";
 import {
+  authorizeStationOperator,
   chicagoBusinessDate,
   DAILY_STATION_IDS,
   isDailyStationId,
+  STATION_REQUIRED_UPSTREAM_QUEUE,
   STATION_UPSTREAM,
+  stationOwner,
   type DailyStationId,
 } from "./chicago-time.ts";
 
@@ -104,12 +107,16 @@ export async function startDailyStationRun(
     };
   }
   const stationId = stationRaw as DailyStationId;
+  const startDenied = authorizeStationOperator(stationId, ops.kind, "start");
+  if (startDenied) return { status: 403, data: { error: startDenied, code: "station_ownership" } };
+
   const businessDate =
     typeof clean.business_date_ct === "string" && /^\d{4}-\d{2}-\d{2}$/.test(clean.business_date_ct)
       ? clean.business_date_ct
       : chicagoBusinessDate();
   const runKey = String(clean.run_key ?? "primary").trim() || "primary";
   const attr = attributionFrom(ops);
+  const owner = stationOwner(stationId);
 
   // Idempotent upsert: resume existing run rather than insert a duplicate.
   const { data: existing } = await sb
@@ -122,14 +129,40 @@ export async function startDailyStationRun(
 
   const upstream = await loadUpstream(sb, stationId, businessDate);
 
+  // Grok stations cannot front-run required upstream queue states.
+  const requiredQueue = STATION_REQUIRED_UPSTREAM_QUEUE[stationId];
+  let queueDependency: string | null = null;
+  if (requiredQueue && upstream.input_batch_id) {
+    const { data: batch } = await sb
+      .from("agh_handoff_batches")
+      .select("id, queue_state")
+      .eq("id", upstream.input_batch_id)
+      .maybeSingle();
+    if (!batch || String(batch.queue_state) !== requiredQueue) {
+      queueDependency =
+        `upstream_queue_not_ready:need_${requiredQueue}:got_${batch?.queue_state ?? "missing"}`;
+    }
+  } else if (requiredQueue && !upstream.input_batch_id) {
+    queueDependency = `upstream_queue_not_ready:need_${requiredQueue}:no_batch`;
+  }
+
   if (existing) {
+    const resumeDenied = authorizeStationOperator(stationId, ops.kind, "resume");
+    if (resumeDenied) return { status: 403, data: { error: resumeDenied, code: "station_ownership" } };
+    // A caller may only resume a run owned by its operator class.
+    if (existing.owner_kind && existing.owner_kind !== owner && ops.kind !== "fendi") {
+      return {
+        status: 403,
+        data: { error: `Cannot resume ${existing.owner_kind}-owned station run`, code: "station_ownership" },
+      };
+    }
     // Resume — preserve original authenticated actor attribution (no overwrite).
     const patch: Record<string, unknown> = {
       updated_at: new Date().toISOString(),
       upstream_station_id: upstream.upstream_station_id,
       upstream_run_id: upstream.upstream_run_id,
       input_batch_id: existing.input_batch_id ?? upstream.input_batch_id,
-      dependency_failure: upstream.dependency_failure,
+      dependency_failure: queueDependency ?? upstream.dependency_failure,
       last_resumed_by: attr.actor_kind,
       last_resumed_by_label: attr.actor_label,
       last_resumed_at: new Date().toISOString(),
@@ -177,12 +210,14 @@ export async function startDailyStationRun(
     actor_kind: attr.actor_kind,
     actor_label: attr.actor_label,
     actor_user_id: attr.actor_user_id,
+    owner_kind: owner,
+    required_upstream_queue_state: requiredQueue ?? null,
     status: "running" as StationStatus,
     started_at: new Date().toISOString(),
     upstream_station_id: upstream.upstream_station_id,
     upstream_run_id: upstream.upstream_run_id,
     input_batch_id: upstream.input_batch_id,
-    dependency_failure: upstream.dependency_failure,
+    dependency_failure: queueDependency ?? upstream.dependency_failure,
   };
 
   const { data, error } = await sb
@@ -236,6 +271,30 @@ export async function completeDailyStationRun(
   const clean = stripSpoofedAttribution(body);
   const runId = String(clean.run_id ?? clean.id ?? "").trim();
   if (!runId) return { status: 400, data: { error: "run_id required" } };
+
+  const { data: existing, error: loadErr } = await sb
+    .from("daily_ops_station_runs")
+    .select("*")
+    .eq("id", runId)
+    .maybeSingle();
+  if (loadErr) return { status: 500, data: { error: loadErr.message } };
+  if (!existing) return { status: 404, data: { error: "run not found" } };
+
+  const stationId = String(existing.station_id);
+  const completeDenied = authorizeStationOperator(stationId, ops.kind, "complete");
+  if (completeDenied) {
+    return { status: 403, data: { error: completeDenied, code: "station_ownership" } };
+  }
+  if (
+    existing.owner_kind &&
+    existing.owner_kind !== stationOwner(stationId) &&
+    ops.kind !== "fendi"
+  ) {
+    return {
+      status: 403,
+      data: { error: `Cannot complete ${existing.owner_kind}-owned station run`, code: "station_ownership" },
+    };
+  }
 
   const statusRaw = String(clean.status ?? "completed").trim();
   const allowed: StationStatus[] = ["completed", "partial", "blocked", "failed"];

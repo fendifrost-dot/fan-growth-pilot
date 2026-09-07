@@ -88,9 +88,12 @@ Deno.test("amendment: Grok can approve/reject; Claude lacks review_handoff_batch
 });
 
 Deno.test("amendment: handoff transitions are single-step; no skip to APPROVED", () => {
-  assertEquals(canTransitionHandoff("CLAUDE_BATCH_READY", "AWAITING_GROK_REVIEW"), true);
+  assertEquals(canTransitionHandoff("CLAUDE_BATCH_READY", "AWAITING_GROK_REVIEW"), false);
+  assertEquals(canTransitionHandoff("CLAUDE_BATCH_READY", "CLAUDE_PLAYLIST_COMPLETE"), true);
   assertEquals(canTransitionHandoff("CLAUDE_BATCH_READY", "APPROVED_FOR_SEND"), false);
-  assertEquals(canTransitionHandoff("AWAITING_GROK_REVIEW", "APPROVED_FOR_SEND"), true);
+  assertEquals(canTransitionHandoff("AWAITING_GROK_REVIEW", "APPROVED_FOR_SEND"), false);
+  assertEquals(canTransitionHandoff("AWAITING_GROK_REVIEW", "GROK_REVIEWED"), true);
+  assertEquals(canTransitionHandoff("GROK_REVIEWED", "APPROVED_FOR_SEND"), true);
   assertEquals(canTransitionHandoff("REJECTED_BY_GROK", "APPROVED_FOR_SEND"), false);
   assertEquals(canTransitionHandoff("IMPORTED_TO_AGH", "CLAUDE_BATCH_READY"), false);
   assert(CLAUDE_SIDE_STATES.has("AWAITING_GROK_REVIEW"));
@@ -100,13 +103,18 @@ Deno.test("amendment: handoff transitions are single-step; no skip to APPROVED",
 
 Deno.test("amendment: form/DM DNA gate is mandatory (not require_dna flag)", () => {
   assert(assertPacketDnaEnvelope({ form_url: "https://x.test" }) != null);
+  assert(assertPacketDnaEnvelope({ song_dna_version_id: "00000000-0000-0000-0000-000000000001" }) != null);
   assertEquals(
-    assertPacketDnaEnvelope({ song_dna_version_id: "00000000-0000-0000-0000-000000000001" }),
+    assertPacketDnaEnvelope({
+      track_id: "track-1",
+      song_dna_version_id: "00000000-0000-0000-0000-000000000001",
+    }),
     null,
   );
   const multi = Deno.readTextFileSync(new URL("./multichannel-path.ts", import.meta.url));
   assert(!multi.includes("if (clean.require_dna)"));
-  assert(multi.includes("requireApprovedSongDna"));
+  assert(multi.includes("enforceTrackDnaLaneEnvelope"));
+  assert(multi.includes("track_id"));
 });
 
 Deno.test("amendment: conversion rate is drafted∩verified / verified (not drafts/verified counts)", () => {

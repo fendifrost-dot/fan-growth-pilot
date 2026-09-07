@@ -84,27 +84,32 @@ Deno.test("station retries are idempotent — resume same run, no duplicate", as
   const req = new Request("https://t", {
     headers: { "x-claude-agent-secret": "c" },
   });
-  // Without env the actor is anonymous; still stamps actor_kind from resolveOpsActor.
-  const first = await startDailyStationRun(
-    sb,
-    { station_id: "playlist_discovery_begin", business_date_ct: "2026-09-07" },
-    actor,
-    req,
-  );
-  assertEquals(first.status, 200);
-  assertEquals(first.data.created, true);
-  const runId = (first.data.run as Row).id;
+  // Need Claude env for ownership
+  Deno.env.set("CLAUDE_AGENT_SECRET", "c");
+  try {
+    const first = await startDailyStationRun(
+      sb,
+      { station_id: "playlist_discovery_begin", business_date_ct: "2026-09-07" },
+      actor,
+      req,
+    );
+    assertEquals(first.status, 200);
+    assertEquals(first.data.created, true);
+    const runId = (first.data.run as Row).id;
 
-  const second = await startDailyStationRun(
-    sb,
-    { station_id: "playlist_discovery_begin", business_date_ct: "2026-09-07" },
-    actor,
-    req,
-  );
-  assertEquals(second.status, 200);
-  assertEquals(second.data.resumed, true);
-  assertEquals((second.data.run as Row).id, runId);
-  assertEquals(store.runs.length, 1);
+    const second = await startDailyStationRun(
+      sb,
+      { station_id: "playlist_discovery_begin", business_date_ct: "2026-09-07" },
+      actor,
+      req,
+    );
+    assertEquals(second.status, 200);
+    assertEquals(second.data.resumed, true);
+    assertEquals((second.data.run as Row).id, runId);
+    assertEquals(store.runs.length, 1);
+  } finally {
+    Deno.env.delete("CLAUDE_AGENT_SECRET");
+  }
 });
 
 Deno.test("later station consumes upstream output batch and records dependency failure", async () => {
@@ -118,23 +123,29 @@ Deno.test("later station consumes upstream output batch and records dependency f
         status: "failed",
         output_batch_id: "batch-out-1",
         error_summary: "source_timeout",
+        owner_kind: "claude",
       },
     ] as Row[],
   };
   const sb = mockSb(store);
   const actor: Actor = { kind: "anonymous" };
-  const res = await startDailyStationRun(
-    sb,
-    { station_id: "playlist_tranche_first", business_date_ct: "2026-09-07" },
-    actor,
-    null,
-  );
-  assertEquals(res.status, 200);
-  assertEquals(res.data.continue_safe_work, true);
-  assertEquals(String(res.data.dependency_failure).includes("upstream_failed"), true);
-  const run = res.data.run as Row;
-  assertEquals(run.upstream_run_id, "up-1");
-  assertEquals(run.input_batch_id, "batch-out-1");
+  Deno.env.set("CLAUDE_AGENT_SECRET", "c");
+  try {
+    const res = await startDailyStationRun(
+      sb,
+      { station_id: "playlist_tranche_first", business_date_ct: "2026-09-07" },
+      actor,
+      new Request("https://t", { headers: { "x-claude-agent-secret": "c" } }),
+    );
+    assertEquals(res.status, 200);
+    assertEquals(res.data.continue_safe_work, true);
+    assertEquals(String(res.data.dependency_failure).includes("upstream_failed"), true);
+    const run = res.data.run as Row;
+    assertEquals(run.upstream_run_id, "up-1");
+    assertEquals(run.input_batch_id, "batch-out-1");
+  } finally {
+    Deno.env.delete("CLAUDE_AGENT_SECRET");
+  }
 });
 
 Deno.test("complete_daily_station_run updates metrics on existing row", async () => {
@@ -146,28 +157,64 @@ Deno.test("complete_daily_station_run updates metrics on existing row", async ()
         business_date_ct: "2026-09-07",
         run_key: "primary",
         status: "running",
+        owner_kind: "claude",
+        actor_kind: "claude",
       },
     ] as Row[],
   };
   const sb = mockSb(store);
-  const done = await completeDailyStationRun(
-    sb,
-    {
-      run_id: "run-9",
-      status: "partial",
-      raw_discoveries: 10,
-      unique_discoveries: 8,
-      verified_targets: 5,
-      drafts_created: 3,
-      duplicates: 2,
-      shortfall_reason: "saturation",
-      output_batch_id: "batch-sync-1",
-    },
-    { kind: "anonymous" },
-    null,
-  );
-  assertEquals(done.status, 200);
-  assertEquals((done.data.run as Row).status, "partial");
-  assertEquals((done.data.run as Row).verified_targets, 5);
-  assertEquals((done.data.run as Row).output_batch_id, "batch-sync-1");
+  Deno.env.set("CLAUDE_AGENT_SECRET", "c");
+  try {
+    const done = await completeDailyStationRun(
+      sb,
+      {
+        run_id: "run-9",
+        status: "partial",
+        raw_discoveries: 10,
+        unique_discoveries: 8,
+        verified_targets: 5,
+        drafts_created: 3,
+        duplicates: 2,
+        shortfall_reason: "saturation",
+        output_batch_id: "batch-sync-1",
+      },
+      { kind: "anonymous" },
+      new Request("https://t", { headers: { "x-claude-agent-secret": "c" } }),
+    );
+    assertEquals(done.status, 200);
+    assertEquals((done.data.run as Row).status, "partial");
+    assertEquals((done.data.run as Row).verified_targets, 5);
+    assertEquals((done.data.run as Row).output_batch_id, "batch-sync-1");
+  } finally {
+    Deno.env.delete("CLAUDE_AGENT_SECRET");
+  }
+});
+
+Deno.test("Grok cannot complete Claude station run", async () => {
+  const store = {
+    runs: [
+      {
+        id: "run-claude",
+        station_id: "playlist_discovery_begin",
+        business_date_ct: "2026-09-07",
+        run_key: "primary",
+        status: "running",
+        owner_kind: "claude",
+      },
+    ] as Row[],
+  };
+  const sb = mockSb(store);
+  Deno.env.set("GROK_PLAYLIST_CONTROL_SECRET", "g");
+  try {
+    const done = await completeDailyStationRun(
+      sb,
+      { run_id: "run-claude", status: "completed" },
+      { kind: "anonymous" },
+      new Request("https://t", { headers: { "x-grok-playlist-control-secret": "g" } }),
+    );
+    assertEquals(done.status, 403);
+    assertEquals(done.data.code, "station_ownership");
+  } finally {
+    Deno.env.delete("GROK_PLAYLIST_CONTROL_SECRET");
+  }
 });

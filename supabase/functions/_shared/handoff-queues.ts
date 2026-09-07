@@ -121,8 +121,13 @@ export function authorizeHandoffState(
     return `${ops.label} cannot set Claude-side handoff states`;
   }
 
-  // Final authority — never Claude, service, scheduler, or human_admin alone.
-  if (ops.kind === "claude" || ops.kind === "service" || ops.kind === "scheduler") {
+  // Final authority — never Claude, playlist-discovery, service, scheduler, or human_admin alone.
+  if (
+    ops.kind === "claude" ||
+    ops.kind === "claude_playlist_discovery" ||
+    ops.kind === "service" ||
+    ops.kind === "scheduler"
+  ) {
     return `${ops.label} cannot set final review/approval/send/import states`;
   }
   if (ops.kind === "human_admin") {

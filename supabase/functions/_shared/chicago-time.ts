@@ -132,12 +132,24 @@ export function authorizeStationOperator(
 
   if (owner === "claude") {
     if (mode === "start") {
-      if (actorKind === "claude" || actorKind === "fendi") return null;
+      if (
+        actorKind === "claude" ||
+        actorKind === "claude_playlist_discovery" ||
+        actorKind === "fendi"
+      ) {
+        return null;
+      }
       if (actorKind === "scheduler" && SCHEDULER_MAY_START_CLAUDE_STATIONS) return null;
       return `${actorKind} cannot start Claude station ${stationId}`;
     }
-    // complete / resume — Claude credential only (Fendi oversight allowed)
-    if (actorKind === "claude" || actorKind === "fendi") return null;
+    // complete / resume — Claude credential or playlist-discovery (Fendi oversight allowed)
+    if (
+      actorKind === "claude" ||
+      actorKind === "claude_playlist_discovery" ||
+      actorKind === "fendi"
+    ) {
+      return null;
+    }
     if (actorKind === "grok_playlist_control") {
       return "Grok cannot complete or impersonate Claude discovery stations";
     }
@@ -147,9 +159,14 @@ export function authorizeStationOperator(
     return `${actorKind} cannot operate Claude station ${stationId}`;
   }
 
-  // Grok stations
+  // Grok stations — only Grok or Fendi; never Claude / playlist-discovery / service / scheduler.
   if (actorKind === "grok_playlist_control" || actorKind === "fendi") return null;
-  if (actorKind === "claude" || actorKind === "service" || actorKind === "scheduler") {
+  if (
+    actorKind === "claude" ||
+    actorKind === "claude_playlist_discovery" ||
+    actorKind === "service" ||
+    actorKind === "scheduler"
+  ) {
     return `${actorKind} cannot complete Grok review or send work`;
   }
   return `${actorKind} cannot operate Grok station ${stationId}`;

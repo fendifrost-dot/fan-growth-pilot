@@ -80,7 +80,7 @@ verify_jwt = false
 [functions.refresh-platform-stats]
 verify_jwt = false
 
-[functions.control-center-api]
+[functions.mcp-playlist-discovery]
 verify_jwt = false
 
 [functions.playlist-research]

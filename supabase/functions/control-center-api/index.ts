@@ -12,6 +12,7 @@ import {
 } from '../_shared/outreach-auth.ts';
 import {
   isClaudeCredential,
+  isClaudePlaylistDiscoveryCredential,
   isGrokCredential,
   isHubServiceCredential,
   secretsEqual,
@@ -27,7 +28,7 @@ import { buildDiscoveryCapacityPlan } from '../_shared/discovery-capacity.ts';
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers':
-    'authorization, x-client-info, apikey, content-type, x-api-key, x-fanfuel-hub-key, x-outreach-scheduler-secret, x-grok-playlist-control-secret, x-grok-agent-secret, x-claude-agent-secret, x-claude-agent-key, x-agh-agent, x-ops-agent',
+    'authorization, x-client-info, apikey, content-type, x-api-key, x-fanfuel-hub-key, x-outreach-scheduler-secret, x-grok-playlist-control-secret, x-grok-agent-secret, x-claude-agent-secret, x-claude-agent-key, x-claude-playlist-discovery-secret, x-agh-playlist-discovery-secret, x-agh-agent, x-ops-agent',
 };
 
 const PLATFORM_STAT_IDENTIFIERS = [
@@ -59,7 +60,7 @@ type HubGateResult =
 function gateHubKey(req: Request): HubGateResult {
   const xApiKey = (req.headers.get('x-api-key') || req.headers.get('x-fanfuel-hub-key') || '').trim();
   if (!xApiKey) return { ok: true, via: 'no_key_presented' };
-  if (isHubServiceCredential(req) || isGrokCredential(req) || isClaudeCredential(req)) {
+  if (isHubServiceCredential(req) || isGrokCredential(req) || isClaudeCredential(req) || isClaudePlaylistDiscoveryCredential(req)) {
     return { ok: true, via: 'hub_key' };
   }
   const hubKey = (Deno.env.get('FANFUEL_HUB_KEY') || '').trim();

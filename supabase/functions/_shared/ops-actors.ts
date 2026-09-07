@@ -19,6 +19,7 @@ import type { Actor } from "./outreach-auth.ts";
 
 export type OpsActorKind =
   | "claude"
+  | "claude_playlist_discovery"
   | "grok_playlist_control"
   | "fendi"
   | "scheduler"
@@ -72,6 +73,10 @@ export type OpsCapability =
   | "create_sync_opportunity"
   | "draft_sync_pitch"
   | "read_own_sync_batches"
+  /** Minimal projection for remote playlist-discovery connector (no fan/radio/licensing). */
+  | "read_playlist_discovery_work"
+  | "submit_playlist_candidates"
+  | "read_own_playlist_batches"
   // Human/Fendi admin surfaces — never granted to Claude/Grok/service/scheduler.
   | "manage_campaigns"
   | "manage_catalog"
@@ -79,6 +84,20 @@ export type OpsCapability =
   | "manage_sync_registers"
   | "manage_radio"
   | "manage_fan_engagement";
+
+/** Narrow remote-connector actor — draft-only playlist discovery. No DNA mutation, approve, send, inbox, fan/radio. */
+const CLAUDE_PLAYLIST_DISCOVERY_CAPS = new Set<OpsCapability>([
+  "research_playlist_targets",
+  "verify_playlist_targets",
+  "generate_playlist_drafts",
+  "record_research_evidence",
+  "run_daily_station",
+  "create_handoff_batch",
+  "verify_submission_path",
+  "read_playlist_discovery_work",
+  "submit_playlist_candidates",
+  "read_own_playlist_batches",
+]);
 
 const CLAUDE_CAPS = new Set<OpsCapability>([
   "research_playlist_targets",
@@ -101,6 +120,7 @@ const CLAUDE_CAPS = new Set<OpsCapability>([
   "create_sync_opportunity",
   "draft_sync_pitch",
   "read_own_sync_batches",
+  "read_playlist_discovery_work",
 ]);
 
 const GROK_CAPS = new Set<OpsCapability>([
@@ -126,6 +146,7 @@ const GROK_CAPS = new Set<OpsCapability>([
   "review_handoff_batch",
   "verify_submission_path",
   "read_own_sync_batches",
+  "read_playlist_discovery_work",
 ]);
 
 /** Only Fendi's exact ARTIST_USER_ID may hold these reserved decisions. */
@@ -182,6 +203,9 @@ const FENDI_CAPS = new Set<OpsCapability>([
   "create_sync_opportunity",
   "draft_sync_pitch",
   "read_own_sync_batches",
+  "read_playlist_discovery_work",
+  "submit_playlist_candidates",
+  "read_own_playlist_batches",
 ]);
 
 /** Human admins: ops reads/writes except playlist approve/send (Grok/Fendi only). */
@@ -216,6 +240,9 @@ const HUMAN_ADMIN_CAPS = new Set<OpsCapability>([
   "create_sync_opportunity",
   "draft_sync_pitch",
   "read_own_sync_batches",
+  "read_playlist_discovery_work",
+  "submit_playlist_candidates",
+  "read_own_playlist_batches",
 ]);
 
 const SCHEDULER_CAPS = new Set<OpsCapability>([
@@ -292,6 +319,21 @@ export function isGrokCredential(req: Request | null): boolean {
   return secretsEqual(presented, expected);
 }
 
+export function isClaudePlaylistDiscoveryCredential(req: Request | null): boolean {
+  const expected = (Deno.env.get("CLAUDE_PLAYLIST_DISCOVERY_SECRET") || "").trim();
+  if (!expected || !req) return false;
+  const presented =
+    header(req, "x-claude-playlist-discovery-secret") ||
+    header(req, "x-agh-playlist-discovery-secret") ||
+    presentedApiKey(req);
+  const hub = (Deno.env.get("FANFUEL_HUB_KEY") || "").trim();
+  const claude = (Deno.env.get("CLAUDE_AGENT_SECRET") || "").trim();
+  // Must not accept hub or broad Claude secrets as this narrower actor.
+  if (hub && secretsEqual(presented, hub) && !secretsEqual(presented, expected)) return false;
+  if (claude && secretsEqual(presented, claude) && !secretsEqual(presented, expected)) return false;
+  return secretsEqual(presented, expected);
+}
+
 export function isClaudeCredential(req: Request | null): boolean {
   const expected = (Deno.env.get("CLAUDE_AGENT_SECRET") || "").trim();
   if (!expected || !req) return false;
@@ -304,6 +346,15 @@ export function isClaudeCredential(req: Request | null): boolean {
   // presented key equals CLAUDE_AGENT_SECRET (not the hub key).
   const hub = (Deno.env.get("FANFUEL_HUB_KEY") || "").trim();
   if (hub && secretsEqual(presented, hub) && !secretsEqual(presented, expected)) {
+    return false;
+  }
+  // Dedicated playlist-discovery secret must not elevate to broad Claude.
+  const discovery = (Deno.env.get("CLAUDE_PLAYLIST_DISCOVERY_SECRET") || "").trim();
+  if (
+    discovery &&
+    secretsEqual(presented, discovery) &&
+    !secretsEqual(presented, expected)
+  ) {
     return false;
   }
   return secretsEqual(presented, expected);
@@ -327,12 +378,22 @@ export function isSchedulerCredential(req: Request | null): boolean {
  * Agent headers never elevate privileges.
  */
 export function resolveOpsActor(actor: Actor | null, req: Request | null = null): OpsActor {
-  // 1) Dedicated credentials win — order: scheduler → Grok → Claude → service.
+  // 1) Dedicated credentials win — order: scheduler → Grok → playlist-discovery → Claude → service.
   if (actor?.kind === "scheduler" || isSchedulerCredential(req)) {
     return { kind: "scheduler", userId: null, label: "scheduler" };
   }
   if (actor?.kind === "grok_playlist_control" || isGrokCredential(req)) {
     return { kind: "grok_playlist_control", userId: null, label: "grok_playlist_control" };
+  }
+  if (
+    actor?.kind === "claude_playlist_discovery" ||
+    isClaudePlaylistDiscoveryCredential(req)
+  ) {
+    return {
+      kind: "claude_playlist_discovery",
+      userId: null,
+      label: "claude_playlist_discovery",
+    };
   }
   if (actor?.kind === "claude" || isClaudeCredential(req)) {
     return { kind: "claude", userId: actor?.kind === "user" ? actor.userId : null, label: "claude" };
@@ -362,6 +423,8 @@ export function resolveOpsActor(actor: Actor | null, req: Request | null = null)
 
 export function capabilitiesFor(kind: OpsActorKind): ReadonlySet<OpsCapability> {
   switch (kind) {
+    case "claude_playlist_discovery":
+      return CLAUDE_PLAYLIST_DISCOVERY_CAPS;
     case "claude":
       return CLAUDE_CAPS;
     case "grok_playlist_control":

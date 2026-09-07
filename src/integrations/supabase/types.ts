@@ -341,6 +341,124 @@ export type Database = {
           },
         ]
       }
+      agh_mcp_oauth_clients: {
+        Row: {
+          client_id: string
+          client_name: string | null
+          client_secret_hash: string | null
+          created_at: string
+          grant_types: string[]
+          redirect_uris: string[]
+          token_endpoint_auth_method: string
+        }
+        Insert: {
+          client_id: string
+          client_name?: string | null
+          client_secret_hash?: string | null
+          created_at?: string
+          grant_types?: string[]
+          redirect_uris?: string[]
+          token_endpoint_auth_method?: string
+        }
+        Update: {
+          client_id?: string
+          client_name?: string | null
+          client_secret_hash?: string | null
+          created_at?: string
+          grant_types?: string[]
+          redirect_uris?: string[]
+          token_endpoint_auth_method?: string
+        }
+        Relationships: []
+      }
+      agh_mcp_oauth_codes: {
+        Row: {
+          authorized_by_user_id: string | null
+          client_id: string
+          code_challenge: string
+          code_challenge_method: string
+          code_hash: string
+          created_at: string
+          expires_at: string
+          redirect_uri: string
+          scope: string
+        }
+        Insert: {
+          authorized_by_user_id?: string | null
+          client_id: string
+          code_challenge: string
+          code_challenge_method?: string
+          code_hash: string
+          created_at?: string
+          expires_at: string
+          redirect_uri: string
+          scope?: string
+        }
+        Update: {
+          authorized_by_user_id?: string | null
+          client_id?: string
+          code_challenge?: string
+          code_challenge_method?: string
+          code_hash?: string
+          created_at?: string
+          expires_at?: string
+          redirect_uri?: string
+          scope?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agh_mcp_oauth_codes_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "agh_mcp_oauth_clients"
+            referencedColumns: ["client_id"]
+          },
+        ]
+      }
+      agh_mcp_oauth_tokens: {
+        Row: {
+          actor_kind: string
+          authorized_by_user_id: string | null
+          client_id: string
+          created_at: string
+          expires_at: string
+          refresh_token_hash: string | null
+          revoked_at: string | null
+          scope: string
+          token_hash: string
+        }
+        Insert: {
+          actor_kind?: string
+          authorized_by_user_id?: string | null
+          client_id: string
+          created_at?: string
+          expires_at: string
+          refresh_token_hash?: string | null
+          revoked_at?: string | null
+          scope?: string
+          token_hash: string
+        }
+        Update: {
+          actor_kind?: string
+          authorized_by_user_id?: string | null
+          client_id?: string
+          created_at?: string
+          expires_at?: string
+          refresh_token_hash?: string | null
+          revoked_at?: string | null
+          scope?: string
+          token_hash?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agh_mcp_oauth_tokens_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "agh_mcp_oauth_clients"
+            referencedColumns: ["client_id"]
+          },
+        ]
+      }
       analytics_snapshots: {
         Row: {
           chartmetric_rank: number | null

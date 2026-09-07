@@ -18,6 +18,11 @@ import {
 } from "./ops-actors.ts";
 import { chicagoBusinessDate } from "./chicago-time.ts";
 import { enforceTrackDnaLaneEnvelope, resolveCurrentApprovedDna } from "./track-dna-envelope.ts";
+import {
+  assertCopyAgainstDnaDescriptors,
+  rejectCallerPlaylistCopy,
+} from "./pitch-descriptor-guard.ts";
+import { resolveTrackPitchCopy } from "./pitch-copy.ts";
 
 export type RunResult = { status: number; data: Record<string, unknown> };
 
@@ -360,6 +365,38 @@ export async function addHandoffRecords(
         };
       }
 
+      // Reject caller-written playlist pitch copy on the record payload.
+      const callerCopy = rejectCallerPlaylistCopy(r);
+      if (callerCopy) return callerCopy;
+      if (typeof r.packet === "object" && r.packet) {
+        const pktCopy = rejectCallerPlaylistCopy(r.packet as Record<string, unknown>);
+        if (pktCopy) return pktCopy;
+      }
+
+      const { data: dnaRow } = await sb
+        .from("song_dna_versions")
+        .select("id, short_pitch, approval_state, primary_genre, approved_lanes, excluded_lanes")
+        .eq("id", envelope.songDnaVersionId!)
+        .maybeSingle();
+      const pitch = resolveTrackPitchCopy({
+        approvedDna: dnaRow,
+        requireApprovedDna: true,
+      });
+      if (!pitch.ok) {
+        return {
+          status: 422,
+          data: { error: "missing approved Song DNA pitch copy", code: "missing_track_pitch_copy" },
+        };
+      }
+      const descErr = assertCopyAgainstDnaDescriptors(pitch.pitch, {
+        primary_genre: dnaRow?.primary_genre as string | null,
+        approved_lanes: (dnaRow?.approved_lanes as string[]) ?? envelope.approvedLanes,
+        excluded_lanes: (dnaRow?.excluded_lanes as string[]) ?? envelope.excludedLanes,
+      });
+      if (descErr) {
+        return { status: 422, data: { error: descErr, code: descErr, persisted: false } };
+      }
+
       const recordState = String(r.queue_state ?? "CLAUDE_BATCH_READY");
       if (!isHandoffQueueState(recordState) || !CLAUDE_SIDE_STATES.has(recordState)) {
         return {
@@ -369,8 +406,18 @@ export async function addHandoffRecords(
       }
 
       const packet = typeof r.packet === "object" && r.packet ? { ...(r.packet as Record<string, unknown>) } : {};
+      // Strip any caller playlist copy fields — server DNA pitch only.
+      for (const k of [
+        "draft_body", "body", "subject", "override_body", "override_subject",
+        "email_body", "pitch_body", "ig_dm_draft", "pitch",
+      ]) {
+        delete packet[k];
+      }
       packet.track_id = trackId;
       packet.song_dna_version_id = envelope.songDnaVersionId;
+      packet.pitch = pitch.pitch;
+      packet.draft_body = pitch.pitch;
+      packet.pitch_copy_source = pitch.source;
       // Never persist playlist_targets.song_dna_version_id as authoritative.
       delete packet.playlist_target_song_dna_version_id;
 
@@ -502,6 +549,7 @@ export async function advanceHandoffBatch(
 
   // Prefer atomic Postgres RPC (compare-and-set on batch_id + expected state).
   // Stamps never overwrite discovered_by / discovered_by_label (create-time only).
+  // No non-atomic application fallback — fail closed if RPC is unavailable.
   const { data: rpcData, error: rpcErr } = await sb.rpc("advance_agh_handoff_batch", {
     p_batch_id: batchId,
     p_expected_state: from,
@@ -509,7 +557,26 @@ export async function advanceHandoffBatch(
     p_stamps: stamps,
   });
 
-  if (!rpcErr && rpcData && typeof rpcData === "object") {
+  if (rpcErr) {
+    const msg = String(rpcErr.message || "");
+    const unavailable =
+      /could not find the function/i.test(msg) ||
+      /permission denied/i.test(msg) ||
+      /42501/.test(msg) ||
+      rpcErr.code === "PGRST202" ||
+      rpcErr.code === "42883";
+    return {
+      status: unavailable ? 503 : 500,
+      data: {
+        error: unavailable
+          ? "advance_agh_handoff_batch RPC unavailable — fail closed (no non-atomic fallback)"
+          : `advance_agh_handoff_batch RPC failed: ${msg}`,
+        code: unavailable ? "rpc_unavailable" : "rpc_failed",
+      },
+    };
+  }
+
+  if (rpcData && typeof rpcData === "object") {
     const result = rpcData as Record<string, unknown>;
     if (result.ok === false && result.code === "conflict") {
       return {
@@ -523,67 +590,34 @@ export async function advanceHandoffBatch(
       };
     }
     if (result.ok === true) {
-      return { status: 200, data: { ok: true, batch: result.batch, records_updated: result.records_updated, atomic: true } };
+      return {
+        status: 200,
+        data: {
+          ok: true,
+          batch: result.batch,
+          records_updated: result.records_updated,
+          atomic: true,
+        },
+      };
     }
     if (result.ok === false) {
-      return { status: 422, data: { error: String(result.error ?? "advance_failed"), code: String(result.code ?? "advance_failed") } };
+      return {
+        status: 422,
+        data: {
+          error: String(result.error ?? "advance_failed"),
+          code: String(result.code ?? "advance_failed"),
+        },
+      };
     }
   }
 
-  // Fallback compare-and-set when RPC is not yet applied (still fail-closed on races).
-  if (rpcErr && !String(rpcErr.message || "").includes("Could not find the function")) {
-    return { status: 500, data: { error: `advance_agh_handoff_batch RPC failed: ${rpcErr.message}` } };
-  }
-
-  const patch: Record<string, unknown> = {
-    queue_state: next,
-    updated_at: new Date().toISOString(),
-    ...stamps,
+  return {
+    status: 503,
+    data: {
+      error: "advance_agh_handoff_batch returned no result — fail closed",
+      code: "rpc_unavailable",
+    },
   };
-  const { data, error } = await sb
-    .from("agh_handoff_batches")
-    .update(patch)
-    .eq("id", batchId)
-    .eq("queue_state", from)
-    .select()
-    .maybeSingle();
-  if (error) return { status: 500, data: { error: error.message } };
-  if (!data) {
-    return {
-      status: 409,
-      data: {
-        error: "queue_state changed by another request",
-        code: "conflict",
-        expected: from,
-        attempted: next,
-      },
-    };
-  }
-
-  const recordPatch: Record<string, unknown> = {
-    queue_state: next,
-    updated_at: new Date().toISOString(),
-  };
-  if (FINAL_AUTHORITY_STATES.has(next)) Object.assign(recordPatch, stampReview(ops));
-  if (next === "APPROVED_FOR_SEND") Object.assign(recordPatch, stampApprove(ops));
-  if (next === "REJECTED_BY_GROK") Object.assign(recordPatch, stampReject(ops));
-
-  const { error: recErr } = await sb
-    .from("agh_handoff_records")
-    .update(recordPatch)
-    .eq("batch_id", batchId);
-  if (recErr) {
-    return {
-      status: 500,
-      data: {
-        error: `batch advanced but record update failed: ${recErr.message}`,
-        code: "record_update_failed",
-        batch: data,
-      },
-    };
-  }
-
-  return { status: 200, data: { ok: true, batch: data, atomic: false } };
 }
 
 export async function reviewHandoffBatch(
@@ -681,6 +715,22 @@ async function markManualHandoffSubmission(
     record = data as Record<string, unknown> | null;
   }
   if (!record) return { status: 404, data: { error: "handoff record not found" } };
+
+  // Idempotency: never overwrite original submission timestamp or submitting actor.
+  if (record.submitted_at != null && String(record.submitted_at).trim() !== "") {
+    return {
+      status: 200,
+      data: {
+        ok: true,
+        noop: true,
+        idempotent: true,
+        record,
+        automated_submit: false,
+        bulk_dm: false,
+        unattended_send: false,
+      },
+    };
+  }
 
   if (String(record.queue_state) !== "APPROVED_FOR_SEND") {
     return {

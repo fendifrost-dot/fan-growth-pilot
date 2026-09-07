@@ -4,6 +4,7 @@
 # Env:
 #   AGH_MIGTEST_USE_SUDO=1  — wrap via `sudo -u postgres` (default for local unix socket)
 #   PGHOST / PGUSER / PGPASSWORD — for CI Postgres service (set AGH_MIGTEST_USE_SUDO=0)
+#   AGH_MIGTEST_REQUIRE_LIVE_PREFLIGHT=1 — abort unless live orphan report is explicitly acknowledged
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -11,7 +12,6 @@ DB_NAME="agh_daily_ops_migtest"
 export PGUSER="${PGUSER:-postgres}"
 export PGHOST="${PGHOST:-/var/run/postgresql}"
 
-# Default to sudo peer-auth when talking to a local cluster socket.
 if [[ -z "${AGH_MIGTEST_USE_SUDO:-}" ]]; then
   if [[ "${PGHOST}" == /var/run/postgresql* ]] || [[ "${PGHOST}" == /tmp* ]]; then
     AGH_MIGTEST_USE_SUDO=1
@@ -31,10 +31,28 @@ psql_admin() {
 
 run_sql() {
   if [[ "${AGH_MIGTEST_USE_SUDO}" == "1" ]]; then
+    sudo -u postgres psql -v ON_ERROR_STOP=1 -d "${DB_NAME}" -t -A "$@"
+  else
+    psql -v ON_ERROR_STOP=1 -d "${DB_NAME}" -t -A "$@"
+  fi
+}
+
+run_sql_pretty() {
+  if [[ "${AGH_MIGTEST_USE_SUDO}" == "1" ]]; then
     sudo -u postgres psql -v ON_ERROR_STOP=1 -d "${DB_NAME}" "$@"
   else
     psql -v ON_ERROR_STOP=1 -d "${DB_NAME}" "$@"
   fi
+}
+
+assert_eq() {
+  local label="$1" actual="$2" expected="$3"
+  if [[ "${actual}" != "${expected}" ]]; then
+    echo "FAIL assert: ${label}: got '${actual}' expected '${expected}'"
+    psql_admin -c "DROP DATABASE IF EXISTS ${DB_NAME};" || true
+    exit 1
+  fi
+  echo "OK assert: ${label}=${expected}"
 }
 
 echo "==> Starting PostgreSQL if needed (sudo=${AGH_MIGTEST_USE_SUDO})"
@@ -48,7 +66,7 @@ psql_admin -c "DROP DATABASE IF EXISTS ${DB_NAME};"
 psql_admin -c "CREATE DATABASE ${DB_NAME};"
 
 echo "==> Minimal prerequisite schema (stubs for FKs)"
-run_sql <<'SQL'
+run_sql_pretty <<'SQL'
 create extension if not exists pgcrypto;
 
 do $$ begin
@@ -109,7 +127,7 @@ SQL
 apply_with_rollback() {
   local file="$1"
   echo "==> Applying $(basename "$file")"
-  if ! run_sql -f "$file"; then
+  if ! run_sql_pretty -f "$file"; then
     echo "FAIL: $(basename "$file") — rolling back by dropping database"
     psql_admin -c "DROP DATABASE IF EXISTS ${DB_NAME};" || true
     exit 1
@@ -119,12 +137,23 @@ apply_with_rollback() {
 apply_with_rollback "$ROOT/supabase/migrations/20260907000000_daily_ops_multichannel_sync_intake.sql"
 apply_with_rollback "$ROOT/supabase/migrations/20260907010000_daily_ops_pr19_security_amendment.sql"
 apply_with_rollback "$ROOT/supabase/migrations/20260907020000_daily_ops_operational_chain.sql"
+apply_with_rollback "$ROOT/supabase/migrations/20260907030000_daily_ops_rpc_hardening.sql"
 
-echo "==> Preflight orphan report"
-run_sql -c "select * from public.agh_daily_ops_fk_preflight();"
+echo "==> Preflight orphan report (empty fixture DB — not production proof)"
+run_sql_pretty -c "select * from public.agh_daily_ops_fk_preflight();"
+echo "NOTE: empty migtest DB cannot prove production FK orphans are clean."
+echo "      Before live apply, run agh_daily_ops_fk_preflight() against production via Lovable SQL Editor."
+if [[ "${AGH_MIGTEST_REQUIRE_LIVE_PREFLIGHT:-0}" == "1" ]]; then
+  if [[ "${AGH_MIGTEST_LIVE_PREFLIGHT_ACK:-}" != "orphans_inspected" ]]; then
+    echo "FAIL: AGH_MIGTEST_REQUIRE_LIVE_PREFLIGHT=1 requires AGH_MIGTEST_LIVE_PREFLIGHT_ACK=orphans_inspected"
+    echo "      (abort: fixture DB is not a live-data preflight)"
+    psql_admin -c "DROP DATABASE IF EXISTS ${DB_NAME};" || true
+    exit 1
+  fi
+fi
 
-echo "==> Atomic handoff RPC conflict test"
-run_sql <<'SQL'
+echo "==> Seed batch for RPC assertions"
+run_sql_pretty <<'SQL'
 insert into public.tracks (id, name) values ('11111111-1111-1111-1111-111111111111', 'Test Track');
 insert into public.song_dna_versions (id, track_id, approval_state, approved_lanes, short_pitch)
 values ('22222222-2222-2222-2222-222222222222', '11111111-1111-1111-1111-111111111111', 'approved', array['rap_general'], 'pitch');
@@ -135,22 +164,69 @@ insert into public.agh_handoff_batches (id, batch_kind, queue_state, track_id, s
 values ('33333333-3333-3333-3333-333333333333', 'playlist', 'CLAUDE_BATCH_READY',
         '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222',
         'claude', 'claude');
+SQL
 
--- Happy path
-select public.advance_agh_handoff_batch(
+echo "==> Happy-path RPC must return ok=true"
+OK1=$(run_sql -c "select public.advance_agh_handoff_batch(
   '33333333-3333-3333-3333-333333333333',
   'CLAUDE_BATCH_READY',
   'CLAUDE_PLAYLIST_COMPLETE',
-  '{"drafted_by":"claude","drafted_by_label":"claude"}'::jsonb
-) ->> 'ok' as ok1;
+  '{\"drafted_by\":\"claude\",\"drafted_by_label\":\"claude\"}'::jsonb
+) ->> 'ok';")
+assert_eq "happy_path_ok" "${OK1}" "true"
 
--- Conflict: wrong expected state
-select public.advance_agh_handoff_batch(
+echo "==> Race / wrong expected state must return code=conflict"
+CONFLICT=$(run_sql -c "select public.advance_agh_handoff_batch(
   '33333333-3333-3333-3333-333333333333',
   'CLAUDE_BATCH_READY',
-  'AWAITING_GROK_REVIEW',
+  'CLAUDE_PLAYLIST_COMPLETE',
   '{}'::jsonb
-) ->> 'code' as conflict_code;
-SQL
+) ->> 'code';")
+assert_eq "race_conflict_code" "${CONFLICT}" "conflict"
 
-echo "==> PASS: daily-ops migrations applied + RPC conflict verified"
+echo "==> Illegal transition skip must fail inside PostgreSQL"
+ILLEGAL=$(run_sql -c "select public.advance_agh_handoff_batch(
+  '33333333-3333-3333-3333-333333333333',
+  'CLAUDE_PLAYLIST_COMPLETE',
+  'APPROVED_FOR_SEND',
+  '{}'::jsonb
+) ->> 'code';")
+assert_eq "illegal_skip_code" "${ILLEGAL}" "illegal_transition"
+
+echo "==> Legal next step after COMPLETE"
+OK2=$(run_sql -c "select public.advance_agh_handoff_batch(
+  '33333333-3333-3333-3333-333333333333',
+  'CLAUDE_PLAYLIST_COMPLETE',
+  'AWAITING_GROK_REVIEW',
+  '{\"drafted_by\":\"claude\"}'::jsonb
+) ->> 'ok';")
+assert_eq "awaiting_grok_ok" "${OK2}" "true"
+
+echo "==> authenticated must NOT execute SECURITY DEFINER RPC"
+# Grant CONNECT so SET ROLE authenticated can run; EXECUTE must still be denied.
+run_sql_pretty -c "grant usage on schema public to authenticated;" >/dev/null
+run_sql_pretty -c "grant select on public.agh_handoff_batches to authenticated;" >/dev/null || true
+set +e
+DENIED_OUT=$(run_sql_pretty -c "set role authenticated; select public.advance_agh_handoff_batch(
+  '33333333-3333-3333-3333-333333333333',
+  'AWAITING_GROK_REVIEW',
+  'GROK_REVIEWED',
+  '{}'::jsonb
+);" 2>&1)
+DENIED_RC=$?
+set -e
+if [[ ${DENIED_RC} -eq 0 ]]; then
+  echo "FAIL: authenticated was able to execute advance_agh_handoff_batch"
+  echo "${DENIED_OUT}"
+  psql_admin -c "DROP DATABASE IF EXISTS ${DB_NAME};" || true
+  exit 1
+fi
+if ! echo "${DENIED_OUT}" | grep -qiE 'permission denied|must be owner|not granted'; then
+  echo "FAIL: expected permission denied for authenticated RPC; got:"
+  echo "${DENIED_OUT}"
+  psql_admin -c "DROP DATABASE IF EXISTS ${DB_NAME};" || true
+  exit 1
+fi
+echo "OK assert: authenticated_rpc_denied"
+
+echo "==> PASS: daily-ops migrations applied + authoritative RPC assertions verified"

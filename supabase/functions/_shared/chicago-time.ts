@@ -79,9 +79,9 @@ export const STATION_UPSTREAM: Partial<Record<DailyStationId, DailyStationId>> =
   grok_playlist_send: "grok_playlist_review",
 };
 
-/** Upstream handoff queue state required before a Grok station may complete. */
+/** Upstream handoff queue state required before a Grok station may start/complete. */
 export const STATION_REQUIRED_UPSTREAM_QUEUE: Partial<Record<DailyStationId, string>> = {
-  grok_playlist_review: "CLAUDE_PLAYLIST_COMPLETE",
+  grok_playlist_review: "AWAITING_GROK_REVIEW",
   grok_playlist_send: "APPROVED_FOR_SEND",
 };
 

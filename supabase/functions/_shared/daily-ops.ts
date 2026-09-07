@@ -15,11 +15,13 @@ import {
   chicagoBusinessDate,
   DAILY_STATION_IDS,
   isDailyStationId,
+  isGrokStationId,
   STATION_REQUIRED_UPSTREAM_QUEUE,
   STATION_UPSTREAM,
   stationOwner,
   type DailyStationId,
 } from "./chicago-time.ts";
+import { advanceHandoffBatch } from "./handoff-queues.ts";
 
 export type RunResult = { status: number; data: Record<string, unknown> };
 
@@ -53,6 +55,7 @@ async function loadUpstream(
   upstream_run_id: string | null;
   input_batch_id: string | null;
   dependency_failure: string | null;
+  upstream_status: string | null;
 }> {
   const upstream = STATION_UPSTREAM[stationId] ?? null;
   if (!upstream) {
@@ -61,6 +64,7 @@ async function loadUpstream(
       upstream_run_id: null,
       input_batch_id: null,
       dependency_failure: null,
+      upstream_status: null,
     };
   }
   const { data } = await sb
@@ -76,16 +80,48 @@ async function loadUpstream(
       upstream_run_id: null,
       input_batch_id: null,
       dependency_failure: `upstream_missing:${upstream}`,
+      upstream_status: null,
     };
   }
-  const failed = data.status === "failed" || data.status === "blocked";
+  const status = String(data.status);
+  const failed = status === "failed" || status === "blocked";
+  const incomplete = status !== "completed";
+  let dependency_failure: string | null = null;
+  if (failed) {
+    dependency_failure =
+      `upstream_${status}:${upstream}${data.error_summary ? `:${data.error_summary}` : ""}`;
+  } else if (incomplete) {
+    dependency_failure = `upstream_incomplete:${upstream}:status_${status}`;
+  } else if (!data.output_batch_id && isGrokStationId(stationId)) {
+    dependency_failure = `upstream_missing_output_batch:${upstream}`;
+  }
   return {
     upstream_station_id: upstream,
     upstream_run_id: data.id as string,
     input_batch_id: (data.output_batch_id as string | null) ?? null,
-    dependency_failure: failed
-      ? `upstream_${data.status}:${upstream}${data.error_summary ? `:${data.error_summary}` : ""}`
-      : null,
+    dependency_failure,
+    upstream_status: status,
+  };
+}
+
+/**
+ * Grok stations hard-block on unmet upstream / queue deps (409/422).
+ * Do not merely record dependency_failure and continue.
+ */
+function hardBlockGrokDependency(
+  stationId: DailyStationId,
+  failure: string | null,
+): RunResult | null {
+  if (!isGrokStationId(stationId) || !failure) return null;
+  const status = failure.startsWith("upstream_queue_not_ready") ? 422 : 409;
+  return {
+    status,
+    data: {
+      error: `Grok station blocked: ${failure}`,
+      code: "dependency_hard_block",
+      dependency_failure: failure,
+      blocked: true,
+    },
   };
 }
 
@@ -146,6 +182,10 @@ export async function startDailyStationRun(
     queueDependency = `upstream_queue_not_ready:need_${requiredQueue}:no_batch`;
   }
 
+  const depFailure = queueDependency ?? upstream.dependency_failure;
+  const grokBlock = hardBlockGrokDependency(stationId, depFailure);
+  if (grokBlock) return grokBlock;
+
   if (existing) {
     const resumeDenied = authorizeStationOperator(stationId, ops.kind, "resume");
     if (resumeDenied) return { status: 403, data: { error: resumeDenied, code: "station_ownership" } };
@@ -162,7 +202,7 @@ export async function startDailyStationRun(
       upstream_station_id: upstream.upstream_station_id,
       upstream_run_id: upstream.upstream_run_id,
       input_batch_id: existing.input_batch_id ?? upstream.input_batch_id,
-      dependency_failure: queueDependency ?? upstream.dependency_failure,
+      dependency_failure: depFailure,
       last_resumed_by: attr.actor_kind,
       last_resumed_by_label: attr.actor_label,
       last_resumed_at: new Date().toISOString(),
@@ -175,7 +215,7 @@ export async function startDailyStationRun(
           resumed: true,
           already_complete: true,
           run: existing,
-          dependency_failure: upstream.dependency_failure,
+          dependency_failure: depFailure,
         },
       };
     }
@@ -197,8 +237,8 @@ export async function startDailyStationRun(
         ok: true,
         resumed: true,
         run: data,
-        dependency_failure: upstream.dependency_failure,
-        continue_safe_work: true,
+        dependency_failure: depFailure,
+        continue_safe_work: !isGrokStationId(stationId),
       },
     };
   }
@@ -217,7 +257,7 @@ export async function startDailyStationRun(
     upstream_station_id: upstream.upstream_station_id,
     upstream_run_id: upstream.upstream_run_id,
     input_batch_id: upstream.input_batch_id,
-    dependency_failure: queueDependency ?? upstream.dependency_failure,
+    dependency_failure: depFailure,
   };
 
   const { data, error } = await sb
@@ -242,7 +282,7 @@ export async function startDailyStationRun(
             ok: true,
             resumed: true,
             run: raced,
-            dependency_failure: upstream.dependency_failure,
+            dependency_failure: depFailure,
           },
         };
       }
@@ -255,8 +295,8 @@ export async function startDailyStationRun(
       ok: true,
       created: true,
       run: data,
-      dependency_failure: upstream.dependency_failure,
-      continue_safe_work: true,
+      dependency_failure: depFailure,
+      continue_safe_work: !isGrokStationId(stationId),
     },
   };
 }
@@ -303,6 +343,36 @@ export async function completeDailyStationRun(
   }
 
   const attr = attributionFrom(ops);
+
+  // Re-check Grok deps at completion — unmet deps hard-block (do not complete).
+  if (isGrokStationId(stationId)) {
+    const businessDate = String(existing.business_date_ct ?? chicagoBusinessDate());
+    const upstream = await loadUpstream(sb, stationId as DailyStationId, businessDate);
+    const requiredQueue = STATION_REQUIRED_UPSTREAM_QUEUE[stationId as DailyStationId];
+    let queueDependency: string | null = null;
+    const batchId = String(clean.input_batch_id ?? existing.input_batch_id ?? upstream.input_batch_id ?? "").trim();
+    if (requiredQueue) {
+      if (!batchId) {
+        queueDependency = `upstream_queue_not_ready:need_${requiredQueue}:no_batch`;
+      } else {
+        const { data: batch } = await sb
+          .from("agh_handoff_batches")
+          .select("id, queue_state")
+          .eq("id", batchId)
+          .maybeSingle();
+        if (!batch || String(batch.queue_state) !== requiredQueue) {
+          queueDependency =
+            `upstream_queue_not_ready:need_${requiredQueue}:got_${batch?.queue_state ?? "missing"}`;
+        }
+      }
+    }
+    const grokBlock = hardBlockGrokDependency(
+      stationId as DailyStationId,
+      queueDependency ?? upstream.dependency_failure,
+    );
+    if (grokBlock) return grokBlock;
+  }
+
   const patch: Record<string, unknown> = {
     status: statusRaw,
     completed_at: new Date().toISOString(),
@@ -328,6 +398,82 @@ export async function completeDailyStationRun(
     patch.dependency_failure = String(clean.dependency_failure);
   }
   if (clean.metrics && typeof clean.metrics === "object") patch.metrics = clean.metrics;
+
+  // Claude final playlist station must leave the batch at AWAITING_GROK_REVIEW.
+  if (stationId === "playlist_tranche_final" && statusRaw === "completed") {
+    const batchId = String(clean.output_batch_id ?? existing.output_batch_id ?? "").trim();
+    if (!batchId) {
+      return {
+        status: 422,
+        data: {
+          error: "playlist_tranche_final completion requires output_batch_id",
+          code: "missing_output_batch",
+        },
+      };
+    }
+    patch.output_batch_id = batchId;
+    const { data: batch, error: bErr } = await sb
+      .from("agh_handoff_batches")
+      .select("id, queue_state")
+      .eq("id", batchId)
+      .maybeSingle();
+    if (bErr) return { status: 500, data: { error: bErr.message } };
+    if (!batch) return { status: 404, data: { error: "output_batch_id not found" } };
+    let state = String(batch.queue_state);
+    if (state === "CLAUDE_BATCH_READY") {
+      const step1 = await advanceHandoffBatch(
+        sb,
+        { batch_id: batchId, queue_state: "CLAUDE_PLAYLIST_COMPLETE" },
+        ops,
+      );
+      if (step1.status >= 400) return step1;
+      state = "CLAUDE_PLAYLIST_COMPLETE";
+    }
+    if (state === "CLAUDE_PLAYLIST_COMPLETE") {
+      const step2 = await advanceHandoffBatch(
+        sb,
+        { batch_id: batchId, queue_state: "AWAITING_GROK_REVIEW" },
+        ops,
+      );
+      if (step2.status >= 400) return step2;
+      state = "AWAITING_GROK_REVIEW";
+    }
+    if (state !== "AWAITING_GROK_REVIEW") {
+      return {
+        status: 422,
+        data: {
+          error: `playlist_tranche_final must leave batch at AWAITING_GROK_REVIEW (got ${state})`,
+          code: "batch_not_awaiting_grok",
+        },
+      };
+    }
+  }
+
+  // Grok review completion advances AWAITING_GROK_REVIEW → GROK_REVIEWED.
+  if (stationId === "grok_playlist_review" && statusRaw === "completed") {
+    const batchId = String(
+      clean.input_batch_id ?? existing.input_batch_id ?? clean.output_batch_id ?? "",
+    ).trim();
+    if (!batchId) {
+      return {
+        status: 422,
+        data: { error: "grok_playlist_review completion requires input_batch_id", code: "missing_batch" },
+      };
+    }
+    const adv = await advanceHandoffBatch(
+      sb,
+      { batch_id: batchId, queue_state: "GROK_REVIEWED" },
+      ops,
+    );
+    if (adv.status >= 400) return adv;
+    patch.output_batch_id = batchId;
+  }
+
+  // Grok send cannot front-run — batch must already be APPROVED_FOR_SEND (checked above).
+  if (stationId === "grok_playlist_send" && statusRaw === "completed") {
+    const batchId = String(clean.input_batch_id ?? existing.input_batch_id ?? "").trim();
+    if (batchId) patch.output_batch_id = batchId;
+  }
 
   const { data, error } = await sb
     .from("daily_ops_station_runs")

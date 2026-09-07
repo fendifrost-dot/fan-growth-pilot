@@ -15,6 +15,11 @@ import {
 import { assertKnownChannel } from "./handoff-queues.ts";
 import { verifyEmail } from "./verify-target.ts";
 import { enforceTrackDnaLaneEnvelope } from "./track-dna-envelope.ts";
+import {
+  assertCopyAgainstDnaDescriptors,
+  rejectCallerPlaylistCopy,
+} from "./pitch-descriptor-guard.ts";
+import { resolveTrackPitchCopy } from "./pitch-copy.ts";
 
 export type RunResult = { status: number; data: Record<string, unknown> };
 
@@ -340,6 +345,9 @@ export async function runMultichannelAction(
   }
 
   if (action === "build_web_form_packet") {
+    const callerCopy = rejectCallerPlaylistCopy(body);
+    if (callerCopy) return callerCopy;
+
     const playlistId = String(clean.playlist_id ?? "").trim();
     const trackId = String(clean.track_id ?? "").trim();
     if (!playlistId) return { status: 400, data: { error: "playlist_id required" } };
@@ -359,6 +367,22 @@ export async function runMultichannelAction(
       };
     }
 
+    const { data: dnaRow } = await sb
+      .from("song_dna_versions")
+      .select("id, short_pitch, approval_state, primary_genre, approved_lanes, excluded_lanes")
+      .eq("id", envelope.songDnaVersionId!)
+      .maybeSingle();
+    const pitch = resolveTrackPitchCopy({ approvedDna: dnaRow, requireApprovedDna: true });
+    if (!pitch.ok) {
+      return { status: 422, data: { error: "missing approved Song DNA pitch copy", code: "missing_track_pitch_copy" } };
+    }
+    const descErr = assertCopyAgainstDnaDescriptors(pitch.pitch, {
+      primary_genre: dnaRow?.primary_genre as string | null,
+      approved_lanes: (dnaRow?.approved_lanes as string[]) ?? envelope.approvedLanes,
+      excluded_lanes: (dnaRow?.excluded_lanes as string[]) ?? envelope.excludedLanes,
+    });
+    if (descErr) return { status: 422, data: { error: descErr, code: descErr } };
+
     const { data, error } = await sb.from("playlist_targets").select("*").eq("playlist_id", playlistId).maybeSingle();
     if (error) return { status: 500, data: { error: error.message } };
     if (!data) return { status: 404, data: { error: "target not found" } };
@@ -366,6 +390,9 @@ export async function runMultichannelAction(
       track_id: trackId,
       song_dna_version_id: envelope.songDnaVersionId,
     });
+    packet.pitch = pitch.pitch;
+    packet.draft_body = pitch.pitch;
+    packet.pitch_copy_source = pitch.source;
     const dnaErr = assertPacketDnaEnvelope(packet);
     if (dnaErr) return { status: 422, data: { error: dnaErr, code: "dna_required" } };
     return {
@@ -375,6 +402,10 @@ export async function runMultichannelAction(
   }
 
   if (action === "build_instagram_dm_draft") {
+    // Caller-written playlist copy is hard-rejected — compose from approved DNA only.
+    const callerCopy = rejectCallerPlaylistCopy(body);
+    if (callerCopy) return callerCopy;
+
     const playlistId = String(clean.playlist_id ?? "").trim();
     const trackId = String(clean.track_id ?? "").trim();
     if (!playlistId) return { status: 400, data: { error: "playlist_id required" } };
@@ -400,29 +431,47 @@ export async function runMultichannelAction(
       };
     }
 
+    const { data: dnaRow } = await sb
+      .from("song_dna_versions")
+      .select("id, short_pitch, approval_state, primary_genre, approved_lanes, excluded_lanes")
+      .eq("id", envelope.songDnaVersionId!)
+      .maybeSingle();
+    const pitch = resolveTrackPitchCopy({ approvedDna: dnaRow, requireApprovedDna: true });
+    if (!pitch.ok) {
+      return {
+        status: 422,
+        data: { error: "missing approved Song DNA pitch copy", code: "missing_track_pitch_copy", persisted: false },
+      };
+    }
+    const descErr = assertCopyAgainstDnaDescriptors(pitch.pitch, {
+      primary_genre: dnaRow?.primary_genre as string | null,
+      approved_lanes: (dnaRow?.approved_lanes as string[]) ?? envelope.approvedLanes,
+      excluded_lanes: (dnaRow?.excluded_lanes as string[]) ?? envelope.excludedLanes,
+    });
+    if (descErr) {
+      return { status: 422, data: { error: descErr, code: descErr, persisted: false } };
+    }
+
     const { data, error } = await sb.from("playlist_targets").select("*").eq("playlist_id", playlistId).maybeSingle();
     if (error) return { status: 500, data: { error: error.message } };
     if (!data) return { status: 404, data: { error: "target not found" } };
 
-    const draftBody = clean.draft_body != null
-      ? String(clean.draft_body)
-      : (data as { ig_dm_draft?: string }).ig_dm_draft;
+    // Persist server-composed DNA pitch only (never caller draft_body).
+    const { error: writeErr } = await sb
+      .from("playlist_targets")
+      .update({
+        ig_dm_draft: pitch.pitch,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("playlist_id", playlistId);
+    if (writeErr) return { status: 500, data: { error: writeErr.message, persisted: false } };
 
-    if (clean.draft_body != null) {
-      const { error: writeErr } = await sb
-        .from("playlist_targets")
-        .update({
-          ig_dm_draft: String(clean.draft_body),
-          updated_at: new Date().toISOString(),
-        })
-        .eq("playlist_id", playlistId);
-      if (writeErr) return { status: 500, data: { error: writeErr.message, persisted: false } };
-    }
-
-    const packet = buildInstagramDmPacket(data as Record<string, unknown>, draftBody, {
+    const packet = buildInstagramDmPacket(data as Record<string, unknown>, pitch.pitch, {
       track_id: trackId,
       song_dna_version_id: envelope.songDnaVersionId,
     });
+    packet.pitch = pitch.pitch;
+    packet.pitch_copy_source = pitch.source;
     const dnaErr = assertPacketDnaEnvelope(packet);
     if (dnaErr) return { status: 422, data: { error: dnaErr, code: "dna_required", persisted: false } };
     return {

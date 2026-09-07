@@ -270,12 +270,12 @@ Deno.test("d) failed IG validation writes nothing", async () => {
       playlist_lanes: [],
     };
     const sb = stubSb(tables, writes);
+    // No caller draft_body — incompatible lane alone must leave nothing persisted.
     const res = await runMultichannelAction(
       "build_instagram_dm_draft",
       {
         playlist_id: "pl-house",
         track_id: "track-a",
-        draft_body: "SHOULD NOT PERSIST",
       },
       sb,
       null,
@@ -287,6 +287,104 @@ Deno.test("d) failed IG validation writes nothing", async () => {
     assertEquals(igWrites.length, 0);
     assertEquals(tables.playlist_targets[0].ig_dm_draft, null);
   });
+});
+
+Deno.test("d2) caller draft_body/body/subject rejected across IG", async () => {
+  await withEnv({ CLAUDE_AGENT_SECRET: "claude-secret" }, async () => {
+    const writes: { table: string; op: string; row: Row }[] = [];
+    const sb = stubSb({
+      tracks: [TRACK],
+      song_dna_versions: [DNA_A],
+      playlist_targets: [{ ...PL_RAP, ig_dm_draft: null }],
+    }, writes);
+    const res = await runMultichannelAction(
+      "build_instagram_dm_draft",
+      {
+        playlist_id: "pl-rap",
+        track_id: "track-a",
+        draft_body: "caller house deep-house language MUST NOT persist",
+      },
+      sb,
+      null,
+      req({ "x-claude-agent-secret": "claude-secret" }),
+    );
+    assertEquals(res.status, 422);
+    assertEquals(res.data.code, "caller_draft_body_rejected");
+    assertEquals(res.data.persisted, false);
+    assertEquals(writes.filter((w) => w.op === "update").length, 0);
+  });
+});
+
+Deno.test("d3) rap DNA cannot persist house/deep-house language (Meditate-shaped fixture, no title hardcode)", async () => {
+  // Fixture mirrors the verified rap identity (club context OK; house genre language not).
+  // Production modules must not contain the song title string.
+  const rapClubDna = {
+    id: "dna-rap-club",
+    track_id: "track-rap-club",
+    short_pitch:
+      "Chicago deep-house influenced melodic cut for the late-night house floor",
+    approval_state: "approved",
+    approved_lanes: ["rap_general", "rap_trap_hype"],
+    excluded_lanes: ["house_club", "deep_house_groove", "house_general"],
+    primary_genre: "rap",
+  };
+  const track = {
+    id: "track-rap-club",
+    name: "Fixture Track",
+    approved_song_dna_version_id: "dna-rap-club",
+  };
+  const { assertCopyAgainstDnaDescriptors } = await import("./pitch-descriptor-guard.ts");
+  const err = assertCopyAgainstDnaDescriptors(String(rapClubDna.short_pitch), {
+    primary_genre: "rap",
+    approved_lanes: rapClubDna.approved_lanes,
+    excluded_lanes: rapClubDna.excluded_lanes,
+  });
+  assertEquals(err, "copy_contains_excluded_house_descriptor");
+
+  // Club-only (no house genre tokens) must still pass — Meditate-shaped club context is fine.
+  assertEquals(
+    assertCopyAgainstDnaDescriptors(
+      "A hip-hop club banger — hard-hitting rap bars for the nightclub floor",
+      {
+        primary_genre: "rap",
+        approved_lanes: rapClubDna.approved_lanes,
+        excluded_lanes: rapClubDna.excluded_lanes,
+      },
+    ),
+    null,
+  );
+
+  await withEnv({ CLAUDE_AGENT_SECRET: "claude-secret" }, async () => {
+    const writes: { table: string; op: string; row: Row }[] = [];
+    const tables: Record<string, Row[]> = {
+      tracks: [track],
+      song_dna_versions: [rapClubDna],
+      playlist_targets: [{ ...PL_RAP, ig_dm_draft: null }],
+      outreach_decision_shadow_log: [],
+      playlist_lanes: [],
+    };
+    const sb = stubSb(tables, writes);
+    const res = await runMultichannelAction(
+      "build_instagram_dm_draft",
+      { playlist_id: "pl-rap", track_id: "track-rap-club" },
+      sb,
+      null,
+      req({ "x-claude-agent-secret": "claude-secret" }),
+    );
+    assertEquals(res.status, 422);
+    assertEquals(res.data.code, "copy_contains_excluded_house_descriptor");
+    assertEquals(res.data.persisted, false);
+    assertEquals(tables.playlist_targets[0].ig_dm_draft, null);
+    assertEquals(writes.filter((w) => w.table === "playlist_targets").length, 0);
+  });
+
+  // Guard: production path modules must not hard-code the real title.
+  const multi = Deno.readTextFileSync(new URL("./multichannel-path.ts", import.meta.url));
+  const handoff = Deno.readTextFileSync(new URL("./handoff-queues.ts", import.meta.url));
+  const guard = Deno.readTextFileSync(new URL("./pitch-descriptor-guard.ts", import.meta.url));
+  assert(!/\bMeditate\b/.test(multi));
+  assert(!/\bMeditate\b/.test(handoff));
+  assert(!/\bMeditate\b/.test(guard));
 });
 
 Deno.test("e) manual submission without APPROVED_FOR_SEND fails", async () => {
@@ -307,8 +405,32 @@ Deno.test("e) manual submission without APPROVED_FOR_SEND fails", async () => {
   });
 });
 
-Deno.test("f) transition races cannot skip/overwrite — shortcuts removed + CAS conflict", async () => {
-  // No shortcut CLAUDE_BATCH_READY → AWAITING_GROK_REVIEW or → APPROVED
+Deno.test("e2) manual submission is idempotent when submitted_at already set", async () => {
+  await withEnv({ GROK_PLAYLIST_CONTROL_SECRET: "grok-secret" }, async () => {
+    const original = {
+      id: "rec-2",
+      queue_state: "APPROVED_FOR_SEND",
+      track_id: "track-a",
+      playlist_target_id: "pl-rap",
+      song_dna_version_id: "dna-a",
+      submitted_at: "2026-09-01T12:00:00.000Z",
+      submitted_by: "grok_playlist_control",
+      submitted_by_label: "grok_playlist_control",
+    };
+    const writes: { table: string; op: string; row: Row }[] = [];
+    const sb = stubSb({ agh_handoff_records: [original] }, writes);
+    const grok = resolveOpsActor(null, req({ "x-grok-playlist-control-secret": "grok-secret" }));
+    const res = await markManualFormSubmitted(sb as never, { handoff_record_id: "rec-2" }, grok);
+    assertEquals(res.status, 200);
+    assertEquals(res.data.idempotent, true);
+    assertEquals(res.data.noop, true);
+    assertEquals(writes.filter((w) => w.op === "update").length, 0);
+    assertEquals(original.submitted_at, "2026-09-01T12:00:00.000Z");
+    assertEquals(original.submitted_by, "grok_playlist_control");
+  });
+});
+
+Deno.test("f) transition races cannot skip/overwrite — shortcuts removed + CAS conflict + RPC fail-closed", async () => {
   assertEquals(canTransitionHandoff("CLAUDE_BATCH_READY", "AWAITING_GROK_REVIEW"), false);
   assertEquals(canTransitionHandoff("CLAUDE_BATCH_READY", "APPROVED_FOR_SEND"), false);
   assertEquals(canTransitionHandoff("AWAITING_GROK_REVIEW", "APPROVED_FOR_SEND"), false);
@@ -325,76 +447,62 @@ Deno.test("f) transition races cannot skip/overwrite — shortcuts removed + CAS
       }],
       agh_handoff_records: [{ id: "r1", batch_id: "batch-1", queue_state: "GROK_REVIEWED" }],
     };
-    const sb = stubSb(tables);
     const grok = resolveOpsActor(null, req({ "x-grok-playlist-control-secret": "grok-secret" }));
 
-    // Race: another request already moved state before our CAS update.
-    // Simulate by mutating after load would see GROK_REVIEWED — stub CAS uses eq filters.
-    // First call loads GROK_REVIEWED; we mutate mid-flight by wrapping rpc-miss fallback.
-    // Direct conflict via expected-state filter: force update against stale from.
     tables.agh_handoff_batches[0].queue_state = "APPROVED_FOR_SEND";
     const skip = await advanceHandoffBatch(
-      sb as never,
+      stubSb(tables) as never,
       { batch_id: "batch-1", queue_state: "REJECTED_BY_GROK" },
       grok,
     );
     assertEquals(skip.status, 422);
     assertEquals(skip.data.code, "illegal_transition");
 
-    // True CAS: from GROK_REVIEWED → APPROVED, but row already APPROVED after concurrent write.
+    // RPC unavailable → 503 fail-closed (no non-atomic fallback).
     tables.agh_handoff_batches[0].queue_state = "GROK_REVIEWED";
-    const racingSb = {
-      ...stubSb(tables),
-      rpc: async () => ({ data: null, error: { message: "Could not find the function advance_agh_handoff_batch" } }),
-      from: (table: string) => {
-        const base = stubSb(tables).from(table) as Record<string, unknown>;
-        if (table !== "agh_handoff_batches") return base;
-        let filters: Record<string, unknown> = {};
-        let payload: Row | null = null;
-        let mode = "select";
-        const chain: Record<string, unknown> = {
-          select: (_c?: string) => {
-            if (mode === "update") {
-              return {
-                maybeSingle: async () => {
-                  // Concurrent writer wins before CAS.
-                  tables.agh_handoff_batches[0].queue_state = "APPROVED_FOR_SEND";
-                  const hits = (tables.agh_handoff_batches ?? []).filter((r) =>
-                    Object.entries(filters).every(([k, v]) => String(r[k]) === String(v))
-                  );
-                  if (!hits.length || !payload) return { data: null, error: null };
-                  return { data: hits[0], error: null };
-                },
-              };
-            }
-            return chain;
-          },
-          eq: (col: string, val: unknown) => {
-            filters[col] = val;
-            return chain;
-          },
-          update: (row: Row) => {
-            mode = "update";
-            payload = row;
-            return chain;
-          },
-          maybeSingle: async () => {
-            const hit = (tables.agh_handoff_batches ?? []).find((r) =>
-              Object.entries(filters).every(([k, v]) => String(r[k]) === String(v))
-            ) ?? null;
-            return { data: hit, error: null };
-          },
-        };
-        return chain;
-      },
+    const unavailable = await advanceHandoffBatch(
+      stubSb(tables) as never,
+      { batch_id: "batch-1", queue_state: "APPROVED_FOR_SEND" },
+      grok,
+    );
+    assertEquals(unavailable.status, 503);
+    assertEquals(unavailable.data.code, "rpc_unavailable");
+
+    // True CAS conflict via RPC payload.
+    const conflictSb = {
+      from: stubSb(tables).from,
+      rpc: async () => ({
+        data: { ok: false, code: "conflict", error: "queue_state changed by another request" },
+        error: null,
+      }),
     };
     const race = await advanceHandoffBatch(
-      racingSb as never,
+      conflictSb as never,
       { batch_id: "batch-1", queue_state: "APPROVED_FOR_SEND" },
       grok,
     );
     assertEquals(race.status, 409);
     assertEquals(race.data.code, "conflict");
+  });
+});
+
+Deno.test("g2) unmet Grok upstream/queue deps hard-block start", async () => {
+  const { startDailyStationRun } = await import("./daily-ops.ts");
+  await withEnv({ GROK_PLAYLIST_CONTROL_SECRET: "grok-secret" }, async () => {
+    const tables: Record<string, Row[]> = {
+      daily_ops_station_runs: [],
+      agh_handoff_batches: [],
+    };
+    const sb = stubSb(tables);
+    const res = await startDailyStationRun(
+      sb as never,
+      { station_id: "grok_playlist_review", business_date_ct: "2026-09-07" },
+      null,
+      req({ "x-grok-playlist-control-secret": "grok-secret" }),
+    );
+    assert(res.status === 409 || res.status === 422);
+    assertEquals(res.data.code, "dependency_hard_block");
+    assertEquals(res.data.blocked, true);
   });
 });
 

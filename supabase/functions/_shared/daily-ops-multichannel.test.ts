@@ -17,6 +17,7 @@ import {
   AGH_OPS_TIMEZONE,
   isDailyStationId,
   STATION_UPSTREAM,
+  STATION_REQUIRED_UPSTREAM_QUEUE,
   DAILY_STATION_IDS,
 } from "./chicago-time.ts";
 import { computeDailyRawRequirement } from "./discovery-capacity.ts";
@@ -81,6 +82,8 @@ Deno.test("station ids and upstream continuity map", () => {
   assertEquals(STATION_UPSTREAM.sync_batch_ready, "playlist_tranche_final");
   assertEquals(STATION_UPSTREAM.grok_playlist_review, "playlist_tranche_final");
   assertEquals(STATION_UPSTREAM.grok_playlist_send, "grok_playlist_review");
+  assertEquals(STATION_REQUIRED_UPSTREAM_QUEUE.grok_playlist_review, "AWAITING_GROK_REVIEW");
+  assertEquals(STATION_REQUIRED_UPSTREAM_QUEUE.grok_playlist_send, "APPROVED_FOR_SEND");
 });
 
 // ---- Idempotency key contract (pure) --------------------------------------

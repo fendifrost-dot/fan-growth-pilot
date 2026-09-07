@@ -85,6 +85,7 @@ export type Database = {
           sent_by_label: string | null
           song_dna_version_id: string | null
           station_run_id: string | null
+          track_id: string | null
           updated_at: string
           upstream_batch_id: string | null
           verified_by: string | null
@@ -118,6 +119,7 @@ export type Database = {
           sent_by_label?: string | null
           song_dna_version_id?: string | null
           station_run_id?: string | null
+          track_id?: string | null
           updated_at?: string
           upstream_batch_id?: string | null
           verified_by?: string | null
@@ -151,6 +153,7 @@ export type Database = {
           sent_by_label?: string | null
           song_dna_version_id?: string | null
           station_run_id?: string | null
+          track_id?: string | null
           updated_at?: string
           upstream_batch_id?: string | null
           verified_by?: string | null
@@ -169,6 +172,13 @@ export type Database = {
             columns: ["station_run_id"]
             isOneToOne: false
             referencedRelation: "daily_ops_station_runs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agh_handoff_batches_track_fkey"
+            columns: ["track_id"]
+            isOneToOne: false
+            referencedRelation: "tracks"
             referencedColumns: ["id"]
           },
           {
@@ -192,6 +202,8 @@ export type Database = {
           drafted_by: string | null
           drafted_by_label: string | null
           id: string
+          manual_submit_channel: string | null
+          manual_submit_result: string | null
           outreach_draft_id: string | null
           packet: Json
           playlist_target_id: string | null
@@ -204,8 +216,12 @@ export type Database = {
           reviewed_by_label: string | null
           song_dna_version_id: string | null
           submission_channel: string | null
+          submitted_at: string | null
+          submitted_by: string | null
+          submitted_by_label: string | null
           sync_opportunity_id: string | null
           sync_target_id: string | null
+          track_id: string | null
           updated_at: string
           verified_by: string | null
           verified_by_label: string | null
@@ -221,6 +237,8 @@ export type Database = {
           drafted_by?: string | null
           drafted_by_label?: string | null
           id?: string
+          manual_submit_channel?: string | null
+          manual_submit_result?: string | null
           outreach_draft_id?: string | null
           packet?: Json
           playlist_target_id?: string | null
@@ -233,8 +251,12 @@ export type Database = {
           reviewed_by_label?: string | null
           song_dna_version_id?: string | null
           submission_channel?: string | null
+          submitted_at?: string | null
+          submitted_by?: string | null
+          submitted_by_label?: string | null
           sync_opportunity_id?: string | null
           sync_target_id?: string | null
+          track_id?: string | null
           updated_at?: string
           verified_by?: string | null
           verified_by_label?: string | null
@@ -250,6 +272,8 @@ export type Database = {
           drafted_by?: string | null
           drafted_by_label?: string | null
           id?: string
+          manual_submit_channel?: string | null
+          manual_submit_result?: string | null
           outreach_draft_id?: string | null
           packet?: Json
           playlist_target_id?: string | null
@@ -262,8 +286,12 @@ export type Database = {
           reviewed_by_label?: string | null
           song_dna_version_id?: string | null
           submission_channel?: string | null
+          submitted_at?: string | null
+          submitted_by?: string | null
+          submitted_by_label?: string | null
           sync_opportunity_id?: string | null
           sync_target_id?: string | null
+          track_id?: string | null
           updated_at?: string
           verified_by?: string | null
           verified_by_label?: string | null
@@ -302,6 +330,13 @@ export type Database = {
             columns: ["sync_target_id"]
             isOneToOne: false
             referencedRelation: "sync_research_targets"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agh_handoff_records_track_fkey"
+            columns: ["track_id"]
+            isOneToOne: false
+            referencedRelation: "tracks"
             referencedColumns: ["id"]
           },
         ]
@@ -575,8 +610,10 @@ export type Database = {
           last_resumed_by_label: string | null
           metrics: Json
           output_batch_id: string | null
+          owner_kind: string | null
           raw_discoveries: number
           rejected_blocked: Json
+          required_upstream_queue_state: string | null
           run_key: string
           saturation_indicators: Json
           shortfall_reason: string | null
@@ -609,8 +646,10 @@ export type Database = {
           last_resumed_by_label?: string | null
           metrics?: Json
           output_batch_id?: string | null
+          owner_kind?: string | null
           raw_discoveries?: number
           rejected_blocked?: Json
+          required_upstream_queue_state?: string | null
           run_key?: string
           saturation_indicators?: Json
           shortfall_reason?: string | null
@@ -643,8 +682,10 @@ export type Database = {
           last_resumed_by_label?: string | null
           metrics?: Json
           output_batch_id?: string | null
+          owner_kind?: string | null
           raw_discoveries?: number
           rejected_blocked?: Json
+          required_upstream_queue_state?: string | null
           run_key?: string
           saturation_indicators?: Json
           shortfall_reason?: string | null
@@ -5548,6 +5589,23 @@ export type Database = {
       }
     }
     Functions: {
+      advance_agh_handoff_batch: {
+        Args: {
+          p_batch_id: string
+          p_expected_state: string
+          p_next_state: string
+          p_stamps?: Json
+        }
+        Returns: Json
+      }
+      agh_daily_ops_fk_preflight: {
+        Args: never
+        Returns: {
+          check_name: string
+          orphan_count: number
+          sample_ids: string
+        }[]
+      }
       bridge_upsert_email_contact: {
         Args: {
           p_email: string

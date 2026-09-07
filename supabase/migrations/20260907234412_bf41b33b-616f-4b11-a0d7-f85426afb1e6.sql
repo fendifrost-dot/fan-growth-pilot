@@ -1,0 +1,1 @@
+alter function public.agh_daily_ops_fk_preflight() set search_path = public;

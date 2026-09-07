@@ -5730,6 +5730,10 @@ export type Database = {
           sample_ids: string
         }[]
       }
+      agh_mcp_compensate_inventory_attempt: {
+        Args: { p_batch_id: string; p_draft_ids: string[] }
+        Returns: Json
+      }
       agh_mcp_consume_oauth_code: {
         Args: {
           p_access_expires_at: string
@@ -5788,6 +5792,15 @@ export type Database = {
         Returns: Json
       }
       agh_mcp_oauth_cleanup_expired: { Args: never; Returns: Json }
+      agh_mcp_persist_playlist_inventory: {
+        Args: {
+          p_attr: Json
+          p_items: Json
+          p_song_dna_version_id: string
+          p_track_id: string
+        }
+        Returns: Json
+      }
       agh_mcp_rotate_oauth_refresh: {
         Args: {
           p_access_expires_at: string

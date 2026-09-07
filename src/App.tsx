@@ -33,6 +33,7 @@ import AdminPitchComposer from "./pages/admin/AdminPitchComposer";
 import AdminPitchPortal from "./pages/admin/AdminPitchPortal";
 import AdminSongDna from "./pages/admin/AdminSongDna";
 import AdminDiscoveryProfiles from "./pages/admin/AdminDiscoveryProfiles";
+import AdminDailyOps from "./pages/admin/AdminDailyOps";
 import AdminOpportunities from "./pages/admin/AdminOpportunities";
 import RegisterPreview from "./pages/dev/RegisterPreview";
 
@@ -93,6 +94,7 @@ const App = () => {
             <Route path="pitch-portal" element={<AdminPitchPortal />} />
             <Route path="song-dna" element={<AdminSongDna />} />
             <Route path="discovery-profiles" element={<AdminDiscoveryProfiles />} />
+            <Route path="daily-ops" element={<AdminDailyOps />} />
           </Route>
 
           {/* Public smart link pages (CATCH-ALL — must stay last among meaningful routes) */}

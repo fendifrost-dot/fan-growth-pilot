@@ -59,6 +59,19 @@ export type OpsCapability =
   | "read_playlist_ops"
   | "read_ops_metrics"
   | "update_sync_gate_ops_flags"
+  // Daily ops / handoff / multichannel / Claude sync research
+  | "run_daily_station"
+  | "read_daily_ops"
+  | "manage_ops_settings"
+  | "create_handoff_batch"
+  | "review_handoff_batch"
+  | "verify_submission_path"
+  | "research_sync_targets"
+  | "verify_sync_targets"
+  | "create_sync_target"
+  | "create_sync_opportunity"
+  | "draft_sync_pitch"
+  | "read_own_sync_batches"
   // Human/Fendi admin surfaces — never granted to Claude/Grok/service/scheduler.
   | "manage_campaigns"
   | "manage_catalog"
@@ -79,6 +92,16 @@ const CLAUDE_CAPS = new Set<OpsCapability>([
   "write_playlist_ops",
   "read_playlist_ops",
   "read_ops_metrics",
+  "run_daily_station",
+  "read_daily_ops",
+  "create_handoff_batch",
+  "verify_submission_path",
+  "research_sync_targets",
+  "verify_sync_targets",
+  "create_sync_target",
+  "create_sync_opportunity",
+  "draft_sync_pitch",
+  "read_own_sync_batches",
 ]);
 
 const GROK_CAPS = new Set<OpsCapability>([
@@ -98,6 +121,12 @@ const GROK_CAPS = new Set<OpsCapability>([
   "read_playlist_ops",
   "read_ops_metrics",
   "update_sync_gate_ops_flags",
+  "run_daily_station",
+  "read_daily_ops",
+  "create_handoff_batch",
+  "review_handoff_batch",
+  "verify_submission_path",
+  "read_own_sync_batches",
 ]);
 
 /** Only Fendi's exact ARTIST_USER_ID may hold these reserved decisions. */
@@ -142,6 +171,18 @@ const FENDI_CAPS = new Set<OpsCapability>([
   "generate_playlist_drafts",
   "run_placement_discovery",
   "record_research_evidence",
+  "run_daily_station",
+  "read_daily_ops",
+  "manage_ops_settings",
+  "create_handoff_batch",
+  "review_handoff_batch",
+  "verify_submission_path",
+  "research_sync_targets",
+  "verify_sync_targets",
+  "create_sync_target",
+  "create_sync_opportunity",
+  "draft_sync_pitch",
+  "read_own_sync_batches",
 ]);
 
 /** Human admins: ops reads/writes except playlist approve/send (Grok/Fendi only). */
@@ -165,6 +206,17 @@ const HUMAN_ADMIN_CAPS = new Set<OpsCapability>([
   "read_playlist_ops",
   "read_ops_metrics",
   "update_sync_gate_ops_flags",
+  "run_daily_station",
+  "read_daily_ops",
+  "manage_ops_settings",
+  "create_handoff_batch",
+  "verify_submission_path",
+  "research_sync_targets",
+  "verify_sync_targets",
+  "create_sync_target",
+  "create_sync_opportunity",
+  "draft_sync_pitch",
+  "read_own_sync_batches",
 ]);
 
 const SCHEDULER_CAPS = new Set<OpsCapability>([
@@ -174,6 +226,8 @@ const SCHEDULER_CAPS = new Set<OpsCapability>([
   "write_playlist_ops",
   "read_playlist_ops",
   "read_ops_metrics",
+  "run_daily_station",
+  "read_daily_ops",
 ]);
 
 /**
@@ -190,6 +244,16 @@ const SERVICE_CAPS = new Set<OpsCapability>([
   "write_playlist_ops",
   "read_playlist_ops",
   "read_ops_metrics",
+  "run_daily_station",
+  "read_daily_ops",
+  "create_handoff_batch",
+  "verify_submission_path",
+  "research_sync_targets",
+  "verify_sync_targets",
+  "create_sync_target",
+  "create_sync_opportunity",
+  "draft_sync_pitch",
+  "read_own_sync_batches",
 ]);
 
 function artistUserId(): string {

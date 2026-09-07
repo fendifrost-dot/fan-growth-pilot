@@ -18,6 +18,11 @@ import {
 } from '../_shared/ops-actors.ts';
 import { buildCutoverReadinessReport } from '../_shared/outreach-decision.ts';
 import { isLyricDecoderAction, runLyricDecoderAction } from '../_shared/lyric-decoder.ts';
+import { isDailyOpsAction, runDailyOpsAction } from '../_shared/daily-ops.ts';
+import { isHandoffAction, runHandoffAction } from '../_shared/handoff-queues.ts';
+import { isMultichannelAction, runMultichannelAction } from '../_shared/multichannel-path.ts';
+import { isSyncResearchAction, runSyncResearchAction } from '../_shared/sync-research.ts';
+import { buildDiscoveryCapacityPlan } from '../_shared/discovery-capacity.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -141,6 +146,47 @@ Deno.serve(async (req) => {
       const result = await runLyricDecoderAction(action, body);
       return new Response(JSON.stringify(result.data), {
         status: result.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isDailyOpsAction(action)) {
+      const result = await runDailyOpsAction(action, body, supabase, actor, req);
+      return new Response(JSON.stringify(result.data), {
+        status: result.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isHandoffAction(action)) {
+      const result = await runHandoffAction(action, body, supabase, actor, req);
+      return new Response(JSON.stringify(result.data), {
+        status: result.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isMultichannelAction(action)) {
+      const result = await runMultichannelAction(action, body, supabase, actor, req);
+      return new Response(JSON.stringify(result.data), {
+        status: result.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isSyncResearchAction(action)) {
+      const result = await runSyncResearchAction(action, body, supabase, actor, req);
+      return new Response(JSON.stringify(result.data), {
+        status: result.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (action === 'get_discovery_capacity_plan') {
+      const songs = Number(body.active_pitching_songs ?? body.active_songs ?? 0) || 0;
+      const plan = await buildDiscoveryCapacityPlan(supabase, songs);
+      return new Response(JSON.stringify({ ok: true, plan }), {
+        status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }

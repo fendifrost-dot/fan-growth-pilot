@@ -201,8 +201,11 @@ Deno.test("Claude retains research / verify / draft / evidence capabilities", ()
     assertEquals(can(actor, "run_placement_discovery"), true);
     assertEquals(can(actor, "record_research_evidence"), true);
     assertEquals(can(actor, "draft_song_dna"), true);
+    assertEquals(can(actor, "research_sync_targets"), true);
+    assertEquals(can(actor, "draft_sync_pitch"), true);
     assertEquals(can(actor, "approve_playlist_drafts"), false);
     assertEquals(can(actor, "send_playlist_pitches"), false);
     assertEquals(can(actor, "monitor_inbox"), false);
+    assertEquals(can(actor, "review_handoff_batch"), false);
   });
 });

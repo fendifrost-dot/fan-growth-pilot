@@ -74,6 +74,13 @@ const AdminHub: React.FC = () => {
           </Button>
         </Card>
         <Card className="p-5">
+          <h3 className="font-medium">Daily operations</h3>
+          <p className="text-sm text-muted-foreground mt-1">Station ledger + Grok handoff queues (CT)</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/daily-ops">Open →</Link>
+          </Button>
+        </Card>
+        <Card className="p-5">
           <h3 className="font-medium">Song register</h3>
           <p className="text-sm text-muted-foreground mt-1">Titles, optional ISRC, aggregator, sample flag</p>
           <Button variant="outline" size="sm" className="mt-3" asChild>

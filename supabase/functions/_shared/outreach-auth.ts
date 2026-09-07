@@ -108,6 +108,7 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
   get_outreach_stats: { cls: 'authenticated-read' },
   get_instagram_messaging_status: { cls: 'authenticated-read' },
   connect_spotify_status: { cls: 'authenticated-read' },
+  get_discovery_capacity_plan: { cls: 'authenticated-read' },
 
   // ---- Campaign lifecycle (human/Fendi only via manage_campaigns) ---------
   create_campaign_draft: { cls: 'capability', capability: 'manage_campaigns', surface: 'admin-write' },
@@ -438,6 +439,144 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
     cls: 'capability',
     capability: 'manage_radio',
     surface: 'outreach-write',
+  },
+
+  // ---- Daily ops station ledger -------------------------------------------
+  start_daily_station_run: {
+    cls: 'capability',
+    capability: 'run_daily_station',
+    surface: 'outreach-write',
+  },
+  complete_daily_station_run: {
+    cls: 'capability',
+    capability: 'run_daily_station',
+    surface: 'outreach-write',
+  },
+  list_daily_station_runs: {
+    cls: 'capability',
+    capability: 'read_daily_ops',
+    surface: 'admin-write',
+  },
+  get_daily_station_run: {
+    cls: 'capability',
+    capability: 'read_daily_ops',
+    surface: 'admin-write',
+  },
+  get_daily_ops_dashboard: {
+    cls: 'capability',
+    capability: 'read_daily_ops',
+    surface: 'admin-write',
+  },
+  list_ops_settings: {
+    cls: 'capability',
+    capability: 'read_daily_ops',
+    surface: 'admin-write',
+  },
+  upsert_ops_setting: {
+    cls: 'capability',
+    capability: 'manage_ops_settings',
+    surface: 'admin-write',
+  },
+
+  // ---- Grok handoff queues ------------------------------------------------
+  create_handoff_batch: {
+    cls: 'capability',
+    capability: 'create_handoff_batch',
+    surface: 'outreach-write',
+  },
+  add_handoff_records: {
+    cls: 'capability',
+    capability: 'create_handoff_batch',
+    surface: 'outreach-write',
+  },
+  advance_handoff_batch: {
+    cls: 'capability',
+    capability: 'create_handoff_batch',
+    surface: 'outreach-write',
+  },
+  review_handoff_batch: {
+    cls: 'capability',
+    capability: 'review_handoff_batch',
+    surface: 'outreach-write',
+  },
+  list_handoff_batches: {
+    cls: 'capability',
+    capability: 'read_daily_ops',
+    surface: 'admin-write',
+  },
+  get_handoff_batch: {
+    cls: 'capability',
+    capability: 'read_daily_ops',
+    surface: 'admin-write',
+  },
+  mark_manual_form_submitted: {
+    cls: 'capability',
+    capability: 'send_playlist_pitches',
+    surface: 'outreach-write',
+  },
+  mark_manual_ig_dm_submitted: {
+    cls: 'capability',
+    capability: 'send_playlist_pitches',
+    surface: 'outreach-write',
+  },
+
+  // ---- Multichannel path verification -------------------------------------
+  verify_submission_path: {
+    cls: 'capability',
+    capability: 'verify_submission_path',
+    surface: 'outreach-write',
+  },
+  build_web_form_packet: {
+    cls: 'capability',
+    capability: 'generate_playlist_drafts',
+    surface: 'outreach-write',
+  },
+  build_instagram_dm_draft: {
+    cls: 'capability',
+    capability: 'generate_playlist_drafts',
+    surface: 'outreach-write',
+  },
+
+  // ---- Claude sync research intake ----------------------------------------
+  research_sync_targets: {
+    cls: 'capability',
+    capability: 'research_sync_targets',
+    surface: 'outreach-write',
+  },
+  verify_sync_targets: {
+    cls: 'capability',
+    capability: 'verify_sync_targets',
+    surface: 'outreach-write',
+  },
+  create_sync_target: {
+    cls: 'capability',
+    capability: 'create_sync_target',
+    surface: 'outreach-write',
+  },
+  create_sync_opportunity: {
+    cls: 'capability',
+    capability: 'create_sync_opportunity',
+    surface: 'outreach-write',
+  },
+  draft_sync_pitch: {
+    cls: 'capability',
+    capability: 'draft_sync_pitch',
+    surface: 'outreach-write',
+  },
+  read_own_sync_batches: {
+    cls: 'capability',
+    capability: 'read_own_sync_batches',
+    surface: 'outreach-write',
+  },
+  list_sync_research_targets: {
+    cls: 'capability',
+    capability: 'read_own_sync_batches',
+    surface: 'admin-write',
+  },
+  list_sync_research_opportunities: {
+    cls: 'capability',
+    capability: 'read_own_sync_batches',
+    surface: 'admin-write',
   },
 };
 

@@ -158,6 +158,13 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "agh_handoff_batches_song_dna_fkey"
+            columns: ["song_dna_version_id"]
+            isOneToOne: false
+            referencedRelation: "song_dna_versions"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "agh_handoff_batches_station_run_id_fkey"
             columns: ["station_run_id"]
             isOneToOne: false
@@ -267,6 +274,34 @@ export type Database = {
             columns: ["batch_id"]
             isOneToOne: false
             referencedRelation: "agh_handoff_batches"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agh_handoff_records_playlist_target_fkey"
+            columns: ["playlist_target_id"]
+            isOneToOne: false
+            referencedRelation: "playlist_targets"
+            referencedColumns: ["playlist_id"]
+          },
+          {
+            foreignKeyName: "agh_handoff_records_song_dna_fkey"
+            columns: ["song_dna_version_id"]
+            isOneToOne: false
+            referencedRelation: "song_dna_versions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agh_handoff_records_sync_opportunity_fkey"
+            columns: ["sync_opportunity_id"]
+            isOneToOne: false
+            referencedRelation: "sync_research_opportunities"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agh_handoff_records_sync_target_fkey"
+            columns: ["sync_target_id"]
+            isOneToOne: false
+            referencedRelation: "sync_research_targets"
             referencedColumns: ["id"]
           },
         ]
@@ -623,6 +658,20 @@ export type Database = {
           verified_targets?: number
         }
         Relationships: [
+          {
+            foreignKeyName: "daily_ops_station_runs_input_batch_fkey"
+            columns: ["input_batch_id"]
+            isOneToOne: false
+            referencedRelation: "agh_handoff_batches"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "daily_ops_station_runs_output_batch_fkey"
+            columns: ["output_batch_id"]
+            isOneToOne: false
+            referencedRelation: "agh_handoff_batches"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "daily_ops_station_runs_upstream_run_id_fkey"
             columns: ["upstream_run_id"]
@@ -3080,6 +3129,13 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "playlist_ops_ledger_song_dna_fkey"
+            columns: ["approved_song_dna_version_id"]
+            isOneToOne: false
+            referencedRelation: "song_dna_versions"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "playlist_ops_ledger_track_id_fkey"
             columns: ["track_id"]
             isOneToOne: false
@@ -3332,7 +3388,22 @@ export type Database = {
           whitelist_status?: boolean | null
           why_it_fits?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "playlist_targets_discovery_profile_fkey"
+            columns: ["discovery_profile_id"]
+            isOneToOne: false
+            referencedRelation: "discovery_profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "playlist_targets_song_dna_fkey"
+            columns: ["song_dna_version_id"]
+            isOneToOne: false
+            referencedRelation: "song_dna_versions"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       press_kits: {
         Row: {
@@ -4707,6 +4778,13 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "sync_research_opportunities_song_dna_fkey"
+            columns: ["song_dna_version_id"]
+            isOneToOne: false
+            referencedRelation: "song_dna_versions"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "sync_research_opportunities_sync_target_id_fkey"
             columns: ["sync_target_id"]
             isOneToOne: false
@@ -4761,6 +4839,13 @@ export type Database = {
             columns: ["opportunity_id"]
             isOneToOne: false
             referencedRelation: "sync_research_opportunities"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sync_research_pitch_drafts_song_dna_fkey"
+            columns: ["song_dna_version_id"]
+            isOneToOne: false
+            referencedRelation: "song_dna_versions"
             referencedColumns: ["id"]
           },
           {
@@ -4857,6 +4942,20 @@ export type Database = {
             columns: ["batch_id"]
             isOneToOne: false
             referencedRelation: "agh_handoff_batches"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sync_research_targets_discovery_profile_fkey"
+            columns: ["discovery_profile_id"]
+            isOneToOne: false
+            referencedRelation: "discovery_profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sync_research_targets_song_dna_fkey"
+            columns: ["song_dna_version_id"]
+            isOneToOne: false
+            referencedRelation: "song_dna_versions"
             referencedColumns: ["id"]
           },
         ]

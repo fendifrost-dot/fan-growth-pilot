@@ -201,8 +201,34 @@ Deno.test("Claude retains research / verify / draft / evidence capabilities", ()
     assertEquals(can(actor, "run_placement_discovery"), true);
     assertEquals(can(actor, "record_research_evidence"), true);
     assertEquals(can(actor, "draft_song_dna"), true);
+    assertEquals(can(actor, "research_sync_targets"), true);
+    assertEquals(can(actor, "draft_sync_pitch"), true);
     assertEquals(can(actor, "approve_playlist_drafts"), false);
     assertEquals(can(actor, "send_playlist_pitches"), false);
     assertEquals(can(actor, "monitor_inbox"), false);
+    assertEquals(can(actor, "review_handoff_batch"), false);
+  });
+});
+
+Deno.test("claude_playlist_discovery is distinct from broad Claude and cannot mutate DNA", () => {
+  withEnv({
+    CLAUDE_PLAYLIST_DISCOVERY_SECRET: "pd-secret",
+    CLAUDE_AGENT_SECRET: "claude-secret",
+  }, () => {
+    const pd = resolveOpsActor(null, req({ "x-claude-playlist-discovery-secret": "pd-secret" }));
+    assertEquals(pd.kind, "claude_playlist_discovery");
+    assertEquals(can(pd, "read_playlist_discovery_work"), true);
+    assertEquals(can(pd, "submit_playlist_candidates"), true);
+    assertEquals(can(pd, "generate_playlist_drafts"), true);
+    assertEquals(can(pd, "draft_song_dna"), false);
+    assertEquals(can(pd, "approve_playlist_drafts"), false);
+    assertEquals(can(pd, "send_playlist_pitches"), false);
+    assertEquals(can(pd, "manage_fan_engagement"), false);
+    assertEquals(can(pd, "run_placement_discovery"), false);
+
+    // Hub key must not authenticate as playlist-discovery.
+    Deno.env.set("FANFUEL_HUB_KEY", "hub-key");
+    const hub = resolveOpsActor(null, req({ "x-api-key": "hub-key" }));
+    assertEquals(hub.kind, "service");
   });
 });

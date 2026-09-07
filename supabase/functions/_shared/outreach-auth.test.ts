@@ -315,3 +315,33 @@ Deno.test("every ACTION_SPEC capability action has a required capability", () =>
     }
   }
 });
+
+Deno.test("machine credentials fail closed on remaining authenticated-read actions", async () => {
+  await withEnv({
+    CLAUDE_AGENT_SECRET: CLAUDE,
+    CLAUDE_PLAYLIST_DISCOVERY_SECRET: "pd-secret",
+    GROK_PLAYLIST_CONTROL_SECRET: GROK,
+    FANFUEL_HUB_KEY: HUB,
+  }, async () => {
+    const machines = [
+      { "x-claude-agent-secret": CLAUDE },
+      { "x-claude-playlist-discovery-secret": "pd-secret" },
+      { "x-grok-playlist-control-secret": GROK },
+      { "x-api-key": HUB },
+    ];
+    for (const headers of machines) {
+      const d = await authorizeAction("list_tracks", req(headers), stubSb(null, false));
+      assertEquals(d.ok, false, `machine must not inherit authenticated-read via ${JSON.stringify(headers)}`);
+      assert(!d.ok && d.status === 403);
+    }
+  });
+});
+
+Deno.test("sensitive fan/radio/licensing reads require manage_* not open auth-read", () => {
+  assertEquals(ACTION_SPEC.get_leads.cls, "capability");
+  assertEquals(requiredCapabilityForAction("get_leads"), "manage_fan_engagement");
+  assertEquals(requiredCapabilityForAction("get_radio_targets"), "manage_radio");
+  assertEquals(requiredCapabilityForAction("list_licensing_pitches"), "manage_sync_registers");
+  assertEquals(requiredCapabilityForAction("list_drafts"), "read_playlist_ops");
+  assertEquals(requiredCapabilityForAction("list_discovery_profiles"), "read_playlist_discovery_work");
+});

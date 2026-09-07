@@ -546,6 +546,54 @@ export async function runDraftPitch(
   else if (channel === "web_form") recipient = (row.submission_url as string)?.trim() ?? null;
 
   const pitchHash = await hashPitchCopy(copy.pitch);
+  const metadata = {
+    lane: lane || null,
+    why_it_fits: (row.why_it_fits as string | null) ?? null,
+    fit_reason: fit.fitReason || null,
+    fit_reason_source: fit.source,
+    fit_reason_internal_only: true,
+    stream_link: streamUrl || null,
+    tone,
+    platform,
+    is_warm: isWarm,
+    prior_track: priorTrack ?? null,
+    track_id: trackId || null,
+    song_dna_version_id: decision.songDnaVersionId,
+    campaign_id: campaignId || null,
+    pitch_source: copy.source,
+    pitch_copy_hash: pitchHash,
+    template_id: tpl?.id ?? null,
+    decision_mode: "enforce",
+    decision_code: decision.code,
+    category_gate_display: gate.reason,
+    placement_source: placementWarm ? (rc?.source as string) : null,
+    generated_by_label: generatedBy,
+  };
+
+  // Inventory atomic persist path: compose only — no draft row until RPC transaction.
+  if (safeBody.persist === false || safeBody.compose_only === true) {
+    return {
+      status: 200,
+      data: {
+        ok: true,
+        composed: true,
+        persist: false,
+        channel,
+        subject: channel === "email" ? subject : null,
+        body: pitchBody,
+        recipient,
+        track_name: trackName,
+        track_id: trackId || null,
+        song_dna_version_id: decision.songDnaVersionId,
+        pitch_copy_source: copy.source,
+        pitch_copy_hash: pitchHash,
+        generated_by: generatedBy,
+        template_id: tpl?.id ?? null,
+        metadata,
+      },
+    };
+  }
+
   const { data: draft, error: insErr } = await sb.from("outreach_drafts").insert({
     playlist_id: playlistId,
     track_name: trackName,
@@ -564,29 +612,7 @@ export async function runDraftPitch(
     approved_by: null,
     approved_at: null,
     approved_content_hash: null,
-    metadata: {
-      lane: lane || null,
-      why_it_fits: (row.why_it_fits as string | null) ?? null,
-      fit_reason: fit.fitReason || null,
-      fit_reason_source: fit.source,
-      fit_reason_internal_only: true,
-      stream_link: streamUrl || null,
-      tone,
-      platform,
-      is_warm: isWarm,
-      prior_track: priorTrack ?? null,
-      track_id: trackId || null,
-      song_dna_version_id: decision.songDnaVersionId,
-      campaign_id: campaignId || null,
-      pitch_source: copy.source,
-      pitch_copy_hash: pitchHash,
-      template_id: tpl?.id ?? null,
-      decision_mode: "enforce",
-      decision_code: decision.code,
-      category_gate_display: gate.reason,
-      placement_source: placementWarm ? (rc?.source as string) : null,
-      generated_by_label: generatedBy,
-    },
+    metadata,
   }).select("id, channel, subject, body, recipient").single();
 
   if (insErr) return { status: 500, data: { error: insErr.message } };

@@ -251,6 +251,43 @@ export function extractPlaylistIdsFromText(blob: string): string[] {
   return out;
 }
 
+/**
+ * Normalize a Spotify playlist id and/or URL to a canonical pair before insert.
+ * Accepts raw 22-char ids, spotify:playlist:ID, open.spotify.com URLs.
+ * Editorial algorithmic ids (37i9dQZF…) are rejected. Returns null when unresolvable.
+ */
+export function normalizeSpotifyPlaylistIdentity(
+  rawId?: string | null,
+  rawUrl?: string | null,
+): { playlist_id: string; playlist_url: string } | null {
+  const idIn = String(rawId ?? "").trim();
+  const urlIn = String(rawUrl ?? "").trim();
+  let id = "";
+
+  const fromSpotifyUri = idIn.match(/^spotify:playlist:([a-zA-Z0-9]{22})$/i);
+  if (fromSpotifyUri) id = fromSpotifyUri[1];
+  else if (/^[a-zA-Z0-9]{22}$/.test(idIn)) id = idIn;
+  else if (idIn.toLowerCase().startsWith("spotify:")) {
+    const stripped = idIn.replace(/^spotify:(playlist:)?/i, "");
+    if (/^[a-zA-Z0-9]{22}$/.test(stripped)) id = stripped;
+  }
+
+  if (!id && urlIn) {
+    const found = extractPlaylistIdsFromText(urlIn);
+    if (found[0]) id = found[0];
+  }
+  if (!id && idIn) {
+    const found = extractPlaylistIdsFromText(idIn);
+    if (found[0]) id = found[0];
+  }
+  if (!id) return null;
+  if (id.startsWith("37i9dQZF")) return null;
+  return {
+    playlist_id: id,
+    playlist_url: `https://open.spotify.com/playlist/${id}`,
+  };
+}
+
 export type SearchHitLike = { url: string; title?: string; description?: string };
 
 /**

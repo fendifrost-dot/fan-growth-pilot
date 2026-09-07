@@ -17,6 +17,7 @@ import {
   type OpsCapability,
   can,
   isClaudeCredential,
+  isClaudePlaylistDiscoveryCredential,
   isGrokCredential,
   isHubServiceCredential,
   isSchedulerCredential,
@@ -37,6 +38,7 @@ export type Actor =
   | { kind: 'scheduler' }
   | { kind: 'service' }
   | { kind: 'claude' }
+  | { kind: 'claude_playlist_discovery' }
   | { kind: 'grok_playlist_control' }
   | { kind: 'anonymous' };
 
@@ -76,35 +78,39 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
   list_lanes: { cls: 'public-read' },
 
   // ---- Authenticated operator reads ---------------------------------------
-  list_drafts: { cls: 'authenticated-read' },
-  list_pitches: { cls: 'authenticated-read' },
-  get_pitch_log: { cls: 'authenticated-read' },
-  pitch_stats_summary: { cls: 'authenticated-read' },
+  get_leads: { cls: 'capability', capability: 'manage_fan_engagement', surface: 'admin-write' },
+  list_fan_roster: { cls: 'capability', capability: 'manage_fan_engagement', surface: 'admin-write' },
+  get_fan_stats: { cls: 'capability', capability: 'manage_fan_engagement', surface: 'admin-write' },
+  list_fan_dm_queue: { cls: 'capability', capability: 'manage_fan_engagement', surface: 'admin-write' },
+  list_ig_roster: { cls: 'capability', capability: 'manage_fan_engagement', surface: 'admin-write' },
+  get_radio_targets: { cls: 'capability', capability: 'manage_radio', surface: 'admin-write' },
+  get_radio_pitch_log: { cls: 'capability', capability: 'manage_radio', surface: 'admin-write' },
+  list_music_supervisors: { cls: 'capability', capability: 'manage_sync_registers', surface: 'admin-write' },
+  list_licensing_pitches: { cls: 'capability', capability: 'manage_sync_registers', surface: 'admin-write' },
+  list_drafts: { cls: 'capability', capability: 'read_playlist_ops', surface: 'outreach-write' },
+  list_pitches: { cls: 'capability', capability: 'read_playlist_ops', surface: 'outreach-write' },
+  get_pitch_log: { cls: 'capability', capability: 'read_playlist_ops', surface: 'outreach-write' },
+  pitch_stats_summary: { cls: 'capability', capability: 'read_ops_metrics', surface: 'outreach-write' },
+  list_discovery_profiles: { cls: 'capability', capability: 'read_playlist_discovery_work', surface: 'outreach-write' },
+  get_discovery_capacity_plan: { cls: 'capability', capability: 'read_playlist_discovery_work', surface: 'outreach-write' },
+  list_song_dna: { cls: 'capability', capability: 'draft_song_dna', surface: 'outreach-write' },
+  get_song_dna: { cls: 'capability', capability: 'draft_song_dna', surface: 'outreach-write' },
+  list_song_dna_audit: { cls: 'capability', capability: 'approve_song_dna', surface: 'admin-write' },
+
+  // Remaining authenticated operator reads — JWT humans only for free reads;
+  // machines must use explicit capability actions above or fail closed below.
   list_unverified_targets: { cls: 'authenticated-read' },
   list_warm_curators: { cls: 'authenticated-read' },
   recommend_targets_for_track: { cls: 'authenticated-read' },
   list_tracks: { cls: 'authenticated-read' },
-  list_music_supervisors: { cls: 'authenticated-read' },
-  list_licensing_pitches: { cls: 'authenticated-read' },
   list_pitch_templates: { cls: 'authenticated-read' },
   preview_pitch_template: { cls: 'authenticated-read' },
-  list_song_dna: { cls: 'authenticated-read' },
-  get_song_dna: { cls: 'authenticated-read' },
-  list_song_dna_audit: { cls: 'authenticated-read' },
-  list_discovery_profiles: { cls: 'authenticated-read' },
   outreach_cutover_readiness: { cls: 'authenticated-read' },
   get_lyric_decoder_status: { cls: 'authenticated-read' },
   list_social_queue: { cls: 'authenticated-read' },
-  list_ig_roster: { cls: 'authenticated-read' },
-  list_fan_dm_queue: { cls: 'authenticated-read' },
-  list_fan_roster: { cls: 'authenticated-read' },
-  get_fan_stats: { cls: 'authenticated-read' },
-  get_leads: { cls: 'authenticated-read' },
   get_momentum_alerts: { cls: 'authenticated-read' },
   get_marketing_actions: { cls: 'authenticated-read' },
   get_platform_metrics: { cls: 'authenticated-read' },
-  get_radio_targets: { cls: 'authenticated-read' },
-  get_radio_pitch_log: { cls: 'authenticated-read' },
   get_outreach_stats: { cls: 'authenticated-read' },
   get_instagram_messaging_status: { cls: 'authenticated-read' },
   connect_spotify_status: { cls: 'authenticated-read' },
@@ -439,6 +445,144 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
     capability: 'manage_radio',
     surface: 'outreach-write',
   },
+
+  // ---- Daily ops station ledger -------------------------------------------
+  start_daily_station_run: {
+    cls: 'capability',
+    capability: 'run_daily_station',
+    surface: 'outreach-write',
+  },
+  complete_daily_station_run: {
+    cls: 'capability',
+    capability: 'run_daily_station',
+    surface: 'outreach-write',
+  },
+  list_daily_station_runs: {
+    cls: 'capability',
+    capability: 'read_daily_ops',
+    surface: 'admin-write',
+  },
+  get_daily_station_run: {
+    cls: 'capability',
+    capability: 'run_daily_station',
+    surface: 'admin-write',
+  },
+  get_daily_ops_dashboard: {
+    cls: 'capability',
+    capability: 'read_daily_ops',
+    surface: 'admin-write',
+  },
+  list_ops_settings: {
+    cls: 'capability',
+    capability: 'read_daily_ops',
+    surface: 'admin-write',
+  },
+  upsert_ops_setting: {
+    cls: 'capability',
+    capability: 'manage_ops_settings',
+    surface: 'admin-write',
+  },
+
+  // ---- Grok handoff queues ------------------------------------------------
+  create_handoff_batch: {
+    cls: 'capability',
+    capability: 'create_handoff_batch',
+    surface: 'outreach-write',
+  },
+  add_handoff_records: {
+    cls: 'capability',
+    capability: 'create_handoff_batch',
+    surface: 'outreach-write',
+  },
+  advance_handoff_batch: {
+    cls: 'capability',
+    capability: 'create_handoff_batch',
+    surface: 'outreach-write',
+  },
+  review_handoff_batch: {
+    cls: 'capability',
+    capability: 'review_handoff_batch',
+    surface: 'outreach-write',
+  },
+  list_handoff_batches: {
+    cls: 'capability',
+    capability: 'create_handoff_batch',
+    surface: 'admin-write',
+  },
+  get_handoff_batch: {
+    cls: 'capability',
+    capability: 'create_handoff_batch',
+    surface: 'admin-write',
+  },
+  mark_manual_form_submitted: {
+    cls: 'capability',
+    capability: 'send_playlist_pitches',
+    surface: 'outreach-write',
+  },
+  mark_manual_ig_dm_submitted: {
+    cls: 'capability',
+    capability: 'send_playlist_pitches',
+    surface: 'outreach-write',
+  },
+
+  // ---- Multichannel path verification -------------------------------------
+  verify_submission_path: {
+    cls: 'capability',
+    capability: 'verify_submission_path',
+    surface: 'outreach-write',
+  },
+  build_web_form_packet: {
+    cls: 'capability',
+    capability: 'generate_playlist_drafts',
+    surface: 'outreach-write',
+  },
+  build_instagram_dm_draft: {
+    cls: 'capability',
+    capability: 'generate_playlist_drafts',
+    surface: 'outreach-write',
+  },
+
+  // ---- Claude sync research intake ----------------------------------------
+  research_sync_targets: {
+    cls: 'capability',
+    capability: 'research_sync_targets',
+    surface: 'outreach-write',
+  },
+  verify_sync_targets: {
+    cls: 'capability',
+    capability: 'verify_sync_targets',
+    surface: 'outreach-write',
+  },
+  create_sync_target: {
+    cls: 'capability',
+    capability: 'create_sync_target',
+    surface: 'outreach-write',
+  },
+  create_sync_opportunity: {
+    cls: 'capability',
+    capability: 'create_sync_opportunity',
+    surface: 'outreach-write',
+  },
+  draft_sync_pitch: {
+    cls: 'capability',
+    capability: 'draft_sync_pitch',
+    surface: 'outreach-write',
+  },
+  read_own_sync_batches: {
+    cls: 'capability',
+    capability: 'read_own_sync_batches',
+    surface: 'outreach-write',
+  },
+  list_sync_research_targets: {
+    cls: 'capability',
+    capability: 'read_own_sync_batches',
+    surface: 'admin-write',
+  },
+  list_sync_research_opportunities: {
+    cls: 'capability',
+    capability: 'read_own_sync_batches',
+    surface: 'admin-write',
+  },
 };
 
 /**
@@ -533,6 +677,7 @@ async function resolveUser(
 export function resolveCredentialActor(req: Request): Actor | null {
   if (isSchedulerCredential(req)) return { kind: 'scheduler' };
   if (isGrokCredential(req)) return { kind: 'grok_playlist_control' };
+  if (isClaudePlaylistDiscoveryCredential(req)) return { kind: 'claude_playlist_discovery' };
   if (isClaudeCredential(req)) return { kind: 'claude' };
   if (isHubServiceCredential(req)) return { kind: 'service' };
   return null;
@@ -672,6 +817,24 @@ export async function authorizeAction(
         ok: false,
         status: 401,
         error: 'Authentication required',
+        cls: 'authenticated-read',
+      };
+    }
+    // Machine credentials do not inherit every authenticated-read — JWT humans only.
+    // Explicit capability-gated actions cover required agent projections.
+    const machineKinds = new Set([
+      'claude',
+      'claude_playlist_discovery',
+      'grok_playlist_control',
+      'service',
+      'scheduler',
+    ]);
+    if (machineKinds.has(opsActor.kind)) {
+      return {
+        ok: false,
+        status: 403,
+        error:
+          `${opsActor.label} cannot use open authenticated-read action "${action}" — use an explicit capability-gated projection`,
         cls: 'authenticated-read',
       };
     }

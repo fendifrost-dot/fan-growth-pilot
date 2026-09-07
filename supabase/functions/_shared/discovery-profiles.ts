@@ -210,6 +210,19 @@ export async function handleDiscoveryProfileAction(
         ? null
         : String(body.matching_expression).trim() || null,
       allocation_share: body.allocation_share == null ? null : Number(body.allocation_share),
+      markets: asStringArray(body.markets),
+      languages: asStringArray(body.languages),
+      playlist_keywords: asStringArray(body.playlist_keywords),
+      curator_keywords: asStringArray(body.curator_keywords),
+      source_domains: asStringArray(body.source_domains),
+      source_types: asStringArray(body.source_types),
+      query_templates: asStringArray(body.query_templates),
+      negative_terms: asStringArray(body.negative_terms),
+      prior_query_cooldown_hours: Number(body.prior_query_cooldown_hours ?? 24) || 24,
+      results_per_query: Number(body.results_per_query ?? 25) || 25,
+      dedupe_key_fields: asStringArray(body.dedupe_key_fields).length
+        ? asStringArray(body.dedupe_key_fields)
+        : ["playlist_url", "curator_email", "form_url", "ig_curator_account"],
       editor_user_id: actor!.kind === "user" ? actor!.userId : null,
       updated_at: new Date().toISOString(),
     };

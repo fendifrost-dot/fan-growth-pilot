@@ -17,19 +17,9 @@ create unique index if not exists outreach_drafts_ops_idempotency_uidx
   on public.outreach_drafts (ops_idempotency_key)
   where ops_idempotency_key is not null;
 
--- Open-pair uniqueness for handoff records (channel included via submission_channel).
-create unique index if not exists agh_handoff_records_open_pair_uidx
-  on public.agh_handoff_records (
-    track_id,
-    playlist_target_id,
-    submission_channel,
-    song_dna_version_id
-  )
-  where track_id is not null
-    and playlist_target_id is not null
-    and submission_channel is not null
-    and song_dna_version_id is not null
-    and queue_state not in ('REJECTED_BY_GROK', 'IMPORTED_TO_AGH');
+-- NOTE: agh_handoff_records_open_pair_uidx is intentionally NOT created here.
+-- Diagnostics land in 20260907150000; guarded index creation is in 20260907160000
+-- after a fail-closed duplicate preflight (so report/reconcile functions survive refusal).
 
 -- ---------------------------------------------------------------------------
 -- 2. Compensate: delete empty handoff batch (fail closed if not empty / missing)

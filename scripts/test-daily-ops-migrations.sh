@@ -159,7 +159,100 @@ apply_with_rollback "$ROOT/supabase/migrations/20260907030000_daily_ops_rpc_hard
 apply_with_rollback "$ROOT/supabase/migrations/20260907120000_mcp_playlist_discovery_oauth.sql"
 apply_with_rollback "$ROOT/supabase/migrations/20260907130000_mcp_oauth_token_lifecycle.sql"
 apply_with_rollback "$ROOT/supabase/migrations/20260907140000_mcp_inventory_idempotency_oauth_atomic.sql"
-apply_with_rollback "$ROOT/supabase/migrations/20260907150000_mcp_inventory_atomic_consistency.sql"
+apply_with_rollback "$ROOT/supabase/migrations/20260907150000_mcp_handoff_open_pair_diagnostics.sql"
+
+echo "==> Open-pair diagnostics installed; guarded index not yet present"
+DIAG_REPORT=$(run_sql -c "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='agh_mcp_handoff_open_pair_duplicate_report';")
+assert_eq "diag_duplicate_report_fn" "${DIAG_REPORT}" "1"
+DIAG_PLAN=$(run_sql -c "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='agh_mcp_handoff_open_pair_reconcile_plan';")
+assert_eq "diag_reconcile_plan_fn" "${DIAG_PLAN}" "1"
+OPEN_IDX_BEFORE=$(run_sql -c "select count(*) from pg_indexes where schemaname='public' and indexname='agh_handoff_records_open_pair_uidx';")
+assert_eq "open_pair_index_absent_before_guard" "${OPEN_IDX_BEFORE}" "0"
+
+echo "==> Seed duplicate open handoff pairs for guarded-migration refusal"
+run_sql_pretty <<'SQL'
+insert into public.tracks (id, name) values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'Dup Track')
+  on conflict (id) do nothing;
+insert into public.song_dna_versions (id, track_id, approval_state, approved_lanes, short_pitch)
+values ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'approved', array['rap_general'], 'pitch')
+  on conflict (id) do nothing;
+update public.tracks set approved_song_dna_version_id = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+ where id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+
+insert into public.playlist_targets (playlist_id, lane, verification_status)
+values ('pl-dup-target', 'rap_general', 'auto_verified')
+on conflict (playlist_id) do nothing;
+
+insert into public.agh_handoff_batches (id, batch_kind, queue_state, track_id, song_dna_version_id, discovered_by, discovered_by_label)
+values
+  ('cccccccc-cccc-cccc-cccc-cccccccccccc', 'playlist', 'CLAUDE_BATCH_READY',
+   'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', 'claude', 'claude'),
+  ('dddddddd-dddd-dddd-dddd-dddddddddddd', 'playlist', 'CLAUDE_BATCH_READY',
+   'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', 'claude', 'claude');
+
+insert into public.agh_handoff_records (
+  id, batch_id, record_kind, queue_state, track_id, playlist_target_id,
+  submission_channel, song_dna_version_id, packet
+) values
+  ('eeeeeeee-eeee-eeee-eeee-eeeeeeee0001', 'cccccccc-cccc-cccc-cccc-cccccccccccc', 'playlist_target',
+   'CLAUDE_BATCH_READY', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'pl-dup-target',
+   'email', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', '{}'::jsonb),
+  ('eeeeeeee-eeee-eeee-eeee-eeeeeeee0002', 'dddddddd-dddd-dddd-dddd-dddddddddddd', 'playlist_target',
+   'CLAUDE_BATCH_READY', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'pl-dup-target',
+   'email', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', '{}'::jsonb);
+SQL
+
+DUP_GROUPS=$(run_sql -c "select count(*) from public.agh_mcp_handoff_open_pair_duplicate_report();")
+assert_eq "seeded_duplicate_groups" "${DUP_GROUPS}" "1"
+PLAN_ROWS=$(run_sql -c "select count(*) from public.agh_mcp_handoff_open_pair_reconcile_plan();")
+assert_eq "seeded_reconcile_plan_rows" "${PLAN_ROWS}" "1"
+
+echo "==> Guarded 160000 must refuse while duplicates exist"
+set +e
+GUARD_OUT=$(run_sql_pretty -f "$ROOT/supabase/migrations/20260907160000_mcp_inventory_open_pair_guard_and_persist.sql" 2>&1)
+GUARD_RC=$?
+set -e
+if [[ ${GUARD_RC} -eq 0 ]]; then
+  echo "FAIL: expected 160000 to refuse when open-pair duplicates exist"
+  echo "${GUARD_OUT}"
+  psql_admin -c "DROP DATABASE IF EXISTS ${DB_NAME};" || true
+  exit 1
+fi
+if ! echo "${GUARD_OUT}" | grep -qi 'PREFLIGHT FAIL'; then
+  echo "FAIL: expected PREFLIGHT FAIL in guarded migration output"
+  echo "${GUARD_OUT}"
+  psql_admin -c "DROP DATABASE IF EXISTS ${DB_NAME};" || true
+  exit 1
+fi
+echo "OK assert: guarded_migration_refused"
+
+echo "==> Diagnostic functions remain callable after refusal"
+AFTER_DUP=$(run_sql -c "select count(*) from public.agh_mcp_handoff_open_pair_duplicate_report();")
+assert_eq "diag_callable_after_refusal_report" "${AFTER_DUP}" "1"
+AFTER_PLAN=$(run_sql -c "select count(*) from public.agh_mcp_handoff_open_pair_reconcile_plan();")
+assert_eq "diag_callable_after_refusal_plan" "${AFTER_PLAN}" "1"
+OPEN_IDX_REFUSED=$(run_sql -c "select count(*) from pg_indexes where schemaname='public' and indexname='agh_handoff_records_open_pair_uidx';")
+assert_eq "open_pair_index_still_absent" "${OPEN_IDX_REFUSED}" "0"
+PERSIST_ABSENT=$(run_sql -c "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='agh_mcp_persist_playlist_inventory';")
+assert_eq "persist_fn_absent_after_refusal" "${PERSIST_ABSENT}" "0"
+
+echo "==> Reconcile fixture (mark later duplicate REJECTED_BY_GROK — deterministic)"
+run_sql_pretty <<'SQL'
+update public.agh_handoff_records r
+   set queue_state = 'REJECTED_BY_GROK',
+       rejection_reason = 'migtest_open_pair_reconcile',
+       updated_at = now()
+ where r.id in (select retire_record_id from public.agh_mcp_handoff_open_pair_reconcile_plan());
+SQL
+CLEAN_DUP=$(run_sql -c "select count(*) from public.agh_mcp_handoff_open_pair_duplicate_report();")
+assert_eq "duplicates_cleared_after_reconcile" "${CLEAN_DUP}" "0"
+
+echo "==> Rerun guarded 160000 successfully after reconcile"
+apply_with_rollback "$ROOT/supabase/migrations/20260907160000_mcp_inventory_open_pair_guard_and_persist.sql"
+OPEN_IDX_AFTER=$(run_sql -c "select count(*) from pg_indexes where schemaname='public' and indexname='agh_handoff_records_open_pair_uidx';")
+assert_eq "open_pair_index_present_after_guard" "${OPEN_IDX_AFTER}" "1"
+PERSIST_OK=$(run_sql -c "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='agh_mcp_persist_playlist_inventory';")
+assert_eq "persist_fn_present_after_guard" "${PERSIST_OK}" "1"
 
 echo "==> MCP OAuth tables exist with actor check"
 OAUTH_TBL=$(run_sql -c "select count(*) from information_schema.tables where table_schema='public' and table_name='agh_mcp_oauth_tokens';")
@@ -436,9 +529,9 @@ if [[ ${FAIL_RC} -eq 0 ]]; then
 fi
 echo "OK assert: third_handoff_aborted"
 
-DRAFT_N=$(run_sql -c "select count(*) from public.outreach_drafts;")
-REC_N=$(run_sql -c "select count(*) from public.agh_handoff_records;")
-BATCH_N=$(run_sql -c "select count(*) from public.agh_handoff_batches where id <> '33333333-3333-3333-3333-333333333333';")
+DRAFT_N=$(run_sql -c "select count(*) from public.outreach_drafts where ops_idempotency_key like '%:pl-inv-%';")
+REC_N=$(run_sql -c "select count(*) from public.agh_handoff_records where playlist_target_id like 'pl-inv-%';")
+BATCH_N=$(run_sql -c "select count(*) from public.agh_handoff_batches where track_id = '11111111-1111-1111-1111-111111111111' and id <> '33333333-3333-3333-3333-333333333333';")
 assert_eq "rollback_zero_drafts" "${DRAFT_N}" "0"
 assert_eq "rollback_zero_records" "${REC_N}" "0"
 assert_eq "rollback_zero_new_batches" "${BATCH_N}" "0"

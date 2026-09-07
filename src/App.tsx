@@ -35,6 +35,7 @@ import AdminSongDna from "./pages/admin/AdminSongDna";
 import AdminDiscoveryProfiles from "./pages/admin/AdminDiscoveryProfiles";
 import AdminDailyOps from "./pages/admin/AdminDailyOps";
 import AdminOpportunities from "./pages/admin/AdminOpportunities";
+import AdminMcpPlaylistAuthorize from "./pages/admin/AdminMcpPlaylistAuthorize";
 import RegisterPreview from "./pages/dev/RegisterPreview";
 
 const queryClient = new QueryClient();
@@ -95,6 +96,7 @@ const App = () => {
             <Route path="song-dna" element={<AdminSongDna />} />
             <Route path="discovery-profiles" element={<AdminDiscoveryProfiles />} />
             <Route path="daily-ops" element={<AdminDailyOps />} />
+            <Route path="mcp-playlist-authorize" element={<AdminMcpPlaylistAuthorize />} />
           </Route>
 
           {/* Public smart link pages (CATCH-ALL — must stay last among meaningful routes) */}

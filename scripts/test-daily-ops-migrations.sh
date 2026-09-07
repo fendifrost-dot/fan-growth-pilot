@@ -139,12 +139,17 @@ apply_with_rollback "$ROOT/supabase/migrations/20260907010000_daily_ops_pr19_sec
 apply_with_rollback "$ROOT/supabase/migrations/20260907020000_daily_ops_operational_chain.sql"
 apply_with_rollback "$ROOT/supabase/migrations/20260907030000_daily_ops_rpc_hardening.sql"
 apply_with_rollback "$ROOT/supabase/migrations/20260907120000_mcp_playlist_discovery_oauth.sql"
+apply_with_rollback "$ROOT/supabase/migrations/20260907130000_mcp_oauth_token_lifecycle.sql"
 
 echo "==> MCP OAuth tables exist with actor check"
 OAUTH_TBL=$(run_sql -c "select count(*) from information_schema.tables where table_schema='public' and table_name='agh_mcp_oauth_tokens';")
 assert_eq "mcp_oauth_tokens_table" "${OAUTH_TBL}" "1"
 OAUTH_CHECK=$(run_sql -c "select pg_get_constraintdef(oid) from pg_constraint where conrelid='public.agh_mcp_oauth_tokens'::regclass and contype='c' limit 1;")
 echo "OK constraint: ${OAUTH_CHECK}"
+REFRESH_COL=$(run_sql -c "select count(*) from information_schema.columns where table_schema='public' and table_name='agh_mcp_oauth_tokens' and column_name='refresh_expires_at';")
+assert_eq "mcp_oauth_refresh_expires_at" "${REFRESH_COL}" "1"
+CLEANUP_FN=$(run_sql -c "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='agh_mcp_oauth_cleanup_expired';")
+assert_eq "mcp_oauth_cleanup_fn" "${CLEANUP_FN}" "1"
 
 echo "==> Preflight orphan report (empty fixture DB — not production proof)"
 run_sql_pretty -c "select * from public.agh_daily_ops_fk_preflight();"

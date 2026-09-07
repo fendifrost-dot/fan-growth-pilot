@@ -634,7 +634,12 @@ export async function reviewHandoffBatch(
   if (!can(ops, "review_handoff_batch") && !can(ops, "approve_playlist_drafts")) {
     return { status: 403, data: { error: `${ops.label} cannot review handoff batches` } };
   }
-  if (ops.kind === "claude" || ops.kind === "service" || ops.kind === "human_admin") {
+  if (
+    ops.kind === "claude" ||
+    ops.kind === "claude_playlist_discovery" ||
+    ops.kind === "service" ||
+    ops.kind === "human_admin"
+  ) {
     return { status: 403, data: { error: `${ops.label} cannot act as final handoff authority` } };
   }
   const clean = stripSpoofedAttribution(body);

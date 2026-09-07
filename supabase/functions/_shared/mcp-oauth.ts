@@ -1,18 +1,37 @@
 /**
- * OAuth 2.1 (PKCE S256) + Dynamic Client Registration helpers for the
- * mcp-playlist-discovery remote connector. Tokens always bind to
- * claude_playlist_discovery — never expose service-role or broad Claude secrets.
+ * OAuth 2.1 (PKCE S256) + Dynamic Client Registration for mcp-playlist-discovery.
+ * Tokens always bind to claude_playlist_discovery.
+ * Consent is Fendi-session-only (exact ARTIST_USER_ID) — never secret/JWT paste.
  */
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
 const SCOPE = "playlist_discovery";
 const ACTOR = "claude_playlist_discovery";
+/** Access token TTL (seconds). */
+export const ACCESS_TOKEN_TTL_SEC = 3600;
+/** Maximum refresh-token family lifetime. */
+export const REFRESH_TOKEN_MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
+
+const APPROVED_REDIRECT_HOSTS = new Set([
+  "claude.ai",
+  "claude.com",
+  "www.claude.ai",
+  "www.claude.com",
+]);
 
 export function mcpPublicBaseUrl(): string {
   const explicit = (Deno.env.get("AGH_MCP_PLAYLIST_DISCOVERY_URL") || "").trim().replace(/\/$/, "");
   if (explicit) return explicit;
   const supabaseUrl = (Deno.env.get("SUPABASE_URL") || "").trim().replace(/\/$/, "");
   return `${supabaseUrl}/functions/v1/mcp-playlist-discovery`;
+}
+
+export function aghPublicAppUrl(): string {
+  return (
+    (Deno.env.get("AGH_PUBLIC_APP_URL") || "").trim().replace(/\/$/, "") ||
+    (Deno.env.get("FRONTEND_URL") || "").trim().replace(/\/$/, "") ||
+    "https://fan-growth-pilot.lovable.app"
+  );
 }
 
 export function protectedResourceMetadata() {
@@ -33,6 +52,7 @@ export function authorizationServerMetadata() {
     authorization_endpoint: `${base}/oauth/authorize`,
     token_endpoint: `${base}/oauth/token`,
     registration_endpoint: `${base}/oauth/register`,
+    revocation_endpoint: `${base}/oauth/revoke`,
     scopes_supported: [SCOPE],
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code", "refresh_token"],
@@ -65,6 +85,26 @@ export async function pkceS256Challenge(verifier: string): Promise<string> {
   return b64url(new Uint8Array(digest));
 }
 
+/** Parse + exact-origin allowlist for OAuth redirect_uris. */
+export function isAllowedRedirectUri(uri: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(uri);
+  } catch {
+    return false;
+  }
+  if (u.username || u.password) return false;
+  if (u.protocol === "https:") {
+    if (APPROVED_REDIRECT_HOSTS.has(u.hostname)) return true;
+    if (u.hostname.endsWith(".claude.ai") || u.hostname.endsWith(".claude.com")) return true;
+    return false;
+  }
+  if (u.protocol === "http:") {
+    return u.hostname === "127.0.0.1" || u.hostname === "localhost";
+  }
+  return false;
+}
+
 export async function registerClient(
   sb: SupabaseClient,
   body: Record<string, unknown>,
@@ -73,16 +113,12 @@ export async function registerClient(
     ? body.redirect_uris.map(String)
     : [];
   if (!redirectUris.length) {
-    return { status: 400, data: { error: "invalid_client_metadata", error_description: "redirect_uris required" } };
+    return {
+      status: 400,
+      data: { error: "invalid_client_metadata", error_description: "redirect_uris required" },
+    };
   }
-  // Claude.ai callback must be accepted.
-  const allowed = redirectUris.every((u) =>
-    u.startsWith("https://claude.ai/") ||
-    u.startsWith("https://claude.com/") ||
-    u.startsWith("http://127.0.0.1:") ||
-    u.startsWith("http://localhost:")
-  );
-  if (!allowed) {
+  if (!redirectUris.every(isAllowedRedirectUri)) {
     return { status: 400, data: { error: "invalid_redirect_uri" } };
   }
   const clientId = `agh-pd-${randomToken(8)}`;
@@ -94,7 +130,9 @@ export async function registerClient(
     client_name: body.client_name != null ? String(body.client_name) : "Claude Playlist Discovery",
     redirect_uris: redirectUris,
   });
-  if (error) return { status: 500, data: { error: "server_error", error_description: error.message } };
+  if (error) {
+    return { status: 500, data: { error: "server_error", error_description: error.message } };
+  }
   return {
     status: 201,
     data: {
@@ -110,10 +148,28 @@ export async function registerClient(
 }
 
 /**
- * Authorize: Fendi must present Bearer JWT matching ARTIST_USER_ID, OR the
- * one-time connector approval secret (CLAUDE_PLAYLIST_DISCOVERY_SECRET) as
- * x-agh-connector-approve — never the service-role key.
+ * Authorize only via Fendi's Supabase-authenticated session JWT
+ * (exact ARTIST_USER_ID). Never accepts connector secrets for consent.
  */
+export async function authorizeFendiSession(
+  sb: SupabaseClient,
+  authorizationHeader: string | null,
+): Promise<{ ok: true; userId: string } | { ok: false; error: string }> {
+  if (!authorizationHeader?.toLowerCase().startsWith("bearer ")) {
+    return { ok: false, error: "fendi_session_required" };
+  }
+  const token = authorizationHeader.slice(7).trim();
+  if (!token) return { ok: false, error: "fendi_session_required" };
+  const { data, error } = await sb.auth.getUser(token);
+  if (error || !data?.user) return { ok: false, error: "invalid_session" };
+  const fendiId = (Deno.env.get("ARTIST_USER_ID") || Deno.env.get("FENDI_USER_ID") || "").trim();
+  if (!fendiId) return { ok: false, error: "artist_user_id_unconfigured" };
+  if (data.user.id !== fendiId) {
+    return { ok: false, error: "only_fendi_may_authorize_connector" };
+  }
+  return { ok: true, userId: data.user.id };
+}
+
 export async function issueAuthCode(
   sb: SupabaseClient,
   opts: {
@@ -122,7 +178,7 @@ export async function issueAuthCode(
     codeChallenge: string;
     codeChallengeMethod: string;
     scope: string;
-    authorizedByUserId: string | null;
+    authorizedByUserId: string;
   },
 ): Promise<{ status: number; data: Record<string, unknown> }> {
   if (opts.codeChallengeMethod !== "S256") {
@@ -130,6 +186,12 @@ export async function issueAuthCode(
   }
   if (opts.scope && opts.scope !== SCOPE) {
     return { status: 400, data: { error: "invalid_scope" } };
+  }
+  if (!opts.authorizedByUserId) {
+    return { status: 403, data: { error: "access_denied", error_description: "fendi_required" } };
+  }
+  if (!isAllowedRedirectUri(opts.redirectUri)) {
+    return { status: 400, data: { error: "invalid_request", error_description: "redirect_uri not allowed" } };
   }
   const { data: client } = await sb
     .from("agh_mcp_oauth_clients")
@@ -153,7 +215,11 @@ export async function issueAuthCode(
     authorized_by_user_id: opts.authorizedByUserId,
     expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
   });
-  if (error) return { status: 500, data: { error: "server_error", error_description: error.message } };
+  if (error) {
+    return { status: 500, data: { error: "server_error", error_description: error.message } };
+  }
+  // Best-effort cleanup of expired rows on each authorize.
+  await cleanupExpiredOAuthRecords(sb);
   return { status: 200, data: { code, redirect_uri: opts.redirectUri } };
 }
 
@@ -205,6 +271,7 @@ export async function exchangeToken(
     return mintTokens(sb, {
       clientId,
       authorizedByUserId: row.authorized_by_user_id ? String(row.authorized_by_user_id) : null,
+      refreshExpiresAt: new Date(Date.now() + REFRESH_TOKEN_MAX_LIFETIME_MS),
     });
   }
 
@@ -220,6 +287,20 @@ export async function exchangeToken(
     if (!tok || String(tok.client_id) !== clientId) {
       return { status: 400, data: { error: "invalid_grant" } };
     }
+    const refreshExp = tok.refresh_expires_at
+      ? new Date(String(tok.refresh_expires_at)).getTime()
+      : 0;
+    if (!refreshExp || refreshExp < Date.now()) {
+      await sb
+        .from("agh_mcp_oauth_tokens")
+        .update({ revoked_at: new Date().toISOString() })
+        .eq("token_hash", tok.token_hash);
+      return {
+        status: 400,
+        data: { error: "invalid_grant", error_description: "refresh_expired" },
+      };
+    }
+    // Rotate: revoke old access+refresh, mint new pair with same refresh_expires_at.
     await sb
       .from("agh_mcp_oauth_tokens")
       .update({ revoked_at: new Date().toISOString() })
@@ -227,6 +308,7 @@ export async function exchangeToken(
     return mintTokens(sb, {
       clientId,
       authorizedByUserId: tok.authorized_by_user_id ? String(tok.authorized_by_user_id) : null,
+      refreshExpiresAt: new Date(refreshExp),
     });
   }
 
@@ -235,13 +317,16 @@ export async function exchangeToken(
 
 async function mintTokens(
   sb: SupabaseClient,
-  opts: { clientId: string; authorizedByUserId: string | null },
+  opts: {
+    clientId: string;
+    authorizedByUserId: string | null;
+    refreshExpiresAt: Date;
+  },
 ): Promise<{ status: number; data: Record<string, unknown> }> {
   const access = randomToken(32);
   const refresh = randomToken(32);
   const tokenHash = await sha256Hex(access);
   const refreshHash = await sha256Hex(refresh);
-  const expiresIn = 3600;
   const { error } = await sb.from("agh_mcp_oauth_tokens").insert({
     token_hash: tokenHash,
     refresh_token_hash: refreshHash,
@@ -249,19 +334,52 @@ async function mintTokens(
     scope: SCOPE,
     actor_kind: ACTOR,
     authorized_by_user_id: opts.authorizedByUserId,
-    expires_at: new Date(Date.now() + expiresIn * 1000).toISOString(),
+    expires_at: new Date(Date.now() + ACCESS_TOKEN_TTL_SEC * 1000).toISOString(),
+    refresh_expires_at: opts.refreshExpiresAt.toISOString(),
   });
-  if (error) return { status: 500, data: { error: "server_error", error_description: error.message } };
+  if (error) {
+    return { status: 500, data: { error: "server_error", error_description: error.message } };
+  }
   return {
     status: 200,
     data: {
       access_token: access,
       token_type: "bearer",
-      expires_in: expiresIn,
+      expires_in: ACCESS_TOKEN_TTL_SEC,
       refresh_token: refresh,
       scope: SCOPE,
+      refresh_expires_in: Math.max(
+        0,
+        Math.floor((opts.refreshExpiresAt.getTime() - Date.now()) / 1000),
+      ),
     },
   };
+}
+
+export async function revokeToken(
+  sb: SupabaseClient,
+  body: Record<string, unknown>,
+): Promise<{ status: number; data: Record<string, unknown> }> {
+  const token = String(body.token ?? "").trim();
+  if (!token) return { status: 400, data: { error: "invalid_request" } };
+  const hash = await sha256Hex(token);
+  const now = new Date().toISOString();
+  await sb.from("agh_mcp_oauth_tokens").update({ revoked_at: now }).eq("token_hash", hash);
+  await sb.from("agh_mcp_oauth_tokens").update({ revoked_at: now }).eq("refresh_token_hash", hash);
+  return { status: 200, data: { revoked: true } };
+}
+
+export async function cleanupExpiredOAuthRecords(
+  sb: SupabaseClient,
+): Promise<{ codes_deleted?: number; tokens_deleted?: number }> {
+  try {
+    const { data } = await sb.rpc("agh_mcp_oauth_cleanup_expired");
+    if (data && typeof data === "object") return data as Record<string, number>;
+  } catch {
+    // Fallback when RPC not yet applied: best-effort deletes.
+  }
+  await sb.from("agh_mcp_oauth_codes").delete().lt("expires_at", new Date().toISOString());
+  return {};
 }
 
 export async function resolveBearerActorKind(
@@ -276,7 +394,7 @@ export async function resolveBearerActorKind(
   const tokenHash = await sha256Hex(token);
   const { data } = await sb
     .from("agh_mcp_oauth_tokens")
-    .select("actor_kind, expires_at, revoked_at")
+    .select("actor_kind, expires_at, revoked_at, refresh_expires_at")
     .eq("token_hash", tokenHash)
     .maybeSingle();
   if (!data || data.revoked_at) return { ok: false, error: "invalid_token" };
@@ -285,6 +403,108 @@ export async function resolveBearerActorKind(
   }
   if (String(data.actor_kind) !== ACTOR) return { ok: false, error: "invalid_actor" };
   return { ok: true, actorKind: ACTOR };
+}
+
+/** One-click Authorize/Cancel consent HTML — no credential inputs. */
+export function renderConsentPage(opts: {
+  clientId: string;
+  redirectUri: string;
+  state: string;
+  codeChallenge: string;
+  codeChallengeMethod: string;
+  scope: string;
+  supabaseUrl: string;
+  supabaseAnonKey: string;
+  aghAppUrl: string;
+}): string {
+  const esc = (s: string) =>
+    s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const aghAuthorize = `${opts.aghAppUrl}/admin/mcp-playlist-authorize?` +
+    new URLSearchParams({
+      client_id: opts.clientId,
+      redirect_uri: opts.redirectUri,
+      state: opts.state,
+      code_challenge: opts.codeChallenge,
+      code_challenge_method: opts.codeChallengeMethod,
+      scope: opts.scope,
+    }).toString();
+
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>AGH · Authorize Playlist Discovery</title>
+<style>
+  body{font-family:ui-sans-serif,system-ui,sans-serif;max-width:28rem;margin:3rem auto;padding:0 1.25rem;color:#111;background:#f7f5f2}
+  h1{font-size:1.35rem;margin:0 0 .5rem}
+  p{line-height:1.45;color:#333}
+  .actions{display:flex;gap:.75rem;margin-top:1.5rem}
+  button,.btn{appearance:none;border:0;border-radius:8px;padding:.7rem 1.1rem;font-size:1rem;cursor:pointer;text-decoration:none;display:inline-block}
+  .authorize{background:#111;color:#fff}
+  .cancel{background:#e8e4de;color:#222}
+  .err{color:#8b1a1a;margin-top:1rem}
+  .hint{font-size:.9rem;color:#555;margin-top:1.25rem}
+</style></head>
+<body>
+<h1>Authorize Claude Playlist Discovery</h1>
+<p>This grants Claude’s scheduled playlist-discovery connector the narrow <code>playlist_discovery</code> scope only. Approve/send and Song DNA remain with Grok / Fendi.</p>
+<p>Sign-in uses your existing AGH session. Only Fendi may authorize.</p>
+<div class="actions">
+  <button type="button" class="authorize" id="authorize">Authorize</button>
+  <button type="button" class="cancel" id="cancel">Cancel</button>
+</div>
+<p class="err" id="err" hidden></p>
+<p class="hint">If you are not signed in here, continue in AGH Admin:<br/>
+<a class="btn cancel" href="${esc(aghAuthorize)}">Open AGH authorize</a></p>
+<script type="module">
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+const params = {
+  client_id: ${JSON.stringify(opts.clientId)},
+  redirect_uri: ${JSON.stringify(opts.redirectUri)},
+  state: ${JSON.stringify(opts.state)},
+  code_challenge: ${JSON.stringify(opts.codeChallenge)},
+  code_challenge_method: ${JSON.stringify(opts.codeChallengeMethod || "S256")},
+  scope: ${JSON.stringify(opts.scope)},
+  decision: "authorize",
+};
+const errEl = document.getElementById("err");
+function showErr(m){ errEl.hidden=false; errEl.textContent=m; }
+document.getElementById("cancel").onclick = () => {
+  const u = new URL(params.redirect_uri);
+  u.searchParams.set("error", "access_denied");
+  if (params.state) u.searchParams.set("state", params.state);
+  location.href = u.toString();
+};
+document.getElementById("authorize").onclick = async () => {
+  try {
+    const sb = createClient(${JSON.stringify(opts.supabaseUrl)}, ${JSON.stringify(opts.supabaseAnonKey)});
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session?.access_token) {
+      location.href = ${JSON.stringify(aghAuthorize)};
+      return;
+    }
+    const res = await fetch(location.pathname + location.search, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "authorization": "Bearer " + session.access_token,
+      },
+      body: JSON.stringify(params),
+    });
+    if (res.redirected) { location.href = res.url; return; }
+    const ct = res.headers.get("content-type") || "";
+    if (ct.includes("application/json")) {
+      const j = await res.json();
+      if (j.redirect_to) { location.href = j.redirect_to; return; }
+      showErr(j.error_description || j.error || ("HTTP " + res.status));
+      return;
+    }
+    if (res.ok) { location.href = res.url || location.href; return; }
+    showErr("Authorization failed (" + res.status + ")");
+  } catch (e) {
+    showErr(String(e?.message || e));
+  }
+};
+</script>
+</body></html>`;
 }
 
 export const PLAYLIST_DISCOVERY_SCOPE = SCOPE;

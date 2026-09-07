@@ -119,14 +119,18 @@ create table public.outreach_drafts (
   id uuid primary key default gen_random_uuid(),
   playlist_id text,
   track_id uuid,
-  track_name text,
+  track_name text not null default 'unknown',
   song_dna_version_id uuid,
-  channel text,
+  channel text not null default 'email',
   status text not null default 'pending',
   generated_at timestamptz default now(),
+  generated_by text,
   subject text,
-  body text,
-  recipient text
+  body text not null default '',
+  recipient text,
+  pitch_copy_source text,
+  pitch_copy_hash text,
+  metadata jsonb not null default '{}'::jsonb
 );
 
 create table public.discovery_profiles (
@@ -155,6 +159,7 @@ apply_with_rollback "$ROOT/supabase/migrations/20260907030000_daily_ops_rpc_hard
 apply_with_rollback "$ROOT/supabase/migrations/20260907120000_mcp_playlist_discovery_oauth.sql"
 apply_with_rollback "$ROOT/supabase/migrations/20260907130000_mcp_oauth_token_lifecycle.sql"
 apply_with_rollback "$ROOT/supabase/migrations/20260907140000_mcp_inventory_idempotency_oauth_atomic.sql"
+apply_with_rollback "$ROOT/supabase/migrations/20260907150000_mcp_inventory_atomic_consistency.sql"
 
 echo "==> MCP OAuth tables exist with actor check"
 OAUTH_TBL=$(run_sql -c "select count(*) from information_schema.tables where table_schema='public' and table_name='agh_mcp_oauth_tokens';")
@@ -364,5 +369,130 @@ ACTIVE_N=$(run_sql -c "select count(*) from public.agh_mcp_oauth_tokens where re
 assert_eq "oauth_rotate_active_tokens" "${ACTIVE_N}" "1"
 NEW_EXP=$(run_sql -c "select refresh_expires_at::text from public.agh_mcp_oauth_tokens where revoked_at is null limit 1;")
 assert_eq "oauth_rotate_preserves_refresh_expires_at" "${NEW_EXP}" "${PRESERVED}"
+
+echo "==> Active idempotency index + open-pair preflight helpers"
+ACTIVE_IDX=$(run_sql -c "select count(*) from pg_indexes where schemaname='public' and indexname='outreach_drafts_ops_idempotency_active_uidx';")
+assert_eq "active_idempotency_index" "${ACTIVE_IDX}" "1"
+OLD_IDX=$(run_sql -c "select count(*) from pg_indexes where schemaname='public' and indexname='outreach_drafts_ops_idempotency_uidx';")
+assert_eq "old_idempotency_index_removed" "${OLD_IDX}" "0"
+PREFLIGHT_FN=$(run_sql -c "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='agh_mcp_handoff_open_pair_duplicate_report';")
+assert_eq "handoff_dup_preflight_fn" "${PREFLIGHT_FN}" "1"
+PERSIST_FN=$(run_sql -c "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='agh_mcp_persist_playlist_inventory';")
+assert_eq "persist_inventory_fn" "${PERSIST_FN}" "1"
+DUP_N=$(run_sql -c "select count(*) from public.agh_mcp_handoff_open_pair_duplicate_report();")
+assert_eq "live_dup_preflight_empty" "${DUP_N}" "0"
+
+echo "==> Seed verified playlist targets for atomic inventory"
+run_sql_pretty <<'SQL'
+alter table public.playlist_targets
+  add column if not exists path_verified boolean default false,
+  add column if not exists contact_method text,
+  add column if not exists submission_method text,
+  add column if not exists curator_email text;
+
+insert into public.playlist_targets (playlist_id, lane, verification_status, path_verified, contact_method, submission_method, curator_email)
+values
+  ('pl-inv-1', 'rap_general', 'auto_verified', true, 'email', 'email', 'a@test'),
+  ('pl-inv-2', 'rap_general', 'auto_verified', true, 'email', 'email', 'b@test'),
+  ('pl-inv-3', 'rap_general', 'auto_verified', true, 'email', 'email', 'c@test')
+on conflict (playlist_id) do update set path_verified = excluded.path_verified;
+SQL
+
+echo "==> Partial handoff insert rollback (record 3 fails) leaves zero drafts/records/batches"
+run_sql_pretty <<'SQL'
+create or replace function public._agh_test_fail_third_handoff()
+returns trigger language plpgsql as $$
+begin
+  if (select count(*) from public.agh_handoff_records where batch_id = new.batch_id) >= 2 then
+    raise exception 'injected failure on third handoff insert';
+  end if;
+  return new;
+end;
+$$;
+drop trigger if exists trg_agh_test_fail_third on public.agh_handoff_records;
+create trigger trg_agh_test_fail_third
+  before insert on public.agh_handoff_records
+  for each row execute function public._agh_test_fail_third_handoff();
+SQL
+
+set +e
+FAIL_OUT=$(run_sql_pretty -c "select public.agh_mcp_persist_playlist_inventory(
+  '11111111-1111-1111-1111-111111111111',
+  '22222222-2222-2222-2222-222222222222',
+  '{\"discovered_by\":\"claude_playlist_discovery\"}'::jsonb,
+  '[
+    {\"playlist_id\":\"pl-inv-1\",\"channel\":\"email\",\"idempotency_key\":\"11111111-1111-1111-1111-111111111111:pl-inv-1:email:22222222-2222-2222-2222-222222222222\",\"draft\":{\"body\":\"b1\",\"track_name\":\"Test Track\",\"subject\":\"s1\"},\"packet\":{\"packet_kind\":\"email_outreach_draft\"}},
+    {\"playlist_id\":\"pl-inv-2\",\"channel\":\"email\",\"idempotency_key\":\"11111111-1111-1111-1111-111111111111:pl-inv-2:email:22222222-2222-2222-2222-222222222222\",\"draft\":{\"body\":\"b2\",\"track_name\":\"Test Track\",\"subject\":\"s2\"},\"packet\":{\"packet_kind\":\"email_outreach_draft\"}},
+    {\"playlist_id\":\"pl-inv-3\",\"channel\":\"email\",\"idempotency_key\":\"11111111-1111-1111-1111-111111111111:pl-inv-3:email:22222222-2222-2222-2222-222222222222\",\"draft\":{\"body\":\"b3\",\"track_name\":\"Test Track\",\"subject\":\"s3\"},\"packet\":{\"packet_kind\":\"email_outreach_draft\"}}
+  ]'::jsonb
+);" 2>&1)
+FAIL_RC=$?
+set -e
+if [[ ${FAIL_RC} -eq 0 ]]; then
+  echo "FAIL: expected third-handoff failure to abort transaction"
+  echo "${FAIL_OUT}"
+  psql_admin -c "DROP DATABASE IF EXISTS ${DB_NAME};" || true
+  exit 1
+fi
+echo "OK assert: third_handoff_aborted"
+
+DRAFT_N=$(run_sql -c "select count(*) from public.outreach_drafts;")
+REC_N=$(run_sql -c "select count(*) from public.agh_handoff_records;")
+BATCH_N=$(run_sql -c "select count(*) from public.agh_handoff_batches where id <> '33333333-3333-3333-3333-333333333333';")
+assert_eq "rollback_zero_drafts" "${DRAFT_N}" "0"
+assert_eq "rollback_zero_records" "${REC_N}" "0"
+assert_eq "rollback_zero_new_batches" "${BATCH_N}" "0"
+
+run_sql_pretty -c "drop trigger if exists trg_agh_test_fail_third on public.agh_handoff_records;"
+run_sql_pretty -c "drop function if exists public._agh_test_fail_third_handoff();"
+
+echo "==> Concurrent identical inventory requests → one logical result"
+ITEMS_JSON='[{"playlist_id":"pl-inv-1","channel":"email","idempotency_key":"11111111-1111-1111-1111-111111111111:pl-inv-1:email:22222222-2222-2222-2222-222222222222","draft":{"body":"body","track_name":"Test Track","subject":"hi"},"packet":{"packet_kind":"email_outreach_draft"}}]'
+TMPA=$(mktemp)
+TMPB=$(mktemp)
+(
+  run_sql -c "select public.agh_mcp_persist_playlist_inventory(
+    '11111111-1111-1111-1111-111111111111',
+    '22222222-2222-2222-2222-222222222222',
+    '{\"discovered_by\":\"claude_playlist_discovery\"}'::jsonb,
+    '${ITEMS_JSON}'::jsonb
+  ) ->> 'ok';" >"$TMPA"
+) &
+(
+  run_sql -c "select public.agh_mcp_persist_playlist_inventory(
+    '11111111-1111-1111-1111-111111111111',
+    '22222222-2222-2222-2222-222222222222',
+    '{\"discovered_by\":\"claude_playlist_discovery\"}'::jsonb,
+    '${ITEMS_JSON}'::jsonb
+  ) ->> 'ok';" >"$TMPB"
+) &
+wait
+A=$(tr -d '[:space:]' <"$TMPA")
+B=$(tr -d '[:space:]' <"$TMPB")
+rm -f "$TMPA" "$TMPB"
+SUCCESS_N=0
+[[ "${A}" == "true" ]] && SUCCESS_N=$((SUCCESS_N + 1))
+[[ "${B}" == "true" ]] && SUCCESS_N=$((SUCCESS_N + 1))
+# Both may return ok=true if race resolves to idempotent; drafts/records must be singular.
+assert_eq "concurrent_inventory_ok_calls" "${SUCCESS_N}" "2"
+DRAFT_N=$(run_sql -c "select count(*) from public.outreach_drafts where status in ('pending','approved');")
+REC_N=$(run_sql -c "select count(*) from public.agh_handoff_records where playlist_target_id='pl-inv-1' and queue_state not in ('REJECTED_BY_GROK','IMPORTED_TO_AGH');")
+assert_eq "concurrent_one_active_draft" "${DRAFT_N}" "1"
+assert_eq "concurrent_one_open_handoff" "${REC_N}" "1"
+
+echo "==> Terminal draft retry allowed (rejected → new pending with same key)"
+run_sql_pretty <<'SQL'
+update public.outreach_drafts set status = 'rejected' where ops_idempotency_key like '%pl-inv-1%';
+update public.agh_handoff_records set queue_state = 'REJECTED_BY_GROK' where playlist_target_id = 'pl-inv-1';
+SQL
+RETRY_OK=$(run_sql -c "select public.agh_mcp_persist_playlist_inventory(
+  '11111111-1111-1111-1111-111111111111',
+  '22222222-2222-2222-2222-222222222222',
+  '{\"discovered_by\":\"claude_playlist_discovery\"}'::jsonb,
+  '${ITEMS_JSON}'::jsonb
+) ->> 'ok';")
+assert_eq "terminal_retry_ok" "${RETRY_OK}" "true"
+ACTIVE_DRAFTS=$(run_sql -c "select count(*) from public.outreach_drafts where status in ('pending','approved') and ops_idempotency_key like '%pl-inv-1%';")
+assert_eq "terminal_retry_one_active" "${ACTIVE_DRAFTS}" "1"
 
 echo "==> PASS: daily-ops migrations applied + authoritative RPC assertions verified"

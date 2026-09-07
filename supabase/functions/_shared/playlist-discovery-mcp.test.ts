@@ -576,12 +576,12 @@ Deno.test("web-form and IG targets retain their channels when verified", async (
   assert(igRows.some((r) => r.channel === "instagram_dm"));
 });
 
-Deno.test("create_playlist_draft_inventory happy path: no copy in addRecords; server pitch stored", async () => {
+Deno.test("create_playlist_draft_inventory happy path: atomic persist; no copy in packet", async () => {
   const ops = playlistDiscoveryActor();
   const trackId = "11111111-1111-1111-1111-111111111111";
   const dnaId = "22222222-2222-2222-2222-222222222222";
   const playlistId = "0DAtAjCytSoXd6T42mP0CJ";
-  let addRecordsPayload: Record<string, unknown> | null = null;
+  let persistItems: Row[] | null = null;
   const tables: Record<string, Row[]> = {
     tracks: [{ id: trackId, name: "Song", approved_song_dna_version_id: dnaId }],
     song_dna_versions: [{
@@ -610,52 +610,67 @@ Deno.test("create_playlist_draft_inventory happy path: no copy in addRecords; se
   const res = await createPlaylistDraftInventory(
     stubSb(tables),
     ops,
+    { track_id: trackId, accepted_candidate_ids: [playlistId] },
     {
-      track_id: trackId,
-      accepted_candidate_ids: [playlistId],
-    },
-    {
-      createBatch: async (_sb, _body, _ops) => {
-        tables.agh_handoff_batches.push({ id: "batch-1", record_count: 0 });
-        return { status: 200, data: { batch: { id: "batch-1" } } };
-      },
-      draftPitch: async () => {
+      composeDraft: async () => ({
+        status: 200,
+        data: {
+          ok: true,
+          composed: true,
+          persist: false,
+          channel: "email",
+          subject: "Subj",
+          body: "server-composed DNA pitch only",
+          recipient: "ok@curator.test",
+          track_name: "Song",
+          pitch_copy_source: "song_dna_versions.short_pitch",
+          pitch_copy_hash: "abc",
+          generated_by: "claude_playlist_discovery",
+          metadata: {},
+        },
+      }),
+      persistInventory: async (_sb, args) => {
+        persistItems = args.items as Row[];
+        const key = inventoryIdempotencyKey(trackId, playlistId, "email", dnaId);
         tables.outreach_drafts.push({
           id: "draft-99",
           status: "pending",
+          ops_idempotency_key: key,
           track_id: trackId,
           playlist_id: playlistId,
           channel: "email",
+          body: "server-composed DNA pitch only",
         });
-        return { status: 200, data: { ok: true, draft_id: "draft-99", channel: "email" } };
-      },
-      addRecords: async (_sb, body, _ops) => {
-        addRecordsPayload = body;
-        const records = (body.records as Row[]) ?? [];
-        for (const r of records) {
-          tables.agh_handoff_records.push({
-            id: crypto.randomUUID(),
-            batch_id: "batch-1",
-            ...r,
-            queue_state: "CLAUDE_BATCH_READY",
-          });
-        }
-        const batch = tables.agh_handoff_batches.find((b) => b.id === "batch-1");
-        if (batch) batch.record_count = records.length;
+        tables.agh_handoff_batches.push({ id: "batch-1", record_count: 1 });
+        tables.agh_handoff_records.push({
+          id: "rec-1",
+          batch_id: "batch-1",
+          track_id: trackId,
+          playlist_target_id: playlistId,
+          submission_channel: "email",
+          song_dna_version_id: dnaId,
+          outreach_draft_id: "draft-99",
+          queue_state: "CLAUDE_BATCH_READY",
+        });
         return {
-          status: 200,
           data: {
             ok: true,
-            rows: records.map((r) => ({
-              ...r,
-              packet: {
-                ...(r.packet as Row),
-                pitch: "server-composed DNA pitch only",
-                draft_body: "server-composed DNA pitch only",
-                pitch_copy_source: "song_dna_versions.short_pitch",
-              },
-            })),
+            idempotent: false,
+            batch_id: "batch-1",
+            inserted: 1,
+            record_count: 1,
+            email_drafts: [{ playlist_id: playlistId, outreach_draft_id: "draft-99" }],
+            manual_packets: [],
+            items: [{
+              playlist_id: playlistId,
+              channel: "email",
+              outreach_draft_id: "draft-99",
+              handoff_record_id: "rec-1",
+              batch_id: "batch-1",
+              reused: false,
+            }],
           },
+          error: null,
         };
       },
     },
@@ -664,29 +679,16 @@ Deno.test("create_playlist_draft_inventory happy path: no copy in addRecords; se
   assertEquals(res.status, 200, JSON.stringify(res.data));
   assertEquals(res.data.discovered_by, "claude_playlist_discovery");
   assertEquals(res.data.drafted_by, "claude_playlist_discovery");
-  assert(addRecordsPayload);
-  const records = (addRecordsPayload!.records as Row[]) ?? [];
-  assertEquals(records.length, 1);
-  assertEquals(records[0].outreach_draft_id, "draft-99");
-  assertEquals(records[0].submission_channel, "email");
-  assertEquals(
-    records[0].dedupe_key,
-    inventoryIdempotencyKey(trackId, playlistId, "email", dnaId),
-  );
-  assertEquals(
-    tables.outreach_drafts[0].ops_idempotency_key,
-    inventoryIdempotencyKey(trackId, playlistId, "email", dnaId),
-  );
-  const pkt = records[0].packet as Row;
+  assert(persistItems);
+  assertEquals(persistItems!.length, 1);
+  assertEquals(persistItems![0].idempotency_key, inventoryIdempotencyKey(trackId, playlistId, "email", dnaId));
+  const pkt = persistItems![0].packet as Row;
   assertEquals(pkt.pitch, undefined);
   assertEquals(pkt.draft_body, undefined);
   assertEquals(pkt.body, undefined);
   assertEquals(pkt.subject, undefined);
   assertEquals(pkt.packet_kind, "email_outreach_draft");
-  const stored = (res.data.stored_pitch_sources as Row[]) ?? [];
-  assertEquals(stored[0].has_server_pitch, true);
-  assertEquals(stored[0].pitch_copy_source, "song_dna_versions.short_pitch");
-  assertEquals(stored[0].outreach_draft_id, "draft-99");
+  assertEquals((persistItems![0].draft as Row).body, "server-composed DNA pitch only");
 });
 
 Deno.test("unverified candidates cannot enter draft inventory", async () => {
@@ -695,7 +697,7 @@ Deno.test("unverified candidates cannot enter draft inventory", async () => {
   const dnaId = "22222222-2222-2222-2222-222222222222";
   const res = await createPlaylistDraftInventory(
     stubSb({
-      tracks: [{ id: trackId, approved_song_dna_version_id: dnaId }],
+      tracks: [{ id: trackId, name: "Song", approved_song_dna_version_id: dnaId }],
       song_dna_versions: [{
         id: dnaId,
         track_id: trackId,
@@ -716,9 +718,6 @@ Deno.test("unverified candidates cannot enter draft inventory", async () => {
     }),
     ops,
     { track_id: trackId, accepted_candidate_ids: ["pl-unverified"] },
-    {
-      createBatch: async () => ({ status: 200, data: { batch: { id: "b1" } } }),
-    },
   );
   assertEquals(res.status, 422);
   assertEquals(res.data.code, "not_verified_eligible");
@@ -731,7 +730,7 @@ Deno.test("web-form inventory stays manual (no outreach_draft); channel preserve
   let seen: Row[] = [];
   const res = await createPlaylistDraftInventory(
     stubSb({
-      tracks: [{ id: trackId, approved_song_dna_version_id: dnaId }],
+      tracks: [{ id: trackId, name: "Song", approved_song_dna_version_id: dnaId }],
       song_dna_versions: [{
         id: dnaId,
         track_id: trackId,
@@ -750,23 +749,36 @@ Deno.test("web-form inventory stays manual (no outreach_draft); channel preserve
         form_url: "https://form.example/submit",
         lane: "rap_general",
       }],
+      outreach_drafts: [],
+      agh_handoff_records: [],
     }),
     ops,
     { track_id: trackId, accepted_candidate_ids: ["pl-form"] },
     {
-      createBatch: async () => ({ status: 200, data: { batch: { id: "b1" } } }),
-      draftPitch: async () => {
-        throw new Error("draftPitch must not be called for web_form");
+      composeDraft: async () => {
+        throw new Error("composeDraft must not be called for web_form");
       },
-      addRecords: async (_sb, body) => {
-        seen = (body.records as Row[]) ?? [];
-        return { status: 200, data: { ok: true, rows: seen } };
+      persistInventory: async (_sb, args) => {
+        seen = args.items as Row[];
+        return {
+          data: {
+            ok: true,
+            idempotent: false,
+            batch_id: "b1",
+            inserted: 1,
+            record_count: 1,
+            email_drafts: [],
+            manual_packets: [{ playlist_id: "pl-form", channel: "web_form" }],
+            items: [{ playlist_id: "pl-form", channel: "web_form", outreach_draft_id: null, reused: false }],
+          },
+          error: null,
+        };
       },
     },
   );
   assertEquals(res.status, 200);
-  assertEquals(seen[0].submission_channel, "web_form");
-  assertEquals(seen[0].outreach_draft_id, null);
+  assertEquals(seen[0].channel, "web_form");
+  assertEquals(seen[0].draft, undefined);
   assertEquals((seen[0].packet as Row).packet_kind, "manual_web_form_packet");
   assertEquals((seen[0].packet as Row).automated_submit, false);
 });
@@ -983,170 +995,246 @@ function inventoryFixture(playlistIds: string[]) {
   return { trackId, dnaId, tables };
 }
 
-Deno.test("inventory failure-injection (a): batch created, draft fails → compensate empty batch", async () => {
+Deno.test("inventory atomic persist failure leaves zero drafts/records/batches", async () => {
   const ops = playlistDiscoveryActor();
-  const { trackId, tables } = inventoryFixture(["pl-a"]);
-  const sb = stubSb(tables);
+  const { trackId, tables } = inventoryFixture(["pl-a", "pl-b", "pl-c"]);
+  const beforeDrafts = tables.outreach_drafts.length;
+  const beforeRecs = tables.agh_handoff_records.length;
+  const beforeBatches = tables.agh_handoff_batches.length;
   const res = await createPlaylistDraftInventory(
-    sb,
+    stubSb(tables),
     ops,
-    { track_id: trackId, accepted_candidate_ids: ["pl-a"] },
+    { track_id: trackId, accepted_candidate_ids: ["pl-a", "pl-b", "pl-c"] },
     {
-      createBatch: async () => {
-        tables.agh_handoff_batches.push({ id: "batch-a", record_count: 0 });
-        return { status: 200, data: { batch: { id: "batch-a" } } };
-      },
-      failureInject: { failBeforeFirstDraft: true },
+      composeDraft: async () => ({
+        status: 200,
+        data: {
+          ok: true,
+          composed: true,
+          persist: false,
+          body: "pitch",
+          subject: "s",
+          track_name: "Song A",
+          pitch_copy_source: "song_dna_versions.short_pitch",
+        },
+      }),
+      persistInventory: async () => ({
+        data: null,
+        error: { message: "simulated handoff record 3 failure — transaction aborted" },
+      }),
     },
   );
   assertEquals(res.status, 500);
-  assertEquals(res.data.code, "inventory_partial_failure");
-  assertEquals(res.data.compensated, true);
-  assertEquals(res.data.batch_deleted, true);
-  assertEquals(tables.agh_handoff_batches.length, 0);
-  assertEquals(tables.outreach_drafts.length, 0);
+  assertEquals(tables.outreach_drafts.length, beforeDrafts);
+  assertEquals(tables.agh_handoff_records.length, beforeRecs);
+  assertEquals(tables.agh_handoff_batches.length, beforeBatches);
 });
 
-Deno.test("inventory failure-injection (b): first draft ok, second fails → orphan cleanup", async () => {
-  const ops = playlistDiscoveryActor();
-  const { trackId, dnaId, tables } = inventoryFixture(["pl-b1", "pl-b2"]);
-  const sb = stubSb(tables);
-  let draftN = 0;
-  const res = await createPlaylistDraftInventory(
-    sb,
-    ops,
-    { track_id: trackId, accepted_candidate_ids: ["pl-b1", "pl-b2"] },
-    {
-      createBatch: async () => {
-        tables.agh_handoff_batches.push({ id: "batch-b", record_count: 0 });
-        return { status: 200, data: { batch: { id: "batch-b" } } };
-      },
-      draftPitch: async (_body, _sb) => {
-        draftN++;
-        const id = `draft-b${draftN}`;
-        tables.outreach_drafts.push({
-          id,
-          status: "pending",
-          track_id: trackId,
-          playlist_id: draftN === 1 ? "pl-b1" : "pl-b2",
-          channel: "email",
-        });
-        return { status: 200, data: { ok: true, draft_id: id, channel: "email" } };
-      },
-      failureInject: { failDraftAtIndex: 1 },
-    },
-  );
-  assertEquals(res.status, 500, JSON.stringify(res.data));
-  assertEquals(res.data.compensated, true);
-  assertEquals(res.data.batch_deleted, true);
-  // First draft stamped then deleted as orphan
-  assertEquals(tables.outreach_drafts.length, 0);
-  assertEquals(tables.agh_handoff_batches.length, 0);
-  const key1 = inventoryIdempotencyKey(trackId, "pl-b1", "email", dnaId);
-  assert(!tables.outreach_drafts.some((d) => d.ops_idempotency_key === key1));
-});
-
-Deno.test("inventory failure-injection (c): drafts ok, handoff fails → orphans + empty batch removed", async () => {
-  const ops = playlistDiscoveryActor();
-  const { trackId, tables } = inventoryFixture(["pl-c"]);
-  const sb = stubSb(tables);
-  const res = await createPlaylistDraftInventory(
-    sb,
-    ops,
-    { track_id: trackId, accepted_candidate_ids: ["pl-c"] },
-    {
-      createBatch: async () => {
-        tables.agh_handoff_batches.push({ id: "batch-c", record_count: 0 });
-        return { status: 200, data: { batch: { id: "batch-c" } } };
-      },
-      draftPitch: async () => {
-        tables.outreach_drafts.push({
-          id: "draft-c",
-          status: "pending",
-          track_id: trackId,
-          playlist_id: "pl-c",
-          channel: "email",
-        });
-        return { status: 200, data: { ok: true, draft_id: "draft-c", channel: "email" } };
-      },
-      failureInject: { failHandoffInsert: true },
-    },
-  );
-  assertEquals(res.status, 500);
-  assertEquals(res.data.compensated, true);
-  assertEquals(tables.outreach_drafts.length, 0);
-  assertEquals(tables.agh_handoff_batches.length, 0);
-  assertEquals(tables.agh_handoff_records.length, 0);
-});
-
-Deno.test("inventory failure-injection (d): identical request retried returns existing", async () => {
+Deno.test("inventory identical request retried returns existing (idempotent)", async () => {
   const ops = playlistDiscoveryActor();
   const { trackId, dnaId, tables } = inventoryFixture(["pl-d"]);
+  const key = inventoryIdempotencyKey(trackId, "pl-d", "email", dnaId);
+  tables.outreach_drafts.push({
+    id: "draft-d",
+    status: "pending",
+    ops_idempotency_key: key,
+    track_id: trackId,
+    playlist_id: "pl-d",
+    channel: "email",
+  });
+  tables.agh_handoff_batches.push({ id: "batch-d", record_count: 1 });
+  tables.agh_handoff_records.push({
+    id: "rec-d",
+    batch_id: "batch-d",
+    track_id: trackId,
+    playlist_target_id: "pl-d",
+    submission_channel: "email",
+    song_dna_version_id: dnaId,
+    outreach_draft_id: "draft-d",
+    queue_state: "CLAUDE_BATCH_READY",
+  });
   const sb = stubSb(tables);
-  const deps = {
-    createBatch: async () => {
-      tables.agh_handoff_batches.push({ id: "batch-d", record_count: 0 });
-      return { status: 200, data: { batch: { id: "batch-d" } } };
-    },
-    draftPitch: async () => {
-      tables.outreach_drafts.push({
-        id: "draft-d",
-        status: "pending",
-        track_id: trackId,
-        playlist_id: "pl-d",
-        channel: "email",
-      });
-      return { status: 200, data: { ok: true, draft_id: "draft-d", channel: "email" } };
-    },
-    addRecords: async (_sb: unknown, body: Record<string, unknown>) => {
-      const records = (body.records as Row[]) ?? [];
-      for (const r of records) {
-        tables.agh_handoff_records.push({
-          id: "rec-d",
-          batch_id: "batch-d",
-          ...r,
-          queue_state: "CLAUDE_BATCH_READY",
-        });
-      }
-      const batch = tables.agh_handoff_batches.find((b) => b.id === "batch-d");
-      if (batch) batch.record_count = records.length;
-      return { status: 200, data: { ok: true, rows: records } };
-    },
-  };
-  const first = await createPlaylistDraftInventory(
-    sb,
-    ops,
-    { track_id: trackId, accepted_candidate_ids: ["pl-d"] },
-    deps,
-  );
-  assertEquals(first.status, 200, JSON.stringify(first.data));
-  assertEquals(first.data.idempotent, false);
-  assertEquals(tables.outreach_drafts.length, 1);
-  assertEquals(tables.agh_handoff_records.length, 1);
-
-  const second = await createPlaylistDraftInventory(
+  const res = await createPlaylistDraftInventory(
     sb,
     ops,
     { track_id: trackId, accepted_candidate_ids: ["pl-d"] },
     {
-      ...deps,
-      createBatch: async () => {
-        throw new Error("must not create batch on idempotent retry");
+      composeDraft: async () => {
+        throw new Error("must not compose on idempotent retry");
       },
-      draftPitch: async () => {
-        throw new Error("must not draft on idempotent retry");
+      persistInventory: async () => {
+        throw new Error("must not persist on idempotent retry");
       },
     },
   );
-  assertEquals(second.status, 200, JSON.stringify(second.data));
-  assertEquals(second.data.idempotent, true);
-  assertEquals(second.data.batch_id, "batch-d");
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals(res.data.idempotent, true);
+  assertEquals(res.data.batch_id, "batch-d");
   assertEquals(tables.outreach_drafts.length, 1);
   assertEquals(tables.agh_handoff_records.length, 1);
-  assertEquals(
-    tables.outreach_drafts[0].ops_idempotency_key,
-    inventoryIdempotencyKey(trackId, "pl-d", "email", dnaId),
+});
+
+Deno.test("terminal draft status allows retry with same idempotency key", async () => {
+  const ops = playlistDiscoveryActor();
+  const { trackId, dnaId, tables } = inventoryFixture(["pl-term"]);
+  const key = inventoryIdempotencyKey(trackId, "pl-term", "email", dnaId);
+  tables.outreach_drafts.push({
+    id: "draft-old",
+    status: "rejected",
+    ops_idempotency_key: key,
+    track_id: trackId,
+    playlist_id: "pl-term",
+    channel: "email",
+  });
+  let persisted = false;
+  const res = await createPlaylistDraftInventory(
+    stubSb(tables),
+    ops,
+    { track_id: trackId, accepted_candidate_ids: ["pl-term"] },
+    {
+      composeDraft: async () => ({
+        status: 200,
+        data: { ok: true, composed: true, persist: false, body: "new", track_name: "Song A" },
+      }),
+      persistInventory: async (_sb, args) => {
+        persisted = true;
+        tables.outreach_drafts.push({
+          id: "draft-new",
+          status: "pending",
+          ops_idempotency_key: key,
+          track_id: trackId,
+          playlist_id: "pl-term",
+        });
+        tables.agh_handoff_batches.push({ id: "batch-new", record_count: 1 });
+        tables.agh_handoff_records.push({
+          id: "rec-new",
+          batch_id: "batch-new",
+          track_id: trackId,
+          playlist_target_id: "pl-term",
+          submission_channel: "email",
+          song_dna_version_id: dnaId,
+          outreach_draft_id: "draft-new",
+          queue_state: "CLAUDE_BATCH_READY",
+        });
+        return {
+          data: {
+            ok: true,
+            idempotent: false,
+            batch_id: "batch-new",
+            inserted: 1,
+            email_drafts: [{ playlist_id: "pl-term", outreach_draft_id: "draft-new" }],
+            items: [{ playlist_id: "pl-term", outreach_draft_id: "draft-new", reused: false }],
+          },
+          error: null,
+        };
+      },
+    },
   );
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assert(persisted);
+  assertEquals(res.data.idempotent, false);
+  assertEquals(tables.outreach_drafts.filter((d) => d.status === "pending").length, 1);
+});
+
+Deno.test("missing OAuth consume/rotate RPC returns 503 migration_required", async () => {
+  const tables: Record<string, Row[]> = {
+    agh_mcp_oauth_clients: [{
+      client_id: "c1",
+      client_secret_hash: await sha256Hex("secret"),
+      redirect_uris: ["https://claude.ai/api/mcp/auth_callback"],
+    }],
+    agh_mcp_oauth_codes: [],
+    agh_mcp_oauth_tokens: [],
+  };
+  const sb = stubSb(tables, {
+    rpcHandlers: {
+      agh_mcp_consume_oauth_code: async () => ({
+        data: null,
+        error: { message: "Could not find the function agh_mcp_consume_oauth_code", code: "PGRST202" },
+      }),
+      agh_mcp_rotate_oauth_refresh: async () => ({
+        data: null,
+        error: { message: "Could not find the function agh_mcp_rotate_oauth_refresh", code: "PGRST202" },
+      }),
+    },
+  });
+  const consume = await exchangeToken(sb, {
+    grant_type: "authorization_code",
+    client_id: "c1",
+    client_secret: "secret",
+    code: "x",
+    redirect_uri: "https://claude.ai/api/mcp/auth_callback",
+    code_verifier: "verifier-value-1234567890123456",
+  });
+  assertEquals(consume.status, 503);
+  assertEquals(consume.data.code, "migration_required");
+
+  const rotate = await exchangeToken(sb, {
+    grant_type: "refresh_token",
+    client_id: "c1",
+    client_secret: "secret",
+    refresh_token: "r",
+  });
+  assertEquals(rotate.status, 503);
+  assertEquals(rotate.data.code, "migration_required");
+});
+
+Deno.test("classification query errors fail closed (not eligible)", async () => {
+  const ops = playlistDiscoveryActor();
+  const trackId = "11111111-1111-1111-1111-111111111111";
+  const dnaId = "22222222-2222-2222-2222-222222222222";
+  const playlistId = "0DAtAjCytSoXd6T42mP0CF";
+  const base = {
+    tracks: [{ id: trackId, name: "Song", approved_song_dna_version_id: dnaId }],
+    song_dna_versions: [{
+      id: dnaId,
+      track_id: trackId,
+      approval_state: "approved",
+      approved_lanes: ["rap_general"],
+      excluded_lanes: [],
+      short_pitch: "pitch",
+      primary_genre: "rap",
+    }],
+    playlist_targets: [{
+      playlist_id: playlistId,
+      contact_method: "email",
+      submission_method: "email",
+      path_verified: true,
+      verification_status: "auto_verified",
+      curator_email: "ok@curator.test",
+      lane: "rap_general",
+    }],
+    outreach_drafts: [],
+    agh_handoff_records: [],
+    pitch_log: [],
+  };
+
+  for (const failTable of [
+    "agh_handoff_records",
+    "outreach_drafts",
+    "pitch_log",
+  ]) {
+    const sb = stubSb({ ...base, [failTable]: [] }, { failTables: { [failTable]: `${failTable} boom` } });
+    // re-seed playlist target after copy
+    sb._tables.playlist_targets = [...base.playlist_targets];
+    sb._tables.tracks = [...base.tracks];
+    sb._tables.song_dna_versions = [...base.song_dna_versions];
+    const res = await submitPlaylistCandidates(sb, ops, {
+      track_id: trackId,
+      candidates: [{
+        playlist_id: playlistId,
+        lane: "rap_general",
+        source_evidence: "https://example.com/evidence",
+        submission_channel: "email",
+        curator_email: "ok@curator.test",
+      }],
+    });
+    assertEquals(res.status, 200, failTable);
+    assertEquals(res.data.verified_eligible_count, 0, failTable);
+    assert((res.data.rejected as Row[]).some((r) =>
+      String(r.classification) === "classification_failed" || String(r.code) === "db_error"
+    ), failTable + " " + JSON.stringify(res.data));
+  }
 });
 
 Deno.test("submit reuses existing verified playlist for a different track/pair", async () => {

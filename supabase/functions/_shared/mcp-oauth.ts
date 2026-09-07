@@ -271,36 +271,15 @@ export async function exchangeToken(
       p_refresh_expires_at: refreshExpires.toISOString(),
     });
     if (rpcErr) {
-      // Fallback when RPC not yet applied: non-atomic path (pre-migration).
       if (/could not find|does not exist|PGRST202/i.test(rpcErr.message)) {
-        const { data: row } = await sb
-          .from("agh_mcp_oauth_codes")
-          .select("*")
-          .eq("code_hash", codeHash)
-          .maybeSingle();
-        if (!row || new Date(String(row.expires_at)).getTime() < Date.now()) {
-          return { status: 400, data: { error: "invalid_grant" } };
-        }
-        if (String(row.redirect_uri) !== redirectUri || String(row.client_id) !== clientId) {
-          return { status: 400, data: { error: "invalid_grant" } };
-        }
-        if (expectedChallenge !== String(row.code_challenge)) {
-          return { status: 400, data: { error: "invalid_grant", error_description: "pkce_failed" } };
-        }
-        const { error: delErr, count } = await sb
-          .from("agh_mcp_oauth_codes")
-          .delete({ count: "exact" })
-          .eq("code_hash", codeHash);
-        if (delErr || count === 0) {
-          return { status: 400, data: { error: "invalid_grant", error_description: "code already consumed" } };
-        }
-        return mintTokens(sb, {
-          clientId,
-          authorizedByUserId: row.authorized_by_user_id ? String(row.authorized_by_user_id) : null,
-          refreshExpiresAt: refreshExpires,
-          accessToken: access,
-          refreshToken: refresh,
-        });
+        return {
+          status: 503,
+          data: {
+            error: "migration_required",
+            error_description: "agh_mcp_consume_oauth_code RPC unavailable",
+            code: "migration_required",
+          },
+        };
       }
       return {
         status: 500,
@@ -348,39 +327,14 @@ export async function exchangeToken(
     });
     if (rpcErr) {
       if (/could not find|does not exist|PGRST202/i.test(rpcErr.message)) {
-        const { data: tok } = await sb
-          .from("agh_mcp_oauth_tokens")
-          .select("*")
-          .eq("refresh_token_hash", refreshHash)
-          .is("revoked_at", null)
-          .maybeSingle();
-        if (!tok || String(tok.client_id) !== clientId) {
-          return { status: 400, data: { error: "invalid_grant" } };
-        }
-        const refreshExp = tok.refresh_expires_at
-          ? new Date(String(tok.refresh_expires_at)).getTime()
-          : 0;
-        if (!refreshExp || refreshExp < Date.now()) {
-          await sb
-            .from("agh_mcp_oauth_tokens")
-            .update({ revoked_at: new Date().toISOString() })
-            .eq("token_hash", tok.token_hash);
-          return {
-            status: 400,
-            data: { error: "invalid_grant", error_description: "refresh_expired" },
-          };
-        }
-        await sb
-          .from("agh_mcp_oauth_tokens")
-          .update({ revoked_at: new Date().toISOString() })
-          .eq("token_hash", tok.token_hash);
-        return mintTokens(sb, {
-          clientId,
-          authorizedByUserId: tok.authorized_by_user_id ? String(tok.authorized_by_user_id) : null,
-          refreshExpiresAt: new Date(refreshExp),
-          accessToken: access,
-          refreshToken: newRefresh,
-        });
+        return {
+          status: 503,
+          data: {
+            error: "migration_required",
+            error_description: "agh_mcp_rotate_oauth_refresh RPC unavailable",
+            code: "migration_required",
+          },
+        };
       }
       return {
         status: 500,

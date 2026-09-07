@@ -56,6 +56,221 @@ export type Database = {
         }
         Relationships: []
       }
+      agh_handoff_batches: {
+        Row: {
+          approved_by: string | null
+          approved_by_label: string | null
+          batch_kind: string
+          business_date_ct: string | null
+          created_at: string
+          discovered_by: string | null
+          discovered_by_label: string | null
+          discovery_profile_ids: string[]
+          drafted_by: string | null
+          drafted_by_label: string | null
+          id: string
+          notes: string | null
+          payload: Json
+          placement_checked_by: string | null
+          placement_checked_by_label: string | null
+          queue_state: string
+          record_count: number
+          rejected_by: string | null
+          rejected_by_label: string | null
+          response_checked_by: string | null
+          response_checked_by_label: string | null
+          reviewed_by: string | null
+          reviewed_by_label: string | null
+          sent_by: string | null
+          sent_by_label: string | null
+          song_dna_version_id: string | null
+          station_run_id: string | null
+          updated_at: string
+          upstream_batch_id: string | null
+          verified_by: string | null
+          verified_by_label: string | null
+        }
+        Insert: {
+          approved_by?: string | null
+          approved_by_label?: string | null
+          batch_kind?: string
+          business_date_ct?: string | null
+          created_at?: string
+          discovered_by?: string | null
+          discovered_by_label?: string | null
+          discovery_profile_ids?: string[]
+          drafted_by?: string | null
+          drafted_by_label?: string | null
+          id?: string
+          notes?: string | null
+          payload?: Json
+          placement_checked_by?: string | null
+          placement_checked_by_label?: string | null
+          queue_state?: string
+          record_count?: number
+          rejected_by?: string | null
+          rejected_by_label?: string | null
+          response_checked_by?: string | null
+          response_checked_by_label?: string | null
+          reviewed_by?: string | null
+          reviewed_by_label?: string | null
+          sent_by?: string | null
+          sent_by_label?: string | null
+          song_dna_version_id?: string | null
+          station_run_id?: string | null
+          updated_at?: string
+          upstream_batch_id?: string | null
+          verified_by?: string | null
+          verified_by_label?: string | null
+        }
+        Update: {
+          approved_by?: string | null
+          approved_by_label?: string | null
+          batch_kind?: string
+          business_date_ct?: string | null
+          created_at?: string
+          discovered_by?: string | null
+          discovered_by_label?: string | null
+          discovery_profile_ids?: string[]
+          drafted_by?: string | null
+          drafted_by_label?: string | null
+          id?: string
+          notes?: string | null
+          payload?: Json
+          placement_checked_by?: string | null
+          placement_checked_by_label?: string | null
+          queue_state?: string
+          record_count?: number
+          rejected_by?: string | null
+          rejected_by_label?: string | null
+          response_checked_by?: string | null
+          response_checked_by_label?: string | null
+          reviewed_by?: string | null
+          reviewed_by_label?: string | null
+          sent_by?: string | null
+          sent_by_label?: string | null
+          song_dna_version_id?: string | null
+          station_run_id?: string | null
+          updated_at?: string
+          upstream_batch_id?: string | null
+          verified_by?: string | null
+          verified_by_label?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agh_handoff_batches_station_run_id_fkey"
+            columns: ["station_run_id"]
+            isOneToOne: false
+            referencedRelation: "daily_ops_station_runs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agh_handoff_batches_upstream_batch_id_fkey"
+            columns: ["upstream_batch_id"]
+            isOneToOne: false
+            referencedRelation: "agh_handoff_batches"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      agh_handoff_records: {
+        Row: {
+          approved_by: string | null
+          approved_by_label: string | null
+          batch_id: string
+          created_at: string
+          dedupe_key: string | null
+          discovered_by: string | null
+          discovered_by_label: string | null
+          drafted_by: string | null
+          drafted_by_label: string | null
+          id: string
+          outreach_draft_id: string | null
+          packet: Json
+          playlist_target_id: string | null
+          queue_state: string
+          record_kind: string
+          rejected_by: string | null
+          rejected_by_label: string | null
+          rejection_reason: string | null
+          reviewed_by: string | null
+          reviewed_by_label: string | null
+          song_dna_version_id: string | null
+          submission_channel: string | null
+          sync_opportunity_id: string | null
+          sync_target_id: string | null
+          updated_at: string
+          verified_by: string | null
+          verified_by_label: string | null
+        }
+        Insert: {
+          approved_by?: string | null
+          approved_by_label?: string | null
+          batch_id: string
+          created_at?: string
+          dedupe_key?: string | null
+          discovered_by?: string | null
+          discovered_by_label?: string | null
+          drafted_by?: string | null
+          drafted_by_label?: string | null
+          id?: string
+          outreach_draft_id?: string | null
+          packet?: Json
+          playlist_target_id?: string | null
+          queue_state?: string
+          record_kind?: string
+          rejected_by?: string | null
+          rejected_by_label?: string | null
+          rejection_reason?: string | null
+          reviewed_by?: string | null
+          reviewed_by_label?: string | null
+          song_dna_version_id?: string | null
+          submission_channel?: string | null
+          sync_opportunity_id?: string | null
+          sync_target_id?: string | null
+          updated_at?: string
+          verified_by?: string | null
+          verified_by_label?: string | null
+        }
+        Update: {
+          approved_by?: string | null
+          approved_by_label?: string | null
+          batch_id?: string
+          created_at?: string
+          dedupe_key?: string | null
+          discovered_by?: string | null
+          discovered_by_label?: string | null
+          drafted_by?: string | null
+          drafted_by_label?: string | null
+          id?: string
+          outreach_draft_id?: string | null
+          packet?: Json
+          playlist_target_id?: string | null
+          queue_state?: string
+          record_kind?: string
+          rejected_by?: string | null
+          rejected_by_label?: string | null
+          rejection_reason?: string | null
+          reviewed_by?: string | null
+          reviewed_by_label?: string | null
+          song_dna_version_id?: string | null
+          submission_channel?: string | null
+          sync_opportunity_id?: string | null
+          sync_target_id?: string | null
+          updated_at?: string
+          verified_by?: string | null
+          verified_by_label?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agh_handoff_records_batch_id_fkey"
+            columns: ["batch_id"]
+            isOneToOne: false
+            referencedRelation: "agh_handoff_batches"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       analytics_snapshots: {
         Row: {
           chartmetric_rank: number | null
@@ -304,6 +519,119 @@ export type Database = {
         }
         Relationships: []
       }
+      daily_ops_station_runs: {
+        Row: {
+          actor_kind: string
+          actor_label: string
+          actor_user_id: string | null
+          business_date_ct: string
+          completed_at: string | null
+          completed_by: string | null
+          completed_by_label: string | null
+          created_at: string
+          dependency_failure: string | null
+          drafts_created: number
+          duplicates: number
+          error_summary: string | null
+          id: string
+          input_batch_id: string | null
+          last_resumed_at: string | null
+          last_resumed_by: string | null
+          last_resumed_by_label: string | null
+          metrics: Json
+          output_batch_id: string | null
+          raw_discoveries: number
+          rejected_blocked: Json
+          run_key: string
+          saturation_indicators: Json
+          shortfall_reason: string | null
+          started_at: string
+          station_id: string
+          status: string
+          unique_discoveries: number
+          updated_at: string
+          upstream_run_id: string | null
+          upstream_station_id: string | null
+          verified_targets: number
+        }
+        Insert: {
+          actor_kind: string
+          actor_label: string
+          actor_user_id?: string | null
+          business_date_ct: string
+          completed_at?: string | null
+          completed_by?: string | null
+          completed_by_label?: string | null
+          created_at?: string
+          dependency_failure?: string | null
+          drafts_created?: number
+          duplicates?: number
+          error_summary?: string | null
+          id?: string
+          input_batch_id?: string | null
+          last_resumed_at?: string | null
+          last_resumed_by?: string | null
+          last_resumed_by_label?: string | null
+          metrics?: Json
+          output_batch_id?: string | null
+          raw_discoveries?: number
+          rejected_blocked?: Json
+          run_key?: string
+          saturation_indicators?: Json
+          shortfall_reason?: string | null
+          started_at?: string
+          station_id: string
+          status?: string
+          unique_discoveries?: number
+          updated_at?: string
+          upstream_run_id?: string | null
+          upstream_station_id?: string | null
+          verified_targets?: number
+        }
+        Update: {
+          actor_kind?: string
+          actor_label?: string
+          actor_user_id?: string | null
+          business_date_ct?: string
+          completed_at?: string | null
+          completed_by?: string | null
+          completed_by_label?: string | null
+          created_at?: string
+          dependency_failure?: string | null
+          drafts_created?: number
+          duplicates?: number
+          error_summary?: string | null
+          id?: string
+          input_batch_id?: string | null
+          last_resumed_at?: string | null
+          last_resumed_by?: string | null
+          last_resumed_by_label?: string | null
+          metrics?: Json
+          output_batch_id?: string | null
+          raw_discoveries?: number
+          rejected_blocked?: Json
+          run_key?: string
+          saturation_indicators?: Json
+          shortfall_reason?: string | null
+          started_at?: string
+          station_id?: string
+          status?: string
+          unique_discoveries?: number
+          updated_at?: string
+          upstream_run_id?: string | null
+          upstream_station_id?: string | null
+          verified_targets?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "daily_ops_station_runs_upstream_run_id_fkey"
+            columns: ["upstream_run_id"]
+            isOneToOne: false
+            referencedRelation: "daily_ops_station_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       discovery_profile_audit_events: {
         Row: {
           actor_user_id: string | null
@@ -355,6 +683,9 @@ export type Database = {
           category_ids: string[]
           compatible_target_category_slugs: string[]
           created_at: string
+          curator_keywords: string[]
+          dedupe_key_fields: string[]
+          discovery_yield: Json
           editor_user_id: string | null
           excluded_lanes: string[]
           excluded_search_terms: string[]
@@ -363,10 +694,21 @@ export type Database = {
           included_search_terms: string[]
           is_active: boolean
           label: string
+          languages: string[]
+          markets: string[]
           matching_expression: string | null
+          negative_terms: string[]
+          playlist_keywords: string[]
+          prior_query_cooldown_hours: number
           profile_key: string
+          query_rotation: Json
+          query_templates: string[]
           reference_artists: string[]
+          results_per_query: number
+          saturation_history: Json
           search_weight: number
+          source_domains: string[]
+          source_types: string[]
           updated_at: string
         }
         Insert: {
@@ -378,6 +720,9 @@ export type Database = {
           category_ids?: string[]
           compatible_target_category_slugs?: string[]
           created_at?: string
+          curator_keywords?: string[]
+          dedupe_key_fields?: string[]
+          discovery_yield?: Json
           editor_user_id?: string | null
           excluded_lanes?: string[]
           excluded_search_terms?: string[]
@@ -386,10 +731,21 @@ export type Database = {
           included_search_terms?: string[]
           is_active?: boolean
           label: string
+          languages?: string[]
+          markets?: string[]
           matching_expression?: string | null
+          negative_terms?: string[]
+          playlist_keywords?: string[]
+          prior_query_cooldown_hours?: number
           profile_key: string
+          query_rotation?: Json
+          query_templates?: string[]
           reference_artists?: string[]
+          results_per_query?: number
+          saturation_history?: Json
           search_weight?: number
+          source_domains?: string[]
+          source_types?: string[]
           updated_at?: string
         }
         Update: {
@@ -401,6 +757,9 @@ export type Database = {
           category_ids?: string[]
           compatible_target_category_slugs?: string[]
           created_at?: string
+          curator_keywords?: string[]
+          dedupe_key_fields?: string[]
+          discovery_yield?: Json
           editor_user_id?: string | null
           excluded_lanes?: string[]
           excluded_search_terms?: string[]
@@ -409,13 +768,74 @@ export type Database = {
           included_search_terms?: string[]
           is_active?: boolean
           label?: string
+          languages?: string[]
+          markets?: string[]
           matching_expression?: string | null
+          negative_terms?: string[]
+          playlist_keywords?: string[]
+          prior_query_cooldown_hours?: number
           profile_key?: string
+          query_rotation?: Json
+          query_templates?: string[]
           reference_artists?: string[]
+          results_per_query?: number
+          saturation_history?: Json
           search_weight?: number
+          source_domains?: string[]
+          source_types?: string[]
           updated_at?: string
         }
         Relationships: []
+      }
+      discovery_saturation_log: {
+        Row: {
+          business_date_ct: string
+          created_at: string
+          discovery_profile_id: string | null
+          id: string
+          notes: string | null
+          query_key: string
+          raw_results: number
+          recorded_by: string | null
+          saturated: boolean
+          source_domain: string | null
+          unique_results: number
+        }
+        Insert: {
+          business_date_ct: string
+          created_at?: string
+          discovery_profile_id?: string | null
+          id?: string
+          notes?: string | null
+          query_key: string
+          raw_results?: number
+          recorded_by?: string | null
+          saturated?: boolean
+          source_domain?: string | null
+          unique_results?: number
+        }
+        Update: {
+          business_date_ct?: string
+          created_at?: string
+          discovery_profile_id?: string | null
+          id?: string
+          notes?: string | null
+          query_key?: string
+          raw_results?: number
+          recorded_by?: string | null
+          saturated?: boolean
+          source_domain?: string | null
+          unique_results?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "discovery_saturation_log_discovery_profile_id_fkey"
+            columns: ["discovery_profile_id"]
+            isOneToOne: false
+            referencedRelation: "discovery_profiles"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       domain_blocklist: {
         Row: {
@@ -2011,6 +2431,33 @@ export type Database = {
           },
         ]
       }
+      ops_settings: {
+        Row: {
+          created_at: string
+          description: string | null
+          setting_key: string
+          setting_value: Json
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          created_at?: string
+          description?: string | null
+          setting_key: string
+          setting_value?: Json
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          created_at?: string
+          description?: string | null
+          setting_key?: string
+          setting_value?: Json
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Relationships: []
+      }
       outreach_decision_shadow_log: {
         Row: {
           campaign_id: string | null
@@ -2661,10 +3108,31 @@ export type Database = {
           curator_twitter: string | null
           curator_url: string | null
           curator_website: string | null
+          discovered_by: string | null
+          discovered_by_label: string | null
+          discovery_profile_id: string | null
           follower_count: number | null
+          form_cost: string | null
+          form_deadline: string | null
+          form_login_required: boolean | null
+          form_manual_submit_result: string | null
+          form_manual_submitted_at: string | null
+          form_manual_submitted_by: string | null
+          form_required_fields: string[] | null
+          form_requirements: string | null
+          form_source_evidence: string | null
+          form_url: string | null
+          form_verified_at: string | null
           fraud_score: number | null
           fraud_verdict: string | null
           id: string
+          ig_curator_account: string | null
+          ig_dm_draft: string | null
+          ig_manual_response_status: string | null
+          ig_manual_submitted_at: string | null
+          ig_manual_submitted_by: string | null
+          ig_source_evidence: string | null
+          ig_verified_at: string | null
           is_active: boolean | null
           is_paid: boolean | null
           lane: string | null
@@ -2675,6 +3143,8 @@ export type Database = {
           legitimacy_score: number | null
           notes: string | null
           overlap_score: number | null
+          path_verification_notes: string | null
+          path_verified: boolean
           pitch_count: number
           pitch_status: string | null
           pitched_at: string | null
@@ -2684,6 +3154,7 @@ export type Database = {
           recommended_pitch_angle: string | null
           research_context: Json | null
           similar_artists: Json | null
+          song_dna_version_id: string | null
           submission_cost: string
           submission_method: string | null
           submission_url: string | null
@@ -2693,6 +3164,8 @@ export type Database = {
           updated_at: string | null
           verification_notes: string | null
           verification_status: string
+          verified_by: string | null
+          verified_by_label: string | null
           vibe_tags: Json | null
           whitelist_status: boolean | null
           why_it_fits: string | null
@@ -2716,10 +3189,31 @@ export type Database = {
           curator_twitter?: string | null
           curator_url?: string | null
           curator_website?: string | null
+          discovered_by?: string | null
+          discovered_by_label?: string | null
+          discovery_profile_id?: string | null
           follower_count?: number | null
+          form_cost?: string | null
+          form_deadline?: string | null
+          form_login_required?: boolean | null
+          form_manual_submit_result?: string | null
+          form_manual_submitted_at?: string | null
+          form_manual_submitted_by?: string | null
+          form_required_fields?: string[] | null
+          form_requirements?: string | null
+          form_source_evidence?: string | null
+          form_url?: string | null
+          form_verified_at?: string | null
           fraud_score?: number | null
           fraud_verdict?: string | null
           id?: string
+          ig_curator_account?: string | null
+          ig_dm_draft?: string | null
+          ig_manual_response_status?: string | null
+          ig_manual_submitted_at?: string | null
+          ig_manual_submitted_by?: string | null
+          ig_source_evidence?: string | null
+          ig_verified_at?: string | null
           is_active?: boolean | null
           is_paid?: boolean | null
           lane?: string | null
@@ -2730,6 +3224,8 @@ export type Database = {
           legitimacy_score?: number | null
           notes?: string | null
           overlap_score?: number | null
+          path_verification_notes?: string | null
+          path_verified?: boolean
           pitch_count?: number
           pitch_status?: string | null
           pitched_at?: string | null
@@ -2739,6 +3235,7 @@ export type Database = {
           recommended_pitch_angle?: string | null
           research_context?: Json | null
           similar_artists?: Json | null
+          song_dna_version_id?: string | null
           submission_cost?: string
           submission_method?: string | null
           submission_url?: string | null
@@ -2748,6 +3245,8 @@ export type Database = {
           updated_at?: string | null
           verification_notes?: string | null
           verification_status?: string
+          verified_by?: string | null
+          verified_by_label?: string | null
           vibe_tags?: Json | null
           whitelist_status?: boolean | null
           why_it_fits?: string | null
@@ -2771,10 +3270,31 @@ export type Database = {
           curator_twitter?: string | null
           curator_url?: string | null
           curator_website?: string | null
+          discovered_by?: string | null
+          discovered_by_label?: string | null
+          discovery_profile_id?: string | null
           follower_count?: number | null
+          form_cost?: string | null
+          form_deadline?: string | null
+          form_login_required?: boolean | null
+          form_manual_submit_result?: string | null
+          form_manual_submitted_at?: string | null
+          form_manual_submitted_by?: string | null
+          form_required_fields?: string[] | null
+          form_requirements?: string | null
+          form_source_evidence?: string | null
+          form_url?: string | null
+          form_verified_at?: string | null
           fraud_score?: number | null
           fraud_verdict?: string | null
           id?: string
+          ig_curator_account?: string | null
+          ig_dm_draft?: string | null
+          ig_manual_response_status?: string | null
+          ig_manual_submitted_at?: string | null
+          ig_manual_submitted_by?: string | null
+          ig_source_evidence?: string | null
+          ig_verified_at?: string | null
           is_active?: boolean | null
           is_paid?: boolean | null
           lane?: string | null
@@ -2785,6 +3305,8 @@ export type Database = {
           legitimacy_score?: number | null
           notes?: string | null
           overlap_score?: number | null
+          path_verification_notes?: string | null
+          path_verified?: boolean
           pitch_count?: number
           pitch_status?: string | null
           pitched_at?: string | null
@@ -2794,6 +3316,7 @@ export type Database = {
           recommended_pitch_angle?: string | null
           research_context?: Json | null
           similar_artists?: Json | null
+          song_dna_version_id?: string | null
           submission_cost?: string
           submission_method?: string | null
           submission_url?: string | null
@@ -2803,6 +3326,8 @@ export type Database = {
           updated_at?: string | null
           verification_notes?: string | null
           verification_status?: string
+          verified_by?: string | null
+          verified_by_label?: string | null
           vibe_tags?: Json | null
           whitelist_status?: boolean | null
           why_it_fits?: string | null
@@ -4078,6 +4603,260 @@ export type Database = {
             columns: ["track_id"]
             isOneToOne: false
             referencedRelation: "tracks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      sync_research_opportunities: {
+        Row: {
+          batch_id: string | null
+          compensation_public: string | null
+          created_at: string
+          deadline: string | null
+          dedupe_key: string | null
+          discovered_by: string
+          discovered_by_label: string
+          drafted_by: string | null
+          drafted_by_label: string | null
+          exclusivity: string | null
+          id: string
+          media_type: string | null
+          no_eligible_track: boolean
+          no_eligible_track_reason: string | null
+          project_brief: string
+          recommended_track_ids: string[]
+          rights_requested: string | null
+          song_dna_version_id: string | null
+          source_evidence: string | null
+          source_url: string | null
+          status: string
+          submission_requirements: string | null
+          sync_target_id: string | null
+          term: string | null
+          territory: string | null
+          updated_at: string
+          verified_by: string | null
+          verified_by_label: string | null
+        }
+        Insert: {
+          batch_id?: string | null
+          compensation_public?: string | null
+          created_at?: string
+          deadline?: string | null
+          dedupe_key?: string | null
+          discovered_by: string
+          discovered_by_label: string
+          drafted_by?: string | null
+          drafted_by_label?: string | null
+          exclusivity?: string | null
+          id?: string
+          media_type?: string | null
+          no_eligible_track?: boolean
+          no_eligible_track_reason?: string | null
+          project_brief: string
+          recommended_track_ids?: string[]
+          rights_requested?: string | null
+          song_dna_version_id?: string | null
+          source_evidence?: string | null
+          source_url?: string | null
+          status?: string
+          submission_requirements?: string | null
+          sync_target_id?: string | null
+          term?: string | null
+          territory?: string | null
+          updated_at?: string
+          verified_by?: string | null
+          verified_by_label?: string | null
+        }
+        Update: {
+          batch_id?: string | null
+          compensation_public?: string | null
+          created_at?: string
+          deadline?: string | null
+          dedupe_key?: string | null
+          discovered_by?: string
+          discovered_by_label?: string
+          drafted_by?: string | null
+          drafted_by_label?: string | null
+          exclusivity?: string | null
+          id?: string
+          media_type?: string | null
+          no_eligible_track?: boolean
+          no_eligible_track_reason?: string | null
+          project_brief?: string
+          recommended_track_ids?: string[]
+          rights_requested?: string | null
+          song_dna_version_id?: string | null
+          source_evidence?: string | null
+          source_url?: string | null
+          status?: string
+          submission_requirements?: string | null
+          sync_target_id?: string | null
+          term?: string | null
+          territory?: string | null
+          updated_at?: string
+          verified_by?: string | null
+          verified_by_label?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sync_research_opportunities_batch_id_fkey"
+            columns: ["batch_id"]
+            isOneToOne: false
+            referencedRelation: "agh_handoff_batches"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sync_research_opportunities_sync_target_id_fkey"
+            columns: ["sync_target_id"]
+            isOneToOne: false
+            referencedRelation: "sync_research_targets"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      sync_research_pitch_drafts: {
+        Row: {
+          body: string
+          created_at: string
+          drafted_by: string
+          drafted_by_label: string
+          id: string
+          opportunity_id: string
+          song_dna_version_id: string | null
+          status: string
+          subject: string | null
+          track_id: string
+          updated_at: string
+        }
+        Insert: {
+          body: string
+          created_at?: string
+          drafted_by: string
+          drafted_by_label: string
+          id?: string
+          opportunity_id: string
+          song_dna_version_id?: string | null
+          status?: string
+          subject?: string | null
+          track_id: string
+          updated_at?: string
+        }
+        Update: {
+          body?: string
+          created_at?: string
+          drafted_by?: string
+          drafted_by_label?: string
+          id?: string
+          opportunity_id?: string
+          song_dna_version_id?: string | null
+          status?: string
+          subject?: string | null
+          track_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sync_research_pitch_drafts_opportunity_id_fkey"
+            columns: ["opportunity_id"]
+            isOneToOne: false
+            referencedRelation: "sync_research_opportunities"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sync_research_pitch_drafts_track_id_fkey"
+            columns: ["track_id"]
+            isOneToOne: false
+            referencedRelation: "tracks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      sync_research_targets: {
+        Row: {
+          batch_id: string | null
+          company_name: string | null
+          contact_channel: string | null
+          created_at: string
+          date_verified: string | null
+          dedupe_key: string
+          discovered_by: string
+          discovered_by_label: string
+          discovery_profile_id: string | null
+          genres_styles_sought: string[]
+          id: string
+          media_types: string[]
+          official_url: string | null
+          person_name: string | null
+          role_category: string
+          song_dna_version_id: string | null
+          source_evidence: string | null
+          status: string
+          submission_policy: string | null
+          territories: string[]
+          updated_at: string
+          verified_by: string | null
+          verified_by_label: string | null
+          verified_contact_path: string | null
+        }
+        Insert: {
+          batch_id?: string | null
+          company_name?: string | null
+          contact_channel?: string | null
+          created_at?: string
+          date_verified?: string | null
+          dedupe_key: string
+          discovered_by: string
+          discovered_by_label: string
+          discovery_profile_id?: string | null
+          genres_styles_sought?: string[]
+          id?: string
+          media_types?: string[]
+          official_url?: string | null
+          person_name?: string | null
+          role_category: string
+          song_dna_version_id?: string | null
+          source_evidence?: string | null
+          status?: string
+          submission_policy?: string | null
+          territories?: string[]
+          updated_at?: string
+          verified_by?: string | null
+          verified_by_label?: string | null
+          verified_contact_path?: string | null
+        }
+        Update: {
+          batch_id?: string | null
+          company_name?: string | null
+          contact_channel?: string | null
+          created_at?: string
+          date_verified?: string | null
+          dedupe_key?: string
+          discovered_by?: string
+          discovered_by_label?: string
+          discovery_profile_id?: string | null
+          genres_styles_sought?: string[]
+          id?: string
+          media_types?: string[]
+          official_url?: string | null
+          person_name?: string | null
+          role_category?: string
+          song_dna_version_id?: string | null
+          source_evidence?: string | null
+          status?: string
+          submission_policy?: string | null
+          territories?: string[]
+          updated_at?: string
+          verified_by?: string | null
+          verified_by_label?: string | null
+          verified_contact_path?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sync_research_targets_batch_id_fkey"
+            columns: ["batch_id"]
+            isOneToOne: false
+            referencedRelation: "agh_handoff_batches"
             referencedColumns: ["id"]
           },
         ]

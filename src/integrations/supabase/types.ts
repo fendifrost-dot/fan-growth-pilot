@@ -5751,6 +5751,33 @@ export type Database = {
         Args: { p_keys: string[] }
         Returns: Json
       }
+      agh_mcp_handoff_open_pair_duplicate_report: {
+        Args: never
+        Returns: {
+          duplicate_count: number
+          playlist_target_id: string
+          sample_batch_ids: string[]
+          sample_queue_states: string[]
+          sample_record_ids: string[]
+          song_dna_version_id: string
+          submission_channel: string
+          track_id: string
+        }[]
+      }
+      agh_mcp_handoff_open_pair_reconcile_plan: {
+        Args: never
+        Returns: {
+          keep_created_at: string
+          keep_record_id: string
+          playlist_target_id: string
+          retire_created_at: string
+          retire_record_id: string
+          song_dna_version_id: string
+          submission_channel: string
+          suggested_action: string
+          track_id: string
+        }[]
+      }
       agh_mcp_lookup_inventory_pair: {
         Args: {
           p_channel: string

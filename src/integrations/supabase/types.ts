@@ -422,6 +422,7 @@ export type Database = {
           client_id: string
           created_at: string
           expires_at: string
+          refresh_expires_at: string | null
           refresh_token_hash: string | null
           revoked_at: string | null
           scope: string
@@ -433,6 +434,7 @@ export type Database = {
           client_id: string
           created_at?: string
           expires_at: string
+          refresh_expires_at?: string | null
           refresh_token_hash?: string | null
           revoked_at?: string | null
           scope?: string
@@ -444,6 +446,7 @@ export type Database = {
           client_id?: string
           created_at?: string
           expires_at?: string
+          refresh_expires_at?: string | null
           refresh_token_hash?: string | null
           revoked_at?: string | null
           scope?: string
@@ -5724,6 +5727,7 @@ export type Database = {
           sample_ids: string
         }[]
       }
+      agh_mcp_oauth_cleanup_expired: { Args: never; Returns: Json }
       bridge_upsert_email_contact: {
         Args: {
           p_email: string

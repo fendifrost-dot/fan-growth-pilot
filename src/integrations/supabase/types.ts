@@ -2726,6 +2726,7 @@ export type Database = {
           id: string
           is_test: boolean
           metadata: Json | null
+          ops_idempotency_key: string | null
           pitch_copy_hash: string | null
           pitch_copy_source: string | null
           pitch_log_id: string | null
@@ -2756,6 +2757,7 @@ export type Database = {
           id?: string
           is_test?: boolean
           metadata?: Json | null
+          ops_idempotency_key?: string | null
           pitch_copy_hash?: string | null
           pitch_copy_source?: string | null
           pitch_log_id?: string | null
@@ -2786,6 +2788,7 @@ export type Database = {
           id?: string
           is_test?: boolean
           metadata?: Json | null
+          ops_idempotency_key?: string | null
           pitch_copy_hash?: string | null
           pitch_copy_source?: string | null
           pitch_log_id?: string | null
@@ -5727,7 +5730,47 @@ export type Database = {
           sample_ids: string
         }[]
       }
+      agh_mcp_consume_oauth_code: {
+        Args: {
+          p_access_expires_at: string
+          p_access_token_hash: string
+          p_client_id: string
+          p_code_hash: string
+          p_expected_challenge: string
+          p_redirect_uri: string
+          p_refresh_expires_at: string
+          p_refresh_token_hash: string
+        }
+        Returns: Json
+      }
+      agh_mcp_delete_empty_handoff_batch: {
+        Args: { p_batch_id: string }
+        Returns: Json
+      }
+      agh_mcp_delete_orphan_drafts: {
+        Args: { p_keys: string[] }
+        Returns: Json
+      }
+      agh_mcp_lookup_inventory_pair: {
+        Args: {
+          p_channel: string
+          p_playlist_id: string
+          p_song_dna_version_id: string
+          p_track_id: string
+        }
+        Returns: Json
+      }
       agh_mcp_oauth_cleanup_expired: { Args: never; Returns: Json }
+      agh_mcp_rotate_oauth_refresh: {
+        Args: {
+          p_access_expires_at: string
+          p_client_id: string
+          p_new_access_token_hash: string
+          p_new_refresh_token_hash: string
+          p_refresh_token_hash: string
+        }
+        Returns: Json
+      }
       bridge_upsert_email_contact: {
         Args: {
           p_email: string

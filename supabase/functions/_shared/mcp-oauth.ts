@@ -252,64 +252,165 @@ export async function exchangeToken(
       return { status: 400, data: { error: "invalid_request" } };
     }
     const codeHash = await sha256Hex(code);
-    const { data: row } = await sb
-      .from("agh_mcp_oauth_codes")
-      .select("*")
-      .eq("code_hash", codeHash)
-      .maybeSingle();
-    if (!row || new Date(String(row.expires_at)).getTime() < Date.now()) {
-      return { status: 400, data: { error: "invalid_grant" } };
-    }
-    if (String(row.redirect_uri) !== redirectUri || String(row.client_id) !== clientId) {
-      return { status: 400, data: { error: "invalid_grant" } };
-    }
-    const expected = await pkceS256Challenge(verifier);
-    if (expected !== String(row.code_challenge)) {
-      return { status: 400, data: { error: "invalid_grant", error_description: "pkce_failed" } };
-    }
-    await sb.from("agh_mcp_oauth_codes").delete().eq("code_hash", codeHash);
-    return mintTokens(sb, {
-      clientId,
-      authorizedByUserId: row.authorized_by_user_id ? String(row.authorized_by_user_id) : null,
-      refreshExpiresAt: new Date(Date.now() + REFRESH_TOKEN_MAX_LIFETIME_MS),
+    const expectedChallenge = await pkceS256Challenge(verifier);
+    const access = randomToken(32);
+    const refresh = randomToken(32);
+    const accessHash = await sha256Hex(access);
+    const refreshHash = await sha256Hex(refresh);
+    const accessExpires = new Date(Date.now() + ACCESS_TOKEN_TTL_SEC * 1000);
+    const refreshExpires = new Date(Date.now() + REFRESH_TOKEN_MAX_LIFETIME_MS);
+
+    const { data: rpcData, error: rpcErr } = await sb.rpc("agh_mcp_consume_oauth_code", {
+      p_code_hash: codeHash,
+      p_client_id: clientId,
+      p_redirect_uri: redirectUri,
+      p_expected_challenge: expectedChallenge,
+      p_access_token_hash: accessHash,
+      p_refresh_token_hash: refreshHash,
+      p_access_expires_at: accessExpires.toISOString(),
+      p_refresh_expires_at: refreshExpires.toISOString(),
     });
+    if (rpcErr) {
+      // Fallback when RPC not yet applied: non-atomic path (pre-migration).
+      if (/could not find|does not exist|PGRST202/i.test(rpcErr.message)) {
+        const { data: row } = await sb
+          .from("agh_mcp_oauth_codes")
+          .select("*")
+          .eq("code_hash", codeHash)
+          .maybeSingle();
+        if (!row || new Date(String(row.expires_at)).getTime() < Date.now()) {
+          return { status: 400, data: { error: "invalid_grant" } };
+        }
+        if (String(row.redirect_uri) !== redirectUri || String(row.client_id) !== clientId) {
+          return { status: 400, data: { error: "invalid_grant" } };
+        }
+        if (expectedChallenge !== String(row.code_challenge)) {
+          return { status: 400, data: { error: "invalid_grant", error_description: "pkce_failed" } };
+        }
+        const { error: delErr, count } = await sb
+          .from("agh_mcp_oauth_codes")
+          .delete({ count: "exact" })
+          .eq("code_hash", codeHash);
+        if (delErr || count === 0) {
+          return { status: 400, data: { error: "invalid_grant", error_description: "code already consumed" } };
+        }
+        return mintTokens(sb, {
+          clientId,
+          authorizedByUserId: row.authorized_by_user_id ? String(row.authorized_by_user_id) : null,
+          refreshExpiresAt: refreshExpires,
+          accessToken: access,
+          refreshToken: refresh,
+        });
+      }
+      return {
+        status: 500,
+        data: { error: "server_error", error_description: rpcErr.message },
+      };
+    }
+    const result = (rpcData ?? {}) as Record<string, unknown>;
+    if (!result.ok) {
+      return {
+        status: 400,
+        data: {
+          error: String(result.code ?? "invalid_grant"),
+          error_description: String(result.error ?? "consume_failed"),
+        },
+      };
+    }
+    return {
+      status: 200,
+      data: {
+        access_token: access,
+        token_type: "bearer",
+        expires_in: ACCESS_TOKEN_TTL_SEC,
+        refresh_token: refresh,
+        scope: SCOPE,
+        refresh_expires_in: Math.floor(REFRESH_TOKEN_MAX_LIFETIME_MS / 1000),
+      },
+    };
   }
 
   if (grant === "refresh_token") {
     const refresh = String(body.refresh_token ?? "");
     const refreshHash = await sha256Hex(refresh);
-    const { data: tok } = await sb
-      .from("agh_mcp_oauth_tokens")
-      .select("*")
-      .eq("refresh_token_hash", refreshHash)
-      .is("revoked_at", null)
-      .maybeSingle();
-    if (!tok || String(tok.client_id) !== clientId) {
-      return { status: 400, data: { error: "invalid_grant" } };
-    }
-    const refreshExp = tok.refresh_expires_at
-      ? new Date(String(tok.refresh_expires_at)).getTime()
-      : 0;
-    if (!refreshExp || refreshExp < Date.now()) {
-      await sb
-        .from("agh_mcp_oauth_tokens")
-        .update({ revoked_at: new Date().toISOString() })
-        .eq("token_hash", tok.token_hash);
+    const access = randomToken(32);
+    const newRefresh = randomToken(32);
+    const accessHash = await sha256Hex(access);
+    const newRefreshHash = await sha256Hex(newRefresh);
+    const accessExpires = new Date(Date.now() + ACCESS_TOKEN_TTL_SEC * 1000);
+
+    const { data: rpcData, error: rpcErr } = await sb.rpc("agh_mcp_rotate_oauth_refresh", {
+      p_refresh_token_hash: refreshHash,
+      p_client_id: clientId,
+      p_new_access_token_hash: accessHash,
+      p_new_refresh_token_hash: newRefreshHash,
+      p_access_expires_at: accessExpires.toISOString(),
+    });
+    if (rpcErr) {
+      if (/could not find|does not exist|PGRST202/i.test(rpcErr.message)) {
+        const { data: tok } = await sb
+          .from("agh_mcp_oauth_tokens")
+          .select("*")
+          .eq("refresh_token_hash", refreshHash)
+          .is("revoked_at", null)
+          .maybeSingle();
+        if (!tok || String(tok.client_id) !== clientId) {
+          return { status: 400, data: { error: "invalid_grant" } };
+        }
+        const refreshExp = tok.refresh_expires_at
+          ? new Date(String(tok.refresh_expires_at)).getTime()
+          : 0;
+        if (!refreshExp || refreshExp < Date.now()) {
+          await sb
+            .from("agh_mcp_oauth_tokens")
+            .update({ revoked_at: new Date().toISOString() })
+            .eq("token_hash", tok.token_hash);
+          return {
+            status: 400,
+            data: { error: "invalid_grant", error_description: "refresh_expired" },
+          };
+        }
+        await sb
+          .from("agh_mcp_oauth_tokens")
+          .update({ revoked_at: new Date().toISOString() })
+          .eq("token_hash", tok.token_hash);
+        return mintTokens(sb, {
+          clientId,
+          authorizedByUserId: tok.authorized_by_user_id ? String(tok.authorized_by_user_id) : null,
+          refreshExpiresAt: new Date(refreshExp),
+          accessToken: access,
+          refreshToken: newRefresh,
+        });
+      }
       return {
-        status: 400,
-        data: { error: "invalid_grant", error_description: "refresh_expired" },
+        status: 500,
+        data: { error: "server_error", error_description: rpcErr.message },
       };
     }
-    // Rotate: revoke old access+refresh, mint new pair with same refresh_expires_at.
-    await sb
-      .from("agh_mcp_oauth_tokens")
-      .update({ revoked_at: new Date().toISOString() })
-      .eq("token_hash", tok.token_hash);
-    return mintTokens(sb, {
-      clientId,
-      authorizedByUserId: tok.authorized_by_user_id ? String(tok.authorized_by_user_id) : null,
-      refreshExpiresAt: new Date(refreshExp),
-    });
+    const result = (rpcData ?? {}) as Record<string, unknown>;
+    if (!result.ok) {
+      return {
+        status: 400,
+        data: {
+          error: String(result.code ?? "invalid_grant"),
+          error_description: String(result.error ?? "rotate_failed"),
+        },
+      };
+    }
+    const refreshExpAt = result.refresh_expires_at
+      ? new Date(String(result.refresh_expires_at)).getTime()
+      : Date.now();
+    return {
+      status: 200,
+      data: {
+        access_token: access,
+        token_type: "bearer",
+        expires_in: ACCESS_TOKEN_TTL_SEC,
+        refresh_token: newRefresh,
+        scope: SCOPE,
+        refresh_expires_in: Math.max(0, Math.floor((refreshExpAt - Date.now()) / 1000)),
+      },
+    };
   }
 
   return { status: 400, data: { error: "unsupported_grant_type" } };
@@ -321,10 +422,12 @@ async function mintTokens(
     clientId: string;
     authorizedByUserId: string | null;
     refreshExpiresAt: Date;
+    accessToken?: string;
+    refreshToken?: string;
   },
 ): Promise<{ status: number; data: Record<string, unknown> }> {
-  const access = randomToken(32);
-  const refresh = randomToken(32);
+  const access = opts.accessToken ?? randomToken(32);
+  const refresh = opts.refreshToken ?? randomToken(32);
   const tokenHash = await sha256Hex(access);
   const refreshHash = await sha256Hex(refresh);
   const { error } = await sb.from("agh_mcp_oauth_tokens").insert({

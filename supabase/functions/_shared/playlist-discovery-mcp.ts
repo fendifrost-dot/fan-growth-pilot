@@ -24,6 +24,13 @@ import { CLAUDE_STATION_IDS, isClaudeStationId } from "./chicago-time.ts";
 import { normalizeSpotifyPlaylistIdentity } from "./discovery-utils.ts";
 import { runDraftPitch } from "./playlist-agent-run.ts";
 import { VERIFIED_STATUSES } from "./verify-target.ts";
+import {
+  classifyExistingPlaylistTarget,
+  compensateInventoryFailure,
+  inventoryIdempotencyKey,
+  lookupInventoryPair,
+  assertWriteOk,
+} from "./playlist-discovery-ops.ts";
 
 export type ToolResult = { status: number; data: Record<string, unknown> };
 
@@ -151,30 +158,100 @@ export const PLAYLIST_DISCOVERY_TOOL_SCHEMAS: Record<
   },
 };
 
+/** Runtime enforcement of published MCP JSON Schemas (nested objects included). */
+function validateAgainstSchema(
+  schema: Record<string, unknown>,
+  value: unknown,
+  path: string,
+): string | null {
+  const typ = schema.type;
+  if (typ === "object") {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return `${path}: expected object`;
+    }
+    const obj = value as Record<string, unknown>;
+    const props = (schema.properties ?? {}) as Record<string, Record<string, unknown>>;
+    const required = (schema.required ?? []) as string[];
+    for (const key of required) {
+      if (obj[key] === undefined || obj[key] === null || obj[key] === "") {
+        return `${path}.${key}: required`;
+      }
+    }
+    if (schema.additionalProperties === false) {
+      const extra = Object.keys(obj).filter((k) => !(k in props));
+      if (extra.length) return `${path}: unexpected fields ${extra.join(", ")}`;
+    }
+    for (const [key, child] of Object.entries(props)) {
+      if (obj[key] === undefined) continue;
+      const err = validateAgainstSchema(child, obj[key], `${path}.${key}`);
+      if (err) return err;
+    }
+    return null;
+  }
+  if (typ === "array") {
+    if (!Array.isArray(value)) return `${path}: expected array`;
+    const minItems = schema.minItems as number | undefined;
+    const maxItems = schema.maxItems as number | undefined;
+    if (minItems != null && value.length < minItems) {
+      return `${path}: minItems ${minItems}`;
+    }
+    if (maxItems != null && value.length > maxItems) {
+      return `${path}: maxItems ${maxItems}`;
+    }
+    const items = schema.items as Record<string, unknown> | undefined;
+    if (items) {
+      for (let i = 0; i < value.length; i++) {
+        const err = validateAgainstSchema(items, value[i], `${path}[${i}]`);
+        if (err) return err;
+      }
+    }
+    return null;
+  }
+  if (typ === "string") {
+    if (typeof value !== "string") return `${path}: expected string`;
+    const minLength = schema.minLength as number | undefined;
+    const maxLength = schema.maxLength as number | undefined;
+    if (minLength != null && value.length < minLength) {
+      return `${path}: minLength ${minLength}`;
+    }
+    if (maxLength != null && value.length > maxLength) {
+      return `${path}: maxLength ${maxLength}`;
+    }
+    const enumVals = schema.enum as unknown[] | undefined;
+    if (enumVals && !enumVals.includes(value)) {
+      return `${path}: invalid enum`;
+    }
+    return null;
+  }
+  if (typ === "integer") {
+    if (typeof value !== "number" || !Number.isInteger(value)) {
+      return `${path}: expected integer`;
+    }
+    const minimum = schema.minimum as number | undefined;
+    const maximum = schema.maximum as number | undefined;
+    if (minimum != null && value < minimum) return `${path}: minimum ${minimum}`;
+    if (maximum != null && value > maximum) return `${path}: maximum ${maximum}`;
+    return null;
+  }
+  if (typ === "number") {
+    if (typeof value !== "number" || Number.isNaN(value)) return `${path}: expected number`;
+    return null;
+  }
+  if (typ === "boolean") {
+    if (typeof value !== "boolean") return `${path}: expected boolean`;
+    return null;
+  }
+  return null;
+}
+
 export function validateToolArgs(
   tool: PlaylistDiscoveryTool,
   args: Record<string, unknown>,
 ): ToolResult | null {
   const schema = PLAYLIST_DISCOVERY_TOOL_SCHEMAS[tool];
-  const props = (schema.properties ?? {}) as Record<string, unknown>;
-  const required = (schema.required ?? []) as string[];
-  const extra = Object.keys(args).filter((k) => !(k in props));
-  if (schema.additionalProperties === false && extra.length) {
-    return {
-      status: 400,
-      data: { error: `Unexpected fields: ${extra.join(", ")}`, code: "invalid_args" },
-    };
-  }
-  for (const key of required) {
-    if (args[key] === undefined || args[key] === null || args[key] === "") {
-      // create_playlist_draft_inventory requires track_id + one of id arrays
-      if (tool === "create_playlist_draft_inventory" && key === "track_id") {
-        return { status: 400, data: { error: "track_id required", code: "invalid_args" } };
-      }
-      if (tool !== "create_playlist_draft_inventory") {
-        return { status: 400, data: { error: `${key} required`, code: "invalid_args" } };
-      }
-    }
+  const err = validateAgainstSchema(schema, args, "args");
+  if (err) {
+    return { status: 400, data: { error: err, code: "invalid_args" } };
   }
   if (tool === "create_playlist_draft_inventory") {
     const a = Array.isArray(args.accepted_candidate_ids) ? args.accepted_candidate_ids : [];
@@ -182,16 +259,8 @@ export function validateToolArgs(
     if (!a.length && !b.length) {
       return {
         status: 400,
-        data: { error: "accepted_candidate_ids required", code: "invalid_args" },
+        data: { error: "accepted_candidate_ids or playlist_ids required", code: "invalid_args" },
       };
-    }
-  }
-  if (tool === "submit_playlist_candidates") {
-    if (!Array.isArray(args.candidates) || args.candidates.length < 1) {
-      return { status: 400, data: { error: "candidates[] required", code: "invalid_args" } };
-    }
-    if (args.candidates.length > 50) {
-      return { status: 400, data: { error: "candidates max 50", code: "invalid_args" } };
     }
   }
   return null;
@@ -366,8 +435,17 @@ export async function submitPlaylistCandidates(
   const attr = attributionFrom(ops);
   const acceptedVerified: Record<string, unknown>[] = [];
   const acceptedUnverified: Record<string, unknown>[] = [];
+  const existingClassified: Record<string, unknown>[] = [];
+  const eligibleExistingIds: string[] = [];
   const duplicates: Record<string, unknown>[] = [];
   const rejected: Record<string, unknown>[] = [];
+
+  const { data: trackRow } = await sb
+    .from("tracks")
+    .select("id, name")
+    .eq("id", trackId)
+    .maybeSingle();
+  const trackName = trackRow?.name != null ? String(trackRow.name) : null;
 
   for (const raw of candidates) {
     const c = typeof raw === "object" && raw
@@ -413,7 +491,44 @@ export async function submitPlaylistCandidates(
       continue;
     }
     if (existing) {
-      duplicates.push({ playlist_id: id, reason: "duplicate_playlist_id" });
+      const classified = await classifyExistingPlaylistTarget(sb, {
+        trackId,
+        playlistId: id,
+        songDnaVersionId: dna.songDnaVersionId!,
+        actor: ops,
+        trackName,
+      });
+      existingClassified.push(classified);
+      if (classified.classification === "existing_verified_eligible") {
+        eligibleExistingIds.push(id);
+        acceptedVerified.push({
+          playlist_id: id,
+          lane,
+          channel: classified.channel,
+          path_verified: true,
+          verification_status: "existing_verified",
+          song_dna_version_id: dna.songDnaVersionId,
+          classification: classified.classification,
+          reused_existing_target: true,
+        });
+      } else if (classified.classification === "existing_unverified") {
+        acceptedUnverified.push({
+          playlist_id: id,
+          channel: classified.channel,
+          classification: classified.classification,
+          reason: classified.reason ?? null,
+          reused_existing_target: true,
+        });
+      } else {
+        duplicates.push({
+          playlist_id: id,
+          reason: classified.classification,
+          classification: classified.classification,
+          outreach_draft_id: classified.outreach_draft_id ?? null,
+          handoff_record_id: classified.handoff_record_id ?? null,
+          cooldown_until: classified.cooldown_until ?? null,
+        });
+      }
       continue;
     }
 
@@ -462,7 +577,33 @@ export async function submitPlaylistCandidates(
     const { error: insErr } = await sb.from("playlist_targets").insert(row);
     if (insErr) {
       if (String(insErr.message).includes("duplicate") || insErr.code === "23505") {
-        duplicates.push({ playlist_id: id, reason: "duplicate_insert" });
+        const classified = await classifyExistingPlaylistTarget(sb, {
+          trackId,
+          playlistId: id,
+          songDnaVersionId: dna.songDnaVersionId!,
+          actor: ops,
+          trackName,
+        });
+        existingClassified.push(classified);
+        if (classified.classification === "existing_verified_eligible") {
+          eligibleExistingIds.push(id);
+          acceptedVerified.push({
+            playlist_id: id,
+            lane,
+            channel: classified.channel,
+            path_verified: true,
+            verification_status: "existing_verified",
+            song_dna_version_id: dna.songDnaVersionId,
+            classification: classified.classification,
+            reused_existing_target: true,
+          });
+        } else {
+          duplicates.push({
+            playlist_id: id,
+            reason: classified.classification,
+            classification: classified.classification,
+          });
+        }
         continue;
       }
       rejected.push({ playlist_id: id, reason: `insert_failed:${insErr.message}` });
@@ -477,7 +618,20 @@ export async function submitPlaylistCandidates(
       actor: ops,
     });
     if (!laneCheck.ok) {
-      await sb.from("playlist_targets").delete().eq("playlist_id", id);
+      const { error: delErr, count: delCount } = await sb
+        .from("playlist_targets")
+        .delete({ count: "exact" })
+        .eq("playlist_id", id);
+      const delOk = assertWriteOk("rollback_incompatible_target", delErr, delCount, 1);
+      if (!delOk.ok) {
+        rejected.push({
+          playlist_id: id,
+          reason: laneCheck.errors[0] ?? "dna_lane_rejected",
+          cleanup_error: delOk.error,
+          errors: laneCheck.errors,
+        });
+        continue;
+      }
       rejected.push({
         playlist_id: id,
         reason: laneCheck.errors[0] ?? "dna_lane_rejected",
@@ -515,6 +669,8 @@ export async function submitPlaylistCandidates(
       rejected_count: rejected.length,
       verified_eligible: acceptedVerified,
       accepted_unverified: acceptedUnverified,
+      existing_targets: existingClassified,
+      eligible_existing_playlist_ids: [...new Set(eligibleExistingIds)],
       duplicates,
       rejected,
       discovered_by: attr.actor_kind,
@@ -526,7 +682,61 @@ export type InventoryDeps = {
   draftPitch?: typeof runDraftPitch;
   createBatch?: typeof createHandoffBatch;
   addRecords?: typeof addHandoffRecords;
+  /** Test-only failure injection — never set in production. */
+  failureInject?: {
+    /** (a) batch created, then fail before any draft */
+    failBeforeFirstDraft?: boolean;
+    /** (b) first draft ok, fail at this 0-based index among email drafts attempted */
+    failDraftAtIndex?: number;
+    /** (c) drafts succeed, handoff insert fails */
+    failHandoffInsert?: boolean;
+  };
 };
+
+async function stampDraftIdempotencyKey(
+  sb: SupabaseClient,
+  draftId: string,
+  key: string,
+): Promise<{ ok: true; draft_id: string } | { ok: false; error: string; status: number }> {
+  const { error, count } = await sb
+    .from("outreach_drafts")
+    .update({ ops_idempotency_key: key }, { count: "exact" })
+    .eq("id", draftId);
+  if (error) {
+    if (error.code === "23505" || /duplicate|unique/i.test(error.message)) {
+      const { data: existing, error: lookErr } = await sb
+        .from("outreach_drafts")
+        .select("id")
+        .eq("ops_idempotency_key", key)
+        .in("status", ["pending", "approved"])
+        .limit(1)
+        .maybeSingle();
+      if (lookErr) {
+        return { ok: false, status: 500, error: `idempotency_lookup:${lookErr.message}` };
+      }
+      if (existing?.id) {
+        // Race: another writer won — drop our orphan draft if distinct.
+        if (String(existing.id) !== draftId) {
+          const { error: delErr, count: delCount } = await sb
+            .from("outreach_drafts")
+            .delete({ count: "exact" })
+            .eq("id", draftId)
+            .eq("status", "pending");
+          const delOk = assertWriteOk("race_orphan_draft_delete", delErr, delCount);
+          if (!delOk.ok) {
+            return { ok: false, status: 500, error: delOk.error };
+          }
+        }
+        return { ok: true, draft_id: String(existing.id) };
+      }
+    }
+    return { ok: false, status: 500, error: `stamp_idempotency:${error.message}` };
+  }
+  if (count != null && count !== 1) {
+    return { ok: false, status: 500, error: `stamp_idempotency:affected_${count}` };
+  }
+  return { ok: true, draft_id: draftId };
+}
 
 export async function createPlaylistDraftInventory(
   sb: SupabaseClient,
@@ -575,12 +785,13 @@ export async function createPlaylistDraftInventory(
       data: { error: dna.errors[0] ?? "dna_rejected", code: dna.errors[0], errors: dna.errors },
     };
   }
+  const songDnaVersionId = dna.songDnaVersionId!;
 
   // Fail-fast: approved DNA must have composable pitch (addHandoffRecords also enforces).
   const { data: dnaRow, error: dnaErr } = await sb
     .from("song_dna_versions")
     .select("id, short_pitch, approval_state, primary_genre, approved_lanes, excluded_lanes")
-    .eq("id", dna.songDnaVersionId!)
+    .eq("id", songDnaVersionId)
     .maybeSingle();
   if (dnaErr) {
     return { status: 500, data: { error: `dna_query_failed:${dnaErr.message}`, code: "db_error" } };
@@ -596,24 +807,18 @@ export async function createPlaylistDraftInventory(
   const createBatch = deps.createBatch ?? createHandoffBatch;
   const addRecords = deps.addRecords ?? addHandoffRecords;
   const draftPitch = deps.draftPitch ?? runDraftPitch;
+  const inject = deps.failureInject ?? {};
 
-  const batchRes = await createBatch(
-    sb,
-    {
-      batch_kind: "playlist",
-      queue_state: "CLAUDE_BATCH_READY",
-      track_id: trackId,
-      song_dna_version_id: dna.songDnaVersionId,
-    },
-    ops,
-  );
-  if (batchRes.status >= 400) return batchRes;
-  const batchId = String((batchRes.data.batch as { id?: string })?.id ?? "");
-  if (!batchId) return { status: 500, data: { error: "batch create missing id" } };
+  type Prepared = {
+    playlistId: string;
+    channel: string;
+    target: Record<string, unknown>;
+    idempotencyKey: string;
+    existing?: Record<string, unknown>;
+  };
 
-  const records: Record<string, unknown>[] = [];
-  const emailDrafts: Record<string, unknown>[] = [];
-  const manualPackets: Record<string, unknown>[] = [];
+  const reused: Record<string, unknown>[] = [];
+  const toCreate: Prepared[] = [];
 
   for (const playlistId of candidateIds) {
     const { data: target, error: tErr } = await sb
@@ -664,7 +869,7 @@ export async function createPlaylistDraftInventory(
       route: "create_playlist_draft_inventory",
       trackId,
       playlistId,
-      callerSongDnaVersionId: dna.songDnaVersionId,
+      callerSongDnaVersionId: songDnaVersionId,
       actor: ops,
     });
     if (!envelope.ok) {
@@ -679,43 +884,235 @@ export async function createPlaylistDraftInventory(
       };
     }
 
+    const key = inventoryIdempotencyKey(trackId, playlistId, channel, songDnaVersionId);
+    const existing = await lookupInventoryPair(sb, {
+      trackId,
+      playlistId,
+      channel,
+      songDnaVersionId,
+    });
+    if (existing.found) {
+      reused.push({
+        playlist_id: playlistId,
+        channel,
+        idempotency_key: key,
+        outreach_draft_id: existing.outreach_draft_id ?? null,
+        handoff_record_id: existing.handoff_record_id ?? null,
+        batch_id: existing.batch_id ?? null,
+        reused: true,
+      });
+      continue;
+    }
+
+    toCreate.push({
+      playlistId,
+      channel,
+      target: target as Record<string, unknown>,
+      idempotencyKey: key,
+    });
+  }
+
+  // (d) identical retry — all pairs already exist
+  if (!toCreate.length) {
+    const attr = attributionFrom(ops);
+    return {
+      status: 200,
+      data: {
+        ok: true,
+        idempotent: true,
+        batch_id: reused[0]?.batch_id ?? null,
+        track_id: trackId,
+        song_dna_version_id: songDnaVersionId,
+        draft_status: "pending",
+        approved: false,
+        sent: false,
+        discovered_by: attr.actor_kind,
+        drafted_by: attr.actor_kind,
+        email_drafts: reused
+          .filter((r) => r.channel === "email" && r.outreach_draft_id)
+          .map((r) => ({
+            playlist_id: r.playlist_id,
+            outreach_draft_id: r.outreach_draft_id,
+            reused: true,
+          })),
+        manual_packets: reused
+          .filter((r) => r.channel !== "email")
+          .map((r) => ({ playlist_id: r.playlist_id, channel: r.channel, reused: true })),
+        reused_pairs: reused,
+        server_pitch_source: pitchProbe.source,
+        records: { ok: true, inserted: 0, duplicates: reused.length, rows: [] },
+        stored_pitch_sources: reused.map((r) => ({
+          outreach_draft_id: r.outreach_draft_id ?? null,
+          playlist_target_id: r.playlist_id ?? null,
+          pitch_copy_source: null,
+          has_server_pitch: false,
+          reused: true,
+        })),
+      },
+    };
+  }
+
+  const batchRes = await createBatch(
+    sb,
+    {
+      batch_kind: "playlist",
+      queue_state: "CLAUDE_BATCH_READY",
+      track_id: trackId,
+      song_dna_version_id: songDnaVersionId,
+    },
+    ops,
+  );
+  if (batchRes.status >= 400) return batchRes;
+  const batchId = String((batchRes.data.batch as { id?: string })?.id ?? "");
+  if (!batchId) return { status: 500, data: { error: "batch create missing id" } };
+
+  const failAndCompensate = async (
+    status: number,
+    data: Record<string, unknown>,
+    orphanKeys: string[],
+  ): Promise<ToolResult> => {
+    const cleanup = await compensateInventoryFailure(sb, {
+      batchId,
+      orphanDraftKeys: orphanKeys,
+    });
+    if (!cleanup.ok) {
+      return {
+        status: 500,
+        data: {
+          ...data,
+          error: data.error ?? "inventory_partial_failure",
+          code: data.code ?? "inventory_compensate_failed",
+          compensate_errors: cleanup.errors,
+          batch_id: batchId,
+        },
+      };
+    }
+    return {
+      status,
+      data: {
+        ...data,
+        compensated: true,
+        drafts_deleted: cleanup.drafts_deleted ?? 0,
+        batch_deleted: cleanup.batch_deleted ?? false,
+        batch_id: batchId,
+      },
+    };
+  };
+
+  // (a) batch created, draft fails
+  if (inject.failBeforeFirstDraft) {
+    return await failAndCompensate(500, {
+      error: "injected_fail_before_first_draft",
+      code: "inventory_partial_failure",
+    }, []);
+  }
+
+  const records: Record<string, unknown>[] = [];
+  const emailDrafts: Record<string, unknown>[] = [];
+  const manualPackets: Record<string, unknown>[] = [];
+  const orphanDraftKeys: string[] = [];
+  let emailDraftIndex = 0;
+
+  for (const item of toCreate) {
+    const { playlistId, channel, target, idempotencyKey } = item;
+
+    // Re-check race before creating
+    const again = await lookupInventoryPair(sb, {
+      trackId,
+      playlistId,
+      channel,
+      songDnaVersionId,
+    });
+    if (again.found) {
+      reused.push({
+        playlist_id: playlistId,
+        channel,
+        idempotency_key: idempotencyKey,
+        outreach_draft_id: again.outreach_draft_id ?? null,
+        handoff_record_id: again.handoff_record_id ?? null,
+        batch_id: again.batch_id ?? null,
+        reused: true,
+      });
+      continue;
+    }
+
     let outreachDraftId: string | null = null;
     let packetKind = "manual_handoff";
 
     if (channel === "email") {
-      // Canonical server-side draft creation — no duplicated composition.
+      if (inject.failDraftAtIndex === emailDraftIndex) {
+        return await failAndCompensate(500, {
+          error: "injected_fail_draft_at_index",
+          code: "inventory_partial_failure",
+          playlist_id: playlistId,
+          fail_draft_at_index: emailDraftIndex,
+        }, orphanDraftKeys);
+      }
+
       const draftRes = await draftPitch(
         {
           playlist_id: playlistId,
           track_id: trackId,
           channel: "email",
-          song_dna_version_id: envelope.songDnaVersionId,
+          song_dna_version_id: songDnaVersionId,
         },
         sb,
         playlistDiscoveryCredentialActor(),
         null,
       );
       if (draftRes.status >= 400) {
-        return {
-          status: draftRes.status,
-          data: {
-            ...draftRes.data,
-            error: draftRes.data.error ?? "email_draft_failed",
-            playlist_id: playlistId,
-          },
-        };
+        return await failAndCompensate(draftRes.status, {
+          ...draftRes.data,
+          error: draftRes.data.error ?? "email_draft_failed",
+          code: "inventory_partial_failure",
+          playlist_id: playlistId,
+        }, orphanDraftKeys);
       }
-      outreachDraftId = String(
+      let draftId = String(
         draftRes.data.draft_id ?? (draftRes.data.draft as { id?: string })?.id ?? "",
-      ) || null;
-      if (!outreachDraftId) {
-        return {
-          status: 500,
-          data: { error: "draft_pitch returned no draft_id", playlist_id: playlistId },
-        };
+      );
+      if (!draftId) {
+        return await failAndCompensate(500, {
+          error: "draft_pitch returned no draft_id",
+          code: "inventory_partial_failure",
+          playlist_id: playlistId,
+        }, orphanDraftKeys);
       }
+
+      const stamped = await stampDraftIdempotencyKey(sb, draftId, idempotencyKey);
+      if (!stamped.ok) {
+        orphanDraftKeys.push(idempotencyKey);
+        // Also try delete by id if stamp never applied
+        const { error: delErr, count: delCount } = await sb
+          .from("outreach_drafts")
+          .delete({ count: "exact" })
+          .eq("id", draftId)
+          .eq("status", "pending");
+        const delOk = assertWriteOk("unstamped_draft_delete", delErr, delCount);
+        if (!delOk.ok) {
+          return await failAndCompensate(500, {
+            error: stamped.error,
+            stamp_cleanup: delOk.error,
+            code: "inventory_partial_failure",
+            playlist_id: playlistId,
+          }, orphanDraftKeys);
+        }
+        return await failAndCompensate(stamped.status, {
+          error: stamped.error,
+          code: "inventory_partial_failure",
+          playlist_id: playlistId,
+        }, orphanDraftKeys);
+      }
+      draftId = stamped.draft_id;
+      orphanDraftKeys.push(idempotencyKey);
+      outreachDraftId = draftId;
       packetKind = "email_outreach_draft";
-      emailDrafts.push({ playlist_id: playlistId, outreach_draft_id: outreachDraftId });
+      emailDrafts.push({
+        playlist_id: playlistId,
+        outreach_draft_id: outreachDraftId,
+        idempotency_key: idempotencyKey,
+      });
+      emailDraftIndex++;
     } else if (channel === "web_form") {
       packetKind = "manual_web_form_packet";
       manualPackets.push({
@@ -723,6 +1120,7 @@ export async function createPlaylistDraftInventory(
         channel,
         automated_submit: false,
         form_url: target.form_url ?? target.submission_url ?? null,
+        idempotency_key: idempotencyKey,
       });
     } else if (channel === "instagram_dm") {
       packetKind = "manual_ig_dm_packet";
@@ -731,25 +1129,27 @@ export async function createPlaylistDraftInventory(
         channel,
         automated_dm: false,
         ig_curator_account: target.ig_curator_account ?? target.curator_instagram ?? null,
+        idempotency_key: idempotencyKey,
       });
     }
 
-    // No pitch/body/subject/draft_body — addHandoffRecords composes from approved DNA.
     records.push({
       record_kind: "playlist_target",
       track_id: trackId,
       playlist_target_id: playlistId,
       submission_channel: channel,
-      song_dna_version_id: envelope.songDnaVersionId,
+      song_dna_version_id: songDnaVersionId,
       queue_state: "CLAUDE_BATCH_READY",
       outreach_draft_id: outreachDraftId,
+      dedupe_key: idempotencyKey,
       packet: {
         track_id: trackId,
-        song_dna_version_id: envelope.songDnaVersionId,
+        song_dna_version_id: songDnaVersionId,
         packet_kind: packetKind,
         channel,
         automated_submit: false,
         automated_dm: false,
+        ops_idempotency_key: idempotencyKey,
       },
     });
   }
@@ -757,26 +1157,89 @@ export async function createPlaylistDraftInventory(
   // Guard: never pass copy fields into addHandoffRecords.
   for (const r of records) {
     const copyProbe = rejectCallerPlaylistCopy(r);
-    if (copyProbe) return copyProbe;
+    if (copyProbe) {
+      return await failAndCompensate(copyProbe.status, copyProbe.data, orphanDraftKeys);
+    }
     if (typeof r.packet === "object" && r.packet) {
       const pktProbe = rejectCallerPlaylistCopy(r.packet as Record<string, unknown>);
-      if (pktProbe) return pktProbe;
+      if (pktProbe) {
+        return await failAndCompensate(pktProbe.status, pktProbe.data, orphanDraftKeys);
+      }
       for (const k of ["pitch", "draft_body", "body", "subject", "ig_dm_draft"]) {
         if ((r.packet as Record<string, unknown>)[k] != null) {
-          return {
-            status: 500,
-            data: {
-              error: `internal: must not pass ${k} into addHandoffRecords`,
-              code: "copy_leak",
-            },
-          };
+          return await failAndCompensate(500, {
+            error: `internal: must not pass ${k} into addHandoffRecords`,
+            code: "copy_leak",
+          }, orphanDraftKeys);
         }
       }
     }
   }
 
+  // (c) drafts succeed, handoff insert fails
+  if (inject.failHandoffInsert) {
+    return await failAndCompensate(500, {
+      error: "injected_fail_handoff_insert",
+      code: "inventory_partial_failure",
+    }, orphanDraftKeys);
+  }
+
+  if (!records.length) {
+    // All raced into existing — delete empty batch
+    const cleanup = await compensateInventoryFailure(sb, {
+      batchId,
+      orphanDraftKeys: [],
+    });
+    if (!cleanup.ok) {
+      return {
+        status: 500,
+        data: {
+          error: "empty_batch_cleanup_failed",
+          code: "inventory_compensate_failed",
+          compensate_errors: cleanup.errors,
+          batch_id: batchId,
+          reused_pairs: reused,
+        },
+      };
+    }
+    const attr = attributionFrom(ops);
+    return {
+      status: 200,
+      data: {
+        ok: true,
+        idempotent: true,
+        batch_id: reused[0]?.batch_id ?? null,
+        track_id: trackId,
+        song_dna_version_id: songDnaVersionId,
+        draft_status: "pending",
+        approved: false,
+        sent: false,
+        discovered_by: attr.actor_kind,
+        drafted_by: attr.actor_kind,
+        email_drafts: reused
+          .filter((r) => r.channel === "email")
+          .map((r) => ({
+            playlist_id: r.playlist_id,
+            outreach_draft_id: r.outreach_draft_id,
+            reused: true,
+          })),
+        manual_packets: [],
+        reused_pairs: reused,
+        server_pitch_source: pitchProbe.source,
+        records: { ok: true, inserted: 0, duplicates: reused.length, rows: [] },
+        stored_pitch_sources: [],
+      },
+    };
+  }
+
   const addRes = await addRecords(sb, { batch_id: batchId, records }, ops);
-  if (addRes.status >= 400) return addRes;
+  if (addRes.status >= 400) {
+    return await failAndCompensate(addRes.status, {
+      ...addRes.data,
+      error: addRes.data.error ?? "handoff_insert_failed",
+      code: "inventory_partial_failure",
+    }, orphanDraftKeys);
+  }
 
   const attr = attributionFrom(ops);
   const storedRows = (addRes.data.rows ?? addRes.data.records ?? []) as Record<string, unknown>[];
@@ -784,9 +1247,10 @@ export async function createPlaylistDraftInventory(
     status: 200,
     data: {
       ok: true,
+      idempotent: false,
       batch_id: batchId,
       track_id: trackId,
-      song_dna_version_id: dna.songDnaVersionId,
+      song_dna_version_id: songDnaVersionId,
       draft_status: "pending",
       approved: false,
       sent: false,
@@ -794,9 +1258,9 @@ export async function createPlaylistDraftInventory(
       drafted_by: attr.actor_kind,
       email_drafts: emailDrafts,
       manual_packets: manualPackets,
+      reused_pairs: reused,
       server_pitch_source: pitchProbe.source,
       records: addRes.data,
-      // Convenience: expose composed pitch sources from stored packets (server-only).
       stored_pitch_sources: storedRows.map((r) => {
         const pkt = (r.packet ?? {}) as Record<string, unknown>;
         return {

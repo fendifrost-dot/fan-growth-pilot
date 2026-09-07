@@ -115,6 +115,20 @@ create table public.playlist_targets (
   verification_status text default 'unverified'
 );
 
+create table public.outreach_drafts (
+  id uuid primary key default gen_random_uuid(),
+  playlist_id text,
+  track_id uuid,
+  track_name text,
+  song_dna_version_id uuid,
+  channel text,
+  status text not null default 'pending',
+  generated_at timestamptz default now(),
+  subject text,
+  body text,
+  recipient text
+);
+
 create table public.discovery_profiles (
   id uuid primary key default gen_random_uuid(),
   profile_key text unique not null,
@@ -140,6 +154,7 @@ apply_with_rollback "$ROOT/supabase/migrations/20260907020000_daily_ops_operatio
 apply_with_rollback "$ROOT/supabase/migrations/20260907030000_daily_ops_rpc_hardening.sql"
 apply_with_rollback "$ROOT/supabase/migrations/20260907120000_mcp_playlist_discovery_oauth.sql"
 apply_with_rollback "$ROOT/supabase/migrations/20260907130000_mcp_oauth_token_lifecycle.sql"
+apply_with_rollback "$ROOT/supabase/migrations/20260907140000_mcp_inventory_idempotency_oauth_atomic.sql"
 
 echo "==> MCP OAuth tables exist with actor check"
 OAUTH_TBL=$(run_sql -c "select count(*) from information_schema.tables where table_schema='public' and table_name='agh_mcp_oauth_tokens';")
@@ -150,6 +165,12 @@ REFRESH_COL=$(run_sql -c "select count(*) from information_schema.columns where 
 assert_eq "mcp_oauth_refresh_expires_at" "${REFRESH_COL}" "1"
 CLEANUP_FN=$(run_sql -c "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='agh_mcp_oauth_cleanup_expired';")
 assert_eq "mcp_oauth_cleanup_fn" "${CLEANUP_FN}" "1"
+IDEM_COL=$(run_sql -c "select count(*) from information_schema.columns where table_schema='public' and table_name='outreach_drafts' and column_name='ops_idempotency_key';")
+assert_eq "outreach_drafts_ops_idempotency_key" "${IDEM_COL}" "1"
+CONSUME_FN=$(run_sql -c "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='agh_mcp_consume_oauth_code';")
+assert_eq "mcp_consume_oauth_code_fn" "${CONSUME_FN}" "1"
+ROTATE_FN=$(run_sql -c "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='agh_mcp_rotate_oauth_refresh';")
+assert_eq "mcp_rotate_oauth_refresh_fn" "${ROTATE_FN}" "1"
 
 echo "==> Preflight orphan report (empty fixture DB — not production proof)"
 run_sql_pretty -c "select * from public.agh_daily_ops_fk_preflight();"
@@ -240,5 +261,108 @@ if ! echo "${DENIED_OUT}" | grep -qiE 'permission denied|must be owner|not grant
   exit 1
 fi
 echo "OK assert: authenticated_rpc_denied"
+
+echo "==> Atomic OAuth consume: replay of same code fails; concurrent exchange → one success"
+run_sql_pretty <<'SQL'
+insert into public.agh_mcp_oauth_clients (client_id, client_secret_hash, client_name, redirect_uris)
+values ('client-atomic', 'hash', 'test', array['https://claude.ai/api/mcp/auth_callback']);
+
+insert into public.agh_mcp_oauth_codes (
+  code_hash, client_id, redirect_uri, code_challenge, code_challenge_method,
+  scope, authorized_by_user_id, expires_at
+) values (
+  'codehash-replay', 'client-atomic', 'https://claude.ai/api/mcp/auth_callback',
+  'challenge', 'S256', 'playlist_discovery', null, now() + interval '10 minutes'
+);
+SQL
+
+OK_CODE=$(run_sql -c "select public.agh_mcp_consume_oauth_code(
+  'codehash-replay', 'client-atomic', 'https://claude.ai/api/mcp/auth_callback', 'challenge',
+  'access-hash-1', 'refresh-hash-1', now() + interval '1 hour', now() + interval '30 days'
+) ->> 'ok';")
+assert_eq "oauth_consume_once_ok" "${OK_CODE}" "true"
+
+REPLAY=$(run_sql -c "select public.agh_mcp_consume_oauth_code(
+  'codehash-replay', 'client-atomic', 'https://claude.ai/api/mcp/auth_callback', 'challenge',
+  'access-hash-2', 'refresh-hash-2', now() + interval '1 hour', now() + interval '30 days'
+) ->> 'ok';")
+assert_eq "oauth_consume_replay_fail" "${REPLAY}" "false"
+
+TOK_COUNT=$(run_sql -c "select count(*) from public.agh_mcp_oauth_tokens where revoked_at is null;")
+assert_eq "oauth_tokens_after_replay" "${TOK_COUNT}" "1"
+
+echo "==> Concurrent code consume: exactly one success"
+run_sql_pretty <<'SQL'
+insert into public.agh_mcp_oauth_codes (
+  code_hash, client_id, redirect_uri, code_challenge, code_challenge_method,
+  scope, authorized_by_user_id, expires_at
+) values (
+  'codehash-race', 'client-atomic', 'https://claude.ai/api/mcp/auth_callback',
+  'challenge', 'S256', 'playlist_discovery', null, now() + interval '10 minutes'
+);
+SQL
+
+TMPA=$(mktemp)
+TMPB=$(mktemp)
+(
+  run_sql -c "select public.agh_mcp_consume_oauth_code(
+    'codehash-race', 'client-atomic', 'https://claude.ai/api/mcp/auth_callback', 'challenge',
+    'access-race-a', 'refresh-race-a', now() + interval '1 hour', now() + interval '30 days'
+  ) ->> 'ok';" >"$TMPA"
+) &
+(
+  run_sql -c "select public.agh_mcp_consume_oauth_code(
+    'codehash-race', 'client-atomic', 'https://claude.ai/api/mcp/auth_callback', 'challenge',
+    'access-race-b', 'refresh-race-b', now() + interval '1 hour', now() + interval '30 days'
+  ) ->> 'ok';" >"$TMPB"
+) &
+wait
+A=$(tr -d '[:space:]' <"$TMPA")
+B=$(tr -d '[:space:]' <"$TMPB")
+rm -f "$TMPA" "$TMPB"
+SUCCESS_N=0
+[[ "${A}" == "true" ]] && SUCCESS_N=$((SUCCESS_N + 1))
+[[ "${B}" == "true" ]] && SUCCESS_N=$((SUCCESS_N + 1))
+assert_eq "oauth_concurrent_consume_one_success" "${SUCCESS_N}" "1"
+
+echo "==> Concurrent refresh rotation: exactly one success; refresh_expires_at preserved"
+run_sql_pretty <<'SQL'
+delete from public.agh_mcp_oauth_tokens;
+insert into public.agh_mcp_oauth_tokens (
+  token_hash, refresh_token_hash, client_id, scope, actor_kind,
+  expires_at, refresh_expires_at
+) values (
+  'tok-old', 'refresh-family', 'client-atomic', 'playlist_discovery', 'claude_playlist_discovery',
+  now() + interval '1 hour', '2030-01-15T12:00:00Z'::timestamptz
+);
+SQL
+
+PRESERVED=$(run_sql -c "select refresh_expires_at::text from public.agh_mcp_oauth_tokens where token_hash='tok-old';")
+
+TMPA=$(mktemp)
+TMPB=$(mktemp)
+(
+  run_sql -c "select public.agh_mcp_rotate_oauth_refresh(
+    'refresh-family', 'client-atomic', 'access-rot-a', 'refresh-rot-a', now() + interval '1 hour'
+  ) ->> 'ok';" >"$TMPA"
+) &
+(
+  run_sql -c "select public.agh_mcp_rotate_oauth_refresh(
+    'refresh-family', 'client-atomic', 'access-rot-b', 'refresh-rot-b', now() + interval '1 hour'
+  ) ->> 'ok';" >"$TMPB"
+) &
+wait
+A=$(tr -d '[:space:]' <"$TMPA")
+B=$(tr -d '[:space:]' <"$TMPB")
+rm -f "$TMPA" "$TMPB"
+SUCCESS_N=0
+[[ "${A}" == "true" ]] && SUCCESS_N=$((SUCCESS_N + 1))
+[[ "${B}" == "true" ]] && SUCCESS_N=$((SUCCESS_N + 1))
+assert_eq "oauth_concurrent_rotate_one_success" "${SUCCESS_N}" "1"
+
+ACTIVE_N=$(run_sql -c "select count(*) from public.agh_mcp_oauth_tokens where revoked_at is null;")
+assert_eq "oauth_rotate_active_tokens" "${ACTIVE_N}" "1"
+NEW_EXP=$(run_sql -c "select refresh_expires_at::text from public.agh_mcp_oauth_tokens where revoked_at is null limit 1;")
+assert_eq "oauth_rotate_preserves_refresh_expires_at" "${NEW_EXP}" "${PRESERVED}"
 
 echo "==> PASS: daily-ops migrations applied + authoritative RPC assertions verified"

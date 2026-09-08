@@ -439,7 +439,7 @@ const AdminPitchComposer: React.FC = () => {
             )}
             {campaigns.length > 0 && (
             <div className="space-y-1.5 max-w-md">
-              <Label>Campaign (optional until pitch_campaigns is live)</Label>
+              <Label>Campaign (required — only active Pitch Portal campaigns authorize outreach)</Label>
               <Select value={campaignId || undefined} onValueChange={setCampaignId}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select campaign…" />

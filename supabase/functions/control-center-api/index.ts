@@ -224,7 +224,7 @@ Deno.serve(async (req) => {
     }
 
     if (isPitchCampaignAction(action)) {
-      const result = await runPitchCampaignAction(action, body, supabase);
+      const result = await runPitchCampaignAction(action, body, supabase, actor, req);
       return new Response(JSON.stringify(result.data), {
         status: result.status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },

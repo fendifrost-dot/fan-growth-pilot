@@ -325,6 +325,8 @@ function stubSb(
         filters[col] = { __gt: val };
         return chain;
       };
+      chain.gte = () => chain;
+      chain.lte = () => chain;
       chain.not = (col: string, op: string, val: unknown) => {
         notFilters.push({ col, op, val });
         return chain;
@@ -809,6 +811,83 @@ Deno.test("database failure on work projection returns explicit failure", async 
   const res = await getPlaylistDiscoveryWork(sb, ops);
   assertEquals(res.status, 500);
   assertEquals(res.data.code, "db_error");
+  assert(String(res.data.error).includes("campaign_query_failed"));
+});
+
+Deno.test("get_playlist_discovery_work returns only active campaigns with approved DNA", async () => {
+  const ops = playlistDiscoveryActor();
+  const sb = stubSb({
+    pitch_campaigns: [
+      { track_id: "track-active", status: "active" },
+      { track_id: "track-paused", status: "paused" },
+      { track_id: "track-ended", status: "ended" },
+      { track_id: "track-no-dna", status: "active" },
+    ],
+    tracks: [
+      {
+        id: "track-active",
+        name: "Fixture Track Active",
+        approved_song_dna_version_id: "dna-active",
+      },
+      {
+        id: "track-paused",
+        name: "Fixture Track Paused",
+        approved_song_dna_version_id: "dna-paused",
+      },
+      {
+        id: "track-ended",
+        name: "Fixture Track Ended",
+        approved_song_dna_version_id: "dna-ended",
+      },
+      {
+        id: "track-no-dna",
+        name: "Fixture Track No DNA",
+        approved_song_dna_version_id: null,
+      },
+    ],
+    song_dna_versions: [
+      {
+        id: "dna-active",
+        track_id: "track-active",
+        approval_state: "approved",
+        short_pitch: "Fixture DNA pitch",
+        approved_lanes: ["rap_general"],
+        excluded_lanes: [],
+        primary_genre: "hip-hop",
+      },
+      {
+        id: "dna-paused",
+        track_id: "track-paused",
+        approval_state: "approved",
+        short_pitch: "Paused DNA pitch",
+        approved_lanes: ["rap_general"],
+        excluded_lanes: [],
+        primary_genre: "hip-hop",
+      },
+    ],
+    discovery_profiles: [],
+    ops_settings: [],
+    playlist_targets: [],
+    outreach_drafts: [],
+    discovery_saturation_log: [],
+  });
+
+  const res = await getPlaylistDiscoveryWork(sb, ops);
+  assertEquals(res.status, 200);
+  const tracks = (res.data.tracks as Row[]) ?? [];
+  assertEquals(tracks.length, 1);
+  assertEquals(tracks[0].track_id, "track-active");
+  assertEquals(tracks[0].approved_song_dna_version_id, "dna-active");
+  assertEquals(tracks[0].approved_pitch_descriptors, ["Fixture DNA pitch"]);
+  assert(!tracks.some((t) => t.track_id === "track-paused"));
+  assert(!tracks.some((t) => t.track_id === "track-ended"));
+  assert(!tracks.some((t) => t.track_id === "track-no-dna"));
+});
+
+Deno.test("OAuth inventory attribution stays claude_playlist_discovery (not Fendi)", () => {
+  const a = attributionFrom(playlistDiscoveryActor());
+  assertEquals(a.actor_kind, "claude_playlist_discovery");
+  assertEquals(a.actor_kind === "fendi", false);
 });
 
 Deno.test("caller pitch copy rejected on inventory", async () => {

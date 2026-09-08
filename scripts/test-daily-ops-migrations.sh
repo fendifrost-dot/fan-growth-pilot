@@ -93,6 +93,7 @@ returns boolean language sql stable as $$ select true $$;
 create table public.tracks (
   id uuid primary key default gen_random_uuid(),
   name text,
+  status text not null default 'active',
   approved_song_dna_version_id uuid,
   sync_eligible boolean default false,
   has_sample text
@@ -106,6 +107,13 @@ create table public.song_dna_versions (
   excluded_lanes text[] default '{}',
   short_pitch text,
   primary_genre text
+);
+
+create table public.smart_links (
+  id uuid primary key default gen_random_uuid(),
+  slug text unique not null,
+  title text,
+  is_active boolean not null default true
 );
 
 create table public.playlist_targets (
@@ -587,5 +595,112 @@ RETRY_OK=$(run_sql -c "select public.agh_mcp_persist_playlist_inventory(
 assert_eq "terminal_retry_ok" "${RETRY_OK}" "true"
 ACTIVE_DRAFTS=$(run_sql -c "select count(*) from public.outreach_drafts where status in ('pending','approved') and ops_idempotency_key like '%pl-inv-1%';")
 assert_eq "terminal_retry_one_active" "${ACTIVE_DRAFTS}" "1"
+
+echo "==> Pitch campaigns current-state adoption (table absent)"
+apply_with_rollback "$ROOT/supabase/migrations/20260908000000_pitch_campaigns_current_state_adoption.sql"
+PC_EXISTS=$(run_sql -c "select count(*) from information_schema.tables where table_schema='public' and table_name='pitch_campaigns';")
+assert_eq "pitch_campaigns_created" "${PC_EXISTS}" "1"
+PC_ROWS=$(run_sql -c "select count(*) from public.pitch_campaigns;")
+assert_eq "pitch_campaigns_no_auto_seed" "${PC_ROWS}" "0"
+DNA_COL=$(run_sql -c "select count(*) from information_schema.columns where table_schema='public' and table_name='pitch_campaigns' and column_name='song_dna_version_id';")
+assert_eq "pitch_campaigns_song_dna_col" "${DNA_COL}" "1"
+SNAP_COL=$(run_sql -c "select count(*) from information_schema.columns where table_schema='public' and table_name='pitch_campaigns' and column_name='configuration_snapshot';")
+assert_eq "pitch_campaigns_snapshot_col" "${SNAP_COL}" "1"
+APPROVED_COL=$(run_sql -c "select count(*) from information_schema.columns where table_schema='public' and table_name='pitch_campaigns' and column_name='approved_by';")
+assert_eq "pitch_campaigns_approved_by_col" "${APPROVED_COL}" "1"
+OPEN_IDX=$(run_sql -c "select count(*) from pg_indexes where schemaname='public' and indexname='pitch_campaigns_one_open_per_track';")
+assert_eq "pitch_campaigns_one_open_idx" "${OPEN_IDX}" "1"
+# No hard-coded production titles in the adoption migration itself
+SEED_HITS=$(grep -ciE 'meditate|designed for me|designedforme' "$ROOT/supabase/migrations/20260908000000_pitch_campaigns_current_state_adoption.sql" || true)
+assert_eq "adoption_migration_no_hardcoded_songs" "${SEED_HITS:-0}" "0"
+
+echo "==> Pitch campaigns adoption over partial historical schema"
+run_sql_pretty <<'SQL'
+drop table if exists public.pitch_campaigns cascade;
+create table public.pitch_campaigns (
+  id uuid primary key default gen_random_uuid(),
+  track_id uuid not null references public.tracks(id) on delete cascade,
+  smart_link_id uuid,
+  status text not null default 'active',
+  daily_target integer not null default 20,
+  notes text,
+  pitch_copy text,
+  started_at timestamptz,
+  ended_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+-- Partial historical active row without DNA/snapshot — must be auto-paused on adopt
+insert into public.tracks (id, name, status)
+values ('99999999-9999-9999-9999-999999999999', 'Fixture Partial Track', 'active')
+on conflict (id) do nothing;
+insert into public.pitch_campaigns (track_id, status, daily_target, pitch_copy, started_at)
+values (
+  '99999999-9999-9999-9999-999999999999',
+  'active',
+  20,
+  'legacy reconstructed copy must not keep this active',
+  now()
+);
+SQL
+apply_with_rollback "$ROOT/supabase/migrations/20260908000000_pitch_campaigns_current_state_adoption.sql"
+PARTIAL_STATUS=$(run_sql -c "select status from public.pitch_campaigns where track_id='99999999-9999-9999-9999-999999999999';")
+assert_eq "partial_active_paused_for_incomplete" "${PARTIAL_STATUS}" "paused"
+PARTIAL_DNA=$(run_sql -c "select count(*) from information_schema.columns where table_schema='public' and table_name='pitch_campaigns' and column_name='song_dna_version_id';")
+assert_eq "partial_gained_song_dna_col" "${PARTIAL_DNA}" "1"
+PARTIAL_ROWS=$(run_sql -c "select count(*) from public.pitch_campaigns;")
+assert_eq "partial_no_extra_seed_rows" "${PARTIAL_ROWS}" "1"
+
+echo "==> Active campaign completeness refuses missing DNA/smart-link at DB layer"
+run_sql_pretty <<'SQL'
+insert into public.smart_links (id, slug, title, is_active)
+values ('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'fixture-link', 'Fixture Link', true)
+on conflict (id) do nothing;
+insert into public.song_dna_versions (id, track_id, approval_state, short_pitch, approved_lanes)
+values (
+  'bbbbbbbb-cccc-dddd-eeee-ffffffffffff',
+  '99999999-9999-9999-9999-999999999999',
+  'approved',
+  'Fixture approved DNA pitch',
+  array['rap_general']
+)
+on conflict (id) do nothing;
+update public.tracks
+   set approved_song_dna_version_id = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff'
+ where id = '99999999-9999-9999-9999-999999999999';
+SQL
+
+set +e
+BAD_ACTIVE=$(run_sql_pretty -c "update public.pitch_campaigns
+  set status='active', smart_link_id=null, song_dna_version_id=null, configuration_snapshot='{}'::jsonb
+ where track_id='99999999-9999-9999-9999-999999999999';" 2>&1)
+BAD_RC=$?
+set -e
+if [[ ${BAD_RC} -eq 0 ]]; then
+  echo "FAIL: expected active without DNA/smart-link/snapshot to be rejected"
+  echo "${BAD_ACTIVE}"
+  psql_admin -c "DROP DATABASE IF EXISTS ${DB_NAME};" || true
+  exit 1
+fi
+echo "OK assert: active_incomplete_rejected"
+
+run_sql_pretty -c "update public.pitch_campaigns
+  set status='active',
+      smart_link_id='aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      song_dna_version_id='bbbbbbbb-cccc-dddd-eeee-ffffffffffff',
+      configuration_snapshot=jsonb_build_object('snapshot_source','server_activation','song_dna_version_id','bbbbbbbb-cccc-dddd-eeee-ffffffffffff'),
+      activated_at=now(),
+      started_at=coalesce(started_at, now()),
+      paused_at=null
+ where track_id='99999999-9999-9999-9999-999999999999';" >/dev/null
+GOOD_ACTIVE=$(run_sql -c "select status from public.pitch_campaigns where track_id='99999999-9999-9999-9999-999999999999';")
+assert_eq "active_complete_allowed" "${GOOD_ACTIVE}" "active"
+
+ACTIVE_FOR_CLAUDE=$(run_sql -c "select count(*) from public.pitch_campaigns where status='active';")
+assert_eq "active_campaigns_visible" "${ACTIVE_FOR_CLAUDE}" "1"
+PAUSED_EXCLUDED=$(run_sql -c "select count(*) from public.pitch_campaigns c
+  join public.tracks t on t.id=c.track_id
+ where c.status='active' and t.name='Fixture Partial Track' and c.song_dna_version_id is null;")
+assert_eq "incomplete_not_active" "${PAUSED_EXCLUDED}" "0"
 
 echo "==> PASS: daily-ops migrations applied + authoritative RPC assertions verified"

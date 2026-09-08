@@ -47,6 +47,9 @@ interface TrackOption {
   id: string;
   name: string;
   has_pitch_copy: boolean;
+  has_approved_dna?: boolean;
+  has_dna_pitch_copy?: boolean;
+  approved_lane_count?: number;
   category_count: number;
   open_campaign_id: string | null;
   open_campaign_status: string | null;
@@ -66,15 +69,26 @@ const MISSING_LABELS: Record<string, { label: string; fixTo: string; fixLabel: s
     fixTo: "/admin",
     fixLabel: "Manage smart links",
   },
+  approved_song_dna: {
+    label: "No current approved Song DNA for this song",
+    fixTo: "/admin/song-dna",
+    fixLabel: "Approve Song DNA",
+  },
+  dna_short_pitch: {
+    label: "Approved Song DNA is missing pitch copy",
+    fixTo: "/admin/song-dna",
+    fixLabel: "Edit Song DNA pitch",
+  },
+  // Legacy keys (pre-DNA) — keep labels so old responses still render
   category: {
-    label: "No category/genre assigned to this song",
-    fixTo: "/admin/categories",
-    fixLabel: "Assign categories",
+    label: "Approved Song DNA lanes missing (use Song DNA, not categories)",
+    fixTo: "/admin/song-dna",
+    fixLabel: "Song DNA",
   },
   short_pitch: {
-    label: "No pitch copy written for this song",
-    fixTo: "/admin/catalogue",
-    fixLabel: "Write pitch copy",
+    label: "Approved Song DNA pitch copy required",
+    fixTo: "/admin/song-dna",
+    fixLabel: "Song DNA",
   },
 };
 
@@ -188,8 +202,8 @@ const AdminPitchPortal: React.FC = () => {
         </h1>
         <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
           The only place a song becomes pitchable. Nothing is ever pitched because it's in the
-          catalogue or has a smart link — a song goes out <strong>only</strong> while it has an
-          active campaign here. Start a campaign to pitch a song; pause or end it to stop.
+          catalogue, has a smart link, or has Song DNA — a song goes out <strong>only</strong> while
+          it has an active campaign here. Start a campaign to pitch a song; pause or end it to stop.
         </p>
       </div>
 
@@ -200,8 +214,9 @@ const AdminPitchPortal: React.FC = () => {
         <div>
           <h2 className="font-medium">Start a new campaign</h2>
           <p className="text-xs text-muted-foreground mt-1">
-            Pick a song, confirm its smart link and daily target, then activate. A song needs a
-            live smart link, an assigned category, and written pitch copy before it can go active.
+            Pick a song, confirm its live smart link and daily target, then activate. Activation
+            requires current approved Song DNA (with pitch copy and lanes) plus a live smart link.
+            Pitch copy is taken from approved DNA — not typed here.
           </p>
         </div>
 
@@ -271,13 +286,40 @@ const AdminPitchPortal: React.FC = () => {
         {/* Readiness hints — shown before you even try, from the picker data */}
         {selectedTrack && (
           <div className="flex flex-wrap gap-2 text-xs">
-            <Badge variant={selectedTrack.has_pitch_copy ? "secondary" : "destructive"}>
-              {selectedTrack.has_pitch_copy ? "Pitch copy ✓" : "Pitch copy missing"}
+            <Badge
+              variant={
+                (selectedTrack.has_approved_dna ?? selectedTrack.has_pitch_copy)
+                  ? "secondary"
+                  : "destructive"
+              }
+            >
+              {(selectedTrack.has_approved_dna ?? selectedTrack.has_pitch_copy)
+                ? "Approved Song DNA ✓"
+                : "Approved Song DNA missing"}
             </Badge>
-            <Badge variant={selectedTrack.category_count > 0 ? "secondary" : "destructive"}>
-              {selectedTrack.category_count > 0
-                ? `${selectedTrack.category_count} categor${selectedTrack.category_count === 1 ? "y" : "ies"} ✓`
-                : "No category assigned"}
+            <Badge
+              variant={
+                (selectedTrack.has_dna_pitch_copy ?? selectedTrack.has_pitch_copy)
+                  ? "secondary"
+                  : "destructive"
+              }
+            >
+              {(selectedTrack.has_dna_pitch_copy ?? selectedTrack.has_pitch_copy)
+                ? "DNA pitch copy ✓"
+                : "DNA pitch copy missing"}
+            </Badge>
+            <Badge
+              variant={
+                (selectedTrack.approved_lane_count ?? selectedTrack.category_count) > 0
+                  ? "secondary"
+                  : "outline"
+              }
+            >
+              {(selectedTrack.approved_lane_count ?? selectedTrack.category_count) > 0
+                ? `${selectedTrack.approved_lane_count ?? selectedTrack.category_count} approved lane${
+                    (selectedTrack.approved_lane_count ?? selectedTrack.category_count) === 1 ? "" : "s"
+                  }`
+                : "No approved lanes yet"}
             </Badge>
             <Badge variant={smartLinkId ? "secondary" : "destructive"}>
               {smartLinkId ? "Smart link ✓" : "No smart link selected"}

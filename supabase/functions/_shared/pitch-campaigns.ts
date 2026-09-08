@@ -8,7 +8,7 @@
 //   * Fendi authorization
 //   * tracks.approved_song_dna_version_id + matching approved song_dna_versions row
 //   * approved DNA short_pitch (never caller-written / tracks.short_pitch)
-//   * approved / excluded lanes from that DNA
+//   * at least one approved_lanes entry from that DNA (excluded_lanes alone do not count)
 //   * a selected live smart link
 //   * a server-generated configuration_snapshot
 //
@@ -106,6 +106,37 @@ export function rejectCallerCampaignPitchCopy(
   return null;
 }
 
+/** Reject caller-supplied snapshot / DNA binding — server owns those fields. */
+export function rejectCallerCampaignSnapshot(
+  body: Record<string, unknown>,
+): Result | null {
+  if (body.configuration_snapshot !== undefined && body.configuration_snapshot !== null) {
+    return {
+      status: 422,
+      data: {
+        error: 'Caller-supplied configuration_snapshot is not accepted. Snapshots are server-generated.',
+        code: 'caller_snapshot_rejected',
+      },
+    };
+  }
+  if (body.song_dna_version_id !== undefined && body.song_dna_version_id !== null) {
+    return {
+      status: 422,
+      data: {
+        error: 'Caller-supplied song_dna_version_id is not accepted. DNA binding is server-derived from the current approved version.',
+        code: 'caller_dna_binding_rejected',
+      },
+    };
+  }
+  return null;
+}
+
+export function rejectCallerCampaignOverrides(
+  body: Record<string, unknown>,
+): Result | null {
+  return rejectCallerCampaignPitchCopy(body) ?? rejectCallerCampaignSnapshot(body);
+}
+
 /** Activation (status → active) is Fendi-session only. */
 export function requireFendiCampaignActivation(ops: OpsActor): Result | null {
   if (ops.kind === 'fendi') return null;
@@ -118,14 +149,25 @@ export function requireFendiCampaignActivation(ops: OpsActor): Result | null {
   };
 }
 
+/** Active-campaign routing/config changes (e.g. smart_link_id) are Fendi-only. */
+export function requireFendiActiveCampaignConfig(ops: OpsActor): Result | null {
+  if (ops.kind === 'fendi') return null;
+  return {
+    status: 403,
+    data: {
+      error: `${ops.label} is not permitted to modify active campaign routing/configuration; Fendi authorization required`,
+      code: 'fendi_active_config_required',
+    },
+  };
+}
+
 /**
  * A campaign cannot go 'active' half-configured. Requires:
  *   1. a LIVE smart link bound to the campaign (is_active = true),
  *   2. tracks.approved_song_dna_version_id pointing at an approved DNA version
  *      for this track (not stale / missing / unapproved),
  *   3. non-empty short_pitch on that DNA version,
- *   4. lanes sourced from that DNA (informational; empty lanes still allowed
- *      when DNA is otherwise approved — missing DNA itself is the refusal).
+ *   4. at least one entry in approved_lanes (excluded_lanes alone do not count).
  *
  * Does NOT authorize via tracks.short_pitch or track_categories.
  */
@@ -187,10 +229,10 @@ export async function evaluateCampaignConfig(
       dnaShortPitch = dna.short_pitch == null ? null : String(dna.short_pitch);
       hasDnaPitchCopy = Boolean(dnaShortPitch && dnaShortPitch.trim().length > 0);
       approvedLanes = Array.isArray(dna.approved_lanes)
-        ? dna.approved_lanes.map((l: unknown) => String(l))
+        ? dna.approved_lanes.map((l: unknown) => String(l).trim()).filter(Boolean)
         : [];
       excludedLanes = Array.isArray(dna.excluded_lanes)
-        ? dna.excluded_lanes.map((l: unknown) => String(l))
+        ? dna.excluded_lanes.map((l: unknown) => String(l).trim()).filter(Boolean)
         : [];
     }
   }
@@ -199,6 +241,7 @@ export async function evaluateCampaignConfig(
   if (!hasSmartLink) missing.push('smart_link');
   if (!hasApprovedDna) missing.push('approved_song_dna');
   if (hasApprovedDna && !hasDnaPitchCopy) missing.push('dna_short_pitch');
+  if (hasApprovedDna && approvedLanes.length === 0) missing.push('approved_lanes');
 
   return {
     ready: missing.length === 0,
@@ -526,8 +569,8 @@ async function createCampaign(
   actor: Actor | null,
   ops: OpsActor,
 ): Promise<Result> {
-  const pitchReject = rejectCallerCampaignPitchCopy(body);
-  if (pitchReject) return pitchReject;
+  const overrideReject = rejectCallerCampaignOverrides(body);
+  if (overrideReject) return overrideReject;
 
   const trackId = String(body.track_id ?? '').trim();
   if (!trackId) return { status: 400, data: { error: 'track_id required' } };
@@ -604,8 +647,8 @@ async function updateCampaign(
   actor: Actor | null,
   ops: OpsActor,
 ): Promise<Result> {
-  const pitchReject = rejectCallerCampaignPitchCopy(body);
-  if (pitchReject) return pitchReject;
+  const overrideReject = rejectCallerCampaignOverrides(body);
+  if (overrideReject) return overrideReject;
 
   const campaignId = String(body.campaign_id ?? '').trim();
   if (!campaignId) return { status: 400, data: { error: 'campaign_id required' } };
@@ -623,8 +666,45 @@ async function updateCampaign(
     patch.daily_target = Math.min(200, Math.max(1, Number(body.daily_target) || 20));
   }
   if (body.notes !== undefined) patch.notes = body.notes == null ? null : String(body.notes);
-  if (body.smart_link_id !== undefined) {
-    patch.smart_link_id = body.smart_link_id ? String(body.smart_link_id) : null;
+
+  const proposedSmartLinkId =
+    body.smart_link_id !== undefined
+      ? (body.smart_link_id ? String(body.smart_link_id) : null)
+      : undefined;
+  const smartLinkChanging =
+    proposedSmartLinkId !== undefined &&
+    String(proposedSmartLinkId ?? '') !== String(current.smart_link_id ?? '');
+
+  // Active campaigns: smart-link / routing changes are Fendi-only and must
+  // re-validate + rebind DNA + regenerate server-side snapshot.
+  if (current.status === 'active' && smartLinkChanging) {
+    const fendiGate = requireFendiActiveCampaignConfig(ops);
+    if (fendiGate) return fendiGate;
+
+    const config = await evaluateCampaignConfig(
+      sb,
+      String(current.track_id),
+      proposedSmartLinkId ?? null,
+    );
+    if (!config) return { status: 404, data: { error: 'Track not found' } };
+    if (!config.ready) {
+      return {
+        status: 400,
+        data: {
+          error: 'Campaign is not fully configured',
+          missing: config.missing,
+          config,
+          code: 'active_smart_link_invalid',
+        },
+      };
+    }
+    patch.smart_link_id = proposedSmartLinkId;
+    patch.song_dna_version_id = config.song_dna_version_id;
+    patch.configuration_snapshot = buildCampaignConfigurationSnapshot(config);
+    patch.approved_by = actorUserId(actor);
+  } else if (proposedSmartLinkId !== undefined) {
+    // Non-active (or unchanged) smart_link_id patch — no Fendi routing gate.
+    patch.smart_link_id = proposedSmartLinkId;
   }
 
   const nextStatus = body.status == null ? null : String(body.status);

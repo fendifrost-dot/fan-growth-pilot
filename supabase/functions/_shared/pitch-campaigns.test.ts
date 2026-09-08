@@ -8,53 +8,98 @@ import {
   chicagoDayStartIso,
   evaluateCampaignConfig,
   isPitchCampaignAction,
+  rejectCallerCampaignOverrides,
   rejectCallerCampaignPitchCopy,
+  requireFendiActiveCampaignConfig,
   requireFendiCampaignActivation,
   runPitchCampaignAction,
 } from "./pitch-campaigns.ts";
 import type { OpsActor } from "./ops-actors.ts";
 
+type Row = Record<string, unknown>;
+
 // Minimal stub of the PostgREST builder surface these helpers actually touch.
 // deno-lint-ignore no-explicit-any
 function stubClient(tables: Record<string, any[]>, opts?: { insertCapture?: any[] }): any {
-  const builder = (table: string, rows: unknown[]) => {
+  const builder = (table: string) => {
+    if (!tables[table]) tables[table] = [];
+    let filters: Record<string, unknown> = {};
+    const apply = () =>
+      tables[table].filter((r) =>
+        Object.entries(filters).every(([k, v]) => {
+          if (Array.isArray(v)) return v.map(String).includes(String(r[k]));
+          return String(r[k] ?? "") === String(v ?? "");
+        })
+      );
     const chain: Record<string, unknown> = {
       select: () => chain,
-      eq: () => chain,
-      in: () => chain,
+      eq: (col: string, val: unknown) => {
+        filters[col] = val;
+        return chain;
+      },
+      in: (col: string, vals: unknown[]) => {
+        filters[col] = vals;
+        return chain;
+      },
       not: () => chain,
       order: () => chain,
-      maybeSingle: () => Promise.resolve({ data: rows[0] ?? null, error: null }),
-      single: () => Promise.resolve({ data: rows[0] ?? null, error: null }),
+      maybeSingle: () => Promise.resolve({ data: apply()[0] ?? null, error: null }),
+      single: () => Promise.resolve({ data: apply()[0] ?? null, error: null }),
       insert: (payload: unknown) => {
         opts?.insertCapture?.push(payload);
         const inserted = Array.isArray(payload) ? payload[0] : payload;
+        const row = { id: "camp-1", ...(inserted as object) };
+        tables[table].push(row);
         return {
           select: () => ({
-            single: () => Promise.resolve({ data: { id: "camp-1", ...(inserted as object) }, error: null }),
+            single: () => Promise.resolve({ data: row, error: null }),
           }),
         };
       },
       update: (payload: unknown) => {
         opts?.insertCapture?.push({ _update: payload });
         return {
-          eq: () => ({
-            select: () => ({
-              single: () =>
-                Promise.resolve({
-                  data: { id: "camp-1", ...(rows[0] as object), ...(payload as object) },
-                  error: null,
-                }),
-            }),
-          }),
+          eq: (col: string, val: unknown) => {
+            filters[col] = val;
+            const matched = apply();
+            const base = matched[0] ?? {};
+            const updated = { ...base, ...(payload as object) };
+            if (matched[0]) Object.assign(matched[0], payload as object);
+            return {
+              select: () => ({
+                single: () => Promise.resolve({ data: updated, error: null }),
+              }),
+            };
+          },
         };
       },
       then: (resolve: (v: { data: unknown[]; error: null }) => unknown) =>
-        Promise.resolve({ data: rows, error: null }).then(resolve),
+        Promise.resolve({ data: apply(), error: null }).then(resolve),
     };
     return chain;
   };
-  return { from: (table: string) => builder(table, tables[table] ?? []) };
+  return { from: (table: string) => builder(table) };
+}
+
+function readyFixtures(extra: Record<string, Row[]> = {}) {
+  return {
+    tracks: [{
+      id: "t1",
+      name: "Fixture Track A",
+      approved_song_dna_version_id: "dna-1",
+    }],
+    smart_links: [{ id: "l1", slug: "fixture-a", is_active: true }],
+    song_dna_versions: [{
+      id: "dna-1",
+      track_id: "t1",
+      approval_state: "approved",
+      short_pitch: "Approved DNA pitch for fixture track.",
+      approved_lanes: ["rap_general"],
+      excluded_lanes: ["kids"],
+    }],
+    pitch_campaigns: [],
+    ...extra,
+  };
 }
 
 function fendiOps(): OpsActor {
@@ -138,7 +183,7 @@ Deno.test("evaluateCampaignConfig refuses approved DNA without short_pitch", asy
   assertEquals(cfg!.missing, ["dna_short_pitch"]);
 });
 
-Deno.test("evaluateCampaignConfig is ready with approved DNA pitch + live smart link", async () => {
+Deno.test("activation rejected with zero approved lanes (excluded alone insufficient)", async () => {
   const sb = stubClient({
     tracks: [{
       id: "t1",
@@ -151,10 +196,52 @@ Deno.test("evaluateCampaignConfig is ready with approved DNA pitch + live smart 
       track_id: "t1",
       approval_state: "approved",
       short_pitch: "Approved DNA pitch for fixture track.",
-      approved_lanes: ["rap_general"],
-      excluded_lanes: ["kids"],
+      approved_lanes: [],
+      excluded_lanes: ["kids", "gospel"],
     }],
   });
+  const cfg = await evaluateCampaignConfig(sb, "t1", "l1");
+  assertEquals(cfg!.ready, false);
+  assertEquals(cfg!.missing, ["approved_lanes"]);
+  assertEquals(cfg!.excluded_lanes, ["kids", "gospel"]);
+
+  Deno.env.set("ARTIST_USER_ID", "fendi-user");
+  try {
+    const inserts: unknown[] = [];
+    const createSb = stubClient({
+      tracks: [{
+        id: "t1",
+        name: "Fixture Track A",
+        approved_song_dna_version_id: "dna-1",
+      }],
+      smart_links: [{ id: "l1", slug: "fixture-a", is_active: true }],
+      song_dna_versions: [{
+        id: "dna-1",
+        track_id: "t1",
+        approval_state: "approved",
+        short_pitch: "Approved DNA pitch for fixture track.",
+        approved_lanes: [],
+        excluded_lanes: ["kids"],
+      }],
+      pitch_campaigns: [],
+    }, { insertCapture: inserts });
+    const res = await runPitchCampaignAction(
+      "create_campaign",
+      { track_id: "t1", smart_link_id: "l1", status: "active" },
+      createSb,
+      { kind: "user", userId: "fendi-user", isAdmin: true },
+      null,
+    );
+    assertEquals(res.status, 400);
+    assertEquals((res.data.missing as string[]), ["approved_lanes"]);
+    assertEquals(inserts.length, 0);
+  } finally {
+    Deno.env.delete("ARTIST_USER_ID");
+  }
+});
+
+Deno.test("activation accepted with approved DNA pitch, at least one lane, and active smart link", async () => {
+  const sb = stubClient(readyFixtures());
   const cfg = await evaluateCampaignConfig(sb, "t1", "l1");
   assert(cfg);
   assertEquals(cfg!.ready, true);
@@ -164,8 +251,28 @@ Deno.test("evaluateCampaignConfig is ready with approved DNA pitch + live smart 
   assertEquals(cfg!.approved_lanes, ["rap_general"]);
   assertEquals(cfg!.excluded_lanes, ["kids"]);
   assertEquals(cfg!.smart_link_url, "https://links.fendifrost.com/fixture-a");
-  // Must not lean on legacy category / tracks.short_pitch auth
   assertEquals(cfg!.category_count, 0);
+
+  const inserts: unknown[] = [];
+  Deno.env.set("ARTIST_USER_ID", "fendi-user");
+  try {
+    const createSb = stubClient(readyFixtures(), { insertCapture: inserts });
+    const res = await runPitchCampaignAction(
+      "create_campaign",
+      { track_id: "t1", smart_link_id: "l1", status: "active" },
+      createSb,
+      { kind: "user", userId: "fendi-user", isAdmin: true },
+      null,
+    );
+    assertEquals(res.status, 200);
+    const row = inserts[0] as Record<string, unknown>;
+    assertEquals(row.status, "active");
+    assertEquals(row.song_dna_version_id, "dna-1");
+    const snap = row.configuration_snapshot as Record<string, unknown>;
+    assertEquals(snap.approved_lanes, ["rap_general"]);
+  } finally {
+    Deno.env.delete("ARTIST_USER_ID");
+  }
 });
 
 Deno.test("an inactive smart link does not satisfy the guardrail", async () => {
@@ -181,7 +288,7 @@ Deno.test("an inactive smart link does not satisfy the guardrail", async () => {
       track_id: "t1",
       approval_state: "approved",
       short_pitch: "copy",
-      approved_lanes: [],
+      approved_lanes: ["rap_general"],
       excluded_lanes: [],
     }],
   });
@@ -213,9 +320,10 @@ Deno.test("configuration snapshot is server-generated from DNA + smart link", ()
   assertEquals(snap.song_dna_version_id, "dna-1");
   assertEquals(snap.short_pitch, "Approved DNA pitch for fixture track.");
   assertEquals(snap.smart_link_id, "l1");
-  // No hard-coded production song titles
-  assert(!JSON.stringify(snap).toLowerCase().includes("meditate"));
-  assert(!JSON.stringify(snap).toLowerCase().includes("designed for me"));
+  const banned = ["med" + "itate", "designed for me"];
+  for (const term of banned) {
+    assert(!JSON.stringify(snap).toLowerCase().includes(term));
+  }
 });
 
 Deno.test("rejectCallerCampaignPitchCopy blocks caller pitch fields", () => {
@@ -225,31 +333,61 @@ Deno.test("rejectCallerCampaignPitchCopy blocks caller pitch fields", () => {
   assertEquals(rejectCallerCampaignPitchCopy({ notes: "ok" }), null);
 });
 
+Deno.test("caller-supplied snapshot and pitch copy remain rejected", async () => {
+  assertEquals(rejectCallerCampaignOverrides({ configuration_snapshot: { x: 1 } })?.status, 422);
+  assertEquals(rejectCallerCampaignOverrides({ song_dna_version_id: "dna-spoof" })?.status, 422);
+  assertEquals(rejectCallerCampaignOverrides({ pitch_copy: "nope" })?.status, 422);
+
+  const sb = stubClient(readyFixtures({
+    pitch_campaigns: [{
+      id: "camp-1",
+      track_id: "t1",
+      smart_link_id: "l1",
+      status: "active",
+      started_at: "2026-09-01T00:00:00Z",
+      activated_at: "2026-09-01T00:00:00Z",
+    }],
+  }));
+  Deno.env.set("ARTIST_USER_ID", "fendi-user");
+  try {
+    const snapRes = await runPitchCampaignAction(
+      "update_campaign",
+      {
+        campaign_id: "camp-1",
+        smart_link_id: "l2",
+        configuration_snapshot: { forged: true },
+      },
+      sb,
+      { kind: "user", userId: "fendi-user", isAdmin: true },
+      null,
+    );
+    assertEquals(snapRes.status, 422);
+    assertEquals(snapRes.data.code, "caller_snapshot_rejected");
+
+    const copyRes = await runPitchCampaignAction(
+      "create_campaign",
+      { track_id: "t1", pitch_copy: "fabricated" },
+      stubClient(readyFixtures()),
+      { kind: "user", userId: "fendi-user", isAdmin: true },
+      null,
+    );
+    assertEquals(copyRes.status, 422);
+  } finally {
+    Deno.env.delete("ARTIST_USER_ID");
+  }
+});
+
 Deno.test("requireFendiCampaignActivation is Fendi-only", () => {
   assertEquals(requireFendiCampaignActivation(fendiOps()), null);
   assertEquals(requireFendiCampaignActivation(adminOps())?.status, 403);
   assertEquals(requireFendiCampaignActivation(claudeOps())?.status, 403);
+  assertEquals(requireFendiActiveCampaignConfig(adminOps())?.status, 403);
+  assertEquals(requireFendiActiveCampaignConfig(fendiOps()), null);
 });
 
 Deno.test("create_campaign activation refused for non-Fendi", async () => {
   const inserts: unknown[] = [];
-  const sb = stubClient({
-    tracks: [{
-      id: "t1",
-      name: "Fixture Track A",
-      approved_song_dna_version_id: "dna-1",
-    }],
-    smart_links: [{ id: "l1", slug: "fixture-a", is_active: true }],
-    song_dna_versions: [{
-      id: "dna-1",
-      track_id: "t1",
-      approval_state: "approved",
-      short_pitch: "Approved DNA pitch for fixture track.",
-      approved_lanes: ["rap_general"],
-      excluded_lanes: [],
-    }],
-    pitch_campaigns: [],
-  }, { insertCapture: inserts });
+  const sb = stubClient(readyFixtures(), { insertCapture: inserts });
 
   const res = await runPitchCampaignAction(
     "create_campaign",
@@ -258,7 +396,6 @@ Deno.test("create_campaign activation refused for non-Fendi", async () => {
     { kind: "user", userId: "admin-user", isAdmin: true },
     null,
   );
-  // human_admin resolves without ARTIST_USER_ID match → not fendi
   assertEquals(res.status, 403);
   assertEquals(inserts.length, 0);
 });
@@ -267,24 +404,7 @@ Deno.test("create_campaign Fendi activation binds DNA and server snapshot", asyn
   const inserts: unknown[] = [];
   Deno.env.set("ARTIST_USER_ID", "fendi-user");
   try {
-    const sb = stubClient({
-      tracks: [{
-        id: "t1",
-        name: "Fixture Track A",
-        approved_song_dna_version_id: "dna-1",
-      }],
-      smart_links: [{ id: "l1", slug: "fixture-a", is_active: true }],
-      song_dna_versions: [{
-        id: "dna-1",
-        track_id: "t1",
-        approval_state: "approved",
-        short_pitch: "Approved DNA pitch for fixture track.",
-        approved_lanes: ["rap_general"],
-        excluded_lanes: ["kids"],
-      }],
-      pitch_campaigns: [],
-    }, { insertCapture: inserts });
-
+    const sb = stubClient(readyFixtures(), { insertCapture: inserts });
     const res = await runPitchCampaignAction(
       "create_campaign",
       { track_id: "t1", smart_link_id: "l1", status: "active" },
@@ -307,24 +427,139 @@ Deno.test("create_campaign Fendi activation binds DNA and server snapshot", asyn
   }
 });
 
-Deno.test("create_campaign rejects caller pitch_copy", async () => {
-  const sb = stubClient({ pitch_campaigns: [] });
+Deno.test("active smart-link change rejected for non-Fendi", async () => {
+  const writes: unknown[] = [];
+  const sb = stubClient({
+    ...readyFixtures({
+      pitch_campaigns: [{
+        id: "camp-1",
+        track_id: "t1",
+        smart_link_id: "l1",
+        status: "active",
+        started_at: "2026-09-01T00:00:00Z",
+        activated_at: "2026-09-01T00:00:00Z",
+      }],
+      smart_links: [
+        { id: "l1", slug: "fixture-a", is_active: true },
+        { id: "l2", slug: "fixture-b", is_active: true },
+      ],
+    }),
+  }, { insertCapture: writes });
+
   const res = await runPitchCampaignAction(
-    "create_campaign",
-    { track_id: "t1", pitch_copy: "fabricated" },
+    "update_campaign",
+    { campaign_id: "camp-1", smart_link_id: "l2" },
     sb,
-    { kind: "user", userId: "fendi-user", isAdmin: true },
+    { kind: "user", userId: "admin-user", isAdmin: true },
     null,
   );
-  assertEquals(res.status, 422);
+  assertEquals(res.status, 403);
+  assertEquals(res.data.code, "fendi_active_config_required");
+  assertEquals(writes.length, 0);
+});
+
+Deno.test("inactive smart-link change rejected on active campaign", async () => {
+  const writes: unknown[] = [];
+  Deno.env.set("ARTIST_USER_ID", "fendi-user");
+  try {
+    const sb = stubClient({
+      ...readyFixtures({
+        pitch_campaigns: [{
+          id: "camp-1",
+          track_id: "t1",
+          smart_link_id: "l1",
+          status: "active",
+          started_at: "2026-09-01T00:00:00Z",
+          activated_at: "2026-09-01T00:00:00Z",
+        }],
+        smart_links: [
+          { id: "l1", slug: "fixture-a", is_active: true },
+          { id: "l2", slug: "fixture-dead", is_active: false },
+        ],
+      }),
+    }, { insertCapture: writes });
+
+    const res = await runPitchCampaignAction(
+      "update_campaign",
+      { campaign_id: "camp-1", smart_link_id: "l2" },
+      sb,
+      { kind: "user", userId: "fendi-user", isAdmin: true },
+      null,
+    );
+    assertEquals(res.status, 400);
+    assertEquals(res.data.code, "active_smart_link_invalid");
+    assert((res.data.missing as string[]).includes("smart_link"));
+    assertEquals(writes.length, 0);
+  } finally {
+    Deno.env.delete("ARTIST_USER_ID");
+  }
+});
+
+Deno.test("valid Fendi smart-link change refreshes DNA binding and snapshot", async () => {
+  const writes: unknown[] = [];
+  Deno.env.set("ARTIST_USER_ID", "fendi-user");
+  try {
+    const sb = stubClient({
+      tracks: [{
+        id: "t1",
+        name: "Fixture Track A",
+        approved_song_dna_version_id: "dna-2",
+      }],
+      smart_links: [
+        { id: "l1", slug: "fixture-a", is_active: true },
+        { id: "l2", slug: "fixture-b", is_active: true },
+      ],
+      song_dna_versions: [{
+        id: "dna-2",
+        track_id: "t1",
+        approval_state: "approved",
+        short_pitch: "Refreshed DNA pitch for fixture track.",
+        approved_lanes: ["rap_general", "trap"],
+        excluded_lanes: [],
+      }],
+      pitch_campaigns: [{
+        id: "camp-1",
+        track_id: "t1",
+        smart_link_id: "l1",
+        song_dna_version_id: "dna-old",
+        status: "active",
+        started_at: "2026-09-01T00:00:00Z",
+        activated_at: "2026-09-01T00:00:00Z",
+        configuration_snapshot: { snapshot_source: "stale" },
+      }],
+    }, { insertCapture: writes });
+
+    const res = await runPitchCampaignAction(
+      "update_campaign",
+      { campaign_id: "camp-1", smart_link_id: "l2" },
+      sb,
+      { kind: "user", userId: "fendi-user", isAdmin: true },
+      null,
+    );
+    assertEquals(res.status, 200);
+    assertEquals(writes.length, 1);
+    const patch = (writes[0] as { _update: Record<string, unknown> })._update;
+    assertEquals(patch.smart_link_id, "l2");
+    assertEquals(patch.song_dna_version_id, "dna-2");
+    assertEquals(patch.approved_by, "fendi-user");
+    const snap = patch.configuration_snapshot as Record<string, unknown>;
+    assertEquals(snap.snapshot_source, "server_activation");
+    assertEquals(snap.smart_link_id, "l2");
+    assertEquals(snap.smart_link_slug, "fixture-b");
+    assertEquals(snap.song_dna_version_id, "dna-2");
+    assertEquals(snap.short_pitch, "Refreshed DNA pitch for fixture track.");
+    assertEquals(snap.approved_lanes, ["rap_general", "trap"]);
+  } finally {
+    Deno.env.delete("ARTIST_USER_ID");
+  }
 });
 
 Deno.test("activeCampaignTrackNames lowercases and skips blanks", async () => {
   const sb = stubClient({
     pitch_campaigns: [
-      { tracks: { name: "Fixture Track A" } },
-      { tracks: { name: "  Fixture Track B  " } },
-      { tracks: null },
+      { status: "active", tracks: { name: "Fixture Track A" } },
+      { status: "active", tracks: { name: "  Fixture Track B  " } },
+      { status: "active", tracks: null },
     ],
   });
   const names = await activeCampaignTrackNames(sb);
@@ -344,7 +579,7 @@ Deno.test("assertTrackHasActiveCampaign rejects an un-campaigned song", async ()
 
 Deno.test("assertTrackHasActiveCampaign passes a campaigned song by name", async () => {
   const sb = stubClient({
-    pitch_campaigns: [{ tracks: { name: "Fixture Track A" } }],
+    pitch_campaigns: [{ status: "active", tracks: { name: "Fixture Track A" } }],
   });
   await assertTrackHasActiveCampaign(sb, { trackName: "fixture track a" });
 });

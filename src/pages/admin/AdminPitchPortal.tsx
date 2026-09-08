@@ -79,9 +79,14 @@ const MISSING_LABELS: Record<string, { label: string; fixTo: string; fixLabel: s
     fixTo: "/admin/song-dna",
     fixLabel: "Edit Song DNA pitch",
   },
+  approved_lanes: {
+    label: "Approved Song DNA needs at least one approved lane",
+    fixTo: "/admin/song-dna",
+    fixLabel: "Set approved lanes",
+  },
   // Legacy keys (pre-DNA) — keep labels so old responses still render
   category: {
-    label: "Approved Song DNA lanes missing (use Song DNA, not categories)",
+    label: "Approved Song DNA needs at least one approved lane",
     fixTo: "/admin/song-dna",
     fixLabel: "Song DNA",
   },
@@ -215,8 +220,9 @@ const AdminPitchPortal: React.FC = () => {
           <h2 className="font-medium">Start a new campaign</h2>
           <p className="text-xs text-muted-foreground mt-1">
             Pick a song, confirm its live smart link and daily target, then activate. Activation
-            requires current approved Song DNA (with pitch copy and lanes) plus a live smart link.
-            Pitch copy is taken from approved DNA — not typed here.
+            requires current approved Song DNA with pitch copy and at least one approved lane, plus a
+            live smart link. Excluded lanes alone are not enough. Pitch copy is taken from approved
+            DNA — not typed here.
           </p>
         </div>
 
@@ -312,14 +318,14 @@ const AdminPitchPortal: React.FC = () => {
               variant={
                 (selectedTrack.approved_lane_count ?? selectedTrack.category_count) > 0
                   ? "secondary"
-                  : "outline"
+                  : "destructive"
               }
             >
               {(selectedTrack.approved_lane_count ?? selectedTrack.category_count) > 0
                 ? `${selectedTrack.approved_lane_count ?? selectedTrack.category_count} approved lane${
                     (selectedTrack.approved_lane_count ?? selectedTrack.category_count) === 1 ? "" : "s"
-                  }`
-                : "No approved lanes yet"}
+                  } ✓`
+                : "No approved lanes"}
             </Badge>
             <Badge variant={smartLinkId ? "secondary" : "destructive"}>
               {smartLinkId ? "Smart link ✓" : "No smart link selected"}

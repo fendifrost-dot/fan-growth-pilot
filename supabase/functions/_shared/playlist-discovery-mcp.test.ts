@@ -27,7 +27,12 @@ import {
   submitPlaylistCandidates,
   createPlaylistDraftInventory,
   startClaudePlaylistStation,
+  completeClaudePlaylistStation,
+  assertPlaylistTargetInsertSchema,
+  buildDiscoveryPlaylistTargetInsert,
+  PLAYLIST_TARGETS_FORBIDDEN_INSERT_KEYS,
 } from "./playlist-discovery-mcp.ts";
+import { startDailyStationRun } from "./daily-ops.ts";
 import {
   inventoryIdempotencyKey,
 } from "./playlist-discovery-ops.ts";
@@ -343,6 +348,26 @@ function stubSb(
         if (failTables[table]) {
           return Promise.resolve({ data: null, error: { message: failTables[table] } });
         }
+        if (mode === "update" && payload && !Array.isArray(payload)) {
+          const matched = apply();
+          for (const r of matched) Object.assign(r, payload);
+          writes.push({ table, op: "update", row: { ...(payload as Row) } });
+          const hit = matched[0] ?? null;
+          return Promise.resolve({
+            data: hit,
+            error: hit ? null : { message: "not found" },
+          });
+        }
+        if (mode === "insert" && payload) {
+          const list = Array.isArray(payload) ? payload : [payload];
+          const created = list.map((r) => {
+            const withId = { id: (r as Row).id ?? crypto.randomUUID(), ...(r as Row) };
+            tables[table].push(withId);
+            writes.push({ table, op: "insert", row: withId });
+            return withId;
+          });
+          return Promise.resolve({ data: created[0] ?? null, error: null });
+        }
         const hit = apply()[0];
         return Promise.resolve({
           data: hit ?? null,
@@ -503,6 +528,7 @@ Deno.test("invalid email cannot become verified with DB-backed verification", as
     track_id: trackId,
     candidates: [{
       playlist_id: "0DAtAjCytSoXd6T42mP0CJ",
+      playlist_name: "Fixture Cold Email List",
       lane: "rap_general",
       source_evidence: "https://example.com/list",
       submission_channel: "email",
@@ -546,6 +572,7 @@ Deno.test("web-form and IG targets retain their channels when verified", async (
     track_id: trackId,
     candidates: [{
       playlist_id: "0DAtAjCytSoXd6T42mP0AA",
+      playlist_name: "Fixture Web Form List",
       lane: "rap_general",
       source_evidence: "https://curator.example/submit-proof",
       submission_channel: "web_form",
@@ -564,6 +591,7 @@ Deno.test("web-form and IG targets retain their channels when verified", async (
     track_id: trackId,
     candidates: [{
       playlist_id: "0DAtAjCytSoXd6T42mP0BB",
+      playlist_name: "Fixture IG List",
       lane: "rap_general",
       source_evidence: "https://ig.example/proof",
       submission_channel: "instagram_dm",
@@ -1530,5 +1558,307 @@ Deno.test("OAuth auth-code replay fails; concurrent refresh rotation yields one 
     assertEquals(active.length, 1);
     assertEquals(String(active[0].refresh_expires_at), String(preserved));
     assert(Number(winner.data.refresh_expires_in) > 0);
+  });
+});
+
+Deno.test("playlist_targets insert keys match live schema and exclude playlist_url", () => {
+  const row = buildDiscoveryPlaylistTargetInsert({
+    playlistId: "0DAtAjCytSoXd6T42mP0CJ",
+    playlistName: "Fixture Discovery List",
+    lane: "rap_general",
+    pathVerified: false,
+    verificationStatus: "unverified",
+    pathReason: "needs_review",
+    channel: "email",
+    curatorEmail: "ok@curator.test",
+    formUrl: null,
+    igAccount: null,
+    evidence: "https://example.com/evidence",
+    discoveredBy: "claude_playlist_discovery",
+    discoveredByLabel: "claude_playlist_discovery",
+    trackName: "Fixture Track",
+    songDnaVersionId: "22222222-2222-2222-2222-222222222222",
+    playlistUrl: "https://open.spotify.com/playlist/0DAtAjCytSoXd6T42mP0CJ",
+    rawSourceUrl: "https://open.spotify.com/playlist/0DAtAjCytSoXd6T42mP0CJ?si=abc",
+  });
+  assertEquals(assertPlaylistTargetInsertSchema(row), null);
+  for (const bad of PLAYLIST_TARGETS_FORBIDDEN_INSERT_KEYS) {
+    assertEquals(Object.prototype.hasOwnProperty.call(row, bad), false, bad);
+  }
+  assertEquals("playlist_url" in row, false);
+  const rc = row.research_context as Row;
+  assertEquals(rc.playlist_url, "https://open.spotify.com/playlist/0DAtAjCytSoXd6T42mP0CJ");
+  assertEquals(rc.source, "claude_playlist_discovery");
+});
+
+Deno.test("submit new Spotify candidate persists without playlist_url column", async () => {
+  const ops = playlistDiscoveryActor();
+  const trackId = "11111111-1111-1111-1111-111111111111";
+  const dnaId = "22222222-2222-2222-2222-222222222222";
+  const playlistId = "0DAtAjCytSoXd6T42mP0NW";
+  const writes: { table: string; op: string; row: Row }[] = [];
+  const sb = stubSb({
+    tracks: [{ id: trackId, name: "Fixture Track", approved_song_dna_version_id: dnaId }],
+    song_dna_versions: [{
+      id: dnaId,
+      track_id: trackId,
+      approval_state: "approved",
+      approved_lanes: ["rap_general"],
+      excluded_lanes: [],
+      short_pitch: "Fixture DNA pitch",
+      primary_genre: "rap",
+    }],
+    playlist_targets: [],
+    domain_blocklist: [],
+    non_curator_domains: [],
+  }, { writes });
+
+  // Use web_form so path verification succeeds without MX/.test TLD network gates;
+  // playlist_url remains a candidate input for identity only — never an insert column.
+  const res = await submitPlaylistCandidates(sb, ops, {
+    track_id: trackId,
+    candidates: [{
+      playlist_id: playlistId,
+      playlist_name: "Fixture New Spotify List",
+      playlist_url: `https://open.spotify.com/playlist/${playlistId}?si=xyz`,
+      source_url: `https://open.spotify.com/playlist/${playlistId}?si=xyz`,
+      lane: "rap_general",
+      source_evidence: "https://example.com/curator-proof",
+      submission_channel: "web_form",
+      form_url: "https://curator.example/submit",
+    }],
+  });
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals(res.data.accepted_count, 1, JSON.stringify(res.data));
+  assertEquals(res.data.rejected_count, 0, JSON.stringify(res.data));
+  const insert = writes.find((w) => w.table === "playlist_targets" && w.op === "insert");
+  assert(insert, "expected playlist_targets insert");
+  assertEquals(assertPlaylistTargetInsertSchema(insert!.row), null);
+  assertEquals("playlist_url" in insert!.row, false);
+  assertEquals(insert!.row.playlist_id, playlistId);
+  assertEquals(insert!.row.playlist_name, "Fixture New Spotify List");
+  assertEquals(insert!.row.discovered_by, "claude_playlist_discovery");
+  assertEquals(insert!.row.platform, "spotify");
+  const rc = insert!.row.research_context as Row;
+  assertEquals(rc.playlist_url, `https://open.spotify.com/playlist/${playlistId}`);
+  assertEquals(rc.source, "claude_playlist_discovery");
+  assertEquals((sb._tables.playlist_targets as Row[]).length, 1);
+  assertEquals((sb._tables.playlist_targets as Row[])[0].playlist_id, playlistId);
+});
+
+Deno.test("missing playlist name fails clearly before playlist_targets insert", async () => {
+  const ops = playlistDiscoveryActor();
+  const trackId = "11111111-1111-1111-1111-111111111111";
+  const dnaId = "22222222-2222-2222-2222-222222222222";
+  const writes: { table: string; op: string; row: Row }[] = [];
+  const sb = stubSb({
+    tracks: [{ id: trackId, name: "Fixture Track", approved_song_dna_version_id: dnaId }],
+    song_dna_versions: [{
+      id: dnaId,
+      track_id: trackId,
+      approval_state: "approved",
+      approved_lanes: ["rap_general"],
+      excluded_lanes: [],
+      short_pitch: "pitch",
+      primary_genre: "rap",
+    }],
+    playlist_targets: [],
+    domain_blocklist: [],
+    non_curator_domains: [],
+  }, { writes });
+
+  const res = await submitPlaylistCandidates(sb, ops, {
+    track_id: trackId,
+    candidates: [{
+      playlist_id: "0DAtAjCytSoXd6T42mP0NN",
+      lane: "rap_general",
+      source_evidence: "https://example.com/evidence",
+      submission_channel: "email",
+      curator_email: "ok@curator.test",
+    }],
+  });
+  assertEquals(res.status, 200);
+  assertEquals(res.data.rejected_count, 1);
+  const rejected = (res.data.rejected as Row[])[0];
+  assertEquals(rejected.reason, "missing_playlist_name");
+  assertEquals(rejected.code, "playlist_name_required");
+  assertEquals(writes.filter((w) => w.table === "playlist_targets").length, 0);
+});
+
+Deno.test("complete_claude_playlist_station schema accepts failure/zero-output fields", () => {
+  const okFailed = validateToolArgs("complete_claude_playlist_station", {
+    run_id: "a2760f20-a81a-4e0b-89b2-76e7c7937328",
+    status: "failed",
+    error_summary: "playlist_targets schema cache: playlist_url",
+    raw_discoveries: 0,
+    unique_discoveries: 0,
+    verified_targets: 0,
+    drafts_created: 0,
+    duplicates: 0,
+    shortfall_reason: "technical_failure",
+  });
+  assertEquals(okFailed, null);
+
+  const okPartial = validateToolArgs("complete_claude_playlist_station", {
+    run_id: "run-partial",
+    status: "partial",
+    shortfall_reason: "saturation",
+    saturation_indicators: ["query_exhausted"],
+  });
+  assertEquals(okPartial, null);
+
+  const badStatus = validateToolArgs("complete_claude_playlist_station", {
+    run_id: "run-x",
+    status: "success",
+  });
+  assert(badStatus);
+  assertEquals(badStatus!.data.code, "invalid_args");
+});
+
+Deno.test("playlist_tranche_final can close as failed/blocked/partial without output_batch_id", async () => {
+  const ops = playlistDiscoveryActor();
+  for (const status of ["failed", "blocked", "partial"] as const) {
+    const tables: Record<string, Row[]> = {
+      daily_ops_station_runs: [{
+        id: `run-${status}`,
+        station_id: "playlist_tranche_final",
+        business_date_ct: "2026-09-09",
+        run_key: "primary",
+        status: "running",
+        owner_kind: "claude",
+        actor_kind: "claude_playlist_discovery",
+      }],
+      agh_handoff_batches: [],
+    };
+    const sb = stubSb(tables);
+    const res = await completeClaudePlaylistStation(sb, ops, {
+      run_id: `run-${status}`,
+      status,
+      error_summary: status === "failed" ? "exact_failure:schema_cache" : null,
+      shortfall_reason: status === "partial" ? "zero_verified" : null,
+      raw_discoveries: 0,
+      drafts_created: 0,
+    });
+    assertEquals(res.status, 200, status + " " + JSON.stringify(res.data));
+    const run = res.data.run as Row;
+    assertEquals(run.status, status);
+    if (status === "failed") {
+      assertEquals(run.error_summary, "exact_failure:schema_cache");
+    }
+    assertEquals(tables.agh_handoff_batches.length, 0, "must not fabricate a batch");
+  }
+});
+
+Deno.test("completed playlist_tranche_final rejects missing output_batch_id", async () => {
+  const ops = playlistDiscoveryActor();
+  const sb = stubSb({
+    daily_ops_station_runs: [{
+      id: "run-complete-missing",
+      station_id: "playlist_tranche_final",
+      business_date_ct: "2026-09-09",
+      run_key: "primary",
+      status: "running",
+      owner_kind: "claude",
+      actor_kind: "claude_playlist_discovery",
+    }],
+    agh_handoff_batches: [],
+  });
+  const res = await completeClaudePlaylistStation(sb, ops, {
+    run_id: "run-complete-missing",
+    status: "completed",
+  });
+  assertEquals(res.status, 422);
+  assertEquals(res.data.code, "missing_output_batch");
+});
+
+Deno.test("successful playlist_tranche_final completion advances to AWAITING_GROK_REVIEW", async () => {
+  const ops = playlistDiscoveryActor();
+  const batchId = "batch-real-1";
+  const tables: Record<string, Row[]> = {
+    daily_ops_station_runs: [{
+      id: "run-complete-ok",
+      station_id: "playlist_tranche_final",
+      business_date_ct: "2026-09-09",
+      run_key: "primary",
+      status: "running",
+      owner_kind: "claude",
+      actor_kind: "claude_playlist_discovery",
+    }],
+    agh_handoff_batches: [{
+      id: batchId,
+      queue_state: "CLAUDE_BATCH_READY",
+      discovered_by: "claude_playlist_discovery",
+      discovered_by_label: "claude_playlist_discovery",
+    }],
+  };
+  const sb = stubSb(tables, {
+    rpcHandlers: {
+      advance_agh_handoff_batch: async (args) => {
+        const batch = tables.agh_handoff_batches.find((b) => String(b.id) === String(args.p_batch_id));
+        if (!batch) {
+          return { data: null, error: { message: "not found" } };
+        }
+        if (String(batch.queue_state) !== String(args.p_expected_state)) {
+          return {
+            data: { ok: false, code: "state_mismatch" },
+            error: null,
+          };
+        }
+        batch.queue_state = String(args.p_next_state);
+        Object.assign(batch, (args.p_stamps as Row) ?? {});
+        return { data: { ok: true, batch }, error: null };
+      },
+    },
+  });
+
+  const res = await completeClaudePlaylistStation(sb, ops, {
+    run_id: "run-complete-ok",
+    status: "completed",
+    output_batch_id: batchId,
+    drafts_created: 3,
+    verified_targets: 3,
+  });
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals((res.data.run as Row).status, "completed");
+  assertEquals((res.data.run as Row).output_batch_id, batchId);
+  assertEquals(tables.agh_handoff_batches[0].queue_state, "AWAITING_GROK_REVIEW");
+});
+
+Deno.test("downstream Grok work hard-blocks after upstream failed/blocked/partial", async () => {
+  await withEnv({ GROK_PLAYLIST_CONTROL_SECRET: GROK }, async () => {
+    for (const upstreamStatus of ["failed", "blocked", "partial"] as const) {
+      const sb = stubSb({
+        daily_ops_station_runs: [{
+          id: `up-${upstreamStatus}`,
+          station_id: "playlist_tranche_final",
+          business_date_ct: "2026-09-09",
+          run_key: "primary",
+          status: upstreamStatus,
+          output_batch_id: null,
+          error_summary: upstreamStatus === "failed" ? "schema_cache" : null,
+          owner_kind: "claude",
+        }],
+        agh_handoff_batches: [],
+      });
+      const res = await startDailyStationRun(
+        sb,
+        { station_id: "grok_playlist_review", business_date_ct: "2026-09-09" },
+        { kind: "anonymous" },
+        req({ "x-grok-playlist-control-secret": GROK }),
+      );
+      assertEquals(res.status, 409, upstreamStatus + " " + JSON.stringify(res.data));
+      assertEquals(res.data.code, "dependency_hard_block");
+      assertEquals(res.data.blocked, true);
+      const failure = String(res.data.dependency_failure);
+      if (upstreamStatus === "failed") {
+        assert(failure.includes("upstream_failed"), failure);
+        assert(failure.includes("schema_cache"), failure);
+      } else if (upstreamStatus === "blocked") {
+        assert(failure.includes("upstream_blocked"), failure);
+      } else {
+        assert(failure.includes("upstream_incomplete"), failure);
+        assert(failure.includes("status_partial"), failure);
+      }
+    }
   });
 });

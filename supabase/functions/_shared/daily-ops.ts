@@ -182,7 +182,10 @@ export async function startDailyStationRun(
     queueDependency = `upstream_queue_not_ready:need_${requiredQueue}:no_batch`;
   }
 
-  const depFailure = queueDependency ?? upstream.dependency_failure;
+  // Prefer explicit upstream station failure/incomplete over queue-not-ready so
+  // failed/blocked/partial Claude runs surface as upstream_* hard-blocks (409),
+  // not masked by missing-batch queue messages (422).
+  const depFailure = upstream.dependency_failure ?? queueDependency;
   const grokBlock = hardBlockGrokDependency(stationId, depFailure);
   if (grokBlock) return grokBlock;
 
@@ -368,7 +371,7 @@ export async function completeDailyStationRun(
     }
     const grokBlock = hardBlockGrokDependency(
       stationId as DailyStationId,
-      queueDependency ?? upstream.dependency_failure,
+      upstream.dependency_failure ?? queueDependency,
     );
     if (grokBlock) return grokBlock;
   }

@@ -33,6 +33,184 @@ import {
 
 export type ToolResult = { status: number; data: Record<string, unknown> };
 
+/**
+ * playlist_targets Insert keys from generated Supabase types (live schema).
+ * Used to fail closed on mistaken columns such as playlist_url / research_notes.
+ */
+export const PLAYLIST_TARGETS_SCHEMA_INSERT_KEYS = new Set([
+  "authenticity_notes",
+  "authenticity_score",
+  "bounce_count",
+  "contact_confidence",
+  "contact_method",
+  "created_at",
+  "curator_email",
+  "curator_handle",
+  "curator_instagram",
+  "curator_linktree",
+  "curator_name",
+  "curator_submission_dm",
+  "curator_submission_note",
+  "curator_submission_url",
+  "curator_tiktok",
+  "curator_twitter",
+  "curator_url",
+  "curator_website",
+  "discovered_by",
+  "discovered_by_label",
+  "discovery_profile_id",
+  "follower_count",
+  "form_cost",
+  "form_deadline",
+  "form_login_required",
+  "form_manual_submit_result",
+  "form_manual_submitted_at",
+  "form_manual_submitted_by",
+  "form_required_fields",
+  "form_requirements",
+  "form_source_evidence",
+  "form_url",
+  "form_verified_at",
+  "fraud_score",
+  "fraud_verdict",
+  "id",
+  "ig_curator_account",
+  "ig_dm_draft",
+  "ig_manual_response_status",
+  "ig_manual_submitted_at",
+  "ig_manual_submitted_by",
+  "ig_source_evidence",
+  "ig_verified_at",
+  "is_active",
+  "is_paid",
+  "lane",
+  "last_bounced_at",
+  "last_enriched_at",
+  "last_pitched_at",
+  "last_verified_at",
+  "legitimacy_score",
+  "notes",
+  "overlap_score",
+  "path_verification_notes",
+  "path_verified",
+  "pitch_count",
+  "pitch_status",
+  "pitched_at",
+  "platform",
+  "playlist_id",
+  "playlist_name",
+  "recommended_pitch_angle",
+  "research_context",
+  "similar_artists",
+  "song_dna_version_id",
+  "submission_cost",
+  "submission_method",
+  "submission_url",
+  "tier",
+  "track_count",
+  "track_name",
+  "updated_at",
+  "verification_notes",
+  "verification_status",
+  "verified_by",
+  "verified_by_label",
+  "vibe_tags",
+  "whitelist_status",
+  "why_it_fits",
+]);
+
+/** Forbidden mistaken columns that have caused live PostgREST schema-cache failures. */
+export const PLAYLIST_TARGETS_FORBIDDEN_INSERT_KEYS = [
+  "playlist_url",
+  "research_notes",
+] as const;
+
+/**
+ * Build a schema-safe playlist_targets insert for discovery.
+ * Accepts playlist_url / source_url only as inputs for identity/context — never as columns.
+ */
+export function buildDiscoveryPlaylistTargetInsert(opts: {
+  playlistId: string;
+  playlistName: string;
+  lane: string;
+  pathVerified: boolean;
+  verificationStatus: string;
+  pathReason: string | null;
+  channel: string | null;
+  curatorEmail: string | null;
+  formUrl: string | null;
+  igAccount: string | null;
+  evidence: string;
+  discoveredBy: string;
+  discoveredByLabel: string;
+  trackName: string | null;
+  songDnaVersionId: string | null;
+  /** Canonical Spotify URL from normalization — stored in research_context only. */
+  playlistUrl: string | null;
+  rawSourceUrl?: string | null;
+}): Record<string, unknown> {
+  const researchContext: Record<string, unknown> = {
+    source: "claude_playlist_discovery",
+    discovered_at: new Date().toISOString(),
+  };
+  if (opts.playlistUrl) researchContext.playlist_url = opts.playlistUrl;
+  if (opts.rawSourceUrl && opts.rawSourceUrl !== opts.playlistUrl) {
+    researchContext.source_url = opts.rawSourceUrl;
+  }
+
+  const row: Record<string, unknown> = {
+    playlist_id: opts.playlistId,
+    playlist_name: opts.playlistName,
+    platform: "spotify",
+    lane: opts.lane,
+    verification_status: opts.verificationStatus,
+    path_verified: opts.pathVerified,
+    path_verification_notes: opts.pathReason,
+    curator_email: opts.curatorEmail,
+    form_url: opts.formUrl,
+    form_source_evidence: opts.evidence,
+    // Only use form URL as submission_url; never stash playlist URLs here.
+    submission_url: opts.formUrl,
+    ig_curator_account: opts.igAccount,
+    curator_instagram: opts.igAccount,
+    ig_source_evidence: opts.evidence,
+    contact_method: opts.channel ?? "email",
+    submission_method: opts.channel ?? "email",
+    submission_cost: "unknown",
+    discovered_by: opts.discoveredBy,
+    discovered_by_label: opts.discoveredByLabel,
+    song_dna_version_id: opts.songDnaVersionId,
+    track_name: opts.trackName ?? "",
+    research_context: researchContext,
+    notes: opts.evidence,
+    is_active: true,
+    updated_at: new Date().toISOString(),
+  };
+
+  const schemaErr = assertPlaylistTargetInsertSchema(row);
+  if (schemaErr) {
+    throw new Error(`playlist_targets_insert_schema:${schemaErr}`);
+  }
+  return row;
+}
+
+/** Returns null when the row matches the live/generated insert contract. */
+export function assertPlaylistTargetInsertSchema(row: Record<string, unknown>): string | null {
+  for (const bad of PLAYLIST_TARGETS_FORBIDDEN_INSERT_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(row, bad)) {
+      return `forbidden_key:${bad}`;
+    }
+  }
+  for (const key of Object.keys(row)) {
+    if (!PLAYLIST_TARGETS_SCHEMA_INSERT_KEYS.has(key)) {
+      return `unknown_key:${key}`;
+    }
+  }
+  if (!String(row.playlist_id ?? "").trim()) return "missing_playlist_id";
+  if (!String(row.playlist_name ?? "").trim()) return "missing_playlist_name";
+  return null;
+}
+
 export const PLAYLIST_DISCOVERY_TOOLS = [
   "get_playlist_discovery_work",
   "submit_playlist_candidates",
@@ -146,6 +324,28 @@ export const PLAYLIST_DISCOVERY_TOOL_SCHEMAS: Record<
       id: { type: "string", maxLength: 64 },
       output_batch_id: { type: "string", maxLength: 64 },
       notes: { type: "string", maxLength: 2000 },
+      status: {
+        type: "string",
+        enum: ["completed", "partial", "blocked", "failed"],
+      },
+      raw_discoveries: { type: "integer", minimum: 0, maximum: 100000 },
+      unique_discoveries: { type: "integer", minimum: 0, maximum: 100000 },
+      verified_targets: { type: "integer", minimum: 0, maximum: 100000 },
+      drafts_created: { type: "integer", minimum: 0, maximum: 100000 },
+      duplicates: { type: "integer", minimum: 0, maximum: 100000 },
+      rejected_blocked: {
+        type: "array",
+        maxItems: 200,
+        items: { type: "object", additionalProperties: true },
+      },
+      saturation_indicators: {
+        type: "array",
+        maxItems: 200,
+        items: { type: "string", maxLength: 500 },
+      },
+      shortfall_reason: { type: "string", maxLength: 2000 },
+      error_summary: { type: "string", maxLength: 4000 },
+      metrics: { type: "object", additionalProperties: true },
     },
   },
   get_own_playlist_batches: {
@@ -538,6 +738,16 @@ export async function submitPlaylistCandidates(
       continue;
     }
 
+    // Live schema requires playlist_name — reject clearly before PostgREST insert.
+    if (!name) {
+      rejected.push({
+        reason: "missing_playlist_name",
+        playlist_id: id,
+        code: "playlist_name_required",
+      });
+      continue;
+    }
+
     // Database-backed path/email verification — never format-only auto-verify.
     const path = await evaluateSubmissionPath(
       {
@@ -557,28 +767,35 @@ export async function submitPlaylistCandidates(
     const igAccount = c.ig_curator_account != null ? String(c.ig_curator_account) : null;
     const curatorEmail = c.curator_email != null ? String(c.curator_email) : null;
 
-    const row = {
-      playlist_id: id,
-      playlist_name: name || null,
-      playlist_url: playlistUrl,
-      lane,
-      verification_status: path.path_verified ? path.status : "unverified",
-      path_verified: path.path_verified,
-      path_verification_notes: path.reason,
-      curator_email: curatorEmail,
-      form_url: formUrl,
-      form_source_evidence: evidence,
-      submission_url: formUrl || (channel === "web_form" ? playlistUrl : null),
-      ig_curator_account: igAccount,
-      curator_instagram: igAccount,
-      ig_source_evidence: evidence,
-      contact_method: channel,
-      submission_method: channel,
-      discovered_by: attr.actor_kind,
-      discovered_by_label: attr.actor_label,
-      research_notes: evidence,
-      updated_at: new Date().toISOString(),
-    };
+    let row: Record<string, unknown>;
+    try {
+      row = buildDiscoveryPlaylistTargetInsert({
+        playlistId: id,
+        playlistName: name,
+        lane,
+        pathVerified: path.path_verified,
+        verificationStatus: path.path_verified ? path.status : "unverified",
+        pathReason: path.reason,
+        channel,
+        curatorEmail,
+        formUrl,
+        igAccount,
+        evidence,
+        discoveredBy: attr.actor_kind,
+        discoveredByLabel: attr.actor_label,
+        trackName,
+        songDnaVersionId: dna.songDnaVersionId,
+        playlistUrl,
+        rawSourceUrl: rawUrl || null,
+      });
+    } catch (e) {
+      rejected.push({
+        playlist_id: id,
+        reason: `insert_schema:${String((e as Error).message || e)}`,
+        code: "playlist_targets_schema",
+      });
+      continue;
+    }
 
     const { error: insErr } = await sb.from("playlist_targets").insert(row);
     if (insErr) {
@@ -1134,7 +1351,16 @@ export async function completeClaudePlaylistStation(
 ): Promise<ToolResult> {
   const denied = denyUnlessCan(ops, "run_daily_station");
   if (denied) return denied;
-  return completeDailyStationRun(sb, body, playlistDiscoveryCredentialActor(), null);
+
+  // Pass status / counts / shortfall / error_summary through to completeDailyStationRun.
+  // completed + playlist_tranche_final still requires a real owned output_batch_id;
+  // failed / blocked / partial may close without inventing a batch.
+  const clean = stripSpoofedAttribution(body);
+  if (clean.notes != null && clean.metrics == null) {
+    // Preserve operator notes without inventing station metrics.
+    clean.metrics = { notes: String(clean.notes) };
+  }
+  return completeDailyStationRun(sb, clean, playlistDiscoveryCredentialActor(), null);
 }
 
 export async function getOwnPlaylistBatches(

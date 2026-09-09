@@ -655,7 +655,7 @@ async function updateCampaign(
 
   const { data: current } = await sb
     .from('pitch_campaigns')
-    .select('id, track_id, smart_link_id, status, started_at, activated_at')
+    .select('id, track_id, smart_link_id, status, started_at, activated_at, daily_target')
     .eq('id', campaignId)
     .maybeSingle();
   if (!current) return { status: 404, data: { error: 'Campaign not found' } };
@@ -663,7 +663,14 @@ async function updateCampaign(
   const patch: Record<string, unknown> = {};
 
   if (body.daily_target != null) {
-    patch.daily_target = Math.min(200, Math.max(1, Number(body.daily_target) || 20));
+    const nextDaily = Math.min(200, Math.max(1, Number(body.daily_target) || 20));
+    const dailyChanging = Number(current.daily_target) !== nextDaily;
+    // Active send volume is configuration — Fendi-only even when status is omitted.
+    if (current.status === 'active' && dailyChanging) {
+      const fendiGate = requireFendiActiveCampaignConfig(ops);
+      if (fendiGate) return fendiGate;
+    }
+    patch.daily_target = nextDaily;
   }
   if (body.notes !== undefined) patch.notes = body.notes == null ? null : String(body.notes);
 

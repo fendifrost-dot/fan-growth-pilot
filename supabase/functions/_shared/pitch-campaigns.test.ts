@@ -458,6 +458,98 @@ Deno.test("active smart-link change rejected for non-Fendi", async () => {
   assertEquals(writes.length, 0);
 });
 
+Deno.test("active daily_target change rejected for non-Fendi when status omitted", async () => {
+  const writes: unknown[] = [];
+  const sb = stubClient({
+    ...readyFixtures({
+      pitch_campaigns: [{
+        id: "camp-1",
+        track_id: "t1",
+        smart_link_id: "l1",
+        daily_target: 20,
+        status: "active",
+        started_at: "2026-09-01T00:00:00Z",
+        activated_at: "2026-09-01T00:00:00Z",
+      }],
+    }),
+  }, { insertCapture: writes });
+
+  const res = await runPitchCampaignAction(
+    "update_campaign",
+    { campaign_id: "camp-1", daily_target: 40 },
+    sb,
+    { kind: "user", userId: "admin-user", isAdmin: true },
+    null,
+  );
+  assertEquals(res.status, 403);
+  assertEquals(res.data.code, "fendi_active_config_required");
+  assertEquals(writes.length, 0);
+});
+
+Deno.test("active daily_target change accepted for Fendi; notes remain editable for non-Fendi", async () => {
+  Deno.env.set("ARTIST_USER_ID", "fendi-user");
+  try {
+    const writes: unknown[] = [];
+    const sb = stubClient({
+      ...readyFixtures({
+        pitch_campaigns: [{
+          id: "camp-1",
+          track_id: "t1",
+          smart_link_id: "l1",
+          daily_target: 20,
+          status: "active",
+          notes: "old",
+          started_at: "2026-09-01T00:00:00Z",
+          activated_at: "2026-09-01T00:00:00Z",
+        }],
+      }),
+    }, { insertCapture: writes });
+
+    const fendiRes = await runPitchCampaignAction(
+      "update_campaign",
+      { campaign_id: "camp-1", daily_target: 35 },
+      sb,
+      { kind: "user", userId: "fendi-user", isAdmin: true },
+      null,
+    );
+    assertEquals(fendiRes.status, 200);
+    assertEquals(writes.length, 1);
+    const patch = (writes[0] as { _update: Record<string, unknown> })._update;
+    assertEquals(patch.daily_target, 35);
+
+    const noteWrites: unknown[] = [];
+    const noteSb = stubClient({
+      ...readyFixtures({
+        pitch_campaigns: [{
+          id: "camp-1",
+          track_id: "t1",
+          smart_link_id: "l1",
+          daily_target: 35,
+          status: "active",
+          notes: "old",
+          started_at: "2026-09-01T00:00:00Z",
+          activated_at: "2026-09-01T00:00:00Z",
+        }],
+      }),
+    }, { insertCapture: noteWrites });
+    const noteRes = await runPitchCampaignAction(
+      "update_campaign",
+      { campaign_id: "camp-1", notes: "admin note ok" },
+      noteSb,
+      { kind: "user", userId: "admin-user", isAdmin: true },
+      null,
+    );
+    assertEquals(noteRes.status, 200);
+    assertEquals(noteWrites.length, 1);
+    assertEquals(
+      (noteWrites[0] as { _update: Record<string, unknown> })._update.notes,
+      "admin note ok",
+    );
+  } finally {
+    Deno.env.delete("ARTIST_USER_ID");
+  }
+});
+
 Deno.test("inactive smart-link change rejected on active campaign", async () => {
   const writes: unknown[] = [];
   Deno.env.set("ARTIST_USER_ID", "fendi-user");

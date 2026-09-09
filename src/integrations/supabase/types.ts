@@ -2807,6 +2807,13 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "outreach_drafts_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "pitch_campaigns"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "outreach_drafts_pitch_log_id_fkey"
             columns: ["pitch_log_id"]
             isOneToOne: false
@@ -2884,6 +2891,94 @@ export type Database = {
           },
           {
             foreignKeyName: "outreach_mismatch_overrides_track_id_fkey"
+            columns: ["track_id"]
+            isOneToOne: false
+            referencedRelation: "tracks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      pitch_campaigns: {
+        Row: {
+          activated_at: string | null
+          approved_by: string | null
+          configuration_snapshot: Json
+          created_at: string
+          created_by: string | null
+          daily_target: number
+          ended_at: string | null
+          id: string
+          notes: string | null
+          paused_at: string | null
+          pitch_copy: string | null
+          pitch_subject_template: string | null
+          smart_link_id: string | null
+          song_dna_version_id: string | null
+          started_at: string | null
+          status: string
+          taxonomy_version: string | null
+          track_id: string
+          updated_at: string
+        }
+        Insert: {
+          activated_at?: string | null
+          approved_by?: string | null
+          configuration_snapshot?: Json
+          created_at?: string
+          created_by?: string | null
+          daily_target?: number
+          ended_at?: string | null
+          id?: string
+          notes?: string | null
+          paused_at?: string | null
+          pitch_copy?: string | null
+          pitch_subject_template?: string | null
+          smart_link_id?: string | null
+          song_dna_version_id?: string | null
+          started_at?: string | null
+          status?: string
+          taxonomy_version?: string | null
+          track_id: string
+          updated_at?: string
+        }
+        Update: {
+          activated_at?: string | null
+          approved_by?: string | null
+          configuration_snapshot?: Json
+          created_at?: string
+          created_by?: string | null
+          daily_target?: number
+          ended_at?: string | null
+          id?: string
+          notes?: string | null
+          paused_at?: string | null
+          pitch_copy?: string | null
+          pitch_subject_template?: string | null
+          smart_link_id?: string | null
+          song_dna_version_id?: string | null
+          started_at?: string | null
+          status?: string
+          taxonomy_version?: string | null
+          track_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pitch_campaigns_smart_link_id_fkey"
+            columns: ["smart_link_id"]
+            isOneToOne: false
+            referencedRelation: "smart_links"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "pitch_campaigns_song_dna_version_id_fkey"
+            columns: ["song_dna_version_id"]
+            isOneToOne: false
+            referencedRelation: "song_dna_versions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "pitch_campaigns_track_id_fkey"
             columns: ["track_id"]
             isOneToOne: false
             referencedRelation: "tracks"
@@ -2995,6 +3090,13 @@ export type Database = {
           track_name?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "pitch_log_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "pitch_campaigns"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "pitch_log_draft_id_fkey"
             columns: ["draft_id"]
@@ -3831,6 +3933,7 @@ export type Database = {
       }
       relationship_history: {
         Row: {
+          campaign_id: string | null
           catalog_placements: number | null
           created_at: string
           dj: string | null
@@ -3855,6 +3958,7 @@ export type Database = {
           territory: string | null
         }
         Insert: {
+          campaign_id?: string | null
           catalog_placements?: number | null
           created_at?: string
           dj?: string | null
@@ -3879,6 +3983,7 @@ export type Database = {
           territory?: string | null
         }
         Update: {
+          campaign_id?: string | null
           catalog_placements?: number | null
           created_at?: string
           dj?: string | null
@@ -3903,6 +4008,13 @@ export type Database = {
           territory?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "relationship_history_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "pitch_campaigns"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "relationship_history_relationship_id_fkey"
             columns: ["relationship_id"]

@@ -2807,6 +2807,13 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "outreach_drafts_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "pitch_campaigns"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "outreach_drafts_pitch_log_id_fkey"
             columns: ["pitch_log_id"]
             isOneToOne: false
@@ -2903,10 +2910,13 @@ export type Database = {
           id: string
           notes: string | null
           paused_at: string | null
+          pitch_copy: string | null
+          pitch_subject_template: string | null
           smart_link_id: string | null
           song_dna_version_id: string | null
           started_at: string | null
           status: string
+          taxonomy_version: string | null
           track_id: string
           updated_at: string
         }
@@ -2921,10 +2931,13 @@ export type Database = {
           id?: string
           notes?: string | null
           paused_at?: string | null
+          pitch_copy?: string | null
+          pitch_subject_template?: string | null
           smart_link_id?: string | null
           song_dna_version_id?: string | null
           started_at?: string | null
           status?: string
+          taxonomy_version?: string | null
           track_id: string
           updated_at?: string
         }
@@ -2939,28 +2952,17 @@ export type Database = {
           id?: string
           notes?: string | null
           paused_at?: string | null
+          pitch_copy?: string | null
+          pitch_subject_template?: string | null
           smart_link_id?: string | null
           song_dna_version_id?: string | null
           started_at?: string | null
           status?: string
+          taxonomy_version?: string | null
           track_id?: string
           updated_at?: string
         }
         Relationships: [
-          {
-            foreignKeyName: "pitch_campaigns_approved_by_fkey"
-            columns: ["approved_by"]
-            isOneToOne: false
-            referencedRelation: "users"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "pitch_campaigns_created_by_fkey"
-            columns: ["created_by"]
-            isOneToOne: false
-            referencedRelation: "users"
-            referencedColumns: ["id"]
-          },
           {
             foreignKeyName: "pitch_campaigns_smart_link_id_fkey"
             columns: ["smart_link_id"]
@@ -3088,6 +3090,13 @@ export type Database = {
           track_name?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "pitch_log_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "pitch_campaigns"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "pitch_log_draft_id_fkey"
             columns: ["draft_id"]
@@ -3924,6 +3933,7 @@ export type Database = {
       }
       relationship_history: {
         Row: {
+          campaign_id: string | null
           catalog_placements: number | null
           created_at: string
           dj: string | null
@@ -3948,6 +3958,7 @@ export type Database = {
           territory: string | null
         }
         Insert: {
+          campaign_id?: string | null
           catalog_placements?: number | null
           created_at?: string
           dj?: string | null
@@ -3972,6 +3983,7 @@ export type Database = {
           territory?: string | null
         }
         Update: {
+          campaign_id?: string | null
           catalog_placements?: number | null
           created_at?: string
           dj?: string | null
@@ -3996,6 +4008,13 @@ export type Database = {
           territory?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "relationship_history_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "pitch_campaigns"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "relationship_history_relationship_id_fkey"
             columns: ["relationship_id"]

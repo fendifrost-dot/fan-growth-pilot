@@ -345,6 +345,25 @@ export async function completeDailyStationRun(
     return { status: 400, data: { error: `status must be one of ${allowed.join(", ")}` } };
   }
 
+  // Completed station records are immutable — a finished run is never rewritten.
+  // Identical re-completion is an idempotent no-op; any other change fails closed.
+  const priorStatus = String(existing.status ?? "");
+  if (existing.completed_at && allowed.includes(priorStatus as StationStatus)) {
+    if (priorStatus === statusRaw) {
+      return { status: 200, data: { ok: true, run: existing, noop: true, immutable: true } };
+    }
+    return {
+      status: 409,
+      data: {
+        error:
+          `Station run already completed as "${priorStatus}" — completed station records are immutable`,
+        code: "station_run_immutable",
+        run_id: runId,
+        status: priorStatus,
+      },
+    };
+  }
+
   const attr = attributionFrom(ops);
 
   // Re-check Grok deps at completion — unmet deps hard-block (do not complete).
@@ -402,10 +421,24 @@ export async function completeDailyStationRun(
   }
   if (clean.metrics && typeof clean.metrics === "object") patch.metrics = clean.metrics;
 
-  // Claude final playlist station must leave the batch at AWAITING_GROK_REVIEW.
+  // Claude final playlist station must leave every one of its output batches at
+  // AWAITING_GROK_REVIEW. A tranche can produce several track-specific batches, so
+  // accept output_batch_ids[] alongside the legacy single output_batch_id and advance
+  // each Claude-owned batch independently — no batch may be stranded at
+  // CLAUDE_BATCH_READY just because it was not the "primary" one.
   if (stationId === "playlist_tranche_final" && statusRaw === "completed") {
-    const batchId = String(clean.output_batch_id ?? existing.output_batch_id ?? "").trim();
-    if (!batchId) {
+    const idList: string[] = [];
+    const pushId = (v: unknown) => {
+      const s = String(v ?? "").trim();
+      if (s && !idList.includes(s)) idList.push(s);
+    };
+    pushId(clean.output_batch_id);
+    if (Array.isArray(clean.output_batch_ids)) clean.output_batch_ids.forEach(pushId);
+    pushId(existing.output_batch_id);
+    if (Array.isArray((existing.metrics as Record<string, unknown> | null)?.output_batch_ids)) {
+      ((existing.metrics as Record<string, unknown>).output_batch_ids as unknown[]).forEach(pushId);
+    }
+    if (idList.length === 0) {
       return {
         status: 422,
         data: {
@@ -414,42 +447,64 @@ export async function completeDailyStationRun(
         },
       };
     }
-    patch.output_batch_id = batchId;
-    const { data: batch, error: bErr } = await sb
-      .from("agh_handoff_batches")
-      .select("id, queue_state")
-      .eq("id", batchId)
-      .maybeSingle();
-    if (bErr) return { status: 500, data: { error: bErr.message } };
-    if (!batch) return { status: 404, data: { error: "output_batch_id not found" } };
-    let state = String(batch.queue_state);
-    if (state === "CLAUDE_BATCH_READY") {
-      const step1 = await advanceHandoffBatch(
-        sb,
-        { batch_id: batchId, queue_state: "CLAUDE_PLAYLIST_COMPLETE" },
-        ops,
-      );
-      if (step1.status >= 400) return step1;
-      state = "CLAUDE_PLAYLIST_COMPLETE";
+    patch.output_batch_id = idList[0];
+    const advanced: Record<string, string>[] = [];
+    for (const batchId of idList) {
+      const { data: batch, error: bErr } = await sb
+        .from("agh_handoff_batches")
+        .select("id, queue_state")
+        .eq("id", batchId)
+        .maybeSingle();
+      if (bErr) return { status: 500, data: { error: bErr.message } };
+      if (!batch) {
+        return {
+          status: 404,
+          data: { error: `output batch not found: ${batchId}`, code: "output_batch_not_found" },
+        };
+      }
+      let state = String(batch.queue_state);
+      if (state === "CLAUDE_BATCH_READY") {
+        const step1 = await advanceHandoffBatch(
+          sb,
+          { batch_id: batchId, queue_state: "CLAUDE_PLAYLIST_COMPLETE" },
+          ops,
+        );
+        if (step1.status >= 400) return step1;
+        state = "CLAUDE_PLAYLIST_COMPLETE";
+      }
+      if (state === "CLAUDE_PLAYLIST_COMPLETE") {
+        const step2 = await advanceHandoffBatch(
+          sb,
+          { batch_id: batchId, queue_state: "AWAITING_GROK_REVIEW" },
+          ops,
+        );
+        if (step2.status >= 400) return step2;
+        state = "AWAITING_GROK_REVIEW";
+      }
+      // Batches Grok already moved past review are fine — never walk them backwards.
+      const downstreamOk = state === "AWAITING_GROK_REVIEW" ||
+        state === "GROK_REVIEWED" ||
+        state === "APPROVED_FOR_SEND" ||
+        state === "REJECTED_BY_GROK" ||
+        state === "AWAITING_AGH_IMPORT" ||
+        state === "IMPORTED_TO_AGH";
+      if (!downstreamOk) {
+        return {
+          status: 422,
+          data: {
+            error:
+              `playlist_tranche_final must leave batch at AWAITING_GROK_REVIEW (got ${state})`,
+            code: "batch_not_awaiting_grok",
+            batch_id: batchId,
+          },
+        };
+      }
+      advanced.push({ batch_id: batchId, queue_state: state });
     }
-    if (state === "CLAUDE_PLAYLIST_COMPLETE") {
-      const step2 = await advanceHandoffBatch(
-        sb,
-        { batch_id: batchId, queue_state: "AWAITING_GROK_REVIEW" },
-        ops,
-      );
-      if (step2.status >= 400) return step2;
-      state = "AWAITING_GROK_REVIEW";
-    }
-    if (state !== "AWAITING_GROK_REVIEW") {
-      return {
-        status: 422,
-        data: {
-          error: `playlist_tranche_final must leave batch at AWAITING_GROK_REVIEW (got ${state})`,
-          code: "batch_not_awaiting_grok",
-        },
-      };
-    }
+    const priorMetrics = (patch.metrics && typeof patch.metrics === "object")
+      ? patch.metrics as Record<string, unknown>
+      : {};
+    patch.metrics = { ...priorMetrics, output_batch_ids: idList, advanced_batches: advanced };
   }
 
   // Grok review completion advances AWAITING_GROK_REVIEW → GROK_REVIEWED.

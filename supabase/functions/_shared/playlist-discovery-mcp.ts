@@ -660,7 +660,12 @@ export async function submitPlaylistCandidates(
     const lane = String(c.lane ?? "").trim();
     const name = String(c.playlist_name ?? c.name ?? "").trim();
     const rawId = String(c.playlist_id ?? c.spotify_playlist_id ?? "").trim();
-    const rawUrl = String(c.playlist_url ?? c.source_url ?? "").trim();
+    // Identity comes from the playlist url only. source_url is evidence context (a
+    // listicle/blog page) and is shared by many candidates — keying identity off it
+    // collapsed distinct playlists into a single target.
+    const rawPlaylistUrl = String(c.playlist_url ?? "").trim();
+    const rawSourceUrl = String(c.source_url ?? "").trim();
+    const rawUrl = rawPlaylistUrl || rawSourceUrl;
 
     if (!evidence) {
       rejected.push({ reason: "missing_source_evidence", playlist_id: rawId || null });
@@ -671,14 +676,24 @@ export async function submitPlaylistCandidates(
       continue;
     }
 
-    const normalized = normalizeSpotifyPlaylistIdentity(rawId, rawUrl);
-    if (!normalized && !rawId && !rawUrl) {
+    const normalized = normalizeSpotifyPlaylistIdentity(rawId, rawPlaylistUrl);
+    if (!normalized && !rawId && !rawPlaylistUrl && !rawSourceUrl) {
       rejected.push({ reason: "missing_playlist_identity", candidate: c });
       continue;
     }
-    // Prefer canonical Spotify id; fall back to raw id / url-keyed id for non-Spotify.
-    const id = normalized?.playlist_id ?? (rawId || `url:${rawUrl}`);
-    const playlistUrl = normalized?.playlist_url ?? (rawUrl || null);
+    if (!normalized) {
+      // Fail closed: never key a target off source_url (shared across candidates) or an
+      // unnormalizable raw id — that silently merges several playlists into one target.
+      rejected.push({
+        reason: "unresolvable_playlist_identity",
+        code: "unresolvable_playlist_identity",
+        playlist_id: rawId || null,
+        playlist_url: rawPlaylistUrl || null,
+      });
+      continue;
+    }
+    const id = normalized.playlist_id;
+    const playlistUrl = normalized.playlist_url;
 
     const { data: existing, error: existErr } = await sb
       .from("playlist_targets")
@@ -786,7 +801,7 @@ export async function submitPlaylistCandidates(
         trackName,
         songDnaVersionId: dna.songDnaVersionId,
         playlistUrl,
-        rawSourceUrl: rawUrl || null,
+        rawSourceUrl: rawSourceUrl || rawPlaylistUrl || null,
       });
     } catch (e) {
       rejected.push({

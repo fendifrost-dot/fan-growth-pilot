@@ -43,6 +43,7 @@ export const HANDOFF_ACTIONS = [
   "create_handoff_batch",
   "add_handoff_records",
   "advance_handoff_batch",
+  "advance_claude_ready_batches",
   "review_handoff_batch",
   "list_handoff_batches",
   "get_handoff_batch",
@@ -848,6 +849,118 @@ async function markManualHandoffSubmission(
   };
 }
 
+/**
+ * Advance every Claude-owned batch that is still waiting behind the tranche station
+ * into AWAITING_GROK_REVIEW, independently of any station run.
+ *
+ * This is the stranded-batch repair: station completion used to advance one output
+ * batch, so extra track-specific batches stayed at CLAUDE_BATCH_READY and needed a
+ * manual CoS clearance before Grok could review them. Packet contents are never
+ * recreated or modified here — only the queue state moves forward, one atomic
+ * compare-and-set per batch, with authority enforced exactly as elsewhere.
+ */
+export async function advanceClaudeReadyBatches(
+  sb: SupabaseClient,
+  body: Record<string, unknown>,
+  ops: OpsActor,
+): Promise<RunResult> {
+  const clean = stripSpoofedAttribution(body);
+  const authErr = authorizeHandoffState(ops, "AWAITING_GROK_REVIEW");
+  if (authErr) return { status: 403, data: { error: authErr, code: "authority_denied" } };
+
+  const explicitIds = Array.isArray(clean.batch_ids)
+    ? clean.batch_ids.map((v) => String(v ?? "").trim()).filter(Boolean)
+    : [];
+  const trackId = String(clean.track_id ?? "").trim();
+  const batchKind = String(clean.batch_kind ?? "playlist").trim();
+  const businessDate = clean.business_date_ct != null || clean.business_date != null
+    ? String(clean.business_date_ct ?? clean.business_date).trim()
+    : null;
+  const pending: HandoffQueueState[] = ["CLAUDE_BATCH_READY", "CLAUDE_PLAYLIST_COMPLETE"];
+
+  let candidateIds: string[] = explicitIds;
+  if (candidateIds.length === 0) {
+    let q = sb
+      .from("agh_handoff_batches")
+      .select("id, queue_state, batch_kind, business_date_ct, discovered_by")
+      .in("queue_state", pending)
+      .order("created_at", { ascending: true })
+      .limit(200);
+    if (batchKind) q = q.eq("batch_kind", batchKind);
+    if (businessDate) q = q.eq("business_date_ct", businessDate);
+    const { data, error } = await q;
+    if (error) return { status: 500, data: { error: error.message } };
+    candidateIds = (data ?? []).map((b) => String(b.id));
+  }
+
+  // Optional track scope — batches carry no track_id, so resolve through their records.
+  if (trackId && candidateIds.length > 0) {
+    const { data: recs, error: rErr } = await sb
+      .from("agh_handoff_records")
+      .select("batch_id")
+      .eq("track_id", trackId)
+      .in("batch_id", candidateIds);
+    if (rErr) return { status: 500, data: { error: rErr.message } };
+    const allowed = new Set((recs ?? []).map((r) => String(r.batch_id)));
+    candidateIds = candidateIds.filter((id) => allowed.has(id));
+  }
+
+  const advanced: Record<string, unknown>[] = [];
+  const skipped: Record<string, unknown>[] = [];
+  const failed: Record<string, unknown>[] = [];
+
+  for (const batchId of candidateIds) {
+    const { data: batch, error: bErr } = await sb
+      .from("agh_handoff_batches")
+      .select("id, queue_state")
+      .eq("id", batchId)
+      .maybeSingle();
+    if (bErr) return { status: 500, data: { error: bErr.message } };
+    if (!batch) {
+      failed.push({ batch_id: batchId, code: "batch_not_found" });
+      continue;
+    }
+    let state = String(batch.queue_state);
+    if (!pending.includes(state as HandoffQueueState)) {
+      skipped.push({ batch_id: batchId, queue_state: state, reason: "not_claude_pending" });
+      continue;
+    }
+    let stepFailed: RunResult | null = null;
+    for (const next of ["CLAUDE_PLAYLIST_COMPLETE", "AWAITING_GROK_REVIEW"] as const) {
+      if (state === next) continue;
+      if (!canTransitionHandoff(state as HandoffQueueState, next)) continue;
+      const step = await advanceHandoffBatch(sb, { batch_id: batchId, queue_state: next }, ops);
+      if (step.status >= 400) {
+        stepFailed = step;
+        break;
+      }
+      state = next;
+    }
+    if (stepFailed) {
+      failed.push({ batch_id: batchId, status: stepFailed.status, ...stepFailed.data });
+      continue;
+    }
+    advanced.push({ batch_id: batchId, queue_state: state });
+  }
+
+  return {
+    status: failed.length > 0 && advanced.length === 0 ? 422 : 200,
+    data: {
+      ok: failed.length === 0,
+      advanced,
+      advanced_count: advanced.length,
+      skipped,
+      failed,
+      scope: {
+        batch_ids: explicitIds.length > 0 ? explicitIds : null,
+        track_id: trackId || null,
+        batch_kind: batchKind || null,
+        business_date_ct: businessDate,
+      },
+    },
+  };
+}
+
 export async function runHandoffAction(
   action: string,
   body: Record<string, unknown>,
@@ -863,6 +976,8 @@ export async function runHandoffAction(
       return addHandoffRecords(sb, body, ops);
     case "advance_handoff_batch":
       return advanceHandoffBatch(sb, body, ops);
+    case "advance_claude_ready_batches":
+      return advanceClaudeReadyBatches(sb, body, ops);
     case "review_handoff_batch":
       return reviewHandoffBatch(sb, body, ops);
     case "list_handoff_batches": {

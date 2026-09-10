@@ -976,6 +976,8 @@ export async function runHandoffAction(
       return addHandoffRecords(sb, body, ops);
     case "advance_handoff_batch":
       return advanceHandoffBatch(sb, body, ops);
+    case "advance_claude_ready_batches":
+      return advanceClaudeReadyBatches(sb, body, ops);
     case "review_handoff_batch":
       return reviewHandoffBatch(sb, body, ops);
     case "list_handoff_batches": {

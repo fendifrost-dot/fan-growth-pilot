@@ -660,7 +660,12 @@ export async function submitPlaylistCandidates(
     const lane = String(c.lane ?? "").trim();
     const name = String(c.playlist_name ?? c.name ?? "").trim();
     const rawId = String(c.playlist_id ?? c.spotify_playlist_id ?? "").trim();
-    const rawUrl = String(c.playlist_url ?? c.source_url ?? "").trim();
+    // Identity comes from the playlist url only. source_url is evidence context (a
+    // listicle/blog page) and is shared by many candidates — keying identity off it
+    // collapsed distinct playlists into a single target.
+    const rawPlaylistUrl = String(c.playlist_url ?? "").trim();
+    const rawSourceUrl = String(c.source_url ?? "").trim();
+    const rawUrl = rawPlaylistUrl || rawSourceUrl;
 
     if (!evidence) {
       rejected.push({ reason: "missing_source_evidence", playlist_id: rawId || null });

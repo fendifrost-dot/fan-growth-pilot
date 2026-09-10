@@ -801,7 +801,7 @@ export async function submitPlaylistCandidates(
         trackName,
         songDnaVersionId: dna.songDnaVersionId,
         playlistUrl,
-        rawSourceUrl: rawUrl || null,
+        rawSourceUrl: rawSourceUrl || rawPlaylistUrl || null,
       });
     } catch (e) {
       rejected.push({

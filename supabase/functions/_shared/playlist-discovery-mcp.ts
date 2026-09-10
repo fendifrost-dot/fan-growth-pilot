@@ -676,14 +676,24 @@ export async function submitPlaylistCandidates(
       continue;
     }
 
-    const normalized = normalizeSpotifyPlaylistIdentity(rawId, rawUrl);
-    if (!normalized && !rawId && !rawUrl) {
+    const normalized = normalizeSpotifyPlaylistIdentity(rawId, rawPlaylistUrl);
+    if (!normalized && !rawId && !rawPlaylistUrl && !rawSourceUrl) {
       rejected.push({ reason: "missing_playlist_identity", candidate: c });
       continue;
     }
-    // Prefer canonical Spotify id; fall back to raw id / url-keyed id for non-Spotify.
-    const id = normalized?.playlist_id ?? (rawId || `url:${rawUrl}`);
-    const playlistUrl = normalized?.playlist_url ?? (rawUrl || null);
+    if (!normalized) {
+      // Fail closed: never key a target off source_url (shared across candidates) or an
+      // unnormalizable raw id — that silently merges several playlists into one target.
+      rejected.push({
+        reason: "unresolvable_playlist_identity",
+        code: "unresolvable_playlist_identity",
+        playlist_id: rawId || null,
+        playlist_url: rawPlaylistUrl || null,
+      });
+      continue;
+    }
+    const id = normalized.playlist_id;
+    const playlistUrl = normalized.playlist_url;
 
     const { data: existing, error: existErr } = await sb
       .from("playlist_targets")

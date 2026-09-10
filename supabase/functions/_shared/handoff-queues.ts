@@ -43,6 +43,7 @@ export const HANDOFF_ACTIONS = [
   "create_handoff_batch",
   "add_handoff_records",
   "advance_handoff_batch",
+  "advance_claude_ready_batches",
   "review_handoff_batch",
   "list_handoff_batches",
   "get_handoff_batch",

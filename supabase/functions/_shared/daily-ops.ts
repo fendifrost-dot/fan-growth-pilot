@@ -345,6 +345,25 @@ export async function completeDailyStationRun(
     return { status: 400, data: { error: `status must be one of ${allowed.join(", ")}` } };
   }
 
+  // Completed station records are immutable — a finished run is never rewritten.
+  // Identical re-completion is an idempotent no-op; any other change fails closed.
+  const priorStatus = String(existing.status ?? "");
+  if (existing.completed_at && allowed.includes(priorStatus as StationStatus)) {
+    if (priorStatus === statusRaw) {
+      return { status: 200, data: { ok: true, run: existing, noop: true, immutable: true } };
+    }
+    return {
+      status: 409,
+      data: {
+        error:
+          `Station run already completed as "${priorStatus}" — completed station records are immutable`,
+        code: "station_run_immutable",
+        run_id: runId,
+        status: priorStatus,
+      },
+    };
+  }
+
   const attr = attributionFrom(ops);
 
   // Re-check Grok deps at completion — unmet deps hard-block (do not complete).

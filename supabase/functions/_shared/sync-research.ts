@@ -658,6 +658,9 @@ export async function draftSyncPitch(
     })
     .eq("id", opportunityId);
 
+  const attachRequested =
+    clean.attach_split_sheet === true || clean.include_split_sheet === true;
+
   return {
     status: 200,
     data: {
@@ -668,6 +671,9 @@ export async function draftSyncPitch(
       license_verified: false,
       monetary_authority: false,
       eligibility: decision,
+      split_sheet_attached: false,
+      split_sheet_delivery_policy: "request_only",
+      ...(attachRequested ? { split_sheet_attach_ignored: true } : {}),
     },
   };
 }

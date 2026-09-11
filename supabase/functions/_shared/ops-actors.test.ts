@@ -254,3 +254,50 @@ Deno.test("claude_sync_discovery is distinct and cannot touch playlist approve/s
     assertEquals(can(pd, "research_sync_targets"), false);
   });
 });
+
+Deno.test("split-sheet capability matrix: Claude drafts, Grok delivers, Fendi finalizes", () => {
+  withEnv({
+    CLAUDE_AGENT_SECRET: "claude-secret",
+    CLAUDE_SYNC_DISCOVERY_SECRET: "sync-secret",
+    GROK_PLAYLIST_CONTROL_SECRET: "grok-secret",
+    FANFUEL_HUB_KEY: "hub-key",
+    ARTIST_USER_ID: "fendi-exact-id",
+  }, () => {
+    const claude = resolveOpsActor(null, req({ "x-claude-agent-secret": "claude-secret" }));
+    const sync = resolveOpsActor(null, req({ "x-claude-sync-discovery-secret": "sync-secret" }));
+    const grok = resolveOpsActor(null, req({ "x-grok-playlist-control-secret": "grok-secret" }));
+    const service = resolveOpsActor(null, req({ "x-api-key": "hub-key" }));
+    const human = resolveOpsActor(user("other-admin"), null);
+    const fendi = resolveOpsActor(user("fendi-exact-id"), null);
+
+    assertEquals(can(claude, "draft_split_sheet"), true);
+    assertEquals(can(claude, "read_split_sheets"), true);
+    assertEquals(can(claude, "finalize_split_sheet"), false);
+    assertEquals(can(claude, "deliver_split_sheet"), false);
+
+    assertEquals(can(sync, "draft_split_sheet"), true);
+    assertEquals(can(sync, "finalize_split_sheet"), false);
+
+    assertEquals(can(grok, "draft_split_sheet"), false);
+    assertEquals(can(grok, "read_split_sheets"), true);
+    assertEquals(can(grok, "deliver_split_sheet"), true);
+    assertEquals(can(grok, "read_split_sheet_deliveries"), true);
+    assertEquals(can(grok, "finalize_split_sheet"), false);
+    assertEquals(can(grok, "authorize_split_sheet_delivery"), true);
+
+    assertEquals(can(service, "draft_split_sheet"), true);
+    assertEquals(can(service, "read_split_sheets"), true);
+    assertEquals(can(service, "finalize_split_sheet"), false);
+    assertEquals(can(service, "deliver_split_sheet"), false);
+
+    assertEquals(can(human, "draft_split_sheet"), true);
+    assertEquals(can(human, "manage_split_sheet_evidence"), true);
+    assertEquals(can(human, "read_split_sheet_deliveries"), true);
+    assertEquals(can(human, "finalize_split_sheet"), false);
+    assertEquals(can(human, "authorize_split_sheet_delivery"), false);
+
+    assertEquals(can(fendi, "finalize_split_sheet"), true);
+    assertEquals(can(fendi, "authorize_split_sheet_delivery"), true);
+    assertEquals(can(fendi, "deliver_split_sheet"), true);
+  });
+});

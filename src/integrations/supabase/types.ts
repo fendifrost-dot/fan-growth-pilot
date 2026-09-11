@@ -4849,305 +4849,46 @@ export type Database = {
           },
         ]
       }
-      // --- Manually extended for authoritative split sheets (20260911160000) ---
       split_sheet_contributors: {
         Row: {
-          confirmation_evidence_id: string | null
-          confirmation_method: string | null
-          confirmation_status: string
-          confirmed_at: string | null
-          confirmed_by: string | null
-          contact_email: string | null
-          contact_phone: string | null
           created_at: string
           id: string
           ipi_number: string | null
           legal_name: string | null
           notes: string | null
-          ownership_side: string
           pro_affiliation: string | null
-          professional_name: string | null
-          publisher_name: string | null
-          publishing_administrator: string | null
           role: string
-          share_controlled: boolean | null
           sort_order: number
           split_percent: number | null
           split_sheet_id: string
-          updated_at: string
         }
         Insert: {
-          confirmation_evidence_id?: string | null
-          confirmation_method?: string | null
-          confirmation_status?: string
-          confirmed_at?: string | null
-          confirmed_by?: string | null
-          contact_email?: string | null
-          contact_phone?: string | null
           created_at?: string
           id?: string
           ipi_number?: string | null
           legal_name?: string | null
           notes?: string | null
-          ownership_side?: string
           pro_affiliation?: string | null
-          professional_name?: string | null
-          publisher_name?: string | null
-          publishing_administrator?: string | null
           role?: string
-          share_controlled?: boolean | null
           sort_order?: number
           split_percent?: number | null
           split_sheet_id: string
-          updated_at?: string
         }
         Update: {
-          confirmation_evidence_id?: string | null
-          confirmation_method?: string | null
-          confirmation_status?: string
-          confirmed_at?: string | null
-          confirmed_by?: string | null
-          contact_email?: string | null
-          contact_phone?: string | null
           created_at?: string
           id?: string
           ipi_number?: string | null
           legal_name?: string | null
           notes?: string | null
-          ownership_side?: string
           pro_affiliation?: string | null
-          professional_name?: string | null
-          publisher_name?: string | null
-          publishing_administrator?: string | null
           role?: string
-          share_controlled?: boolean | null
           sort_order?: number
           split_percent?: number | null
           split_sheet_id?: string
-          updated_at?: string
         }
         Relationships: [
           {
             foreignKeyName: "split_sheet_contributors_split_sheet_id_fkey"
-            columns: ["split_sheet_id"]
-            isOneToOne: false
-            referencedRelation: "split_sheets"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "split_sheet_contributors_confirmation_evidence_id_fkey"
-            columns: ["confirmation_evidence_id"]
-            isOneToOne: false
-            referencedRelation: "split_sheet_evidence"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      split_sheet_deliveries: {
-        Row: {
-          approval_identity: string | null
-          approval_required: boolean
-          created_at: string
-          delivered_by: string
-          delivered_by_label: string
-          delivery_channel: string
-          delivery_error: string | null
-          delivery_reason: string
-          delivery_result: string
-          document_hash: string
-          document_kind: string
-          document_version: number
-          follow_up_required: boolean
-          id: string
-          recipient_email: string | null
-          recipient_name: string | null
-          recipient_organization: string | null
-          response_notes: string | null
-          secure_link_expires_at: string | null
-          split_sheet_id: string
-          sync_opportunity_id: string | null
-          sync_target_id: string | null
-          track_id: string
-        }
-        Insert: {
-          approval_identity?: string | null
-          approval_required?: boolean
-          created_at?: string
-          delivered_by: string
-          delivered_by_label: string
-          delivery_channel?: string
-          delivery_error?: string | null
-          delivery_reason: string
-          delivery_result?: string
-          document_hash: string
-          document_kind: string
-          document_version: number
-          follow_up_required?: boolean
-          id?: string
-          recipient_email?: string | null
-          recipient_name?: string | null
-          recipient_organization?: string | null
-          response_notes?: string | null
-          secure_link_expires_at?: string | null
-          split_sheet_id: string
-          sync_opportunity_id?: string | null
-          sync_target_id?: string | null
-          track_id: string
-        }
-        Update: {
-          approval_identity?: string | null
-          approval_required?: boolean
-          created_at?: string
-          delivered_by?: string
-          delivered_by_label?: string
-          delivery_channel?: string
-          delivery_error?: string | null
-          delivery_reason?: string
-          delivery_result?: string
-          document_hash?: string
-          document_kind?: string
-          document_version?: number
-          follow_up_required?: boolean
-          id?: string
-          recipient_email?: string | null
-          recipient_name?: string | null
-          recipient_organization?: string | null
-          response_notes?: string | null
-          secure_link_expires_at?: string | null
-          split_sheet_id?: string
-          sync_opportunity_id?: string | null
-          sync_target_id?: string | null
-          track_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "split_sheet_deliveries_split_sheet_id_fkey"
-            columns: ["split_sheet_id"]
-            isOneToOne: false
-            referencedRelation: "split_sheets"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "split_sheet_deliveries_track_id_fkey"
-            columns: ["track_id"]
-            isOneToOne: false
-            referencedRelation: "tracks"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      split_sheet_evidence: {
-        Row: {
-          created_at: string
-          document_hash: string | null
-          evidence_kind: string
-          id: string
-          mime_type: string | null
-          notes: string | null
-          provider_reference: string | null
-          split_sheet_id: string
-          storage_path: string | null
-          track_id: string
-          uploaded_by: string | null
-          verification_status: string
-          verified_at: string | null
-          verified_by: string | null
-        }
-        Insert: {
-          created_at?: string
-          document_hash?: string | null
-          evidence_kind: string
-          id?: string
-          mime_type?: string | null
-          notes?: string | null
-          provider_reference?: string | null
-          split_sheet_id: string
-          storage_path?: string | null
-          track_id: string
-          uploaded_by?: string | null
-          verification_status?: string
-          verified_at?: string | null
-          verified_by?: string | null
-        }
-        Update: {
-          created_at?: string
-          document_hash?: string | null
-          evidence_kind?: string
-          id?: string
-          mime_type?: string | null
-          notes?: string | null
-          provider_reference?: string | null
-          split_sheet_id?: string
-          storage_path?: string | null
-          track_id?: string
-          uploaded_by?: string | null
-          verification_status?: string
-          verified_at?: string | null
-          verified_by?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "split_sheet_evidence_split_sheet_id_fkey"
-            columns: ["split_sheet_id"]
-            isOneToOne: false
-            referencedRelation: "split_sheets"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "split_sheet_evidence_track_id_fkey"
-            columns: ["track_id"]
-            isOneToOne: false
-            referencedRelation: "tracks"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      split_sheet_master_owners: {
-        Row: {
-          created_at: string
-          evidence_reference: string | null
-          id: string
-          label_name: string | null
-          legal_name: string
-          may_license_master: boolean
-          notes: string | null
-          ownership_percent: number
-          professional_name: string | null
-          sort_order: number
-          split_sheet_id: string
-          updated_at: string
-        }
-        Insert: {
-          created_at?: string
-          evidence_reference?: string | null
-          id?: string
-          label_name?: string | null
-          legal_name: string
-          may_license_master?: boolean
-          notes?: string | null
-          ownership_percent: number
-          professional_name?: string | null
-          sort_order?: number
-          split_sheet_id: string
-          updated_at?: string
-        }
-        Update: {
-          created_at?: string
-          evidence_reference?: string | null
-          id?: string
-          label_name?: string | null
-          legal_name?: string
-          may_license_master?: boolean
-          notes?: string | null
-          ownership_percent?: number
-          professional_name?: string | null
-          sort_order?: number
-          split_sheet_id?: string
-          updated_at?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "split_sheet_master_owners_split_sheet_id_fkey"
             columns: ["split_sheet_id"]
             isOneToOne: false
             referencedRelation: "split_sheets"
@@ -5158,33 +4899,14 @@ export type Database = {
       split_sheets: {
         Row: {
           action_items: Json
-          awaiting_confirmation_at: string | null
-          composition_total_percent: number | null
-          confirmation_summary: Json
           created_at: string
           created_by: string | null
-          dispute_reason: string | null
-          document_hash: string | null
-          document_kind: string
           document_mime: string | null
           document_storage_path: string | null
-          fendi_approved_at: string | null
-          fendi_approved_by: string | null
-          fendi_reviewed_at: string | null
-          fendi_reviewed_by: string | null
-          finalized_at: string | null
-          finalized_by: string | null
           generated_html: string | null
           id: string
-          is_current: boolean
-          master_controlled: boolean
-          master_total_percent: number | null
           notes: string | null
-          one_stop_master: boolean
-          publishing_controlled: boolean
-          rights_readiness: Json
           status: string
-          superseded_by: string | null
           title: string | null
           track_id: string
           updated_at: string
@@ -5193,33 +4915,14 @@ export type Database = {
         }
         Insert: {
           action_items?: Json
-          awaiting_confirmation_at?: string | null
-          composition_total_percent?: number | null
-          confirmation_summary?: Json
           created_at?: string
           created_by?: string | null
-          dispute_reason?: string | null
-          document_hash?: string | null
-          document_kind?: string
           document_mime?: string | null
           document_storage_path?: string | null
-          fendi_approved_at?: string | null
-          fendi_approved_by?: string | null
-          fendi_reviewed_at?: string | null
-          fendi_reviewed_by?: string | null
-          finalized_at?: string | null
-          finalized_by?: string | null
           generated_html?: string | null
           id?: string
-          is_current?: boolean
-          master_controlled?: boolean
-          master_total_percent?: number | null
           notes?: string | null
-          one_stop_master?: boolean
-          publishing_controlled?: boolean
-          rights_readiness?: Json
           status?: string
-          superseded_by?: string | null
           title?: string | null
           track_id: string
           updated_at?: string
@@ -5228,33 +4931,14 @@ export type Database = {
         }
         Update: {
           action_items?: Json
-          awaiting_confirmation_at?: string | null
-          composition_total_percent?: number | null
-          confirmation_summary?: Json
           created_at?: string
           created_by?: string | null
-          dispute_reason?: string | null
-          document_hash?: string | null
-          document_kind?: string
           document_mime?: string | null
           document_storage_path?: string | null
-          fendi_approved_at?: string | null
-          fendi_approved_by?: string | null
-          fendi_reviewed_at?: string | null
-          fendi_reviewed_by?: string | null
-          finalized_at?: string | null
-          finalized_by?: string | null
           generated_html?: string | null
           id?: string
-          is_current?: boolean
-          master_controlled?: boolean
-          master_total_percent?: number | null
           notes?: string | null
-          one_stop_master?: boolean
-          publishing_controlled?: boolean
-          rights_readiness?: Json
           status?: string
-          superseded_by?: string | null
           title?: string | null
           track_id?: string
           updated_at?: string
@@ -5264,67 +4948,6 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "split_sheets_track_id_fkey"
-            columns: ["track_id"]
-            isOneToOne: false
-            referencedRelation: "tracks"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "split_sheets_superseded_by_fkey"
-            columns: ["superseded_by"]
-            isOneToOne: false
-            referencedRelation: "split_sheets"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      rights_document_audit_events: {
-        Row: {
-          actor_kind: string
-          actor_label: string
-          actor_user_id: string | null
-          created_at: string
-          detail: Json
-          document_hash: string | null
-          event_kind: string
-          id: string
-          split_sheet_id: string | null
-          track_id: string | null
-        }
-        Insert: {
-          actor_kind: string
-          actor_label: string
-          actor_user_id?: string | null
-          created_at?: string
-          detail?: Json
-          document_hash?: string | null
-          event_kind: string
-          id?: string
-          split_sheet_id?: string | null
-          track_id?: string | null
-        }
-        Update: {
-          actor_kind?: string
-          actor_label?: string
-          actor_user_id?: string | null
-          created_at?: string
-          detail?: Json
-          document_hash?: string | null
-          event_kind?: string
-          id?: string
-          split_sheet_id?: string | null
-          track_id?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "rights_document_audit_events_split_sheet_id_fkey"
-            columns: ["split_sheet_id"]
-            isOneToOne: false
-            referencedRelation: "split_sheets"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "rights_document_audit_events_track_id_fkey"
             columns: ["track_id"]
             isOneToOne: false
             referencedRelation: "tracks"
@@ -5901,7 +5524,6 @@ export type Database = {
           approved_song_dna_version_id: string | null
           assets_ready: boolean
           created_at: string
-          current_split_sheet_id: string | null
           default_tone: string
           duration_seconds: number | null
           eligibility_reason: string | null
@@ -5926,10 +5548,7 @@ export type Database = {
           sample_exception_resolved: boolean
           short_pitch: string | null
           soundcloud_url: string | null
-          split_sheet_delivery_policy: string
           splits_ready: boolean
-          splits_ready_legacy: boolean | null
-          splits_ready_source: string
           spotify_url: string | null
           status: string
           sync_approved_at: string | null
@@ -5946,7 +5565,6 @@ export type Database = {
           approved_song_dna_version_id?: string | null
           assets_ready?: boolean
           created_at?: string
-          current_split_sheet_id?: string | null
           default_tone?: string
           duration_seconds?: number | null
           eligibility_reason?: string | null
@@ -5971,10 +5589,7 @@ export type Database = {
           sample_exception_resolved?: boolean
           short_pitch?: string | null
           soundcloud_url?: string | null
-          split_sheet_delivery_policy?: string
           splits_ready?: boolean
-          splits_ready_legacy?: boolean | null
-          splits_ready_source?: string
           spotify_url?: string | null
           status?: string
           sync_approved_at?: string | null
@@ -5991,7 +5606,6 @@ export type Database = {
           approved_song_dna_version_id?: string | null
           assets_ready?: boolean
           created_at?: string
-          current_split_sheet_id?: string | null
           default_tone?: string
           duration_seconds?: number | null
           eligibility_reason?: string | null
@@ -6016,10 +5630,7 @@ export type Database = {
           sample_exception_resolved?: boolean
           short_pitch?: string | null
           soundcloud_url?: string | null
-          split_sheet_delivery_policy?: string
           splits_ready?: boolean
-          splits_ready_legacy?: boolean | null
-          splits_ready_source?: string
           spotify_url?: string | null
           status?: string
           sync_approved_at?: string | null
@@ -6036,13 +5647,6 @@ export type Database = {
             columns: ["approved_song_dna_version_id"]
             isOneToOne: false
             referencedRelation: "song_dna_versions"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "tracks_current_split_sheet_id_fkey"
-            columns: ["current_split_sheet_id"]
-            isOneToOne: false
-            referencedRelation: "split_sheets"
             referencedColumns: ["id"]
           },
         ]

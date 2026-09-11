@@ -315,9 +315,16 @@ Deno.serve(async (req) => {
           campaignId: resolvedCampaignId || decision.campaignId,
           pitchCopySource: integrity.source,
           pitchCopyHash: integrity.hash,
+          // Gated-send attribution. Taken from the server-sealed draft (written from
+          // the verified ops credential at approve time — e.g. grok_playlist_control),
+          // never from caller-supplied body fields. Both are guaranteed present here
+          // because verifyApprovedContentHash() rejects drafts missing either.
+          approvedBy: String(draft.approved_by ?? "").trim() || null,
+          approvedAt: String(draft.approved_at ?? "").trim() || null,
         },
       );
     }
+
     return jsonPitch(buildNonEmailMessage(row, method, trackNameOut));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

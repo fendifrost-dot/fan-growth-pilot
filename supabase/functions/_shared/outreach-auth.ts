@@ -657,6 +657,99 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
     capability: 'update_sync_gate_ops_flags',
     surface: 'admin-write',
   },
+
+  // ---- Authoritative split sheets / rights delivery -----------------------
+  list_split_sheets: {
+    cls: 'capability',
+    capability: 'read_split_sheets',
+    surface: 'admin-write',
+  },
+  get_split_sheet: {
+    cls: 'capability',
+    capability: 'read_split_sheets',
+    surface: 'admin-write',
+  },
+  create_split_sheet_version: {
+    cls: 'capability',
+    capability: 'draft_split_sheet',
+    surface: 'admin-write',
+  },
+  create_split_sheet: {
+    cls: 'capability',
+    capability: 'draft_split_sheet',
+    surface: 'admin-write',
+  },
+  regenerate_split_sheet_document: {
+    cls: 'capability',
+    capability: 'draft_split_sheet',
+    surface: 'admin-write',
+  },
+  record_contributor_confirmation: {
+    cls: 'capability',
+    capability: 'manage_split_sheet_evidence',
+    surface: 'admin-write',
+  },
+  upload_split_sheet_evidence: {
+    cls: 'capability',
+    capability: 'manage_split_sheet_evidence',
+    surface: 'admin-write',
+  },
+  mark_split_sheet_disputed: {
+    cls: 'capability',
+    capability: 'manage_split_sheet_evidence',
+    surface: 'admin-write',
+  },
+  submit_split_sheet_for_fendi_review: {
+    cls: 'capability',
+    capability: 'draft_split_sheet',
+    surface: 'admin-write',
+  },
+  finalize_split_sheet: {
+    cls: 'capability',
+    capability: 'finalize_split_sheet',
+    surface: 'admin-write',
+  },
+  get_split_sheet_signed_url: {
+    cls: 'capability',
+    capability: 'read_split_sheets',
+    surface: 'admin-write',
+  },
+  get_track_split_readiness: {
+    cls: 'capability',
+    capability: 'read_split_sheets',
+    surface: 'admin-write',
+  },
+  get_split_sheet_delivery_availability: {
+    cls: 'capability',
+    capability: 'read_split_sheet_deliveries',
+    surface: 'outreach-write',
+  },
+  request_split_sheet_delivery_authorization: {
+    cls: 'capability',
+    capability: 'authorize_split_sheet_delivery',
+    surface: 'admin-write',
+  },
+  deliver_split_sheet_to_sync_contact: {
+    cls: 'capability',
+    capability: 'deliver_split_sheet',
+    surface: 'outreach-write',
+  },
+  list_split_sheet_deliveries: {
+    cls: 'capability',
+    capability: 'read_split_sheet_deliveries',
+    surface: 'outreach-write',
+  },
+  record_split_sheet_delivery_response: {
+    cls: 'capability',
+    capability: 'deliver_split_sheet',
+    surface: 'outreach-write',
+  },
+  // Deprecated destructive in-place edit — capability-gated; handler returns 410.
+  update_split_sheet_contributors: {
+    cls: 'capability',
+    capability: 'draft_split_sheet',
+    surface: 'admin-write',
+  },
 };
 
 /**

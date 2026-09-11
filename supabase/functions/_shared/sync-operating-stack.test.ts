@@ -319,6 +319,7 @@ Deno.test("eligibility: blocked without Fendi approvals / readiness; no caller h
       has_sample: "no",
       assets_ready: true,
       splits_ready: true,
+      splits_ready_source: "authoritative_final",
       publishing_ready: true,
       unresolved_rights_exception: false,
       sample_declaration_approved_at: "2026-09-01T00:00:00Z",
@@ -337,6 +338,33 @@ Deno.test("eligibility: blocked without Fendi approvals / readiness; no caller h
   });
   assertEquals(ready.eligible, true);
   assertEquals(ready.blockers, []);
+
+  const legacy = evaluateSyncEligibility({
+    track: {
+      id: MEDITATE_ID,
+      approved_song_dna_version_id: "dna-1",
+      has_sample: "no",
+      assets_ready: true,
+      splits_ready: true,
+      splits_ready_source: "unverified_legacy",
+      publishing_ready: true,
+      unresolved_rights_exception: false,
+      sample_declaration_approved_at: "2026-09-01T00:00:00Z",
+      sample_declaration_approved_by: "fendi",
+      sync_approved_at: "2026-09-01T00:00:00Z",
+      sync_approved_by: "fendi",
+    },
+    dna: {
+      id: "dna-1",
+      approval_state: "approved",
+      sample_declaration: "no",
+      sync_recommendation: "approved",
+      payload: {},
+    },
+    privateLicenseVerified: false,
+  });
+  assertEquals(legacy.eligible, false);
+  assert(legacy.blockers.includes("required_splits"));
 });
 
 Deno.test("opportunity types: active_brief vs agency_introduction remain distinct", () => {

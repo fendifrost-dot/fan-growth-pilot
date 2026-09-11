@@ -37,6 +37,9 @@ type TrackGateRow = {
   assets_ready?: boolean | null;
   publishing_ready?: boolean | null;
   splits_ready?: boolean | null;
+  /** Provenance — unverified_legacy / legacy never clears the splits gate. */
+  splits_ready_source?: string | null;
+  current_split_sheet_id?: string | null;
   unresolved_rights_exception?: boolean | null;
   sample_exception_resolved?: boolean | null;
   sample_declaration_approved_at?: string | null;
@@ -44,6 +47,17 @@ type TrackGateRow = {
   sync_approved_at?: string | null;
   sync_approved_by?: string | null;
 };
+
+/**
+ * Sync gate: splits_ready alone is insufficient.
+ * Only authoritative_final provenance clears the blocker.
+ */
+export function splitsReadyIsAuthoritative(track: {
+  splits_ready?: boolean | null;
+  splits_ready_source?: string | null;
+}): boolean {
+  return track.splits_ready === true && track.splits_ready_source === "authoritative_final";
+}
 
 type DnaGateRow = {
   id: string;
@@ -100,9 +114,13 @@ export function evaluateSyncEligibility(input: {
     reasons.push("Unresolved rights exception blocks sync");
   }
 
-  if (!truthy(input.track.splits_ready)) {
+  if (!splitsReadyIsAuthoritative(input.track)) {
     blockers.push("required_splits");
-    reasons.push("Required splits not marked ready");
+    reasons.push(
+      String(input.track.splits_ready_source ?? "") === "unverified_legacy"
+        ? "Legacy splits_ready flag is unverified; authoritative final split sheet required (splits_ready_source=authoritative_final)"
+        : "Authoritative finalized split sheet required (splits_ready_source=authoritative_final)",
+    );
   }
   if (!truthy(input.track.publishing_ready)) {
     blockers.push("publishing_readiness");
@@ -168,7 +186,7 @@ export async function computeTrackSyncEligibility(
   const { data: track, error: tErr } = await sb
     .from("tracks")
     .select(
-      "id, name, approved_song_dna_version_id, has_sample, assets_ready, publishing_ready, splits_ready, unresolved_rights_exception, sample_exception_resolved, sample_declaration_approved_at, sample_declaration_approved_by, sync_approved_at, sync_approved_by",
+      "id, name, approved_song_dna_version_id, has_sample, assets_ready, publishing_ready, splits_ready, splits_ready_source, current_split_sheet_id, unresolved_rights_exception, sample_exception_resolved, sample_declaration_approved_at, sample_declaration_approved_by, sync_approved_at, sync_approved_by",
     )
     .eq("id", trackId)
     .maybeSingle();

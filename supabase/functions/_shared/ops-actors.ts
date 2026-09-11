@@ -87,6 +87,14 @@ export type OpsCapability =
   | "read_playlist_discovery_work"
   | "submit_playlist_candidates"
   | "read_own_playlist_batches"
+  // Authoritative split sheets / rights delivery
+  | "draft_split_sheet"
+  | "read_split_sheets"
+  | "manage_split_sheet_evidence"
+  | "finalize_split_sheet"
+  | "deliver_split_sheet"
+  | "authorize_split_sheet_delivery"
+  | "read_split_sheet_deliveries"
   // Human/Fendi admin surfaces — never granted to Claude/Grok/service/scheduler.
   | "manage_campaigns"
   | "manage_catalog"
@@ -127,6 +135,8 @@ const CLAUDE_SYNC_DISCOVERY_CAPS = new Set<OpsCapability>([
   "create_handoff_batch",
   "verify_submission_path",
   "record_research_evidence",
+  "draft_split_sheet",
+  "read_split_sheets",
 ]);
 
 const CLAUDE_CAPS = new Set<OpsCapability>([
@@ -154,6 +164,8 @@ const CLAUDE_CAPS = new Set<OpsCapability>([
   "submit_sync_research",
   "advance_sync_batch",
   "read_playlist_discovery_work",
+  "draft_split_sheet",
+  "read_split_sheets",
 ]);
 
 const GROK_CAPS = new Set<OpsCapability>([
@@ -187,6 +199,9 @@ const GROK_CAPS = new Set<OpsCapability>([
   "track_sync_responses",
   "escalate_sync_to_fendi",
   "read_playlist_discovery_work",
+  "read_split_sheets",
+  "deliver_split_sheet",
+  "read_split_sheet_deliveries",
 ]);
 
 /** Only Fendi's exact ARTIST_USER_ID may hold these reserved decisions. */
@@ -197,6 +212,8 @@ const FENDI_ONLY = new Set<OpsCapability>([
   "approve_sync_eligibility",
   "alter_approved_song_dna",
   "authorize_monetary_decisions",
+  "finalize_split_sheet",
+  "authorize_split_sheet_delivery",
 ]);
 
 const ADMIN_SURFACE = new Set<OpsCapability>([
@@ -255,6 +272,13 @@ const FENDI_CAPS = new Set<OpsCapability>([
   "read_playlist_discovery_work",
   "submit_playlist_candidates",
   "read_own_playlist_batches",
+  "draft_split_sheet",
+  "read_split_sheets",
+  "manage_split_sheet_evidence",
+  "finalize_split_sheet",
+  "deliver_split_sheet",
+  "authorize_split_sheet_delivery",
+  "read_split_sheet_deliveries",
 ]);
 
 /** Human admins: ops reads/writes except playlist approve/send (Grok/Fendi only). */
@@ -298,6 +322,10 @@ const HUMAN_ADMIN_CAPS = new Set<OpsCapability>([
   "read_playlist_discovery_work",
   "submit_playlist_candidates",
   "read_own_playlist_batches",
+  "draft_split_sheet",
+  "read_split_sheets",
+  "manage_split_sheet_evidence",
+  "read_split_sheet_deliveries",
 ]);
 
 const SCHEDULER_CAPS = new Set<OpsCapability>([
@@ -337,6 +365,8 @@ const SERVICE_CAPS = new Set<OpsCapability>([
   "read_sync_discovery_work",
   "submit_sync_research",
   "advance_sync_batch",
+  "draft_split_sheet",
+  "read_split_sheets",
 ]);
 
 function artistUserId(): string {
@@ -590,6 +620,10 @@ export function stripSpoofedAttribution(body: Record<string, unknown>): Record<s
     "sent_by_label",
     "response_checked_by_label",
     "placement_checked_by_label",
+    "fendi_approved_by",
+    "fendi_reviewed_by",
+    "finalized_by",
+    "approval_identity",
   ]) {
     delete out[key];
   }

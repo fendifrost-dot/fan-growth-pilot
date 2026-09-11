@@ -25,6 +25,11 @@ import { isMultichannelAction, runMultichannelAction } from '../_shared/multicha
 import { isSyncResearchAction, runSyncResearchAction } from '../_shared/sync-research.ts';
 import { isSyncControlAction, runSyncControlAction } from '../_shared/sync-control.ts';
 import { isSyncGateAction, runSyncGateAction } from '../_shared/sync-gate.ts';
+import { isSplitSheetAction, runSplitSheetAction } from '../_shared/split-sheets.ts';
+import {
+  isSplitSheetDeliveryAction,
+  runSplitSheetDeliveryAction,
+} from '../_shared/split-sheet-delivery.ts';
 import { buildDiscoveryCapacityPlan } from '../_shared/discovery-capacity.ts';
 import { isClaudeSyncDiscoveryCredential } from '../_shared/ops-actors.ts';
 
@@ -202,6 +207,22 @@ Deno.serve(async (req) => {
 
     if (isSyncGateAction(action)) {
       const result = await runSyncGateAction(action, body, supabase, actor, req);
+      return new Response(JSON.stringify(result.data), {
+        status: result.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isSplitSheetAction(action)) {
+      const result = await runSplitSheetAction(action, body, supabase, actor, req);
+      return new Response(JSON.stringify(result.data), {
+        status: result.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isSplitSheetDeliveryAction(action)) {
+      const result = await runSplitSheetDeliveryAction(action, body, supabase, actor, req);
       return new Response(JSON.stringify(result.data), {
         status: result.status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },

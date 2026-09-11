@@ -32,6 +32,7 @@ import AdminCategories from "./pages/admin/AdminCategories";
 import AdminPitchComposer from "./pages/admin/AdminPitchComposer";
 import AdminPitchPortal from "./pages/admin/AdminPitchPortal";
 import AdminSongDna from "./pages/admin/AdminSongDna";
+import AdminSplitSheets from "./pages/admin/AdminSplitSheets";
 import AdminDiscoveryProfiles from "./pages/admin/AdminDiscoveryProfiles";
 import AdminDailyOps from "./pages/admin/AdminDailyOps";
 import AdminOpportunities from "./pages/admin/AdminOpportunities";
@@ -95,6 +96,7 @@ const App = () => {
             <Route path="pitch-composer" element={<AdminPitchComposer />} />
             <Route path="pitch-portal" element={<AdminPitchPortal />} />
             <Route path="song-dna" element={<AdminSongDna />} />
+            <Route path="split-sheets" element={<AdminSplitSheets />} />
             <Route path="discovery-profiles" element={<AdminDiscoveryProfiles />} />
             <Route path="daily-ops" element={<AdminDailyOps />} />
             <Route path="mcp-playlist-authorize" element={<AdminMcpPlaylistAuthorize />} />

@@ -370,7 +370,10 @@ async function handleEmailPitch(
     campaignId?: string | null;
     pitchCopySource?: string | null;
     pitchCopyHash?: string | null;
+    approvedBy?: string | null;
+    approvedAt?: string | null;
   } = {},
+
 ): Promise<Response> {
   const playlistId = String(row.playlist_id);
   // ---------------------------------------------------------------------------

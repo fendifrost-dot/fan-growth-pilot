@@ -31,6 +31,9 @@ export function normalizeTitle(name: string | null | undefined): string {
   return (name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+/** Legacy sample-only heuristic — do NOT use for outreach gating.
+ * Authoritative gate: sync-eligibility.ts → recomputeAndPersistSyncEligibility.
+ */
 export function computeSyncEligible(hasSample: string | null | undefined): boolean {
   return hasSample === "no";
 }

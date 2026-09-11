@@ -64,10 +64,23 @@ export function evaluateSyncReady(input: {
   approvedDnaVersionId?: string | null;
   sampleDeclarationApproved?: boolean;
   syncApprovedByFendi?: boolean;
+  splitsReady?: boolean;
+  publishingReady?: boolean;
+  assetsReady?: boolean;
+  rightsClear?: boolean;
+  privateLicenseOk?: boolean;
+  requiresPrivateLicense?: boolean;
 }): { ready: boolean; blockers: string[] } {
   const blockers: string[] = [];
   if (!input.approvedDnaVersionId) blockers.push("approved_song_dna");
   if (!input.sampleDeclarationApproved) blockers.push("fendi_sample_declaration_approval");
   if (!input.syncApprovedByFendi) blockers.push("fendi_sync_approval");
+  if (input.splitsReady === false) blockers.push("required_splits");
+  if (input.publishingReady === false) blockers.push("publishing_readiness");
+  if (input.assetsReady === false) blockers.push("asset_readiness");
+  if (input.rightsClear === false) blockers.push("rights_review");
+  if (input.requiresPrivateLicense && !input.privateLicenseOk) {
+    blockers.push("private_license_evidence");
+  }
   return { ready: blockers.length === 0, blockers };
 }

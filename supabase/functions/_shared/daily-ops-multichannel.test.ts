@@ -82,8 +82,12 @@ Deno.test("station ids and upstream continuity map", () => {
   assertEquals(STATION_UPSTREAM.sync_batch_ready, "playlist_tranche_final");
   assertEquals(STATION_UPSTREAM.grok_playlist_review, "playlist_tranche_final");
   assertEquals(STATION_UPSTREAM.grok_playlist_send, "grok_playlist_review");
+  assertEquals(STATION_UPSTREAM.grok_sync_review, "sync_batch_ready");
+  assertEquals(STATION_UPSTREAM.grok_sync_send, "grok_sync_review");
   assertEquals(STATION_REQUIRED_UPSTREAM_QUEUE.grok_playlist_review, "AWAITING_GROK_REVIEW");
   assertEquals(STATION_REQUIRED_UPSTREAM_QUEUE.grok_playlist_send, "APPROVED_FOR_SEND");
+  assertEquals(STATION_REQUIRED_UPSTREAM_QUEUE.grok_sync_review, "AWAITING_GROK_REVIEW");
+  assertEquals(STATION_REQUIRED_UPSTREAM_QUEUE.grok_sync_send, "APPROVED_FOR_SEND");
 });
 
 // ---- Idempotency key contract (pure) --------------------------------------
@@ -131,6 +135,8 @@ Deno.test("Grok can consume/review Claude playlist batches and send; not DNA/syn
     assertEquals(can(actor, "review_handoff_batch"), true);
     assertEquals(can(actor, "approve_playlist_drafts"), true);
     assertEquals(can(actor, "send_playlist_pitches"), true);
+    assertEquals(can(actor, "approve_sync_outreach"), true);
+    assertEquals(can(actor, "submit_sync_outreach"), true);
     assertEquals(can(actor, "create_sync_target"), false);
     assertEquals(can(actor, "approve_sync_eligibility"), false);
     assertEquals(can(actor, "approve_song_dna"), false);

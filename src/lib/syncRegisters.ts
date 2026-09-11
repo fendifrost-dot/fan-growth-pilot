@@ -23,6 +23,9 @@ export function normalizeTitle(name: string | null | undefined): string {
   return (name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+/** Legacy sample-only heuristic — do NOT use for outreach gating.
+ * Authoritative gate lives server-side in sync-eligibility / tracks.sync_eligible.
+ */
 export function computeSyncEligible(hasSample: SampleFlag | string | null | undefined): boolean {
   return hasSample === "no";
 }

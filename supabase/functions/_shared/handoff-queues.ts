@@ -126,6 +126,7 @@ export function authorizeHandoffState(
   if (
     ops.kind === "claude" ||
     ops.kind === "claude_playlist_discovery" ||
+    ops.kind === "claude_sync_discovery" ||
     ops.kind === "service" ||
     ops.kind === "scheduler"
   ) {
@@ -638,6 +639,7 @@ export async function reviewHandoffBatch(
   if (
     ops.kind === "claude" ||
     ops.kind === "claude_playlist_discovery" ||
+    ops.kind === "claude_sync_discovery" ||
     ops.kind === "service" ||
     ops.kind === "human_admin"
   ) {

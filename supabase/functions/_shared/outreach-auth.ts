@@ -18,6 +18,7 @@ import {
   can,
   isClaudeCredential,
   isClaudePlaylistDiscoveryCredential,
+  isClaudeSyncDiscoveryCredential,
   isGrokCredential,
   isHubServiceCredential,
   isSchedulerCredential,
@@ -39,6 +40,7 @@ export type Actor =
   | { kind: 'service' }
   | { kind: 'claude' }
   | { kind: 'claude_playlist_discovery' }
+  | { kind: 'claude_sync_discovery' }
   | { kind: 'grok_playlist_control' }
   | { kind: 'anonymous' };
 
@@ -583,6 +585,78 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
     capability: 'read_own_sync_batches',
     surface: 'admin-write',
   },
+  get_sync_discovery_work: {
+    cls: 'capability',
+    capability: 'read_sync_discovery_work',
+    surface: 'outreach-write',
+  },
+  submit_sync_research: {
+    cls: 'capability',
+    capability: 'submit_sync_research',
+    surface: 'outreach-write',
+  },
+  advance_sync_batch: {
+    cls: 'capability',
+    capability: 'advance_sync_batch',
+    surface: 'outreach-write',
+  },
+  // ---- Grok sync control (extends grok_playlist_control) -------------------
+  review_sync_outreach: {
+    cls: 'capability',
+    capability: 'review_sync_outreach',
+    surface: 'outreach-write',
+  },
+  approve_sync_outreach: {
+    cls: 'capability',
+    capability: 'approve_sync_outreach',
+    surface: 'outreach-write',
+  },
+  reject_sync_outreach: {
+    cls: 'capability',
+    capability: 'reject_sync_outreach',
+    surface: 'outreach-write',
+  },
+  submit_sync_outreach: {
+    cls: 'capability',
+    capability: 'submit_sync_outreach',
+    surface: 'outreach-write',
+  },
+  track_sync_responses: {
+    cls: 'capability',
+    capability: 'track_sync_responses',
+    surface: 'outreach-write',
+  },
+  escalate_sync_to_fendi: {
+    cls: 'capability',
+    capability: 'escalate_sync_to_fendi',
+    surface: 'outreach-write',
+  },
+  list_sync_pending_drafts: {
+    cls: 'capability',
+    capability: 'review_sync_outreach',
+    surface: 'outreach-write',
+  },
+  // ---- Fendi-only sync gate approvals -------------------------------------
+  approve_sample_declaration: {
+    cls: 'capability',
+    capability: 'approve_sample_declaration',
+    surface: 'admin-write',
+  },
+  approve_sync_eligibility: {
+    cls: 'capability',
+    capability: 'approve_sync_eligibility',
+    surface: 'admin-write',
+  },
+  recompute_sync_eligibility: {
+    cls: 'capability',
+    capability: 'approve_sync_eligibility',
+    surface: 'admin-write',
+  },
+  update_sync_gate_ops_flags: {
+    cls: 'capability',
+    capability: 'update_sync_gate_ops_flags',
+    surface: 'admin-write',
+  },
 };
 
 /**
@@ -677,6 +751,7 @@ async function resolveUser(
 export function resolveCredentialActor(req: Request): Actor | null {
   if (isSchedulerCredential(req)) return { kind: 'scheduler' };
   if (isGrokCredential(req)) return { kind: 'grok_playlist_control' };
+  if (isClaudeSyncDiscoveryCredential(req)) return { kind: 'claude_sync_discovery' };
   if (isClaudePlaylistDiscoveryCredential(req)) return { kind: 'claude_playlist_discovery' };
   if (isClaudeCredential(req)) return { kind: 'claude' };
   if (isHubServiceCredential(req)) return { kind: 'service' };
@@ -825,6 +900,7 @@ export async function authorizeAction(
     const machineKinds = new Set([
       'claude',
       'claude_playlist_discovery',
+      'claude_sync_discovery',
       'grok_playlist_control',
       'service',
       'scheduler',

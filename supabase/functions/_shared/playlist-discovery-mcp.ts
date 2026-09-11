@@ -30,6 +30,9 @@ import {
   lookupInventoryPair,
   assertWriteOk,
 } from "./playlist-discovery-ops.ts";
+import {
+  inventoryAttrFromAuthenticatedActor,
+} from "./batch-attribution.ts";
 
 export type ToolResult = { status: number; data: Record<string, unknown> };
 
@@ -1262,13 +1265,12 @@ export async function createPlaylistDraftInventory(
     };
   }
 
+  // Batch + record attribution from authenticated actor only — never caller body.
+  const serverAttr = inventoryAttrFromAuthenticatedActor(ops, clean);
   const { data: persisted, error: persistErr } = await persistInventory(sb, {
     track_id: trackId,
     song_dna_version_id: songDnaVersionId,
-    attr: {
-      discovered_by: attr.actor_kind,
-      discovered_by_label: attr.actor_label,
-    },
+    attr: serverAttr,
     items,
   });
 

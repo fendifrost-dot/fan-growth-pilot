@@ -201,6 +201,7 @@ const GROK_CAPS = new Set<OpsCapability>([
   "read_playlist_discovery_work",
   "read_split_sheets",
   "deliver_split_sheet",
+  "authorize_split_sheet_delivery",
   "read_split_sheet_deliveries",
 ]);
 
@@ -213,7 +214,7 @@ const FENDI_ONLY = new Set<OpsCapability>([
   "alter_approved_song_dna",
   "authorize_monetary_decisions",
   "finalize_split_sheet",
-  "authorize_split_sheet_delivery",
+  // authorize_split_sheet_delivery: Grok may request; Fendi grant enforced in delivery handler.
 ]);
 
 const ADMIN_SURFACE = new Set<OpsCapability>([

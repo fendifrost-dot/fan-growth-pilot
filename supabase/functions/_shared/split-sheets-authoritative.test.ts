@@ -194,7 +194,8 @@ Deno.test("6. Ordinary human_admin cannot finalize", () => {
     assertEquals(can(admin, "draft_split_sheet"), true);
     assertEquals(can(admin, "manage_split_sheet_evidence"), true);
     assert(isFendiReserved("finalize_split_sheet"));
-    assert(isFendiReserved("authorize_split_sheet_delivery"));
+    // Grok may request delivery auth; granting remains Fendi-only in the delivery handler.
+    assertFalse(isFendiReserved("authorize_split_sheet_delivery"));
   });
 });
 
@@ -224,7 +225,7 @@ Deno.test("8. Grok cannot edit shares and cannot deliver draft/superseded", () =
     assertEquals(can(grok, "draft_split_sheet"), false);
     assertEquals(can(grok, "read_split_sheets"), true);
     assertEquals(can(grok, "deliver_split_sheet"), true);
-    assertEquals(can(grok, "authorize_split_sheet_delivery"), false);
+    assertEquals(can(grok, "authorize_split_sheet_delivery"), true);
     assertEquals(can(grok, "finalize_split_sheet"), false);
     assertEquals(requiredCapabilityForAction("create_split_sheet_version"), "draft_split_sheet");
     assertFalse(can(grok, requiredCapabilityForAction("create_split_sheet_version")!));

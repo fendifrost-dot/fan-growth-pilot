@@ -283,7 +283,7 @@ Deno.test("split-sheet capability matrix: Claude drafts, Grok delivers, Fendi fi
     assertEquals(can(grok, "deliver_split_sheet"), true);
     assertEquals(can(grok, "read_split_sheet_deliveries"), true);
     assertEquals(can(grok, "finalize_split_sheet"), false);
-    assertEquals(can(grok, "authorize_split_sheet_delivery"), true);
+    assertEquals(can(grok, "authorize_split_sheet_delivery"), false);
 
     assertEquals(can(service, "draft_split_sheet"), true);
     assertEquals(can(service, "read_split_sheets"), true);

@@ -1,12 +1,20 @@
 -- Authoritative split-sheet / rights stack.
--- Extends existing split_sheets + split_sheet_contributors (do not recreate).
--- Fixes destructive contributor replace via atomic versioned RPC.
+-- Extends existing split_sheets + split_sheet_contributors (do NOT recreate).
+-- Atomic versioned replacement via create_split_sheet_version (no delete-then-insert).
 -- Apply via Lovable SQL Editor (paste). Additive / idempotent.
+--
+-- Contract locked to edge TS (supabase/functions/_shared/split-sheets*.ts):
+--   tables: split_sheets, split_sheet_contributors, split_sheet_master_owners,
+--           split_sheet_evidence, split_sheet_deliveries, rights_document_audit_events
+--   RPCs: create_split_sheet_version, finalize_split_sheet_version
+--   tracks.splits_ready_source = 'authoritative_final' when ready
+--   bucket: rights-documents (private)
+--   ops_settings.split_sheet_delivery_policy default request_only
 
 begin;
 
 -- ---------------------------------------------------------------------------
--- 1. Extend split_sheets lifecycle + document integrity fields
+-- 1. Extend split_sheets
 -- ---------------------------------------------------------------------------
 alter table public.split_sheets
   add column if not exists document_hash text,
@@ -42,7 +50,6 @@ do $$ begin
       'final',
       'superseded',
       'disputed',
-      -- legacy statuses preserved for existing rows
       'incomplete',
       'ready_for_signatures',
       'signed'
@@ -63,24 +70,22 @@ do $$ begin
 exception when others then null;
 end $$;
 
--- Map legacy incomplete → draft for clarity (keep signed/ready as historical)
 update public.split_sheets set status = 'draft' where status = 'incomplete';
 update public.split_sheets set status = 'ready_for_fendi_review' where status = 'ready_for_signatures';
-update public.split_sheets set status = 'final', document_kind = 'uploaded_signed'
-  where status = 'signed' and coalesce(document_kind, '') = 'agh_generated_summary';
+-- Legacy "signed" status is NOT proof of a signed file — demote for Fendi review.
+update public.split_sheets set status = 'ready_for_fendi_review' where status = 'signed';
 
--- Ensure at most one current sheet per track
 create unique index if not exists split_sheets_one_current_per_track
   on public.split_sheets (track_id)
   where is_current = true;
 
 comment on column public.split_sheets.document_kind is
-  'Honest document class: agh_generated_summary ≠ signed. Never label unsigned HTML as signed.';
+  'Honest class: agh_generated_summary ≠ signed. Never label unsigned HTML as signed.';
 comment on column public.split_sheets.is_current is
-  'Exactly one current version per track when a sheet exists. Finalized versions stay immutable.';
+  'At most one current version per track. Finalized versions are immutable; corrections create a new version.';
 
 -- ---------------------------------------------------------------------------
--- 2. Extend contributors: composition vs master, confirmation, publishing
+-- 2. Extend contributors
 -- ---------------------------------------------------------------------------
 alter table public.split_sheet_contributors
   add column if not exists ownership_side text not null default 'composition',
@@ -142,7 +147,7 @@ exception when others then null;
 end $$;
 
 -- ---------------------------------------------------------------------------
--- 3. Master ownership detail (may also live as ownership_side=master rows)
+-- 3. Master owners / evidence / deliveries / audit
 -- ---------------------------------------------------------------------------
 create table if not exists public.split_sheet_master_owners (
   id uuid primary key default gen_random_uuid(),
@@ -170,9 +175,6 @@ create policy split_sheet_master_owners_admin_all on public.split_sheet_master_o
   using (public.has_role(auth.uid(), 'admin'))
   with check (public.has_role(auth.uid(), 'admin'));
 
--- ---------------------------------------------------------------------------
--- 4. Evidence (uploaded signed sheets / provider refs) + delivery + audit
--- ---------------------------------------------------------------------------
 create table if not exists public.split_sheet_evidence (
   id uuid primary key default gen_random_uuid(),
   split_sheet_id uuid not null references public.split_sheets(id) on delete cascade,
@@ -264,7 +266,8 @@ create table if not exists public.rights_document_audit_events (
   event_kind text not null
     check (event_kind in (
       'view', 'download', 'delivery', 'create_version', 'finalize',
-      'supersede', 'confirm', 'dispute', 'evidence_upload', 'eligibility_recompute'
+      'supersede', 'confirm', 'dispute', 'evidence_upload', 'eligibility_recompute',
+      'delivery_authorization_request', 'delivery_authorization_granted'
     )),
   actor_kind text not null,
   actor_label text not null,
@@ -285,7 +288,7 @@ create policy rights_document_audit_events_admin_all on public.rights_document_a
   with check (public.has_role(auth.uid(), 'admin'));
 
 -- ---------------------------------------------------------------------------
--- 5. Legacy splits_ready provenance — historical only until verified
+-- 5. Legacy splits_ready provenance
 -- ---------------------------------------------------------------------------
 alter table public.tracks
   add column if not exists splits_ready_legacy boolean,
@@ -314,8 +317,6 @@ do $$ begin
 exception when others then null;
 end $$;
 
--- Preserve any legacy true flags as historical metadata, then clear readiness
--- until authoritative documentation is attached.
 update public.tracks
    set splits_ready_legacy = splits_ready,
        splits_ready_source = case when splits_ready then 'unverified_legacy' else 'none' end,
@@ -326,9 +327,11 @@ comment on column public.tracks.splits_ready is
   'Server-derived from authoritative finalized split sheet + confirmations/evidence. Never trust caller.';
 comment on column public.tracks.splits_ready_legacy is
   'Historical boolean preserved for audit; does not confer sync readiness.';
+comment on column public.tracks.splits_ready_source is
+  'Only authoritative_final (with splits_ready=true) clears the sync splits gate.';
 
 -- ---------------------------------------------------------------------------
--- 6. Private storage bucket for rights documents
+-- 6. Private storage bucket
 -- ---------------------------------------------------------------------------
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (
@@ -355,10 +358,10 @@ create policy rights_documents_admin_insert on storage.objects
 drop policy if exists rights_documents_deny_anon on storage.objects;
 create policy rights_documents_deny_anon on storage.objects
   for all to anon
-  using (bucket_id <> 'rights-documents');
+  using (bucket_id = 'rights-documents' and false);
 
 -- ---------------------------------------------------------------------------
--- 7. Validation helpers + atomic versioned contributor replacement RPC
+-- 7. Validation + atomic create_split_sheet_version
 -- ---------------------------------------------------------------------------
 create or replace function public._split_sheet_validate_contributor_set(
   p_composition jsonb,
@@ -421,9 +424,9 @@ begin
         v_errors := array_append(v_errors, 'master_legal_name_required');
       end if;
       begin
-        v_pct := (v_item->>'ownership_percent')::numeric;
+        v_pct := coalesce((v_item->>'ownership_percent')::numeric, (v_item->>'split_percent')::numeric);
       exception when others then
-        v_pct := (v_item->>'split_percent')::numeric;
+        v_pct := null;
       end;
       if v_pct is null or v_pct < 0 or v_pct > 100 then
         v_errors := array_append(v_errors, 'master_percent_out_of_range');
@@ -478,6 +481,7 @@ declare
   v_idx int := 0;
   v_comp_total numeric;
   v_master_total numeric;
+  v_actor_uuid uuid;
 begin
   if p_track_id is null or not exists (select 1 from public.tracks where id = p_track_id) then
     return jsonb_build_object('ok', false, 'code', 'track_not_found', 'errors', jsonb_build_array('track_not_found'));
@@ -497,6 +501,16 @@ begin
   v_comp_total := (v_validation->>'composition_total')::numeric;
   v_master_total := (v_validation->>'master_total')::numeric;
 
+  begin
+    if p_actor_user_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then
+      v_actor_uuid := p_actor_user_id::uuid;
+    else
+      v_actor_uuid := null;
+    end if;
+  exception when others then
+    v_actor_uuid := null;
+  end;
+
   select id into v_prev
     from public.split_sheets
    where track_id = p_track_id and is_current = true
@@ -506,7 +520,7 @@ begin
     from public.split_sheets
    where track_id = p_track_id;
 
-  -- Supersede prior current version (never delete its contributors)
+  -- Supersede prior current version — NEVER delete its contributors
   if v_prev is not null then
     update public.split_sheets
        set is_current = false,
@@ -528,8 +542,8 @@ begin
     coalesce(p_one_stop_master, false),
     coalesce(p_publishing_controlled, false),
     coalesce(p_master_controlled, false),
-    nullif(p_actor_user_id, '')::uuid,
-    nullif(p_actor_user_id, '')::uuid
+    v_actor_uuid,
+    v_actor_uuid
   ) returning id into v_sheet_id;
 
   if v_prev is not null then
@@ -548,8 +562,8 @@ begin
       nullif(trim(v_item->>'professional_name'), ''),
       coalesce(nullif(trim(v_item->>'role'), ''), 'writer'),
       (v_item->>'split_percent')::numeric,
-      nullif(trim(v_item->>'ipi_number'), ''),
-      nullif(trim(v_item->>'pro_affiliation'), ''),
+      nullif(trim(coalesce(v_item->>'ipi_number', v_item->>'ipi_number')), ''),
+      nullif(trim(coalesce(v_item->>'pro_affiliation', v_item->>'pro_affiliation')), ''),
       nullif(trim(v_item->>'publisher_name'), ''),
       nullif(trim(v_item->>'publishing_administrator'), ''),
       case when v_item ? 'share_controlled' then (v_item->>'share_controlled')::boolean else null end,
@@ -577,7 +591,6 @@ begin
       nullif(trim(v_item->>'notes'), ''),
       v_idx
     );
-    -- Mirror into contributors as ownership_side=master for unified reads
     insert into public.split_sheet_contributors (
       split_sheet_id, ownership_side, legal_name, professional_name, role,
       split_percent, notes, sort_order
@@ -617,6 +630,7 @@ begin
   );
 exception
   when others then
+    -- Rolls back all writes in this function body (atomicity).
     return jsonb_build_object(
       'ok', false,
       'code', 'transaction_failed',
@@ -632,7 +646,8 @@ grant execute on function public.create_split_sheet_version(
   uuid, jsonb, jsonb, text, text, boolean, boolean, boolean, text, text, text, text, text
 ) to service_role;
 
--- Finalize: Fendi-only path should be enforced in edge auth; RPC still stamps server fields.
+-- Finalize: edge auth enforces Fendi-only; RPC also rejects non-fendi actor_kind.
+-- Caller-supplied approval identity is ignored — only authenticated p_actor_* matter.
 create or replace function public.finalize_split_sheet_version(
   p_split_sheet_id uuid,
   p_actor_kind text,
@@ -664,6 +679,13 @@ begin
   if v_sheet.status in ('final', 'superseded') then
     return jsonb_build_object('ok', false, 'code', 'immutable', 'error', 'finalized versions are immutable');
   end if;
+  if v_sheet.status = 'disputed' then
+    return jsonb_build_object('ok', false, 'code', 'disputed', 'error', 'disputed versions cannot be finalized');
+  end if;
+
+  if abs(coalesce(v_sheet.composition_total_percent, 0) - 100) > 0.001 then
+    return jsonb_build_object('ok', false, 'code', 'composition_total_must_equal_100');
+  end if;
 
   if p_require_confirmations then
     select count(*) into v_unconfirmed
@@ -671,8 +693,7 @@ begin
      where split_sheet_id = p_split_sheet_id
        and ownership_side = 'composition'
        and confirmation_status not in ('confirmed', 'waived_by_fendi');
-    -- Allow finalize when uploaded signed evidence exists even if unconfirmed rows remain.
-    if v_unconfirmed > 0 and p_document_kind = 'agh_generated_summary' then
+    if v_unconfirmed > 0 and coalesce(p_document_kind, 'agh_generated_summary') = 'agh_generated_summary' then
       return jsonb_build_object(
         'ok', false,
         'code', 'confirmations_incomplete',
@@ -716,7 +737,12 @@ begin
     jsonb_build_object('document_kind', p_document_kind)
   );
 
-  return jsonb_build_object('ok', true, 'split_sheet_id', p_split_sheet_id, 'splits_ready', true);
+  return jsonb_build_object(
+    'ok', true,
+    'split_sheet_id', p_split_sheet_id,
+    'splits_ready', true,
+    'splits_ready_source', 'authoritative_final'
+  );
 end;
 $$;
 
@@ -727,7 +753,59 @@ grant execute on function public.finalize_split_sheet_version(
   uuid, text, text, text, text, text, text, text, boolean
 ) to service_role;
 
--- Delivery policy seed
+-- Immutability: finalized sheets cannot rewrite ownership payload in place.
+create or replace function public._split_sheet_prevent_final_mutation()
+returns trigger
+language plpgsql
+as $$
+begin
+  if tg_op = 'UPDATE' and old.status = 'final' then
+    if new.status is distinct from old.status and new.status not in ('final', 'superseded') then
+      raise exception 'finalized split sheets are immutable (status)';
+    end if;
+    if new.generated_html is distinct from old.generated_html
+       or new.document_hash is distinct from old.document_hash
+       or new.composition_total_percent is distinct from old.composition_total_percent
+       or new.master_total_percent is distinct from old.master_total_percent
+       or new.track_id is distinct from old.track_id
+       or new.version_number is distinct from old.version_number then
+      raise exception 'finalized split sheets are immutable — create a new version';
+    end if;
+  end if;
+  if tg_op = 'DELETE' and old.status = 'final' then
+    raise exception 'finalized split sheets cannot be deleted';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists split_sheets_final_immutable on public.split_sheets;
+create trigger split_sheets_final_immutable
+  before update or delete on public.split_sheets
+  for each row execute function public._split_sheet_prevent_final_mutation();
+
+create or replace function public._split_sheet_contributors_prevent_final_mutation()
+returns trigger
+language plpgsql
+as $$
+declare
+  v_status text;
+begin
+  select status into v_status from public.split_sheets
+   where id = coalesce(new.split_sheet_id, old.split_sheet_id);
+  if v_status = 'final' then
+    raise exception 'cannot mutate contributors on a finalized split sheet — create a new version';
+  end if;
+  if tg_op = 'DELETE' then return old; end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists split_sheet_contributors_final_immutable on public.split_sheet_contributors;
+create trigger split_sheet_contributors_final_immutable
+  before insert or update or delete on public.split_sheet_contributors
+  for each row execute function public._split_sheet_contributors_prevent_final_mutation();
+
 insert into public.ops_settings (setting_key, setting_value, description) values
 (
   'split_sheet_delivery_policy',

@@ -523,6 +523,17 @@ async function handleEmailPitch(
       message_to_user: "🧪 [TEST MODE] Pitch email sent to *" + email + "* for *" + playlistName + "* (" + trackName + "). No pitch_log row, no cooldown applied.",
     });
   }
+  // Gated-send attribution must never land NULL: a sent row with no approver
+  // falsely reads as an ungated send to audit scanners. Prefer the attribution the
+  // caller already resolved from the sealed draft; re-read the draft as a backstop.
+  let approvedBy = identity.approvedBy ?? null;
+  let approvedAt = identity.approvedAt ?? null;
+  if ((!approvedBy || !approvedAt) && draftId) {
+    const { data: sealed } = await sb.from("outreach_drafts")
+      .select("approved_by, approved_at").eq("id", draftId).maybeSingle();
+    approvedBy = approvedBy || (String(sealed?.approved_by ?? "").trim() || null);
+    approvedAt = approvedAt || (String(sealed?.approved_at ?? "").trim() || null);
+  }
   const { data: logRow, error: insOk } = await sb.from("pitch_log")
     .insert(pitchLogRow(playlistId, trackName, email, method, "sent", {
       cooldown_until: cooldownIso,
@@ -539,9 +550,12 @@ async function handleEmailPitch(
       pitch_copy_source: identity.pitchCopySource ?? null,
       pitch_copy_hash: identity.pitchCopyHash ?? null,
       dispatched_via: "execute-pitch",
+      approved_by: approvedBy,
+      approved_at: approvedAt,
     }))
     .select("id")
     .single();
+
   if (insOk) {
     console.error("pitch_log insert after send:", insOk.message, { playlistId, trackName, email });
     return jsonPitch({

@@ -20,6 +20,7 @@ import type { Actor } from "./outreach-auth.ts";
 export type OpsActorKind =
   | "claude"
   | "claude_playlist_discovery"
+  | "claude_sync_discovery"
   | "grok_playlist_control"
   | "fendi"
   | "scheduler"
@@ -73,6 +74,15 @@ export type OpsCapability =
   | "create_sync_opportunity"
   | "draft_sync_pitch"
   | "read_own_sync_batches"
+  | "read_sync_discovery_work"
+  | "submit_sync_research"
+  | "advance_sync_batch"
+  | "review_sync_outreach"
+  | "approve_sync_outreach"
+  | "reject_sync_outreach"
+  | "submit_sync_outreach"
+  | "track_sync_responses"
+  | "escalate_sync_to_fendi"
   /** Minimal projection for remote playlist-discovery connector (no fan/radio/licensing). */
   | "read_playlist_discovery_work"
   | "submit_playlist_candidates"
@@ -99,6 +109,26 @@ const CLAUDE_PLAYLIST_DISCOVERY_CAPS = new Set<OpsCapability>([
   "read_own_playlist_batches",
 ]);
 
+/**
+ * Narrow remote-connector actor — sync research only.
+ * May research/persist/draft for eligible tracks; never approve/send/DNA/eligibility.
+ */
+const CLAUDE_SYNC_DISCOVERY_CAPS = new Set<OpsCapability>([
+  "research_sync_targets",
+  "verify_sync_targets",
+  "create_sync_target",
+  "create_sync_opportunity",
+  "draft_sync_pitch",
+  "read_own_sync_batches",
+  "read_sync_discovery_work",
+  "submit_sync_research",
+  "advance_sync_batch",
+  "run_daily_station",
+  "create_handoff_batch",
+  "verify_submission_path",
+  "record_research_evidence",
+]);
+
 const CLAUDE_CAPS = new Set<OpsCapability>([
   "research_playlist_targets",
   "verify_playlist_targets",
@@ -120,6 +150,9 @@ const CLAUDE_CAPS = new Set<OpsCapability>([
   "create_sync_opportunity",
   "draft_sync_pitch",
   "read_own_sync_batches",
+  "read_sync_discovery_work",
+  "submit_sync_research",
+  "advance_sync_batch",
   "read_playlist_discovery_work",
 ]);
 
@@ -146,6 +179,13 @@ const GROK_CAPS = new Set<OpsCapability>([
   "review_handoff_batch",
   "verify_submission_path",
   "read_own_sync_batches",
+  "read_sync_discovery_work",
+  "review_sync_outreach",
+  "approve_sync_outreach",
+  "reject_sync_outreach",
+  "submit_sync_outreach",
+  "track_sync_responses",
+  "escalate_sync_to_fendi",
   "read_playlist_discovery_work",
 ]);
 
@@ -203,6 +243,15 @@ const FENDI_CAPS = new Set<OpsCapability>([
   "create_sync_opportunity",
   "draft_sync_pitch",
   "read_own_sync_batches",
+  "read_sync_discovery_work",
+  "submit_sync_research",
+  "advance_sync_batch",
+  "review_sync_outreach",
+  "approve_sync_outreach",
+  "reject_sync_outreach",
+  "submit_sync_outreach",
+  "track_sync_responses",
+  "escalate_sync_to_fendi",
   "read_playlist_discovery_work",
   "submit_playlist_candidates",
   "read_own_playlist_batches",
@@ -240,6 +289,12 @@ const HUMAN_ADMIN_CAPS = new Set<OpsCapability>([
   "create_sync_opportunity",
   "draft_sync_pitch",
   "read_own_sync_batches",
+  "read_sync_discovery_work",
+  "submit_sync_research",
+  "advance_sync_batch",
+  "review_sync_outreach",
+  "track_sync_responses",
+  "escalate_sync_to_fendi",
   "read_playlist_discovery_work",
   "submit_playlist_candidates",
   "read_own_playlist_batches",
@@ -279,6 +334,9 @@ const SERVICE_CAPS = new Set<OpsCapability>([
   "create_sync_opportunity",
   "draft_sync_pitch",
   "read_own_sync_batches",
+  "read_sync_discovery_work",
+  "submit_sync_research",
+  "advance_sync_batch",
 ]);
 
 function artistUserId(): string {
@@ -328,9 +386,29 @@ export function isClaudePlaylistDiscoveryCredential(req: Request | null): boolea
     presentedApiKey(req);
   const hub = (Deno.env.get("FANFUEL_HUB_KEY") || "").trim();
   const claude = (Deno.env.get("CLAUDE_AGENT_SECRET") || "").trim();
+  const sync = (Deno.env.get("CLAUDE_SYNC_DISCOVERY_SECRET") || "").trim();
   // Must not accept hub or broad Claude secrets as this narrower actor.
   if (hub && secretsEqual(presented, hub) && !secretsEqual(presented, expected)) return false;
   if (claude && secretsEqual(presented, claude) && !secretsEqual(presented, expected)) return false;
+  if (sync && secretsEqual(presented, sync) && !secretsEqual(presented, expected)) return false;
+  return secretsEqual(presented, expected);
+}
+
+export function isClaudeSyncDiscoveryCredential(req: Request | null): boolean {
+  const expected = (Deno.env.get("CLAUDE_SYNC_DISCOVERY_SECRET") || "").trim();
+  if (!expected || !req) return false;
+  const presented =
+    header(req, "x-claude-sync-discovery-secret") ||
+    header(req, "x-agh-sync-discovery-secret") ||
+    presentedApiKey(req);
+  const hub = (Deno.env.get("FANFUEL_HUB_KEY") || "").trim();
+  const claude = (Deno.env.get("CLAUDE_AGENT_SECRET") || "").trim();
+  const playlist = (Deno.env.get("CLAUDE_PLAYLIST_DISCOVERY_SECRET") || "").trim();
+  if (hub && secretsEqual(presented, hub) && !secretsEqual(presented, expected)) return false;
+  if (claude && secretsEqual(presented, claude) && !secretsEqual(presented, expected)) return false;
+  if (playlist && secretsEqual(presented, playlist) && !secretsEqual(presented, expected)) {
+    return false;
+  }
   return secretsEqual(presented, expected);
 }
 
@@ -357,6 +435,10 @@ export function isClaudeCredential(req: Request | null): boolean {
   ) {
     return false;
   }
+  const sync = (Deno.env.get("CLAUDE_SYNC_DISCOVERY_SECRET") || "").trim();
+  if (sync && secretsEqual(presented, sync) && !secretsEqual(presented, expected)) {
+    return false;
+  }
   return secretsEqual(presented, expected);
 }
 
@@ -378,12 +460,20 @@ export function isSchedulerCredential(req: Request | null): boolean {
  * Agent headers never elevate privileges.
  */
 export function resolveOpsActor(actor: Actor | null, req: Request | null = null): OpsActor {
-  // 1) Dedicated credentials win — order: scheduler → Grok → playlist-discovery → Claude → service.
+  // 1) Dedicated credentials win — order: scheduler → Grok → sync-discovery →
+  //    playlist-discovery → Claude → service.
   if (actor?.kind === "scheduler" || isSchedulerCredential(req)) {
     return { kind: "scheduler", userId: null, label: "scheduler" };
   }
   if (actor?.kind === "grok_playlist_control" || isGrokCredential(req)) {
     return { kind: "grok_playlist_control", userId: null, label: "grok_playlist_control" };
+  }
+  if (actor?.kind === "claude_sync_discovery" || isClaudeSyncDiscoveryCredential(req)) {
+    return {
+      kind: "claude_sync_discovery",
+      userId: null,
+      label: "claude_sync_discovery",
+    };
   }
   if (
     actor?.kind === "claude_playlist_discovery" ||
@@ -425,6 +515,8 @@ export function capabilitiesFor(kind: OpsActorKind): ReadonlySet<OpsCapability> 
   switch (kind) {
     case "claude_playlist_discovery":
       return CLAUDE_PLAYLIST_DISCOVERY_CAPS;
+    case "claude_sync_discovery":
+      return CLAUDE_SYNC_DISCOVERY_CAPS;
     case "claude":
       return CLAUDE_CAPS;
     case "grok_playlist_control":

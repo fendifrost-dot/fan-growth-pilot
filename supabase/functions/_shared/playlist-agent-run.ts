@@ -3262,6 +3262,13 @@ export async function runCatalogueAdmin(
       if (error) return { status: 500, data: { error: error.message } };
       track = data;
     }
+    // Recompute authoritative sync eligibility after any gate-related catalogue write.
+    try {
+      const { recomputeAndPersistSyncEligibility } = await import("./sync-eligibility.ts");
+      await recomputeAndPersistSyncEligibility(sb, String(track.id));
+    } catch {
+      // Non-fatal: catalogue write succeeded; eligibility can be recomputed via CCA.
+    }
     if (Array.isArray(body.category_ids)) {
       const ids = body.category_ids.slice(0, 5).map(String);
       await sb.from("track_categories").delete().eq("track_id", track.id);

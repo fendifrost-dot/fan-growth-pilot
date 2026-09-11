@@ -15,6 +15,8 @@ export const CLAUDE_STATION_IDS = [
 export const GROK_STATION_IDS = [
   "grok_playlist_review",
   "grok_playlist_send",
+  "grok_sync_review",
+  "grok_sync_send",
 ] as const;
 
 export const DAILY_STATION_IDS = [
@@ -32,6 +34,8 @@ const STATION_LOCAL_TIMES: Record<string, string> = {
   sync_batch_ready: "12:00",
   grok_playlist_review: "13:00",
   grok_playlist_send: "15:00",
+  grok_sync_review: "13:30",
+  grok_sync_send: "15:30",
 };
 
 const STATION_OWNER: Record<DailyStationId, StationOwnerKind> = {
@@ -41,6 +45,8 @@ const STATION_OWNER: Record<DailyStationId, StationOwnerKind> = {
   sync_batch_ready: "claude",
   grok_playlist_review: "grok_playlist_control",
   grok_playlist_send: "grok_playlist_control",
+  grok_sync_review: "grok_playlist_control",
+  grok_sync_send: "grok_playlist_control",
 };
 
 /**
@@ -77,12 +83,16 @@ export const STATION_UPSTREAM: Partial<Record<DailyStationId, DailyStationId>> =
   sync_batch_ready: "playlist_tranche_final",
   grok_playlist_review: "playlist_tranche_final",
   grok_playlist_send: "grok_playlist_review",
+  grok_sync_review: "sync_batch_ready",
+  grok_sync_send: "grok_sync_review",
 };
 
 /** Upstream handoff queue state required before a Grok station may start/complete. */
 export const STATION_REQUIRED_UPSTREAM_QUEUE: Partial<Record<DailyStationId, string>> = {
   grok_playlist_review: "AWAITING_GROK_REVIEW",
   grok_playlist_send: "APPROVED_FOR_SEND",
+  grok_sync_review: "AWAITING_GROK_REVIEW",
+  grok_sync_send: "APPROVED_FOR_SEND",
 };
 
 export function chicagoBusinessDate(instant: Date = new Date()): string {
@@ -115,12 +125,23 @@ export function stationLocalTime(stationId: string): string | null {
   return STATION_LOCAL_TIMES[stationId] ?? null;
 }
 
+function isClaudeFamily(actorKind: string): boolean {
+  return (
+    actorKind === "claude" ||
+    actorKind === "claude_playlist_discovery" ||
+    actorKind === "claude_sync_discovery"
+  );
+}
+
 /**
  * Authorize an actor to operate a station.
- * mode=start: Claude stations → claude | scheduler | fendi
+ * mode=start: Claude stations → claude family | scheduler | fendi
  *             Grok stations → grok | fendi
- * mode=complete|resume: Claude stations → claude | fendi (NOT scheduler/service/grok)
+ * mode=complete|resume: Claude stations → claude family | fendi (NOT scheduler/service/grok)
  *                       Grok stations → grok | fendi (NOT claude/service/scheduler)
+ *
+ * Sync noon station may be completed by claude_sync_discovery; playlist stations
+ * may be completed by claude_playlist_discovery. Broad claude may operate either.
  */
 export function authorizeStationOperator(
   stationId: string,
@@ -132,6 +153,23 @@ export function authorizeStationOperator(
 
   if (owner === "claude") {
     if (mode === "start") {
+      if (isClaudeFamily(actorKind) || actorKind === "fendi") return null;
+      if (actorKind === "scheduler" && SCHEDULER_MAY_START_CLAUDE_STATIONS) return null;
+      return `${actorKind} cannot start Claude station ${stationId}`;
+    }
+    // complete / resume
+    if (stationId === "sync_batch_ready") {
+      if (
+        actorKind === "claude" ||
+        actorKind === "claude_sync_discovery" ||
+        actorKind === "fendi"
+      ) {
+        return null;
+      }
+      if (actorKind === "claude_playlist_discovery") {
+        return "claude_playlist_discovery cannot complete sync_batch_ready — use sync discovery lane";
+      }
+    } else {
       if (
         actorKind === "claude" ||
         actorKind === "claude_playlist_discovery" ||
@@ -139,16 +177,9 @@ export function authorizeStationOperator(
       ) {
         return null;
       }
-      if (actorKind === "scheduler" && SCHEDULER_MAY_START_CLAUDE_STATIONS) return null;
-      return `${actorKind} cannot start Claude station ${stationId}`;
-    }
-    // complete / resume — Claude credential or playlist-discovery (Fendi oversight allowed)
-    if (
-      actorKind === "claude" ||
-      actorKind === "claude_playlist_discovery" ||
-      actorKind === "fendi"
-    ) {
-      return null;
+      if (actorKind === "claude_sync_discovery") {
+        return "claude_sync_discovery cannot complete playlist stations";
+      }
     }
     if (actorKind === "grok_playlist_control") {
       return "Grok cannot complete or impersonate Claude discovery stations";
@@ -159,11 +190,12 @@ export function authorizeStationOperator(
     return `${actorKind} cannot operate Claude station ${stationId}`;
   }
 
-  // Grok stations — only Grok or Fendi; never Claude / playlist-discovery / service / scheduler.
+  // Grok stations — only Grok or Fendi; never Claude / discovery / service / scheduler.
   if (actorKind === "grok_playlist_control" || actorKind === "fendi") return null;
   if (
     actorKind === "claude" ||
     actorKind === "claude_playlist_discovery" ||
+    actorKind === "claude_sync_discovery" ||
     actorKind === "service" ||
     actorKind === "scheduler"
   ) {

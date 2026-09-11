@@ -225,10 +225,32 @@ Deno.test("claude_playlist_discovery is distinct from broad Claude and cannot mu
     assertEquals(can(pd, "send_playlist_pitches"), false);
     assertEquals(can(pd, "manage_fan_engagement"), false);
     assertEquals(can(pd, "run_placement_discovery"), false);
+    assertEquals(can(pd, "research_sync_targets"), false);
 
     // Hub key must not authenticate as playlist-discovery.
     Deno.env.set("FANFUEL_HUB_KEY", "hub-key");
     const hub = resolveOpsActor(null, req({ "x-api-key": "hub-key" }));
     assertEquals(hub.kind, "service");
+  });
+});
+
+Deno.test("claude_sync_discovery is distinct and cannot touch playlist approve/send", () => {
+  withEnv({
+    CLAUDE_SYNC_DISCOVERY_SECRET: "sync-secret",
+    CLAUDE_PLAYLIST_DISCOVERY_SECRET: "pd-secret",
+    CLAUDE_AGENT_SECRET: "claude-secret",
+  }, () => {
+    const sd = resolveOpsActor(null, req({ "x-claude-sync-discovery-secret": "sync-secret" }));
+    assertEquals(sd.kind, "claude_sync_discovery");
+    assertEquals(can(sd, "research_sync_targets"), true);
+    assertEquals(can(sd, "draft_sync_pitch"), true);
+    assertEquals(can(sd, "read_playlist_discovery_work"), false);
+    assertEquals(can(sd, "approve_sync_eligibility"), false);
+    assertEquals(can(sd, "approve_playlist_drafts"), false);
+
+    // Playlist secret must not elevate to sync discovery.
+    const pd = resolveOpsActor(null, req({ "x-claude-playlist-discovery-secret": "pd-secret" }));
+    assertEquals(pd.kind, "claude_playlist_discovery");
+    assertEquals(can(pd, "research_sync_targets"), false);
   });
 });

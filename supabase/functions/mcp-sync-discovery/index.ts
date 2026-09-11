@@ -1,36 +1,37 @@
 /**
- * Remote MCP endpoint for Claude playlist discovery (custom connector / Cowork).
+ * Remote MCP endpoint for Claude sync discovery (custom connector / Cowork).
  *
  * Transport: Streamable HTTP JSON-RPC at /mcp
  * Auth: OAuth 2.1 + PKCE (S256) + Dynamic Client Registration
  *
  * Consent: Fendi's existing Supabase AGH session (exact ARTIST_USER_ID) only.
- * Never accepts pasted JWT or CLAUDE_PLAYLIST_DISCOVERY_SECRET for OAuth.
+ * Never accepts pasted JWT or CLAUDE_SYNC_DISCOVERY_SECRET for OAuth.
  *
- * All tools run as fixed identity claude_playlist_discovery.
+ * All tools run as fixed identity claude_sync_discovery.
  * Never exposes SUPABASE_SERVICE_ROLE_KEY. Never accepts arbitrary action names.
+ * Never approves/sends outreach or mutates Song DNA / eligibility.
  */
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import {
   aghPublicAppUrl,
-  authorizationServerMetadata,
   authorizeFendiSession,
   exchangeToken,
   issueAuthCode,
-  mcpPublicBaseUrl,
-  PLAYLIST_DISCOVERY_SCOPE,
-  protectedResourceMetadata,
   registerClient,
   renderConsentPage,
   resolveBearerActorKind,
   revokeToken,
+  SYNC_DISCOVERY_SCOPE,
+  syncAuthorizationServerMetadata,
+  syncMcpPublicBaseUrl,
+  syncProtectedResourceMetadata,
 } from "../_shared/mcp-oauth.ts";
 import {
-  PLAYLIST_DISCOVERY_TOOLS,
-  PLAYLIST_DISCOVERY_TOOL_SCHEMAS,
-  playlistDiscoveryActor,
-  runPlaylistDiscoveryTool,
-} from "../_shared/playlist-discovery-mcp.ts";
+  SYNC_DISCOVERY_TOOLS,
+  SYNC_DISCOVERY_TOOL_SCHEMAS,
+  syncDiscoveryActor,
+  runSyncDiscoveryTool,
+} from "../_shared/sync-discovery-mcp.ts";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -62,7 +63,7 @@ function sbAdmin() {
 function pathOf(req: Request): string {
   const u = new URL(req.url);
   let p = u.pathname;
-  const marker = "/mcp-playlist-discovery";
+  const marker = "/mcp-sync-discovery";
   const idx = p.indexOf(marker);
   if (idx >= 0) p = p.slice(idx + marker.length) || "/";
   if (!p.startsWith("/")) p = `/${p}`;
@@ -71,27 +72,33 @@ function pathOf(req: Request): string {
 
 function toolDescription(name: string): string {
   switch (name) {
-    case "get_playlist_discovery_work":
-      return "Read active pitching tracks (ids/titles), current approved DNA, lanes, profiles, daily target. No ISRCs.";
-    case "submit_playlist_candidates":
-      return "Submit structured playlist candidate facts + evidence. Server dedupes, verifies (DB-backed), enforces DNA lanes. Returns verified_eligible vs accepted_unverified.";
-    case "create_playlist_draft_inventory":
-      return "Create Claude-side pending inventory from verified_eligible IDs only. Email → outreach_drafts; form/IG → manual packets. No approve/send. No caller pitch copy.";
-    case "start_claude_playlist_station":
-      return "Start a Claude-owned playlist discovery station run.";
-    case "complete_claude_playlist_station":
-      return "Complete a Claude-owned playlist discovery station run.";
-    case "get_own_playlist_batches":
-      return "List handoff batches attributed to claude_playlist_discovery only.";
+    case "get_sync_discovery_work":
+      return "Read active sync-research tracks from AGH config + approved Song DNA + server eligibility. Never invent eligibility.";
+    case "submit_sync_targets":
+      return "Persist researched sync targets (agency contacts). Idempotent dedupe. Attribution from auth identity only.";
+    case "submit_sync_opportunities":
+      return "Persist active_brief (requires deadline) or agency_introduction records with provenance.";
+    case "create_sync_drafts":
+      return "Create pending catered sync drafts only when server eligibility passes. Returns precise blockers otherwise.";
+    case "verify_sync_contacts":
+      return "Verify contact routes + evidence for own sync targets.";
+    case "advance_sync_batch":
+      return "Create durable sync handoff batch for Grok review. Persists counts + record IDs in AGH.";
+    case "start_claude_sync_station":
+      return "Start the noon sync_batch_ready station run.";
+    case "complete_claude_sync_station":
+      return "Complete the noon sync_batch_ready station run with honest shortfalls.";
+    case "get_own_sync_batches":
+      return "List sync handoff batches attributed to claude_sync_discovery only.";
     default:
       return name;
   }
 }
 
-const TOOL_DEFS = PLAYLIST_DISCOVERY_TOOLS.map((name) => ({
+const TOOL_DEFS = SYNC_DISCOVERY_TOOLS.map((name) => ({
   name,
   description: toolDescription(name),
-  inputSchema: PLAYLIST_DISCOVERY_TOOL_SCHEMAS[name],
+  inputSchema: SYNC_DISCOVERY_TOOL_SCHEMAS[name],
 }));
 
 async function handleMcp(
@@ -99,12 +106,12 @@ async function handleMcp(
   sb: ReturnType<typeof sbAdmin>,
 ): Promise<Response> {
   const authz = req.headers.get("authorization");
-  const bearer = await resolveBearerActorKind(sb, authz, "claude_playlist_discovery");
+  const bearer = await resolveBearerActorKind(sb, authz, "claude_sync_discovery");
   if (!bearer.ok) {
-    const base = mcpPublicBaseUrl();
+    const base = syncMcpPublicBaseUrl();
     return json(401, { error: "unauthorized", error_description: bearer.error }, {
       "WWW-Authenticate":
-        `Bearer realm="agh-playlist-discovery", resource_metadata="${base}/.well-known/oauth-protected-resource"`,
+        `Bearer realm="agh-sync-discovery", resource_metadata="${base}/.well-known/oauth-protected-resource"`,
     });
   }
 
@@ -112,8 +119,8 @@ async function handleMcp(
     return json(200, {
       ok: true,
       transport: "streamable-http",
-      tools: PLAYLIST_DISCOVERY_TOOLS,
-      actor: "claude_playlist_discovery",
+      tools: SYNC_DISCOVERY_TOOLS,
+      actor: "claude_sync_discovery",
     });
   }
 
@@ -130,7 +137,7 @@ async function handleMcp(
     ? rpc.params
     : {}) as Record<string, unknown>;
 
-  const ops = playlistDiscoveryActor();
+  const ops = syncDiscoveryActor();
 
   if (method === "initialize") {
     return json(200, {
@@ -139,7 +146,7 @@ async function handleMcp(
       result: {
         protocolVersion: "2025-03-26",
         capabilities: { tools: {} },
-        serverInfo: { name: "agh-playlist-discovery", version: "1.1.0" },
+        serverInfo: { name: "agh-sync-discovery", version: "1.0.0" },
       },
     });
   }
@@ -154,7 +161,7 @@ async function handleMcp(
     const args = (typeof params.arguments === "object" && params.arguments
       ? params.arguments
       : {}) as Record<string, unknown>;
-    const result = await runPlaylistDiscoveryTool(name, args, sb, ops);
+    const result = await runSyncDiscoveryTool(name, args, sb, ops);
     if (result.status >= 400) {
       return json(200, {
         jsonrpc: "2.0",
@@ -194,30 +201,33 @@ Deno.serve(async (req) => {
       path === "/.well-known/oauth-protected-resource" ||
       path === "/.well-known/oauth-protected-resource/mcp"
     ) {
-      return json(200, protectedResourceMetadata());
+      return json(200, syncProtectedResourceMetadata());
     }
     if (
       path === "/.well-known/oauth-authorization-server" ||
       path === "/.well-known/openid-configuration"
     ) {
-      return json(200, authorizationServerMetadata());
+      return json(200, syncAuthorizationServerMetadata());
     }
 
     if (path === "/health" || path === "/") {
       return json(200, {
         ok: true,
-        service: "mcp-playlist-discovery",
-        actor: "claude_playlist_discovery",
-        tools: PLAYLIST_DISCOVERY_TOOLS,
+        service: "mcp-sync-discovery",
+        actor: "claude_sync_discovery",
+        tools: SYNC_DISCOVERY_TOOLS,
         oauth: true,
         consent: "fendi_session_only",
-        mcp: `${mcpPublicBaseUrl()}/mcp`,
+        mcp: `${syncMcpPublicBaseUrl()}/mcp`,
       });
     }
 
     if (path === "/oauth/register" && req.method === "POST") {
       const body = await req.json();
-      const result = await registerClient(sb, body);
+      const result = await registerClient(sb, {
+        ...body,
+        client_name: body.client_name ?? "Claude Sync Discovery",
+      });
       return json(result.status, result.data);
     }
 
@@ -235,7 +245,6 @@ Deno.serve(async (req) => {
       return json(result.status, result.data);
     }
 
-    // ---- Authorize: Fendi session only (one-click Authorize/Cancel) ----
     if (path === "/oauth/authorize") {
       const url = new URL(req.url);
       if (req.method === "GET") {
@@ -244,7 +253,7 @@ Deno.serve(async (req) => {
         const state = url.searchParams.get("state") || "";
         const challenge = url.searchParams.get("code_challenge") || "";
         const method = url.searchParams.get("code_challenge_method") || "S256";
-        const scope = url.searchParams.get("scope") || PLAYLIST_DISCOVERY_SCOPE;
+        const scope = url.searchParams.get("scope") || SYNC_DISCOVERY_SCOPE;
         const supabaseUrl = (Deno.env.get("SUPABASE_URL") || "").trim();
         const anonKey = (
           Deno.env.get("SUPABASE_ANON_KEY") ||
@@ -263,6 +272,7 @@ Deno.serve(async (req) => {
             supabaseUrl,
             supabaseAnonKey: anonKey,
             aghAppUrl: aghPublicAppUrl(),
+            connector: "sync",
           }),
         );
       }
@@ -288,7 +298,6 @@ Deno.serve(async (req) => {
           return json(200, { redirect_to: redirect.toString() });
         }
 
-        // Session JWT from Authorization header only — never from form fields.
         const authz = await authorizeFendiSession(sb, req.headers.get("authorization"));
         if (!authz.ok) return json(403, { error: authz.error });
 
@@ -297,14 +306,13 @@ Deno.serve(async (req) => {
           redirectUri: fields.redirect_uri,
           codeChallenge: fields.code_challenge,
           codeChallengeMethod: fields.code_challenge_method || "S256",
-          scope: fields.scope || PLAYLIST_DISCOVERY_SCOPE,
+          scope: fields.scope || SYNC_DISCOVERY_SCOPE,
           authorizedByUserId: authz.userId,
         });
         if (issued.status !== 200) return json(issued.status, issued.data);
         const redirect = new URL(fields.redirect_uri);
         redirect.searchParams.set("code", String(issued.data.code));
         if (fields.state) redirect.searchParams.set("state", fields.state);
-        // Prefer JSON redirect for fetch-based consent; also support 302.
         if (ct.includes("application/json")) {
           return json(200, { redirect_to: redirect.toString(), code: issued.data.code });
         }

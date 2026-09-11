@@ -1,12 +1,31 @@
 /**
- * OAuth 2.1 (PKCE S256) + Dynamic Client Registration for mcp-playlist-discovery.
- * Tokens always bind to claude_playlist_discovery.
+ * OAuth 2.1 (PKCE S256) + Dynamic Client Registration for MCP connectors.
+ * Tokens bind to scope: playlist_discovery → claude_playlist_discovery,
+ * sync_discovery → claude_sync_discovery.
  * Consent is Fendi-session-only (exact ARTIST_USER_ID) — never secret/JWT paste.
  */
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
-const SCOPE = "playlist_discovery";
-const ACTOR = "claude_playlist_discovery";
+export const PLAYLIST_DISCOVERY_SCOPE = "playlist_discovery";
+export const SYNC_DISCOVERY_SCOPE = "sync_discovery";
+export const PLAYLIST_DISCOVERY_ACTOR = "claude_playlist_discovery";
+export const SYNC_DISCOVERY_ACTOR = "claude_sync_discovery";
+
+const SCOPE = PLAYLIST_DISCOVERY_SCOPE;
+const ACTOR = PLAYLIST_DISCOVERY_ACTOR;
+
+export const MCP_SCOPES = [PLAYLIST_DISCOVERY_SCOPE, SYNC_DISCOVERY_SCOPE] as const;
+
+export function actorForScope(scope: string): string | null {
+  if (scope === PLAYLIST_DISCOVERY_SCOPE) return PLAYLIST_DISCOVERY_ACTOR;
+  if (scope === SYNC_DISCOVERY_SCOPE) return SYNC_DISCOVERY_ACTOR;
+  return null;
+}
+
+export function isAllowedMcpScope(scope: string): boolean {
+  return (MCP_SCOPES as readonly string[]).includes(scope);
+}
+
 /** Access token TTL (seconds). */
 export const ACCESS_TOKEN_TTL_SEC = 3600;
 /** Maximum refresh-token family lifetime. */
@@ -26,6 +45,13 @@ export function mcpPublicBaseUrl(): string {
   return `${supabaseUrl}/functions/v1/mcp-playlist-discovery`;
 }
 
+export function syncMcpPublicBaseUrl(): string {
+  const explicit = (Deno.env.get("AGH_MCP_SYNC_DISCOVERY_URL") || "").trim().replace(/\/$/, "");
+  if (explicit) return explicit;
+  const supabaseUrl = (Deno.env.get("SUPABASE_URL") || "").trim().replace(/\/$/, "");
+  return `${supabaseUrl}/functions/v1/mcp-sync-discovery`;
+}
+
 export function aghPublicAppUrl(): string {
   return (
     (Deno.env.get("AGH_PUBLIC_APP_URL") || "").trim().replace(/\/$/, "") ||
@@ -39,7 +65,18 @@ export function protectedResourceMetadata() {
   return {
     resource: `${base}/mcp`,
     authorization_servers: [base],
-    scopes_supported: [SCOPE],
+    scopes_supported: [PLAYLIST_DISCOVERY_SCOPE],
+    bearer_methods_supported: ["header"],
+    resource_documentation: "https://github.com/fendifrost-dot/fan-growth-pilot",
+  };
+}
+
+export function syncProtectedResourceMetadata() {
+  const base = syncMcpPublicBaseUrl();
+  return {
+    resource: `${base}/mcp`,
+    authorization_servers: [base],
+    scopes_supported: [SYNC_DISCOVERY_SCOPE],
     bearer_methods_supported: ["header"],
     resource_documentation: "https://github.com/fendifrost-dot/fan-growth-pilot",
   };
@@ -53,7 +90,23 @@ export function authorizationServerMetadata() {
     token_endpoint: `${base}/oauth/token`,
     registration_endpoint: `${base}/oauth/register`,
     revocation_endpoint: `${base}/oauth/revoke`,
-    scopes_supported: [SCOPE],
+    scopes_supported: [PLAYLIST_DISCOVERY_SCOPE],
+    response_types_supported: ["code"],
+    grant_types_supported: ["authorization_code", "refresh_token"],
+    code_challenge_methods_supported: ["S256"],
+    token_endpoint_auth_methods_supported: ["client_secret_post", "none"],
+  };
+}
+
+export function syncAuthorizationServerMetadata() {
+  const base = syncMcpPublicBaseUrl();
+  return {
+    issuer: base,
+    authorization_endpoint: `${base}/oauth/authorize`,
+    token_endpoint: `${base}/oauth/token`,
+    registration_endpoint: `${base}/oauth/register`,
+    revocation_endpoint: `${base}/oauth/revoke`,
+    scopes_supported: [SYNC_DISCOVERY_SCOPE],
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code", "refresh_token"],
     code_challenge_methods_supported: ["S256"],
@@ -184,9 +237,10 @@ export async function issueAuthCode(
   if (opts.codeChallengeMethod !== "S256") {
     return { status: 400, data: { error: "invalid_request", error_description: "S256 required" } };
   }
-  if (opts.scope && opts.scope !== SCOPE) {
+  if (opts.scope && !isAllowedMcpScope(opts.scope)) {
     return { status: 400, data: { error: "invalid_scope" } };
   }
+  const scope = opts.scope && isAllowedMcpScope(opts.scope) ? opts.scope : PLAYLIST_DISCOVERY_SCOPE;
   if (!opts.authorizedByUserId) {
     return { status: 403, data: { error: "access_denied", error_description: "fendi_required" } };
   }
@@ -211,7 +265,7 @@ export async function issueAuthCode(
     redirect_uri: opts.redirectUri,
     code_challenge: opts.codeChallenge,
     code_challenge_method: "S256",
-    scope: SCOPE,
+    scope,
     authorized_by_user_id: opts.authorizedByUserId,
     expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
   });
@@ -303,7 +357,7 @@ export async function exchangeToken(
         token_type: "bearer",
         expires_in: ACCESS_TOKEN_TTL_SEC,
         refresh_token: refresh,
-        scope: SCOPE,
+        scope: String(result.scope ?? PLAYLIST_DISCOVERY_SCOPE),
         refresh_expires_in: Math.floor(REFRESH_TOKEN_MAX_LIFETIME_MS / 1000),
       },
     };
@@ -361,7 +415,7 @@ export async function exchangeToken(
         token_type: "bearer",
         expires_in: ACCESS_TOKEN_TTL_SEC,
         refresh_token: newRefresh,
-        scope: SCOPE,
+        scope: String(result.scope ?? PLAYLIST_DISCOVERY_SCOPE),
         refresh_expires_in: Math.max(0, Math.floor((refreshExpAt - Date.now()) / 1000)),
       },
     };
@@ -378,18 +432,23 @@ async function mintTokens(
     refreshExpiresAt: Date;
     accessToken?: string;
     refreshToken?: string;
+    scope?: string;
   },
 ): Promise<{ status: number; data: Record<string, unknown> }> {
   const access = opts.accessToken ?? randomToken(32);
   const refresh = opts.refreshToken ?? randomToken(32);
   const tokenHash = await sha256Hex(access);
   const refreshHash = await sha256Hex(refresh);
+  const scope = opts.scope && isAllowedMcpScope(opts.scope)
+    ? opts.scope
+    : PLAYLIST_DISCOVERY_SCOPE;
+  const actor = actorForScope(scope) ?? PLAYLIST_DISCOVERY_ACTOR;
   const { error } = await sb.from("agh_mcp_oauth_tokens").insert({
     token_hash: tokenHash,
     refresh_token_hash: refreshHash,
     client_id: opts.clientId,
-    scope: SCOPE,
-    actor_kind: ACTOR,
+    scope,
+    actor_kind: actor,
     authorized_by_user_id: opts.authorizedByUserId,
     expires_at: new Date(Date.now() + ACCESS_TOKEN_TTL_SEC * 1000).toISOString(),
     refresh_expires_at: opts.refreshExpiresAt.toISOString(),
@@ -404,7 +463,7 @@ async function mintTokens(
       token_type: "bearer",
       expires_in: ACCESS_TOKEN_TTL_SEC,
       refresh_token: refresh,
-      scope: SCOPE,
+      scope,
       refresh_expires_in: Math.max(
         0,
         Math.floor((opts.refreshExpiresAt.getTime() - Date.now()) / 1000),
@@ -442,7 +501,8 @@ export async function cleanupExpiredOAuthRecords(
 export async function resolveBearerActorKind(
   sb: SupabaseClient,
   authorizationHeader: string | null,
-): Promise<{ ok: true; actorKind: typeof ACTOR } | { ok: false; error: string }> {
+  expectedActor: string = PLAYLIST_DISCOVERY_ACTOR,
+): Promise<{ ok: true; actorKind: string; scope: string } | { ok: false; error: string }> {
   if (!authorizationHeader?.toLowerCase().startsWith("bearer ")) {
     return { ok: false, error: "missing_bearer" };
   }
@@ -451,15 +511,20 @@ export async function resolveBearerActorKind(
   const tokenHash = await sha256Hex(token);
   const { data } = await sb
     .from("agh_mcp_oauth_tokens")
-    .select("actor_kind, expires_at, revoked_at, refresh_expires_at")
+    .select("actor_kind, scope, expires_at, revoked_at, refresh_expires_at")
     .eq("token_hash", tokenHash)
     .maybeSingle();
   if (!data || data.revoked_at) return { ok: false, error: "invalid_token" };
   if (new Date(String(data.expires_at)).getTime() < Date.now()) {
     return { ok: false, error: "token_expired" };
   }
-  if (String(data.actor_kind) !== ACTOR) return { ok: false, error: "invalid_actor" };
-  return { ok: true, actorKind: ACTOR };
+  const actorKind = String(data.actor_kind ?? "");
+  if (actorKind !== expectedActor) return { ok: false, error: "invalid_actor" };
+  return {
+    ok: true,
+    actorKind,
+    scope: String(data.scope ?? ""),
+  };
 }
 
 /** One-click Authorize/Cancel consent HTML — no credential inputs. */
@@ -473,10 +538,21 @@ export function renderConsentPage(opts: {
   supabaseUrl: string;
   supabaseAnonKey: string;
   aghAppUrl: string;
+  connector?: "playlist" | "sync";
 }): string {
   const esc = (s: string) =>
     s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const aghAuthorize = `${opts.aghAppUrl}/admin/mcp-playlist-authorize?` +
+  const isSync = opts.connector === "sync" || opts.scope === SYNC_DISCOVERY_SCOPE;
+  const authorizePath = isSync
+    ? "/admin/mcp-sync-authorize"
+    : "/admin/mcp-playlist-authorize";
+  const title = isSync
+    ? "Authorize Claude Sync Discovery"
+    : "Authorize Claude Playlist Discovery";
+  const blurb = isSync
+    ? "This grants Claude’s sync-discovery connector the narrow <code>sync_discovery</code> scope only. Approve/send, Song DNA, and sync eligibility remain with Grok / Fendi."
+    : "This grants Claude’s scheduled playlist-discovery connector the narrow <code>playlist_discovery</code> scope only. Approve/send and Song DNA remain with Grok / Fendi.";
+  const aghAuthorize = `${opts.aghAppUrl}${authorizePath}?` +
     new URLSearchParams({
       client_id: opts.clientId,
       redirect_uri: opts.redirectUri,
@@ -488,7 +564,7 @@ export function renderConsentPage(opts: {
 
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>AGH · Authorize Playlist Discovery</title>
+<title>AGH · ${esc(title)}</title>
 <style>
   body{font-family:ui-sans-serif,system-ui,sans-serif;max-width:28rem;margin:3rem auto;padding:0 1.25rem;color:#111;background:#f7f5f2}
   h1{font-size:1.35rem;margin:0 0 .5rem}
@@ -501,8 +577,8 @@ export function renderConsentPage(opts: {
   .hint{font-size:.9rem;color:#555;margin-top:1.25rem}
 </style></head>
 <body>
-<h1>Authorize Claude Playlist Discovery</h1>
-<p>This grants Claude’s scheduled playlist-discovery connector the narrow <code>playlist_discovery</code> scope only. Approve/send and Song DNA remain with Grok / Fendi.</p>
+<h1>${esc(title)}</h1>
+<p>${blurb}</p>
 <p>Sign-in uses your existing AGH session. Only Fendi may authorize.</p>
 <div class="actions">
   <button type="button" class="authorize" id="authorize">Authorize</button>
@@ -563,5 +639,3 @@ document.getElementById("authorize").onclick = async () => {
 </script>
 </body></html>`;
 }
-
-export const PLAYLIST_DISCOVERY_SCOPE = SCOPE;

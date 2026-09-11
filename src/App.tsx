@@ -36,6 +36,7 @@ import AdminDiscoveryProfiles from "./pages/admin/AdminDiscoveryProfiles";
 import AdminDailyOps from "./pages/admin/AdminDailyOps";
 import AdminOpportunities from "./pages/admin/AdminOpportunities";
 import AdminMcpPlaylistAuthorize from "./pages/admin/AdminMcpPlaylistAuthorize";
+import AdminMcpSyncAuthorize from "./pages/admin/AdminMcpSyncAuthorize";
 import RegisterPreview from "./pages/dev/RegisterPreview";
 
 const queryClient = new QueryClient();
@@ -97,6 +98,7 @@ const App = () => {
             <Route path="discovery-profiles" element={<AdminDiscoveryProfiles />} />
             <Route path="daily-ops" element={<AdminDailyOps />} />
             <Route path="mcp-playlist-authorize" element={<AdminMcpPlaylistAuthorize />} />
+            <Route path="mcp-sync-authorize" element={<AdminMcpSyncAuthorize />} />
           </Route>
 
           {/* Public smart link pages (CATCH-ALL — must stay last among meaningful routes) */}

@@ -304,23 +304,23 @@ Deno.test("INVARIANT: this module exposes no way to promote a track to 'eligible
   }
 });
 
-Deno.test("INVARIANT: neither send path nor draft path writes eligibility", async () => {
+Deno.test("INVARIANT: neither send path nor draft path writes outreach_eligibility", async () => {
   const sends = await Deno.readTextFile(new URL("../execute-pitch/index.ts", import.meta.url));
   const drafts = await Deno.readTextFile(new URL("./playlist-agent-run.ts", import.meta.url));
   for (const [label, src] of [["execute-pitch", sends], ["playlist-agent-run", drafts]] as const) {
     // Automation may only ever move a track to a MORE restrictive state, and
     // returning to 'eligible' is out of scope for P0-A — so neither path may
-    // write any eligibility column. Reading it into a refusal payload is fine;
-    // what must not exist is an eligibility key inside a database write, so scan
-    // the payload of every write call rather than the whole file.
+    // write the outreach_eligibility column. Reading it into a refusal payload
+    // is fine. Sync-lane recomputes (sync_eligible*) are a different field and
+    // must not trip this invariant via substring "eligibility".
     for (const writer of [".update(", ".insert(", ".upsert(", ".rpc("]) {
       let at = src.indexOf(writer);
       while (at > -1) {
         const payload = src.slice(at, at + 600);
         assertEquals(
-          payload.includes("eligibility"),
+          /outreach_eligibility\s*:/.test(payload),
           false,
-          `${label} must not write an eligibility column (${writer} near offset ${at})`,
+          `${label} must not write outreach_eligibility (${writer} near offset ${at})`,
         );
         at = src.indexOf(writer, at + 1);
       }

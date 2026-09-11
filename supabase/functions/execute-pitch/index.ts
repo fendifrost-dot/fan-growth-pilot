@@ -106,6 +106,8 @@ function pitchLogRow(
     pitch_copy_source?: string | null;
     pitch_copy_hash?: string | null;
     dispatched_via?: string | null;
+    approved_by?: string | null;
+    approved_at?: string | null;
   } = {},
 ) {
   // Only attach subject/email_body/sent_at when explicitly provided so error rows keep
@@ -131,6 +133,9 @@ function pitchLogRow(
   if (extra.pitch_copy_source) row.pitch_copy_source = extra.pitch_copy_source;
   if (extra.pitch_copy_hash) row.pitch_copy_hash = extra.pitch_copy_hash;
   if (extra.dispatched_via) row.dispatched_via = extra.dispatched_via;
+  if (extra.approved_by) row.approved_by = extra.approved_by;
+  if (extra.approved_at) row.approved_at = extra.approved_at;
+
   return row;
 }
 Deno.serve(async (req) => {

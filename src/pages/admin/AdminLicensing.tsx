@@ -215,7 +215,8 @@ const AdminLicensing: React.FC = () => {
         <h1 className="text-2xl font-semibold tracking-tight mt-1">Licensing register</h1>
         <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
           Same bookkeeping as playlist submissions: who was pitched, which song, when, whether they responded.
-          No licenses exist today — this log starts empty. Month-1 default song is Meditate.
+          No licenses exist today — this log starts empty. The month-1 default is whichever
+          catalogue track has the data flag, not a hardcoded title.
         </p>
       </div>
 

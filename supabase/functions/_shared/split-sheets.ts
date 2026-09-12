@@ -13,6 +13,7 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1
 import type { Actor } from "./outreach-auth.ts";
 import {
   attributionFrom,
+  can,
   resolveOpsActor,
   stripSpoofedAttribution,
   type OpsActor,
@@ -1015,8 +1016,28 @@ export async function runSplitSheetAction(
     }
 
     case "get_split_sheet_signed_url": {
-      if (!canReadSplitSheets(ops)) {
+      // Claude may read metadata / identify gaps but must not mint signed URLs
+      // that expose contributor PII documents.
+      if (isClaudeKind(ops)) {
+        return {
+          status: 403,
+          data: {
+            error: "Claude may not download split-sheet documents or mint signed URLs",
+            code: "claude_document_download_denied",
+          },
+        };
+      }
+      if (!can(ops, "download_split_sheet_document") && !canReadSplitSheets(ops)) {
         return { status: 401, data: { error: "Authentication required" } };
+      }
+      if (!can(ops, "download_split_sheet_document")) {
+        return {
+          status: 403,
+          data: {
+            error: "download_split_sheet_document capability required",
+            code: "signed_url_denied",
+          },
+        };
       }
       const sheetId = String(clean.split_sheet_id ?? "").trim();
       if (!sheetId) return { status: 400, data: { error: "split_sheet_id required" } };

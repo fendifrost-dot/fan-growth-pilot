@@ -173,6 +173,10 @@ const AdminSplitSheets: React.FC = () => {
   const [contributors, setContributors] = useState<Contributor[]>([emptyContributor()]);
   const [masters, setMasters] = useState<MasterOwner[]>([emptyMaster()]);
   const [disputeReason, setDisputeReason] = useState("");
+  const [evidenceNotes, setEvidenceNotes] = useState("");
+  const [evidenceKind, setEvidenceKind] = useState("uploaded_signed_split");
+  const [confirmContributorId, setConfirmContributorId] = useState("");
+  const [deliveryRequestReason, setDeliveryRequestReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -377,6 +381,68 @@ const AdminSplitSheets: React.FC = () => {
       await load();
     } catch (e) {
       toast.error((e as Error).message || "Dispute failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const uploadEvidenceNote = async () => {
+    if (!selectedId || !detail) return;
+    setBusy(true);
+    try {
+      await callHubFn("upload_split_sheet_evidence", {
+        split_sheet_id: selectedId,
+        track_id: detail.sheet.track_id,
+        evidence_kind: evidenceKind,
+        notes: evidenceNotes.trim() || null,
+        verification_status: "unverified",
+      });
+      toast.success("Evidence record saved (not labeled signed until verified)");
+      setEvidenceNotes("");
+      await openDetail(selectedId);
+    } catch (e) {
+      toast.error((e as Error).message || "Evidence save failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const recordConfirmation = async () => {
+    if (!selectedId || !confirmContributorId) {
+      toast.error("Select a contributor");
+      return;
+    }
+    setBusy(true);
+    try {
+      await callHubFn("record_contributor_confirmation", {
+        split_sheet_id: selectedId,
+        contributor_id: confirmContributorId,
+        confirmation_status: "confirmed",
+        confirmation_method: "admin_recorded",
+      });
+      toast.success("Contributor confirmation recorded");
+      await openDetail(selectedId);
+      await load();
+    } catch (e) {
+      toast.error((e as Error).message || "Confirmation failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const requestDeliveryAuthorization = async () => {
+    if (!selectedId || !detail) return;
+    setBusy(true);
+    try {
+      await callHubFn("request_split_sheet_delivery_authorization", {
+        track_id: detail.sheet.track_id,
+        split_sheet_id: selectedId,
+        reason: deliveryRequestReason.trim() || "recipient_requested",
+      });
+      toast.success("Delivery authorization requested (awaiting Fendi)");
+      setDeliveryRequestReason("");
+    } catch (e) {
+      toast.error((e as Error).message || "Request failed");
     } finally {
       setBusy(false);
     }
@@ -862,6 +928,75 @@ const AdminSplitSheets: React.FC = () => {
                 onClick={() => void markDisputed()}
               >
                 Mark disputed
+              </Button>
+            </div>
+
+            <div className="space-y-2 border-t pt-3">
+              <h3 className="text-sm font-medium">Record evidence / confirmation</h3>
+              <p className="text-xs text-muted-foreground">
+                Uploaded evidence is never labeled “signed” until verification. AGH-generated HTML is
+                an ownership summary only.
+              </p>
+              <Label>Evidence kind</Label>
+              <Select value={evidenceKind} onValueChange={setEvidenceKind}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="uploaded_signed_split">Uploaded signed split</SelectItem>
+                  <SelectItem value="contributor_confirmation">Contributor confirmation</SelectItem>
+                  <SelectItem value="signature_provider_ref">Signature provider ref</SelectItem>
+                  <SelectItem value="other">Other</SelectItem>
+                </SelectContent>
+              </Select>
+              <Textarea
+                placeholder="Evidence notes / storage reference"
+                value={evidenceNotes}
+                onChange={(e) => setEvidenceNotes(e.target.value)}
+                rows={2}
+              />
+              <Button size="sm" variant="outline" disabled={busy} onClick={() => void uploadEvidenceNote()}>
+                Save evidence record
+              </Button>
+              <Label className="mt-2">Confirm contributor</Label>
+              <Select value={confirmContributorId} onValueChange={setConfirmContributorId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select contributor" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(detail.contributors ?? [])
+                    .filter((c) => c.id)
+                    .map((c) => (
+                      <SelectItem key={c.id!} value={c.id!}>
+                        {c.legal_name || "Unnamed"} ({c.confirmation_status || "unconfirmed"})
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+              <Button size="sm" variant="outline" disabled={busy} onClick={() => void recordConfirmation()}>
+                Record confirmation
+              </Button>
+            </div>
+
+            <div className="space-y-2 border-t pt-3">
+              <h3 className="text-sm font-medium">Request delivery authorization</h3>
+              <p className="text-xs text-muted-foreground">
+                Default policy is request_only. Grok may request; only Fendi grants. Initial pitches
+                never auto-attach the full sheet.
+              </p>
+              <Textarea
+                placeholder="Reason (recipient requested / opportunity requires)"
+                value={deliveryRequestReason}
+                onChange={(e) => setDeliveryRequestReason(e.target.value)}
+                rows={2}
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy || detail.sheet.status !== "final"}
+                onClick={() => void requestDeliveryAuthorization()}
+              >
+                Request Fendi delivery authorization
               </Button>
             </div>
 

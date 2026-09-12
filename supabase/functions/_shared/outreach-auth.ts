@@ -501,6 +501,11 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
     capability: 'create_handoff_batch',
     surface: 'outreach-write',
   },
+  advance_claude_ready_batches: {
+    cls: 'capability',
+    capability: 'create_handoff_batch',
+    surface: 'outreach-write',
+  },
   review_handoff_batch: {
     cls: 'capability',
     capability: 'review_handoff_batch',

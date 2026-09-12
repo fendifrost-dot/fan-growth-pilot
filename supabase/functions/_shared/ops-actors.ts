@@ -93,7 +93,9 @@ export type OpsCapability =
   | "manage_split_sheet_evidence"
   | "finalize_split_sheet"
   | "deliver_split_sheet"
+  | "request_split_sheet_delivery_authorization"
   | "authorize_split_sheet_delivery"
+  | "download_split_sheet_document"
   | "read_split_sheet_deliveries"
   // Human/Fendi admin surfaces — never granted to Claude/Grok/service/scheduler.
   | "manage_campaigns"
@@ -201,6 +203,8 @@ const GROK_CAPS = new Set<OpsCapability>([
   "read_playlist_discovery_work",
   "read_split_sheets",
   "deliver_split_sheet",
+  "request_split_sheet_delivery_authorization",
+  "download_split_sheet_document",
   "read_split_sheet_deliveries",
 ]);
 
@@ -277,7 +281,9 @@ const FENDI_CAPS = new Set<OpsCapability>([
   "manage_split_sheet_evidence",
   "finalize_split_sheet",
   "deliver_split_sheet",
+  "request_split_sheet_delivery_authorization",
   "authorize_split_sheet_delivery",
+  "download_split_sheet_document",
   "read_split_sheet_deliveries",
 ]);
 
@@ -325,6 +331,8 @@ const HUMAN_ADMIN_CAPS = new Set<OpsCapability>([
   "draft_split_sheet",
   "read_split_sheets",
   "manage_split_sheet_evidence",
+  "request_split_sheet_delivery_authorization",
+  "download_split_sheet_document",
   "read_split_sheet_deliveries",
 ]);
 

@@ -711,7 +711,7 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
   },
   get_split_sheet_signed_url: {
     cls: 'capability',
-    capability: 'read_split_sheets',
+    capability: 'download_split_sheet_document',
     surface: 'admin-write',
   },
   get_track_split_readiness: {
@@ -725,6 +725,11 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
     surface: 'outreach-write',
   },
   request_split_sheet_delivery_authorization: {
+    cls: 'capability',
+    capability: 'request_split_sheet_delivery_authorization',
+    surface: 'outreach-write',
+  },
+  grant_split_sheet_delivery_authorization: {
     cls: 'capability',
     capability: 'authorize_split_sheet_delivery',
     surface: 'admin-write',

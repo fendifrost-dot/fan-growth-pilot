@@ -20,6 +20,10 @@ import { evaluateSyncEligibility } from "./sync-eligibility.ts";
 import { PLAYLIST_DISCOVERY_TOOLS } from "./playlist-discovery-mcp.ts";
 import type { Actor } from "./outreach-auth.ts";
 import {
+  SPLIT_SHEET_DELIVERY_ACTIONS,
+  isSplitSheetDeliveryAction,
+} from "./split-sheet-delivery.ts";
+import {
   RIGHTS_DOCUMENTS_BUCKET,
   RIGHTS_DOCUMENTS_BUCKET_IS_PUBLIC,
   SPLIT_SHEET_RPC_CONTRACT,
@@ -198,7 +202,7 @@ Deno.test("6. Ordinary human_admin cannot finalize", () => {
   });
 });
 
-Deno.test("7. Claude cannot finalize or deliver", () => {
+Deno.test("7. Claude cannot finalize, deliver, or download documents", () => {
   withEnv({ CLAUDE_AGENT_SECRET: "claude-secret" }, () => {
     const actor = resolveOpsActor(null, req({ "x-claude-agent-secret": "claude-secret" }));
     assertEquals(actor.kind, "claude");
@@ -207,6 +211,8 @@ Deno.test("7. Claude cannot finalize or deliver", () => {
     assertEquals(can(actor, "finalize_split_sheet"), false);
     assertEquals(can(actor, "deliver_split_sheet"), false);
     assertEquals(can(actor, "authorize_split_sheet_delivery"), false);
+    assertEquals(can(actor, "download_split_sheet_document"), false);
+    assertEquals(can(actor, "request_split_sheet_delivery_authorization"), false);
   });
   withEnv({ CLAUDE_SYNC_DISCOVERY_SECRET: "sync-secret" }, () => {
     const sd = resolveOpsActor(null, req({ "x-claude-sync-discovery-secret": "sync-secret" }));
@@ -214,6 +220,7 @@ Deno.test("7. Claude cannot finalize or deliver", () => {
     assertEquals(can(sd, "draft_split_sheet"), true);
     assertEquals(can(sd, "finalize_split_sheet"), false);
     assertEquals(can(sd, "deliver_split_sheet"), false);
+    assertEquals(can(sd, "download_split_sheet_document"), false);
   });
 });
 
@@ -224,6 +231,8 @@ Deno.test("8. Grok cannot edit shares and cannot deliver draft/superseded", () =
     assertEquals(can(grok, "draft_split_sheet"), false);
     assertEquals(can(grok, "read_split_sheets"), true);
     assertEquals(can(grok, "deliver_split_sheet"), true);
+    assertEquals(can(grok, "request_split_sheet_delivery_authorization"), true);
+    assertEquals(can(grok, "download_split_sheet_document"), true);
     assertEquals(can(grok, "authorize_split_sheet_delivery"), false);
     assertEquals(can(grok, "finalize_split_sheet"), false);
     assertEquals(requiredCapabilityForAction("create_split_sheet_version"), "draft_split_sheet");
@@ -231,6 +240,8 @@ Deno.test("8. Grok cannot edit shares and cannot deliver draft/superseded", () =
 
     assertFalse(isDeliverableSplitSheetStatus("draft"));
     assertFalse(isDeliverableSplitSheetStatus("superseded"));
+    assertFalse(isDeliverableSplitSheetStatus("disputed"));
+    assertFalse(isDeliverableSplitSheetStatus("awaiting_contributor_confirmation"));
     assert(isDeliverableSplitSheetStatus("final"));
     assert(isDeliverableSplitSheetStatus("approved"));
   });
@@ -355,7 +366,15 @@ Deno.test("ACTION_SPEC maps split-sheet actions to expected capabilities", () =>
   );
   assertEquals(
     requiredCapabilityForAction("request_split_sheet_delivery_authorization"),
+    "request_split_sheet_delivery_authorization",
+  );
+  assertEquals(
+    requiredCapabilityForAction("grant_split_sheet_delivery_authorization"),
     "authorize_split_sheet_delivery",
+  );
+  assertEquals(
+    requiredCapabilityForAction("get_split_sheet_signed_url"),
+    "download_split_sheet_document",
   );
   assertEquals(
     requiredCapabilityForAction("upload_split_sheet_evidence"),
@@ -383,10 +402,28 @@ Deno.test("Fendi holds full split-sheet capability set", () => {
       "manage_split_sheet_evidence",
       "finalize_split_sheet",
       "deliver_split_sheet",
+      "request_split_sheet_delivery_authorization",
       "authorize_split_sheet_delivery",
+      "download_split_sheet_document",
       "read_split_sheet_deliveries",
     ] as const) {
       assertEquals(can(fendi, cap), true, `fendi must have ${cap}`);
     }
   });
+});
+
+Deno.test("Delivery lane separates request vs Fendi-only grant", () => {
+  assert(isSplitSheetDeliveryAction("request_split_sheet_delivery_authorization"));
+  assert(isSplitSheetDeliveryAction("grant_split_sheet_delivery_authorization"));
+  assert(SPLIT_SHEET_DELIVERY_ACTIONS.includes("grant_split_sheet_delivery_authorization"));
+  assertEquals(
+    requiredCapabilityForAction("request_split_sheet_delivery_authorization"),
+    "request_split_sheet_delivery_authorization",
+  );
+  assertEquals(
+    requiredCapabilityForAction("grant_split_sheet_delivery_authorization"),
+    "authorize_split_sheet_delivery",
+  );
+  assert(isFendiReserved("authorize_split_sheet_delivery"));
+  assertFalse(isFendiReserved("request_split_sheet_delivery_authorization"));
 });

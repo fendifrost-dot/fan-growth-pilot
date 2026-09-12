@@ -11,6 +11,7 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1
 import type { Actor } from "./outreach-auth.ts";
 import {
   attributionFrom,
+  can,
   resolveOpsActor,
   stripSpoofedAttribution,
   type OpsActor,
@@ -25,6 +26,7 @@ import {
 export const SPLIT_SHEET_DELIVERY_ACTIONS = [
   "get_split_sheet_delivery_availability",
   "request_split_sheet_delivery_authorization",
+  "grant_split_sheet_delivery_authorization",
   "deliver_split_sheet_to_sync_contact",
   "list_split_sheet_deliveries",
   "record_split_sheet_delivery_response",
@@ -238,10 +240,22 @@ export async function runSplitSheetDeliveryAction(
     }
 
     case "request_split_sheet_delivery_authorization": {
-      if (!canDeliver(ops) && ops.kind !== "human_admin") {
+      if (!can(ops, "request_split_sheet_delivery_authorization") && !canDeliver(ops) &&
+        ops.kind !== "human_admin") {
         return {
           status: 403,
           data: { error: `${ops.label} may not request delivery authorization` },
+        };
+      }
+      // Grant must use grant_split_sheet_delivery_authorization (Fendi-only).
+      if (clean.authorize === true || clean.grant === true) {
+        return {
+          status: 400,
+          data: {
+            error:
+              "Use grant_split_sheet_delivery_authorization to grant; this action only requests",
+            code: "use_grant_action",
+          },
         };
       }
       const trackId = String(clean.track_id ?? "").trim();
@@ -251,39 +265,6 @@ export async function runSplitSheetDeliveryAction(
       }
       const reason = String(clean.reason ?? clean.request_reason ?? "").trim();
       const attr = attributionFrom(ops);
-      const grant = clean.authorize === true || clean.grant === true;
-
-      if (grant) {
-        if (ops.kind !== "fendi") {
-          return {
-            status: 403,
-            data: {
-              error: "Only Fendi may grant split-sheet delivery authorization",
-              code: "fendi_only",
-            },
-          };
-        }
-        await sb.from("rights_document_audit_events").insert({
-          track_id: trackId,
-          split_sheet_id: sheetId,
-          event_kind: "delivery",
-          actor_kind: attr.actor_kind,
-          actor_label: attr.actor_label,
-          actor_user_id: attr.actor_user_id,
-          detail: {
-            phase: "authorization_granted",
-            granted_by_kind: "fendi",
-            reason: reason || null,
-            sync_target_id: clean.sync_target_id ?? null,
-            sync_opportunity_id: clean.sync_opportunity_id ?? null,
-          },
-        });
-        return {
-          status: 200,
-          data: { ok: true, authorized: true, granted_by: attr.actor_label },
-        };
-      }
-
       await sb.from("rights_document_audit_events").insert({
         track_id: trackId,
         split_sheet_id: sheetId,
@@ -307,6 +288,44 @@ export async function runSplitSheetDeliveryAction(
           awaiting_fendi: true,
           requested_by: attr.actor_label,
         },
+      };
+    }
+
+    case "grant_split_sheet_delivery_authorization": {
+      if (ops.kind !== "fendi" || !can(ops, "authorize_split_sheet_delivery")) {
+        return {
+          status: 403,
+          data: {
+            error: "Only Fendi may grant split-sheet delivery authorization",
+            code: "fendi_only",
+          },
+        };
+      }
+      const trackId = String(clean.track_id ?? "").trim();
+      const sheetId = String(clean.split_sheet_id ?? "").trim();
+      if (!trackId || !sheetId) {
+        return { status: 400, data: { error: "track_id and split_sheet_id required" } };
+      }
+      const reason = String(clean.reason ?? clean.grant_reason ?? "").trim();
+      const attr = attributionFrom(ops);
+      await sb.from("rights_document_audit_events").insert({
+        track_id: trackId,
+        split_sheet_id: sheetId,
+        event_kind: "delivery",
+        actor_kind: attr.actor_kind,
+        actor_label: attr.actor_label,
+        actor_user_id: attr.actor_user_id,
+        detail: {
+          phase: "authorization_granted",
+          granted_by_kind: "fendi",
+          reason: reason || null,
+          sync_target_id: clean.sync_target_id ?? null,
+          sync_opportunity_id: clean.sync_opportunity_id ?? null,
+        },
+      });
+      return {
+        status: 200,
+        data: { ok: true, authorized: true, granted_by: attr.actor_label },
       };
     }
 

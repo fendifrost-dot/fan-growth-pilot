@@ -90,8 +90,9 @@ function installPreviewFetch(): () => void {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     if (!url.includes("control-center-api")) return original(input, init);
     let action = "";
+    let body: Record<string, unknown> = {};
     try {
-      const body = typeof init?.body === "string" ? JSON.parse(init.body) : {};
+      body = typeof init?.body === "string" ? JSON.parse(init.body) : {};
       action = String(body.action ?? "");
     } catch { /* ignore */ }
     const payload =
@@ -99,6 +100,20 @@ function installPreviewFetch(): () => void {
       action === "list_categories" ? { rows: [] } :
       action === "list_music_supervisors" ? { rows: [] } :
       action === "list_licensing_pitches" ? { rows: [] } :
+      action === "get_sync_eligibility" ? {
+        ok: true,
+        track: SEED_TRACKS.find((t) => t.id === body.track_id) ?? SEED_TRACKS[0],
+        dna: null,
+        eligibility: {
+          track_id: body.track_id,
+          eligible: false,
+          blockers: ["fendi_sync_approval"],
+          reasons: ["Fendi sync approval required"],
+          song_dna_version_id: null,
+          computed_at: new Date().toISOString(),
+        },
+        dna_conflicts_with_computed: false,
+      } :
       { ok: true };
     return new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } });
   };

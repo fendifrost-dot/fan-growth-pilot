@@ -642,6 +642,7 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
     surface: 'outreach-write',
   },
   // ---- Fendi-only sync gate approvals -------------------------------------
+  get_sync_eligibility: { cls: 'authenticated-read' },
   approve_sample_declaration: {
     cls: 'capability',
     capability: 'approve_sample_declaration',

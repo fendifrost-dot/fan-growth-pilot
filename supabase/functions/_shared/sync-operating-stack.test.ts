@@ -34,7 +34,13 @@ import {
   getSyncDiscoveryWork,
 } from "./sync-research.ts";
 import { SYNC_CONTROL_ACTIONS, isSyncControlAction } from "./sync-control.ts";
-import { SYNC_GATE_ACTIONS, isSyncGateAction } from "./sync-gate.ts";
+import {
+  SYNC_GATE_ACTIONS,
+  isSyncGateAction,
+  parseSampleDeclarationInput,
+  parseSyncEligibilityDecision,
+  dnaConflictsWithComputedEligibility,
+} from "./sync-gate.ts";
 import {
   SYNC_DISCOVERY_TOOLS,
   syncDiscoveryActor,
@@ -460,9 +466,13 @@ Deno.test("ACTION_SPEC covers sync research, control, and gate actions", () => {
     ...SYNC_CONTROL_ACTIONS,
     ...SYNC_GATE_ACTIONS,
   ]) {
-    assert(ACTION_SPEC[action], `missing ACTION_SPEC for ${action}`);
-    assert(requiredCapabilityForAction(action), `missing capability for ${action}`);
+    const spec = ACTION_SPEC[action];
+    assert(spec, `missing ACTION_SPEC for ${action}`);
+    if (spec.cls === "capability") {
+      assert(requiredCapabilityForAction(action), `missing capability for ${action}`);
+    }
   }
+  assertEquals(ACTION_SPEC.get_sync_eligibility.cls, "authenticated-read");
   assertEquals(isSyncControlAction("approve_sync_outreach"), true);
   assertEquals(isSyncGateAction("approve_sync_eligibility"), true);
 });
@@ -705,4 +715,31 @@ Deno.test("authorizeAction denies Claude sync approve/submit", async () => {
     );
     assertEquals(gateDenied.ok, false);
   });
+});
+
+Deno.test("sync gate parsers: sample_declaration and YES/NO decision; caller has_sample still rejected", () => {
+  assertEquals(parseSampleDeclarationInput(undefined), null);
+  assertEquals(parseSampleDeclarationInput("yes"), "yes");
+  assertEquals(parseSampleDeclarationInput("NO"), "no");
+  assertEquals(parseSampleDeclarationInput("unknown"), "unknown");
+  assertEquals(parseSampleDeclarationInput("maybe"), "invalid");
+  assertEquals(parseSyncEligibilityDecision(undefined), "yes");
+  assertEquals(parseSyncEligibilityDecision("yes"), "yes");
+  assertEquals(parseSyncEligibilityDecision("no"), "no");
+  assertEquals(parseSyncEligibilityDecision("revoke"), "no");
+  assertEquals(parseSyncEligibilityDecision("maybe"), "invalid");
+  assertEquals(rejectCallerSyncIdentity({ has_sample: "no" }), "caller-supplied has_sample is rejected");
+  assertEquals(rejectCallerSyncIdentity({ sample_declaration: "no" }), null);
+  assertEquals(rejectCallerSyncIdentity({ decision: "no" }), null);
+  assertEquals(isSyncGateAction("get_sync_eligibility"), true);
+  assertEquals(ACTION_SPEC.get_sync_eligibility.cls, "authenticated-read");
+});
+
+Deno.test("DNA sync_recommendation vs computed eligibility is surfaced, never silently merged", () => {
+  assertEquals(dnaConflictsWithComputedEligibility("approved", false), true);
+  assertEquals(dnaConflictsWithComputedEligibility("blocked", true), true);
+  assertEquals(dnaConflictsWithComputedEligibility("candidate", true), true);
+  assertEquals(dnaConflictsWithComputedEligibility("approved", true), false);
+  assertEquals(dnaConflictsWithComputedEligibility("blocked", false), false);
+  assertEquals(dnaConflictsWithComputedEligibility(null, false), false);
 });

@@ -97,6 +97,8 @@ export type OpsCapability =
   | "authorize_split_sheet_delivery"
   | "download_split_sheet_document"
   | "read_split_sheet_deliveries"
+  | "set_sync_operating_scope"
+  | "verify_split_sheet_evidence"
   // Human/Fendi admin surfaces — never granted to Claude/Grok/service/scheduler.
   | "manage_campaigns"
   | "manage_catalog"
@@ -218,6 +220,8 @@ const FENDI_ONLY = new Set<OpsCapability>([
   "authorize_monetary_decisions",
   "finalize_split_sheet",
   "authorize_split_sheet_delivery",
+  "set_sync_operating_scope",
+  "verify_split_sheet_evidence",
 ]);
 
 const ADMIN_SURFACE = new Set<OpsCapability>([

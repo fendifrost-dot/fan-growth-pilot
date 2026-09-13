@@ -54,7 +54,6 @@ do $$ begin
       'ready_for_signatures',
       'signed'
     ));
-exception when others then null;
 end $$;
 
 do $$ begin
@@ -67,7 +66,6 @@ do $$ begin
       'uploaded_signed',
       'provider_signed'
     ));
-exception when others then null;
 end $$;
 
 update public.split_sheets set status = 'draft' where status = 'incomplete';
@@ -108,7 +106,6 @@ do $$ begin
   alter table public.split_sheet_contributors
     add constraint split_sheet_contributors_ownership_side_check
     check (ownership_side in ('composition', 'master'));
-exception when others then null;
 end $$;
 
 do $$ begin
@@ -119,7 +116,6 @@ do $$ begin
     check (confirmation_status in (
       'unconfirmed', 'confirmed', 'disputed', 'waived_by_fendi'
     ));
-exception when others then null;
 end $$;
 
 do $$ begin
@@ -131,7 +127,6 @@ do $$ begin
       'writer', 'composer', 'songwriter', 'producer', 'publisher',
       'artist', 'master_owner', 'label', 'other'
     ));
-exception when others then null;
 end $$;
 
 do $$ begin
@@ -143,7 +138,6 @@ do $$ begin
       split_percent is null
       or (split_percent >= 0 and split_percent <= 100)
     );
-exception when others then null;
 end $$;
 
 -- ---------------------------------------------------------------------------
@@ -306,7 +300,6 @@ do $$ begin
       'manual_fendi_override',
       'none'
     ));
-exception when others then null;
 end $$;
 
 do $$ begin
@@ -314,7 +307,6 @@ do $$ begin
   alter table public.tracks
     add constraint tracks_split_sheet_delivery_policy_check
     check (split_sheet_delivery_policy in ('request_only', 'opportunity_required', 'fendi_authorized'));
-exception when others then null;
 end $$;
 
 update public.tracks

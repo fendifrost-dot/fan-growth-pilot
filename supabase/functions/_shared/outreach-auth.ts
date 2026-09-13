@@ -590,6 +590,11 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
     capability: 'read_own_sync_batches',
     surface: 'admin-write',
   },
+  set_sync_operating_scope: {
+    cls: 'capability',
+    capability: 'set_sync_operating_scope',
+    surface: 'admin-write',
+  },
   get_sync_discovery_work: {
     cls: 'capability',
     capability: 'read_sync_discovery_work',
@@ -622,6 +627,11 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
     surface: 'outreach-write',
   },
   submit_sync_outreach: {
+    cls: 'capability',
+    capability: 'submit_sync_outreach',
+    surface: 'outreach-write',
+  },
+  record_manual_sync_outreach_submission: {
     cls: 'capability',
     capability: 'submit_sync_outreach',
     surface: 'outreach-write',
@@ -699,6 +709,16 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
     capability: 'manage_split_sheet_evidence',
     surface: 'admin-write',
   },
+  verify_split_sheet_evidence: {
+    cls: 'capability',
+    capability: 'verify_split_sheet_evidence',
+    surface: 'admin-write',
+  },
+  reject_split_sheet_evidence: {
+    cls: 'capability',
+    capability: 'verify_split_sheet_evidence',
+    surface: 'admin-write',
+  },
   mark_split_sheet_disputed: {
     cls: 'capability',
     capability: 'manage_split_sheet_evidence',
@@ -750,6 +770,11 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
     surface: 'outreach-write',
   },
   record_split_sheet_delivery_response: {
+    cls: 'capability',
+    capability: 'deliver_split_sheet',
+    surface: 'outreach-write',
+  },
+  record_manual_split_sheet_submission: {
     cls: 'capability',
     capability: 'deliver_split_sheet',
     surface: 'outreach-write',

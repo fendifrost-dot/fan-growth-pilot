@@ -28,6 +28,8 @@ export const SPLIT_SHEET_ACTIONS = [
   "regenerate_split_sheet_document",
   "record_contributor_confirmation",
   "upload_split_sheet_evidence",
+  "verify_split_sheet_evidence",
+  "reject_split_sheet_evidence",
   "mark_split_sheet_disputed",
   "submit_split_sheet_for_fendi_review",
   "finalize_split_sheet",
@@ -48,6 +50,7 @@ export const DOCUMENT_KINDS = [
   "contributor_confirmed",
   "uploaded_signed",
   "provider_signed",
+  "verified_signed",
 ] as const;
 export type DocumentKind = (typeof DOCUMENT_KINDS)[number];
 
@@ -114,9 +117,11 @@ function documentKindLabel(kind: string): string {
     case "contributor_confirmed":
       return "Contributor-confirmed ownership summary";
     case "uploaded_signed":
-      return "Uploaded signed split sheet";
+      return "Uploaded signed file (unverified until Fendi verifies)";
     case "provider_signed":
-      return "Provider-signed split sheet";
+      return "Provider-signed file (unverified until Fendi verifies)";
+    case "verified_signed":
+      return "Verified signed split sheet";
     case "agh_generated_summary":
     default:
       return "AGH-generated ownership summary (not a signed instrument)";
@@ -222,11 +227,20 @@ export function validateContributorSetLocal(
   };
 }
 
-/** SHA-256 hex of UTF-8 HTML (Web Crypto). */
+/** SHA-256 hex of the exact stored bytes (Web Crypto). */
 export async function computeDocumentHash(html: string): Promise<string> {
   const bytes = new TextEncoder().encode(html);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** One-pass: generate the stored artifact once, hash those exact bytes. Never re-render. */
+export async function buildCanonicalDocument(
+  opts: Parameters<typeof renderAuthoritativeSplitSheetHtml>[0],
+): Promise<{ html: string; hash: string }> {
+  const html = renderAuthoritativeSplitSheetHtml({ ...opts, documentHash: undefined });
+  const hash = await computeDocumentHash(html);
+  return { html, hash };
 }
 
 export function renderAuthoritativeSplitSheetHtml(opts: {
@@ -307,15 +321,22 @@ export function deriveSplitsReadyFromSheet(sheet: {
   status?: string | null;
   is_current?: boolean | null;
   document_kind?: string | null;
-}): { splits_ready: boolean; splits_ready_source: string } {
+  document_hash?: string | null;
+  document_storage_path?: string | null;
+}, opts?: { verifiedEvidence?: boolean }): { splits_ready: boolean; splits_ready_source: string } {
+  const kind = String(sheet.document_kind ?? "");
+  const signedClaim = kind === "uploaded_signed" || kind === "provider_signed" || kind === "verified_signed";
   const finalOk =
     String(sheet.status ?? "") === "final" &&
     sheet.is_current === true &&
-    DOCUMENT_KINDS.includes(String(sheet.document_kind ?? "") as DocumentKind);
-  if (finalOk) {
-    return { splits_ready: true, splits_ready_source: "authoritative_final" };
+    DOCUMENT_KINDS.includes(kind as DocumentKind) &&
+    Boolean(String(sheet.document_hash ?? "").trim()) &&
+    Boolean(String(sheet.document_storage_path ?? "").trim());
+  if (!finalOk) return { splits_ready: false, splits_ready_source: "none" };
+  if (signedClaim && opts?.verifiedEvidence !== true) {
+    return { splits_ready: false, splits_ready_source: "none" };
   }
-  return { splits_ready: false, splits_ready_source: "none" };
+  return { splits_ready: true, splits_ready_source: "authoritative_final" };
 }
 
 /**
@@ -527,7 +548,7 @@ export async function runSplitSheetAction(
       const title = clean.title != null
         ? String(clean.title)
         : `Ownership summary — ${track.name}`;
-      const html = renderAuthoritativeSplitSheetHtml({
+      const { html: htmlCanonical, hash: finalHash } = await buildCanonicalDocument({
         trackName: String(track.name),
         title,
         versionNumber: previewVersion,
@@ -540,22 +561,6 @@ export async function runSplitSheetAction(
         masterControlled: clean.master_controlled === true,
         status: "draft",
       });
-      const documentHash = await computeDocumentHash(html);
-      const htmlWithHash = renderAuthoritativeSplitSheetHtml({
-        trackName: String(track.name),
-        title,
-        versionNumber: previewVersion,
-        documentKind: "agh_generated_summary",
-        documentHash,
-        composition,
-        master,
-        generatedAt: now,
-        oneStopMaster: clean.one_stop_master === true,
-        publishingControlled: clean.publishing_controlled === true,
-        masterControlled: clean.master_controlled === true,
-        status: "draft",
-      });
-      const finalHash = await computeDocumentHash(htmlWithHash);
       const attr = attributionFrom(ops);
 
       const { data: rpcData, error: rpcErr } = await sb.rpc("create_split_sheet_version", {
@@ -570,7 +575,7 @@ export async function runSplitSheetAction(
         p_actor_kind: attr.actor_kind,
         p_actor_label: attr.actor_label,
         p_actor_user_id: attr.actor_user_id,
-        p_generated_html: htmlWithHash,
+        p_generated_html: htmlCanonical,
         p_document_hash: finalHash,
       });
       if (rpcErr) {
@@ -587,7 +592,7 @@ export async function runSplitSheetAction(
       const sheetId = String(result.split_sheet_id);
       const versionNumber = Number(result.version_number ?? previewVersion);
       const path = storagePath(trackId, sheetId, versionNumber);
-      const stored = await storeHtml(sb, path, htmlWithHash);
+      const stored = await storeHtml(sb, path, htmlCanonical);
       if (stored.ok && stored.path) {
         await sb
           .from("split_sheets")
@@ -647,7 +652,7 @@ export async function runSplitSheetAction(
         .maybeSingle();
       const now = new Date().toISOString();
       const kind = String(sheet.document_kind ?? "agh_generated_summary");
-      const htmlBase = renderAuthoritativeSplitSheetHtml({
+      const { html, hash: finalHash } = await buildCanonicalDocument({
         trackName: String(track?.name ?? "Track"),
         title: sheet.title as string | null,
         versionNumber: Number(sheet.version_number ?? 1),
@@ -660,22 +665,6 @@ export async function runSplitSheetAction(
         masterControlled: sheet.master_controlled === true,
         status: String(sheet.status ?? ""),
       });
-      const hash = await computeDocumentHash(htmlBase);
-      const html = renderAuthoritativeSplitSheetHtml({
-        trackName: String(track?.name ?? "Track"),
-        title: sheet.title as string | null,
-        versionNumber: Number(sheet.version_number ?? 1),
-        documentKind: kind,
-        documentHash: hash,
-        composition: contributors,
-        master,
-        generatedAt: now,
-        oneStopMaster: sheet.one_stop_master === true,
-        publishingControlled: sheet.publishing_controlled === true,
-        masterControlled: sheet.master_controlled === true,
-        status: String(sheet.status ?? ""),
-      });
-      const finalHash = await computeDocumentHash(html);
       const path = storagePath(
         String(sheet.track_id),
         id,
@@ -806,16 +795,7 @@ export async function runSplitSheetAction(
         .single();
       if (error) return { status: 500, data: { error: error.message } };
 
-      // Honest document_kind upgrade when signed evidence is attached — never invent "signed" for HTML alone.
-      if (evidenceKind === "uploaded_signed_split" || evidenceKind === "signature_provider_ref") {
-        const nextKind = evidenceKind === "signature_provider_ref"
-          ? "provider_signed"
-          : "uploaded_signed";
-        await sb.from("split_sheets").update({
-          document_kind: nextKind,
-          updated_at: new Date().toISOString(),
-        }).eq("id", sheetId).neq("status", "final");
-      }
+      // Upload never converts the sheet into a signed/contributor-confirmed document.
       await auditEvent(sb, {
         track_id: trackId,
         split_sheet_id: sheetId,
@@ -824,7 +804,125 @@ export async function runSplitSheetAction(
         document_hash: clean.document_hash != null ? String(clean.document_hash) : null,
         detail: { evidence_id: data.id, evidence_kind: evidenceKind },
       });
+      return { status: 200, data: { ok: true, evidence: data, verification_status: "unverified" } };
+    }
+
+    case "verify_split_sheet_evidence": {
+      if (ops.kind !== "fendi" || !can(ops, "verify_split_sheet_evidence")) {
+        return {
+          status: 403,
+          data: { error: "Only Fendi may verify split-sheet evidence", code: "fendi_only" },
+        };
+      }
+      const evidenceId = String(clean.evidence_id ?? "").trim();
+      if (!evidenceId) return { status: 400, data: { error: "evidence_id required" } };
+      const { data: ev, error: eErr } = await sb.from("split_sheet_evidence").select("*")
+        .eq("id", evidenceId).maybeSingle();
+      if (eErr) return { status: 500, data: { error: eErr.message } };
+      if (!ev) return { status: 404, data: { error: "evidence not found" } };
+      const path = String(ev.storage_path ?? "").trim();
+      const declaredHash = String(ev.document_hash ?? ev.object_bytes_sha256 ?? "").trim();
+      if (!path || !declaredHash) {
+        return {
+          status: 422,
+          data: {
+            error: "verified evidence requires a storage object and deterministic hash",
+            code: "evidence_incomplete",
+          },
+        };
+      }
+      const { data: blob, error: dlErr } = await sb.storage
+        .from(RIGHTS_DOCUMENTS_BUCKET)
+        .download(path);
+      if (dlErr || !blob) {
+        return {
+          status: 422,
+          data: {
+            error: "evidence object missing, empty, or inaccessible",
+            code: "evidence_inaccessible",
+          },
+        };
+      }
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      if (bytes.byteLength === 0) {
+        return {
+          status: 422,
+          data: { error: "evidence object is empty", code: "evidence_empty" },
+        };
+      }
+      const digest = await crypto.subtle.digest("SHA-256", bytes);
+      const liveHash = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+      if (liveHash !== declaredHash) {
+        return {
+          status: 422,
+          data: { error: "evidence hash mismatch", code: "hash_mismatch" },
+        };
+      }
+      const now = new Date().toISOString();
+      const attr = attributionFrom(ops);
+      const { data, error } = await sb.from("split_sheet_evidence").update({
+        verification_status: "verified",
+        verified_at: now,
+        verified_by: attr.actor_label,
+        signer_contributor_id: clean.signer_contributor_id
+          ? String(clean.signer_contributor_id)
+          : ev.signer_contributor_id,
+        object_bytes_sha256: liveHash,
+        document_hash: declaredHash,
+      }).eq("id", evidenceId).select("*").single();
+      if (error) return { status: 500, data: { error: error.message } };
+      if (String(ev.evidence_kind) === "uploaded_signed_split" ||
+        String(ev.evidence_kind) === "signature_provider_ref") {
+        await sb.from("split_sheets").update({
+          document_kind: "verified_signed",
+          updated_at: now,
+        }).eq("id", ev.split_sheet_id).neq("status", "final");
+      }
+      await auditEvent(sb, {
+        track_id: String(ev.track_id),
+        split_sheet_id: String(ev.split_sheet_id),
+        event_kind: "evidence_verify",
+        ops,
+        document_hash: hash,
+        detail: { evidence_id: evidenceId },
+      });
       return { status: 200, data: { ok: true, evidence: data } };
+    }
+
+    case "reject_split_sheet_evidence": {
+      if (ops.kind !== "fendi" || !can(ops, "verify_split_sheet_evidence")) {
+        return {
+          status: 403,
+          data: { error: "Only Fendi may reject split-sheet evidence", code: "fendi_only" },
+        };
+      }
+      const evidenceId = String(clean.evidence_id ?? "").trim();
+      const reason = String(clean.reason ?? "").trim();
+      if (!evidenceId || !reason) {
+        return { status: 400, data: { error: "evidence_id and reason required" } };
+      }
+      const { data: ev } = await sb.from("split_sheet_evidence").select("*")
+        .eq("id", evidenceId).maybeSingle();
+      if (!ev) return { status: 404, data: { error: "evidence not found" } };
+      const now = new Date().toISOString();
+      const { data, error } = await sb.from("split_sheet_evidence").update({
+        verification_status: "rejected",
+        notes: reason,
+      }).eq("id", evidenceId).select("*").single();
+      if (error) return { status: 500, data: { error: error.message } };
+      await sb.from("tracks").update({
+        splits_ready: false,
+        splits_ready_source: "none",
+        updated_at: now,
+      }).eq("id", ev.track_id);
+      await auditEvent(sb, {
+        track_id: String(ev.track_id),
+        split_sheet_id: String(ev.split_sheet_id),
+        event_kind: "evidence_reject",
+        ops,
+        detail: { evidence_id: evidenceId, reason },
+      });
+      return { status: 200, data: { ok: true, evidence: data, splits_ready: false } };
     }
 
     case "mark_split_sheet_disputed": {
@@ -938,7 +1036,7 @@ export async function runSplitSheetAction(
         documentKind = "agh_generated_summary";
       }
 
-      const html = renderAuthoritativeSplitSheetHtml({
+      const { html: htmlFinal, hash: documentHash } = await buildCanonicalDocument({
         trackName: String(track?.name ?? "Track"),
         title: sheet.title as string | null,
         versionNumber: Number(sheet.version_number ?? 1),
@@ -951,22 +1049,6 @@ export async function runSplitSheetAction(
         masterControlled: sheet.master_controlled === true,
         status: "final",
       });
-      const hashProbe = await computeDocumentHash(html);
-      const htmlFinal = renderAuthoritativeSplitSheetHtml({
-        trackName: String(track?.name ?? "Track"),
-        title: sheet.title as string | null,
-        versionNumber: Number(sheet.version_number ?? 1),
-        documentKind,
-        documentHash: hashProbe,
-        composition: contributors,
-        master,
-        generatedAt: now,
-        oneStopMaster: sheet.one_stop_master === true,
-        publishingControlled: sheet.publishing_controlled === true,
-        masterControlled: sheet.master_controlled === true,
-        status: "final",
-      });
-      const documentHash = await computeDocumentHash(htmlFinal);
       const path = storagePath(
         String(sheet.track_id),
         sheetId,

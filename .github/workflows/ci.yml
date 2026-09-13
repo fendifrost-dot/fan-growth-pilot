@@ -31,6 +31,12 @@ jobs:
       - name: Unit tests (vitest)
         run: npm test
 
+      - name: Generated split-sheet types present
+        run: bash scripts/assert-generated-split-sheet-types.sh
+
+      - name: No hardcoded sync identity in corrective runtime
+        run: bash scripts/assert-no-hardcoded-sync-identity.sh
+
       - name: Setup Deno
         uses: denoland/setup-deno@v2
         with:
@@ -82,3 +88,31 @@ jobs:
 
       - name: Apply daily-ops migrations + RPC conflict check
         run: bash scripts/test-daily-ops-migrations.sh
+
+  sync-split-migrations:
+    name: sync/split migrations (Postgres)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: localhost
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      AGH_MIGTEST_USE_SUDO: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Apply sync/split migrations + live constraint checks
+        run: bash scripts/test-sync-split-migrations.sh

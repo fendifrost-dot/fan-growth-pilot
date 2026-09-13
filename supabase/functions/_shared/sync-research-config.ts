@@ -24,6 +24,8 @@ export type SyncResearchConfig = {
   version: number;
   default_status: SyncTrackStatus;
   tracks: Record<string, SyncResearchTrackEntry>;
+  /** Fendi-only first-run allowlist. Undefined = legacy (active_research ids). [] = paused. */
+  operating_scope_track_ids?: string[];
 };
 
 export const DEFAULT_SYNC_RESEARCH_CONFIG: SyncResearchConfig = {
@@ -59,11 +61,28 @@ export function parseSyncResearchConfig(raw: unknown): SyncResearchConfig {
       notes: e.notes != null ? String(e.notes) : undefined,
     };
   }
+  let operatingScope: string[] | undefined;
+  if (Array.isArray(obj.operating_scope_track_ids)) {
+    operatingScope = obj.operating_scope_track_ids.map((id) => String(id).trim()).filter(Boolean);
+  }
   return {
     version: Number(obj.version) || 1,
     default_status: defaultStatus,
     tracks,
+    operating_scope_track_ids: operatingScope,
   };
+}
+
+/** Campaign active ∩ Fendi operating scope. Never uses song titles. */
+export function isInOperatingScope(config: SyncResearchConfig, trackId: string): boolean {
+  if (config.operating_scope_track_ids === undefined) {
+    return isActiveResearchTrack(config, trackId);
+  }
+  return config.operating_scope_track_ids.includes(trackId);
+}
+
+export function inDiscoveryScope(config: SyncResearchConfig, trackId: string): boolean {
+  return isActiveResearchTrack(config, trackId) && isInOperatingScope(config, trackId);
 }
 
 export async function loadSyncResearchConfig(

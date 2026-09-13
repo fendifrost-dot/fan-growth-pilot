@@ -32,7 +32,6 @@ do $$ begin
   alter table public.tracks
     add constraint tracks_has_sample_check
     check (has_sample in ('yes', 'no', 'unknown'));
-exception when others then null;
 end $$;
 
 do $$ begin
@@ -41,7 +40,6 @@ do $$ begin
   alter table public.tracks
     add constraint tracks_genre_stamp_check
     check (genre_stamp in ('hip_hop_rap', 'house_electronic', 'unknown'));
-exception when others then null;
 end $$;
 
 do $$ begin
@@ -50,7 +48,6 @@ do $$ begin
   alter table public.tracks
     add constraint tracks_aggregator_check
     check (aggregator in ('distrokid', 'tunecore', 'orchard', 'open'));
-exception when others then null;
 end $$;
 
 comment on column public.tracks.sync_eligible is
@@ -179,7 +176,6 @@ do $$ begin
   alter table public.sync_research_targets
     add constraint sync_research_targets_target_type_check
     check (target_type in ('agency_introduction', 'active_brief_contact'));
-exception when others then null;
 end $$;
 
 alter table public.sync_research_opportunities
@@ -199,7 +195,6 @@ do $$ begin
   alter table public.sync_research_opportunities
     add constraint sync_research_opportunities_opportunity_type_check
     check (opportunity_type in ('active_brief', 'agency_introduction'));
-exception when others then null;
 end $$;
 
 -- Backfill primary_source_url from source_url / official_url when empty.
@@ -243,7 +238,6 @@ do $$ begin
     check (status in (
       'draft', 'superseded', 'approved', 'rejected', 'sent_manual', 'submitted', 'awaiting_response'
     ));
-exception when others then null;
 end $$;
 
 do $$ begin
@@ -252,7 +246,6 @@ do $$ begin
   alter table public.sync_research_pitch_drafts
     add constraint sync_research_pitch_drafts_submission_channel_check
     check (submission_channel is null or submission_channel in ('email', 'web_form'));
-exception when others then null;
 end $$;
 
 -- Durable batch counters on sync handoff batches
@@ -460,7 +453,6 @@ grant execute on function public.agh_mcp_rotate_oauth_refresh(
 do $$ begin
   alter table public.daily_ops_station_runs
     drop constraint if exists daily_ops_station_runs_station_id_check;
-exception when others then null;
 end $$;
 
 -- Prefer no hard check so new stations can be added via code + ops_settings.

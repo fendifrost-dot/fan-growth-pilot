@@ -23,9 +23,10 @@ import {
 } from "./sync-eligibility.ts";
 import {
   activeResearchTrackIds,
-  isActiveResearchTrack,
+  inDiscoveryScope,
   loadSyncResearchConfig,
   rejectCallerSyncIdentity,
+  SYNC_RESEARCH_SETTING_KEY,
   trackResearchStatus,
 } from "./sync-research-config.ts";
 import { chicagoBusinessDate } from "./chicago-time.ts";
@@ -44,6 +45,7 @@ export const SYNC_RESEARCH_ACTIONS = [
   "get_sync_discovery_work",
   "submit_sync_research",
   "advance_sync_batch",
+  "set_sync_operating_scope",
 ] as const;
 
 export function isSyncResearchAction(action: string): boolean {
@@ -171,11 +173,11 @@ export async function createSyncTarget(
     : "";
   if (associatedTrackId) {
     const config = await loadSyncResearchConfig(sb);
-    if (!isActiveResearchTrack(config, associatedTrackId)) {
+    if (!inDiscoveryScope(config, associatedTrackId)) {
       return {
         status: 422,
         data: {
-          error: "track not active for sync research",
+          error: "track not in Fendi operating scope for sync research",
           code: "sync_research_track_inactive",
           track_id: associatedTrackId,
           status: trackResearchStatus(config, associatedTrackId),
@@ -417,11 +419,11 @@ export async function createSyncOpportunity(
     : "";
   if (associatedTrackId) {
     const config = await loadSyncResearchConfig(sb);
-    if (!isActiveResearchTrack(config, associatedTrackId)) {
+    if (!inDiscoveryScope(config, associatedTrackId)) {
       return {
         status: 422,
         data: {
-          error: "track not active for sync research",
+          error: "track not in Fendi operating scope for sync research",
           code: "sync_research_track_inactive",
           track_id: associatedTrackId,
           status: trackResearchStatus(config, associatedTrackId),
@@ -569,11 +571,11 @@ export async function draftSyncPitch(
 
   // Config: drafting requires active research track AND sync eligibility.
   const config = await loadSyncResearchConfig(sb);
-  if (!isActiveResearchTrack(config, trackId)) {
+  if (!inDiscoveryScope(config, trackId)) {
     return {
       status: 422,
       data: {
-        error: "track not active for sync research",
+        error: "track not in Fendi operating scope for sync research",
         code: "sync_research_track_inactive",
         track_id: trackId,
         status: trackResearchStatus(config, trackId),
@@ -717,7 +719,7 @@ export async function getSyncDiscoveryWork(
   if (denied) return denied;
 
   const config = await loadSyncResearchConfig(sb);
-  const activeIds = activeResearchTrackIds(config);
+  const activeIds = activeResearchTrackIds(config).filter((id) => inDiscoveryScope(config, id));
   const tracks: Record<string, unknown>[] = [];
 
   for (const trackId of activeIds) {
@@ -882,7 +884,7 @@ export async function advanceSyncBatch(
   const trackId = clean.track_id
     ? String(clean.track_id).trim()
     : activeIds[0] ?? "";
-  if (!trackId || !isActiveResearchTrack(config, trackId)) {
+  if (!trackId || !inDiscoveryScope(config, trackId)) {
     return {
       status: 422,
       data: {
@@ -1045,6 +1047,51 @@ export async function readOwnSyncBatches(
   };
 }
 
+export async function setSyncOperatingScope(
+  sb: SupabaseClient,
+  body: Record<string, unknown>,
+  ops: OpsActor,
+): Promise<RunResult> {
+  if (ops.kind !== "fendi" || !can(ops, "set_sync_operating_scope")) {
+    return {
+      status: 403,
+      data: {
+        error: "Only Fendi may change the sync operating scope",
+        code: "fendi_only",
+      },
+    };
+  }
+  const ids = Array.isArray(body.operating_scope_track_ids)
+    ? body.operating_scope_track_ids.map((id) => String(id).trim()).filter(Boolean)
+    : null;
+  if (!ids) {
+    return { status: 400, data: { error: "operating_scope_track_ids array required" } };
+  }
+  const current = await loadSyncResearchConfig(sb);
+  const next = {
+    ...current,
+    operating_scope_track_ids: ids,
+  };
+  const { error } = await sb.from("ops_settings").upsert(
+    {
+      setting_key: SYNC_RESEARCH_SETTING_KEY,
+      setting_value: next,
+      updated_at: new Date().toISOString(),
+      updated_by: ops.label,
+    },
+    { onConflict: "setting_key" },
+  );
+  if (error) return { status: 500, data: { error: error.message } };
+  return {
+    status: 200,
+    data: {
+      ok: true,
+      operating_scope_track_ids: ids,
+      note: "Campaign statuses were not modified. Discovery uses active_research ∩ this scope.",
+    },
+  };
+}
+
 export async function runSyncResearchAction(
   action: string,
   body: Record<string, unknown>,
@@ -1072,6 +1119,8 @@ export async function runSyncResearchAction(
       return submitSyncResearch(sb, body, ops);
     case "advance_sync_batch":
       return advanceSyncBatch(sb, body, ops);
+    case "set_sync_operating_scope":
+      return setSyncOperatingScope(sb, body, ops);
     case "list_sync_research_targets": {
       let q = sb
         .from("sync_research_targets")

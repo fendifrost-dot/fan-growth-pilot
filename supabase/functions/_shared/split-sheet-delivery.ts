@@ -19,9 +19,11 @@ import {
 import {
   DOCUMENT_KINDS,
   RIGHTS_DOCUMENTS_BUCKET,
+  computeDocumentHash,
   type DocumentKind,
   type Result,
 } from "./split-sheets.ts";
+import { outreachIdempotencyKey, sendProviderEmail, utf8ToBase64 } from "./provider-transport.ts";
 
 export const SPLIT_SHEET_DELIVERY_ACTIONS = [
   "get_split_sheet_delivery_availability",
@@ -30,6 +32,7 @@ export const SPLIT_SHEET_DELIVERY_ACTIONS = [
   "deliver_split_sheet_to_sync_contact",
   "list_split_sheet_deliveries",
   "record_split_sheet_delivery_response",
+  "record_manual_split_sheet_submission",
 ] as const;
 
 export function isSplitSheetDeliveryAction(action: string): boolean {
@@ -397,34 +400,174 @@ export async function runSplitSheetDeliveryAction(
       }
 
       const path = String(sheet.document_storage_path ?? "").trim();
+      const documentHash = String(sheet.document_hash ?? "");
+      if (!documentHash || !path) {
+        return {
+          status: 422,
+          data: { error: "final stored document + hash required before delivery", code: "missing_hash" },
+        };
+      }
+      if (String(sheet.generated_html ?? "").trim()) {
+        const liveHash = await computeDocumentHash(String(sheet.generated_html));
+        if (liveHash !== documentHash) {
+          return {
+            status: 409,
+            data: { error: "stored document hash mismatch", code: "hash_mismatch" },
+          };
+        }
+      }
+
+      const { data: verifiedEv } = await sb
+        .from("split_sheet_evidence")
+        .select("id")
+        .eq("split_sheet_id", sheetId)
+        .eq("verification_status", "verified")
+        .limit(1);
+      const kind = String(sheet.document_kind ?? "");
+      if ((kind === "uploaded_signed" || kind === "provider_signed" || kind === "verified_signed") &&
+        !(verifiedEv ?? []).length) {
+        return {
+          status: 422,
+          data: { error: "verified evidence required for signed-document delivery", code: "evidence_unverified" },
+        };
+      }
+
+      const prior = await findPriorFendiAuthorization(sb, trackId, sheetId);
+      if (ops.kind !== "fendi" && !prior) {
+        return {
+          status: 403,
+          data: {
+            error: "Grok must request and Fendi must grant delivery authorization before transport",
+            code: "fendi_authorization_required",
+          },
+        };
+      }
+      if (effectivePolicy === "proactive_allowed") {
+        if (!clean.sync_opportunity_id) {
+          return {
+            status: 422,
+            data: { error: "proactive delivery requires sync_opportunity_id", code: "opportunity_required" },
+          };
+        }
+      }
+
+      const channel = String(clean.delivery_channel ?? "email");
+      const attr = attributionFrom(ops);
+      const idempotencyKey = outreachIdempotencyKey({
+        kind: "split_delivery",
+        id: `${sheetId}:${clean.sync_opportunity_id ?? clean.recipient_email ?? "manual"}`,
+        channel,
+      });
+      const { data: existing } = await sb
+        .from("split_sheet_deliveries")
+        .select("*")
+        .eq("idempotency_key", idempotencyKey)
+        .maybeSingle();
+      if (existing && existing.delivery_result === "sent") {
+        return { status: 200, data: { ok: true, delivery: existing, idempotent_replay: true } };
+      }
+
+      if (channel === "web_form") {
+        const { data: delivery, error } = await sb.from("split_sheet_deliveries").insert({
+          track_id: trackId,
+          split_sheet_id: sheetId,
+          sync_target_id: clean.sync_target_id ? String(clean.sync_target_id) : null,
+          sync_opportunity_id: clean.sync_opportunity_id ? String(clean.sync_opportunity_id) : null,
+          recipient_name: clean.recipient_name != null ? String(clean.recipient_name) : null,
+          recipient_email: clean.recipient_email != null ? String(clean.recipient_email) : null,
+          recipient_organization: clean.recipient_organization != null
+            ? String(clean.recipient_organization)
+            : null,
+          delivery_reason: deliveryReason,
+          delivery_channel: "web_form",
+          document_version: Number(sheet.version_number ?? 1),
+          document_hash: documentHash,
+          document_kind: String(sheet.document_kind),
+          document_storage_path: path,
+          delivered_by: attr.actor_kind,
+          delivered_by_label: attr.actor_label,
+          requested_by: attr.actor_label,
+          authorized_by: prior || ops.kind === "fendi" ? "fendi" : null,
+          approval_identity: ops.kind === "fendi" ? attr.actor_label : null,
+          approval_required: true,
+          delivery_result: "awaiting_manual_submission",
+          idempotency_key: idempotencyKey,
+        }).select("*").single();
+        if (error) return { status: 500, data: { error: error.message } };
+        await sb.from("rights_document_audit_events").insert({
+          track_id: trackId,
+          split_sheet_id: sheetId,
+          event_kind: "delivery",
+          actor_kind: attr.actor_kind,
+          actor_label: attr.actor_label,
+          actor_user_id: attr.actor_user_id,
+          document_hash: documentHash,
+          detail: { phase: "manual_packet", delivery_id: delivery.id, sent: false },
+        });
+        return {
+          status: 200,
+          data: {
+            ok: true,
+            delivery,
+            delivery_result: "awaiting_manual_submission",
+            sent: false,
+            note: "Manual packet only. Record the external submission with record_manual_split_sheet_submission.",
+          },
+        };
+      }
+
+      if (channel !== "email") {
+        return { status: 400, data: { error: "delivery_channel must be email or web_form" } };
+      }
+      const recipient = String(clean.recipient_email ?? "").trim();
+      if (!recipient) {
+        return { status: 400, data: { error: "recipient_email required for email delivery" } };
+      }
+
       const ttl = Math.min(
         Math.max(Number(clean.ttl_seconds) || policy.secure_link_ttl_seconds || 900, 60),
         3600,
       );
+      let attachmentContent: string | null = null;
+      if (sheet.generated_html) {
+        attachmentContent = utf8ToBase64(String(sheet.generated_html));
+      }
       let signedUrl: string | null = null;
       let secureExpires: string | null = null;
-      if (path) {
+      if (!attachmentContent && path) {
         const { data: signed, error: sErr } = await sb.storage
           .from(RIGHTS_DOCUMENTS_BUCKET)
           .createSignedUrl(path, ttl);
-        if (sErr) {
-          return {
-            status: 503,
-            data: { error: sErr.message, code: "signed_url_failed" },
-          };
+        if (!sErr) {
+          signedUrl = signed?.signedUrl ?? null;
+          secureExpires = new Date(Date.now() + ttl * 1000).toISOString();
         }
-        signedUrl = signed?.signedUrl ?? null;
-        secureExpires = new Date(Date.now() + ttl * 1000).toISOString();
       }
 
-      const attr = attributionFrom(ops);
-      const documentHash = String(sheet.document_hash ?? "");
-      if (!documentHash) {
+      if (!attachmentContent && !signedUrl) {
         return {
           status: 422,
-          data: { error: "document_hash required before delivery", code: "missing_hash" },
+          data: {
+            error: "cannot deliver without stored document bytes or a short-lived authenticated link",
+            code: "delivery_payload_missing",
+          },
         };
       }
+
+      const bodyText = attachmentContent
+        ? "Confidential ownership document attached. Do not forward. This is not a public URL."
+        : `Confidential ownership document (short-lived authenticated download; not a public URL):\n${signedUrl}`;
+
+      const send = await sendProviderEmail({
+        to: [recipient],
+        subject: "Confidential ownership document",
+        text: bodyText,
+        html: `<p>${bodyText.replace(/\n/g, "<br>")}</p>`,
+        idempotencyKey,
+        attachments: attachmentContent
+          ? [{ filename: "ownership-summary.html", content: attachmentContent, contentType: "text/html" }]
+          : undefined,
+      });
 
       const { data: delivery, error } = await sb
         .from("split_sheet_deliveries")
@@ -436,22 +579,28 @@ export async function runSplitSheetDeliveryAction(
             ? String(clean.sync_opportunity_id)
             : null,
           recipient_name: clean.recipient_name != null ? String(clean.recipient_name) : null,
-          recipient_email: clean.recipient_email != null ? String(clean.recipient_email) : null,
+          recipient_email: recipient,
           recipient_organization: clean.recipient_organization != null
             ? String(clean.recipient_organization)
             : null,
           delivery_reason: deliveryReason,
-          delivery_channel: String(clean.delivery_channel ?? "secure_link"),
+          delivery_channel: "email",
           document_version: Number(sheet.version_number ?? 1),
           document_hash: documentHash,
           document_kind: String(sheet.document_kind),
+          document_storage_path: path,
           secure_link_expires_at: secureExpires,
           delivered_by: attr.actor_kind,
           delivered_by_label: attr.actor_label,
+          requested_by: attr.actor_label,
+          authorized_by: prior || ops.kind === "fendi" ? "fendi" : null,
           approval_identity: ops.kind === "fendi" ? attr.actor_label : null,
-          approval_required: deliveryReason === "fendi_authorized",
-          delivery_result: signedUrl ? "sent" : "logged",
-          delivery_error: path ? null : "missing_storage_path_logged_without_link",
+          approval_required: true,
+          delivery_result: send.ok ? "sent" : "failed",
+          delivery_error: send.ok ? null : send.error,
+          provider_message_id: send.ok ? send.id : null,
+          provider_response: send.ok ? send.raw : { error: send.error },
+          idempotency_key: idempotencyKey,
         })
         .select("*")
         .single();
@@ -466,25 +615,67 @@ export async function runSplitSheetDeliveryAction(
         actor_user_id: attr.actor_user_id,
         document_hash: documentHash,
         detail: {
-          phase: "delivered",
+          phase: send.ok ? "provider_accepted" : "provider_failed",
           delivery_id: delivery.id,
           delivery_reason: deliveryReason,
-          ttl_seconds: ttl,
+          provider_message_id: send.ok ? send.id : null,
+          minted_signed_url: Boolean(signedUrl),
         },
       });
 
       return {
-        status: 200,
+        status: send.ok ? 200 : 502,
         data: {
-          ok: true,
+          ok: send.ok,
           delivery,
-          signed_url: signedUrl,
-          expires_in_seconds: ttl,
+          sent: send.ok,
+          delivery_result: send.ok ? "sent" : "failed",
+          provider_message_id: send.ok ? send.id : null,
+          retryable: send.ok ? false : send.retryable,
           document_kind: sheet.document_kind,
           document_hash: documentHash,
           auto_attached_to_pitch: false,
         },
       };
+    }
+
+    case "record_manual_split_sheet_submission": {
+      if (!canDeliver(ops)) {
+        return { status: 403, data: { error: `${ops.label} may not record manual submissions` } };
+      }
+      const deliveryId = String(clean.delivery_id ?? "").trim();
+      const evidence = String(clean.submission_evidence ?? "").trim();
+      if (!deliveryId || !evidence) {
+        return { status: 400, data: { error: "delivery_id and submission_evidence required" } };
+      }
+      const { data: row } = await sb.from("split_sheet_deliveries").select("*")
+        .eq("id", deliveryId).maybeSingle();
+      if (!row) return { status: 404, data: { error: "delivery not found" } };
+      if (row.delivery_result !== "awaiting_manual_submission") {
+        return {
+          status: 409,
+          data: { error: "delivery is not awaiting manual submission", code: "not_manual_packet" },
+        };
+      }
+      const attr = attributionFrom(ops);
+      const { data, error } = await sb.from("split_sheet_deliveries").update({
+        delivery_result: "sent",
+        response_notes: evidence,
+        delivered_by: attr.actor_kind,
+        delivered_by_label: attr.actor_label,
+      }).eq("id", deliveryId).select("*").single();
+      if (error) return { status: 500, data: { error: error.message } };
+      await sb.from("rights_document_audit_events").insert({
+        track_id: row.track_id,
+        split_sheet_id: row.split_sheet_id,
+        event_kind: "manual_submission",
+        actor_kind: attr.actor_kind,
+        actor_label: attr.actor_label,
+        actor_user_id: attr.actor_user_id,
+        document_hash: row.document_hash,
+        detail: { delivery_id: deliveryId, evidence },
+      });
+      return { status: 200, data: { ok: true, delivery: data, sent: true } };
     }
 
     case "list_split_sheet_deliveries": {

@@ -18,6 +18,8 @@ import {
   formatEligibilityBlock,
 } from "./sync-eligibility.ts";
 import { rejectCallerSyncIdentity } from "./sync-research-config.ts";
+import { resolveCurrentApprovedDna } from "./track-dna-envelope.ts";
+import { outreachIdempotencyKey, sendProviderEmail } from "./provider-transport.ts";
 
 export type RunResult = { status: number; data: Record<string, unknown> };
 
@@ -26,6 +28,7 @@ export const SYNC_CONTROL_ACTIONS = [
   "approve_sync_outreach",
   "reject_sync_outreach",
   "submit_sync_outreach",
+  "record_manual_sync_outreach_submission",
   "track_sync_responses",
   "escalate_sync_to_fendi",
   "list_sync_pending_drafts",
@@ -288,9 +291,9 @@ export async function rejectSyncOutreach(
 }
 
 /**
- * Submit approved outreach via supported channels.
- * Logs evidence only — does not invent sends. Email path records intent + timestamp;
- * actual Resend wiring remains operator-gated and eligibility-bound.
+ * Submit approved outreach via a real transport.
+ * Email: Resend. submitted/sent only after provider acceptance.
+ * web_form / other: awaiting_manual_submission until Grok records external confirmation.
  */
 export async function submitSyncOutreach(
   sb: SupabaseClient,
@@ -299,6 +302,15 @@ export async function submitSyncOutreach(
 ): Promise<RunResult> {
   const denied = await requireCap(ops, "submit_sync_outreach");
   if (denied) return denied;
+  if (ops.kind !== "grok_playlist_control" && ops.kind !== "fendi") {
+    return {
+      status: 403,
+      data: {
+        error: "Only Grok playlist-control or Fendi may submit sync outreach",
+        code: "submit_actor_denied",
+      },
+    };
+  }
   const spoof = rejectCallerSyncIdentity(body);
   if (spoof) return { status: 400, data: { error: spoof, code: "caller_identity_rejected" } };
   const clean = stripSpoofedAttribution(body);
@@ -313,7 +325,6 @@ export async function submitSyncOutreach(
     };
   }
 
-  // Reject caller subject/body overrides on submit — use approved draft content.
   if (clean.subject !== undefined || clean.body !== undefined) {
     return {
       status: 400,
@@ -331,10 +342,50 @@ export async function submitSyncOutreach(
     .maybeSingle();
   if (error) return { status: 500, data: { error: error.message } };
   if (!draft) return { status: 404, data: { error: "draft not found" } };
-  if (draft.status !== "approved") {
+  if (draft.status === "submitted" && draft.submission_message_id) {
+    return {
+      status: 200,
+      data: {
+        ok: true,
+        draft,
+        submitted: true,
+        idempotent_replay: true,
+        provider_message_id: draft.submission_message_id,
+      },
+    };
+  }
+  if (draft.status !== "approved" && draft.status !== "send_failed") {
     return {
       status: 422,
       data: { error: "draft must be approved before submit", code: "not_approved", status: draft.status },
+    };
+  }
+
+  const { data: opportunity } = await sb
+    .from("sync_research_opportunities")
+    .select("*")
+    .eq("id", draft.opportunity_id)
+    .maybeSingle();
+  if (!opportunity) return { status: 404, data: { error: "opportunity not found" } };
+
+  let target: Record<string, unknown> | null = null;
+  if (opportunity.sync_target_id) {
+    const { data: targetRow } = await sb
+      .from("sync_research_targets")
+      .select("*")
+      .eq("id", opportunity.sync_target_id)
+      .maybeSingle();
+    target = targetRow;
+  }
+  const targetVerified =
+    target != null &&
+    (String(target.status ?? "") === "verified" ||
+      Boolean(target.date_verified) ||
+      Boolean(String(target.verified_contact_path ?? "").trim()));
+  if (!targetVerified) {
+    return {
+      status: 422,
+      data: { error: "verified sync target/opportunity required", code: "target_unverified" },
     };
   }
 
@@ -344,10 +395,123 @@ export async function submitSyncOutreach(
     return { status: 422, data: formatEligibilityBlock(decision) };
   }
 
-  const evidence = String(clean.submission_evidence ?? "").trim() ||
-    `submitted_via_${channel}_at_${new Date().toISOString()}`;
+  const dna = await resolveCurrentApprovedDna(sb, { trackId: String(draft.track_id) });
+  if (!dna.ok || !dna.songDnaVersionId) {
+    return {
+      status: 422,
+      data: { error: dna.errors[0] ?? "approved Song DNA required", code: "approved_dna_required" },
+    };
+  }
+
+  const { data: currentSheet } = await sb
+    .from("split_sheets")
+    .select("id, version_number, document_hash, status, is_current")
+    .eq("track_id", draft.track_id)
+    .eq("is_current", true)
+    .maybeSingle();
+
   const attr = attributionFrom(ops);
   const now = new Date().toISOString();
+  const idempotencyKey = String(draft.send_idempotency_key || "").trim() ||
+    outreachIdempotencyKey({ kind: "sync-outreach", id: String(draft.id), channel });
+
+  await sb.from("sync_research_pitch_drafts").update({
+    send_idempotency_key: idempotencyKey,
+    send_attempted_at: now,
+    updated_at: now,
+  }).eq("id", draftId);
+
+  const binding = {
+    track_id: draft.track_id,
+    song_dna_version_id: dna.songDnaVersionId,
+    opportunity_id: draft.opportunity_id,
+    target_id: opportunity.sync_target_id,
+    split_sheet_id: currentSheet?.id ?? null,
+    split_sheet_version: currentSheet?.version_number ?? null,
+    document_hash: currentSheet?.document_hash ?? null,
+    rights_state: {
+      sync_eligible: decision.eligible,
+      blockers: decision.blockers,
+    },
+  };
+
+  if (channel !== "email") {
+    const { data: updated, error: uErr } = await sb
+      .from("sync_research_pitch_drafts")
+      .update({
+        status: "awaiting_manual_submission",
+        submission_channel: channel,
+        send_idempotency_key: idempotencyKey,
+        submission_evidence: "manual_packet_created",
+        updated_at: now,
+      })
+      .eq("id", draftId)
+      .select()
+      .single();
+    if (uErr) return { status: 500, data: { error: uErr.message } };
+    return {
+      status: 200,
+      data: {
+        ok: true,
+        draft: updated,
+        submitted: false,
+        awaiting_manual_submission: true,
+        packet: {
+          ...binding,
+          contact_path: target?.verified_contact_path ?? null,
+          subject: draft.subject,
+          body: draft.body,
+        },
+        contractual_commitment: false,
+        monetary_authority: false,
+        eligibility: decision,
+      },
+    };
+  }
+
+  const recipient = String(target?.verified_contact_path ?? "").trim();
+  if (!recipient || !recipient.includes("@")) {
+    return {
+      status: 422,
+      data: { error: "verified email contact path required for email outreach", code: "missing_recipient" },
+    };
+  }
+
+  const send = await sendProviderEmail({
+    to: [recipient],
+    subject: String(draft.subject ?? "Sync outreach"),
+    text: String(draft.body ?? ""),
+    html: String(draft.body ?? ""),
+    idempotencyKey,
+  });
+
+  if (!send.ok) {
+    const { data: failed, error: failErr } = await sb
+      .from("sync_research_pitch_drafts")
+      .update({
+        status: "send_failed",
+        submission_channel: "email",
+        send_idempotency_key: idempotencyKey,
+        provider_response: { error: send.error, retryable: send.retryable },
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", draftId)
+      .select()
+      .single();
+    if (failErr) return { status: 500, data: { error: failErr.message } };
+    return {
+      status: 502,
+      data: {
+        ok: false,
+        draft: failed,
+        submitted: false,
+        retryable: send.retryable,
+        error: send.error,
+        eligibility: decision,
+      },
+    };
+  }
+
   const { data: updated, error: uErr } = await sb
     .from("sync_research_pitch_drafts")
     .update({
@@ -355,11 +519,11 @@ export async function submitSyncOutreach(
       submitted_by: attr.actor_kind,
       submitted_by_label: attr.actor_label,
       submitted_at: now,
-      submission_channel: channel,
-      submission_evidence: evidence,
-      submission_message_id: clean.submission_message_id != null
-        ? String(clean.submission_message_id)
-        : null,
+      submission_channel: "email",
+      submission_evidence: "provider_accepted",
+      submission_message_id: send.id,
+      send_idempotency_key: idempotencyKey,
+      provider_response: send.raw,
       updated_at: now,
     })
     .eq("id", draftId)
@@ -394,13 +558,63 @@ export async function submitSyncOutreach(
     data: {
       ok: true,
       draft: updated,
+      submitted: true,
       submitted_at: now,
-      submission_channel: channel,
+      submission_channel: "email",
+      provider_message_id: send.id,
+      binding,
       contractual_commitment: false,
       monetary_authority: false,
       eligibility: decision,
     },
   };
+}
+
+export async function recordManualSyncOutreachSubmission(
+  sb: SupabaseClient,
+  body: Record<string, unknown>,
+  ops: OpsActor,
+): Promise<RunResult> {
+  const denied = await requireCap(ops, "submit_sync_outreach");
+  if (denied) return denied;
+  if (ops.kind !== "grok_playlist_control" && ops.kind !== "fendi") {
+    return { status: 403, data: { error: `${ops.label} may not record manual outreach submissions` } };
+  }
+  const clean = stripSpoofedAttribution(body);
+  const draftId = String(clean.draft_id ?? "").trim();
+  const evidence = String(clean.submission_evidence ?? "").trim();
+  if (!draftId || !evidence) {
+    return { status: 400, data: { error: "draft_id and submission_evidence required" } };
+  }
+  const { data: draft } = await sb
+    .from("sync_research_pitch_drafts")
+    .select("*")
+    .eq("id", draftId)
+    .maybeSingle();
+  if (!draft) return { status: 404, data: { error: "draft not found" } };
+  if (draft.status !== "awaiting_manual_submission") {
+    return {
+      status: 409,
+      data: { error: "draft is not awaiting manual submission", code: "not_manual_packet" },
+    };
+  }
+  const attr = attributionFrom(ops);
+  const now = new Date().toISOString();
+  const { data, error } = await sb
+    .from("sync_research_pitch_drafts")
+    .update({
+      status: "submitted",
+      submitted_by: attr.actor_kind,
+      submitted_by_label: attr.actor_label,
+      submitted_at: now,
+      submission_evidence: evidence,
+      updated_at: now,
+    })
+    .eq("id", draftId)
+    .select()
+    .single();
+  if (error) return { status: 500, data: { error: error.message } };
+  return { status: 200, data: { ok: true, draft: data, submitted: true } };
 }
 
 export async function trackSyncResponses(
@@ -518,6 +732,8 @@ export async function runSyncControlAction(
       return rejectSyncOutreach(sb, body, ops);
     case "submit_sync_outreach":
       return submitSyncOutreach(sb, body, ops);
+    case "record_manual_sync_outreach_submission":
+      return recordManualSyncOutreachSubmission(sb, body, ops);
     case "track_sync_responses":
       return trackSyncResponses(sb, body, ops);
     case "escalate_sync_to_fendi":

@@ -610,6 +610,12 @@ export async function listOpsSettings(sb: SupabaseClient): Promise<RunResult> {
   return { status: 200, data: { ok: true, rows: data ?? [] } };
 }
 
+/** Fendi-only ops_settings keys. Claude/Grok/admin cannot expand sync scope or delivery policy here. */
+export const FENDI_LOCKED_OPS_SETTING_KEYS = new Set([
+  "sync_research_config",
+  "split_sheet_delivery_policy",
+]);
+
 export async function upsertOpsSetting(
   sb: SupabaseClient,
   body: Record<string, unknown>,
@@ -619,6 +625,15 @@ export async function upsertOpsSetting(
   if (!key) return { status: 400, data: { error: "setting_key required" } };
   if (body.setting_value === undefined) {
     return { status: 400, data: { error: "setting_value required" } };
+  }
+  if (FENDI_LOCKED_OPS_SETTING_KEYS.has(key) && ops.kind !== "fendi") {
+    return {
+      status: 403,
+      data: {
+        error: `${key} may only be changed by Fendi`,
+        code: "fendi_only",
+      },
+    };
   }
   const row = {
     setting_key: key,

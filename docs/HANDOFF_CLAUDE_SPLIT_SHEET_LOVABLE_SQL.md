@@ -1,7 +1,7 @@
 # Claude handoff — apply sync + split-sheet delivery migrations via Lovable SQL Editor
 
 **For:** Claude (browser agent) applying gated production SQL through Lovable.  
-**Pinned commit:** fill after merge — this PR’s commit is recorded at the top of the PR.  
+**Pinned commit:** `51d446658a38c4cc024b7ae6c6cc5b0432c087b2` on `cursor/sync-split-sheet-delivery-a9e7` (PR #30).  
 **Written:** 2026-09-13  
 **Parent docs:** [`HANDOFF_AUTHORITATIVE_SPLIT_SHEETS.md`](./HANDOFF_AUTHORITATIVE_SPLIT_SHEETS.md) · [`SUPABASE_ACCESS.md`](./SUPABASE_ACCESS.md) · [`AGENT_BOOTSTRAP.md`](./AGENT_BOOTSTRAP.md) · [`HANDOFF_SYNC_SPLIT_LIVE_ACCEPTANCE.md`](./HANDOFF_SYNC_SPLIT_LIVE_ACCEPTANCE.md)
 

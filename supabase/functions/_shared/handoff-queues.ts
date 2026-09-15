@@ -282,6 +282,9 @@ export async function createHandoffBatch(
   }
 
   const discover = stampDiscover(ops);
+  // Playlist inventory batches must carry batch-level drafted_by from the
+  // authenticated actor at create time — never from caller drafted_by.
+  const draft = batchKind === "playlist" ? stampDraft(ops) : {};
   const row = {
     batch_kind: batchKind,
     queue_state: queueState,
@@ -301,6 +304,7 @@ export async function createHandoffBatch(
     payload: typeof clean.payload === "object" && clean.payload ? clean.payload : {},
     record_count: 0,
     ...discover,
+    ...draft,
     updated_at: new Date().toISOString(),
   };
   const { data, error } = await sb.from("agh_handoff_batches").insert(row).select().single();

@@ -703,4 +703,103 @@ PAUSED_EXCLUDED=$(run_sql -c "select count(*) from public.pitch_campaigns c
  where c.status='active' and t.name='Fixture Partial Track' and c.song_dna_version_id is null;")
 assert_eq "incomplete_not_active" "${PAUSED_EXCLUDED}" "0"
 
+echo "==> Batch drafted_by attribution repair + safe backfill"
+apply_with_rollback "$ROOT/supabase/migrations/20260910160000_batch_drafted_by_attribution.sql"
+RECON_TBL=$(run_sql -c "select count(*) from information_schema.tables where table_schema='public' and table_name='agh_batch_attribution_reconciliation';")
+assert_eq "attribution_reconciliation_table" "${RECON_TBL}" "1"
+BACKFILL_FN=$(run_sql -c "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='agh_backfill_batch_drafted_by';")
+assert_eq "backfill_batch_drafted_by_fn" "${BACKFILL_FN}" "1"
+
+# Seed: null batch drafted_by with unambiguous Claude records → backfill
+run_sql_pretty <<'SQL'
+insert into public.playlist_targets (playlist_id, lane, verification_status, path_verified, contact_method, submission_method, curator_email)
+values
+  ('pl-attr-1', 'rap_general', 'auto_verified', true, 'email', 'email', 'a@test'),
+  ('pl-attr-2a', 'rap_general', 'auto_verified', true, 'email', 'email', 'b@test'),
+  ('pl-attr-2b', 'rap_general', 'auto_verified', true, 'email', 'email', 'c@test')
+on conflict (playlist_id) do nothing;
+
+insert into public.agh_handoff_batches (
+  id, batch_kind, queue_state, track_id, song_dna_version_id,
+  discovered_by, discovered_by_label, drafted_by, drafted_by_label, record_count
+) values (
+  'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1', 'playlist', 'CLAUDE_BATCH_READY',
+  '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222',
+  'claude_playlist_discovery', 'claude_playlist_discovery', null, null, 1
+);
+
+insert into public.agh_handoff_records (
+  id, batch_id, record_kind, queue_state, track_id, playlist_target_id,
+  submission_channel, song_dna_version_id, packet,
+  discovered_by, discovered_by_label, drafted_by, drafted_by_label
+) values (
+  'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1',
+  'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1',
+  'playlist_target', 'CLAUDE_BATCH_READY',
+  '11111111-1111-1111-1111-111111111111', 'pl-attr-1', 'email',
+  '22222222-2222-2222-2222-222222222222', '{}'::jsonb,
+  'claude_playlist_discovery', 'claude_playlist_discovery',
+  'claude_playlist_discovery', 'claude_playlist_discovery'
+);
+
+-- Mixed actors → must flag, not overwrite
+insert into public.agh_handoff_batches (
+  id, batch_kind, queue_state, track_id, song_dna_version_id,
+  discovered_by, discovered_by_label, drafted_by, record_count
+) values (
+  'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2', 'playlist', 'CLAUDE_BATCH_READY',
+  '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222',
+  'claude_playlist_discovery', 'claude_playlist_discovery', null, 2
+);
+
+insert into public.agh_handoff_records (
+  id, batch_id, record_kind, queue_state, track_id, playlist_target_id,
+  submission_channel, song_dna_version_id, packet,
+  discovered_by, discovered_by_label, drafted_by, drafted_by_label
+) values
+(
+  'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2',
+  'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2',
+  'playlist_target', 'CLAUDE_BATCH_READY',
+  '11111111-1111-1111-1111-111111111111', 'pl-attr-2a', 'email',
+  '22222222-2222-2222-2222-222222222222', '{}'::jsonb,
+  'claude_playlist_discovery', 'claude_playlist_discovery',
+  'claude_playlist_discovery', 'claude_playlist_discovery'
+),
+(
+  'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb3',
+  'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2',
+  'playlist_target', 'CLAUDE_BATCH_READY',
+  '11111111-1111-1111-1111-111111111111', 'pl-attr-2b', 'email',
+  '22222222-2222-2222-2222-222222222222', '{}'::jsonb,
+  'fendi', 'fendi', 'fendi', 'fendi'
+);
+SQL
+
+BF=$(run_sql -c "select public.agh_backfill_batch_drafted_by()::text;")
+echo "backfill_result=${BF}"
+BF_OK=$(run_sql -c "select public.agh_backfill_batch_drafted_by() ->> 'ok';")
+assert_eq "backfill_ok" "${BF_OK}" "true"
+FILLED=$(run_sql -c "select drafted_by from public.agh_handoff_batches where id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1';")
+assert_eq "unambiguous_batch_drafted_by" "${FILLED}" "claude_playlist_discovery"
+MIXED_STILL_NULL=$(run_sql -c "select coalesce(drafted_by, 'NULL') from public.agh_handoff_batches where id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2';")
+assert_eq "mixed_batch_left_null" "${MIXED_STILL_NULL}" "NULL"
+FLAGGED=$(run_sql -c "select reason from public.agh_batch_attribution_reconciliation where batch_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2';")
+assert_eq "mixed_flagged_reason" "${FLAGGED}" "mixed_record_actors"
+STATE_PRESERVED=$(run_sql -c "select queue_state from public.agh_handoff_batches where id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1';")
+assert_eq "backfill_preserves_queue_state" "${STATE_PRESERVED}" "CLAUDE_BATCH_READY"
+
+# Persist RPC must write batch drafted_by on create (reuse seeded pl-inv targets pattern)
+PERSIST_ATTR_OK=$(run_sql -c "select public.agh_mcp_persist_playlist_inventory(
+  '11111111-1111-1111-1111-111111111111',
+  '22222222-2222-2222-2222-222222222222',
+  '{\"discovered_by\":\"claude_playlist_discovery\",\"discovered_by_label\":\"claude_playlist_discovery\",\"drafted_by\":\"claude_playlist_discovery\",\"drafted_by_label\":\"claude_playlist_discovery\"}'::jsonb,
+  '[{\"playlist_id\":\"pl-inv-2\",\"channel\":\"email\",\"idempotency_key\":\"11111111-1111-1111-1111-111111111111:pl-inv-2:email:22222222-2222-2222-2222-222222222222\",\"record_kind\":\"playlist_target\",\"queue_state\":\"CLAUDE_BATCH_READY\",\"packet\":{\"packet_kind\":\"email_outreach_draft\"},\"draft\":{\"track_name\":\"Test Track\",\"recipient\":\"b@test\",\"subject\":\"S\",\"body\":\"server pitch\",\"pitch_copy_source\":\"song_dna\",\"pitch_copy_hash\":\"h\",\"generated_by\":\"claude_playlist_discovery\",\"metadata\":{}}}]'::jsonb
+) ->> 'ok';")
+assert_eq "persist_attr_ok" "${PERSIST_ATTR_OK}" "true"
+PERSIST_BATCH=$(run_sql -c "select drafted_by from public.agh_handoff_batches where id = (
+  select batch_id from public.agh_handoff_records where playlist_target_id='pl-inv-2' and queue_state not in ('REJECTED_BY_GROK','IMPORTED_TO_AGH') limit 1
+);")
+assert_eq "persist_sets_batch_drafted_by" "${PERSIST_BATCH}" "claude_playlist_discovery"
+
 echo "==> PASS: daily-ops migrations applied + authoritative RPC assertions verified"

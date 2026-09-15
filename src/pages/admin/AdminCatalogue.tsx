@@ -41,6 +41,7 @@ import {
   type GenreStamp,
   type SampleFlag,
 } from "@/lib/syncRegisters";
+import TrackSyncEligibilityPanel from "@/components/admin/TrackSyncEligibilityPanel";
 
 type Category = { id: string; slug: string; label: string; family: string };
 type TrackRow = {
@@ -62,6 +63,18 @@ type TrackRow = {
   genre_stamp?: GenreStamp | string | null;
   has_sample?: SampleFlag | string | null;
   sync_eligible?: boolean | null;
+  sync_eligible_blockers?: string[] | null;
+  sync_eligible_computed_at?: string | null;
+  sync_approved_at?: string | null;
+  sync_approved_by?: string | null;
+  sample_declaration_approved_at?: string | null;
+  sample_declaration_approved_by?: string | null;
+  assets_ready?: boolean | null;
+  publishing_ready?: boolean | null;
+  splits_ready?: boolean | null;
+  splits_ready_source?: string | null;
+  unresolved_rights_exception?: boolean | null;
+  outreach_eligibility?: string | null;
   is_month1_sync_default?: boolean | null;
   track_categories?: { category_id: string; categories: Category | null }[];
 };
@@ -208,8 +221,9 @@ const AdminCatalogue: React.FC = () => {
           </h1>
           <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
             Operator-only catalog: titles, optional ISRC, aggregator, genre stamp, and sample flag.
-            Sync-eligible is automatic (no sample only). A DistroKid miss is not unreleased — leave
-            aggregator OPEN when the distributor is unknown. Month-1 sync default is Meditate (Hip-Hop/Rap).
+            Sync eligibility is a per-song Fendi control on each track — playlist approval does not
+            grant it. A DistroKid miss is not unreleased; leave aggregator OPEN when the distributor
+            is unknown.
           </p>
         </div>
         <Button onClick={openNew}>
@@ -258,7 +272,11 @@ const AdminCatalogue: React.FC = () => {
                     {row.sync_eligible ? (
                       <Badge variant="default" className="text-[10px]">Eligible</Badge>
                     ) : (
-                      <Badge variant="outline" className="text-[10px]">No</Badge>
+                      <Badge variant="outline" className="text-[10px]">
+                        {(row.sync_eligible_blockers?.length ?? 0) > 0
+                          ? `${row.sync_eligible_blockers!.length} blocker${row.sync_eligible_blockers!.length === 1 ? "" : "s"}`
+                          : "No"}
+                      </Badge>
                     )}
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
@@ -329,11 +347,11 @@ const AdminCatalogue: React.FC = () => {
                 </SelectContent>
               </Select>
               <p className="text-[11px] text-muted-foreground mt-1">
-                Meditate is Hip-Hop/Rap only. House/electronic pool is Balenciaga (Let Me Freeze), Electrilla, Designed For Me (Control).
+                Stamp must match this track’s recorded identity / approved Song DNA — never a title special-case.
               </p>
             </div>
             <div>
-              <Label>Has sample</Label>
+              <Label>Has sample (catalogue flag)</Label>
               <Select value={form.has_sample ?? "unknown"} onValueChange={(v) => setForm({ ...form, has_sample: v })}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -342,15 +360,18 @@ const AdminCatalogue: React.FC = () => {
                   ))}
                 </SelectContent>
               </Select>
-              <p className="text-[11px] text-muted-foreground mt-1">Sync-eligible only when this is “no sample”.</p>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Saving updates the catalogue flag. Confirm sample declaration in the Sync panel to stamp Fendi approval.
+              </p>
             </div>
             <label className="flex items-center gap-2 text-sm cursor-pointer">
               <Checkbox
                 checked={Boolean(form.is_month1_sync_default)}
                 onCheckedChange={(v) => setForm({ ...form, is_month1_sync_default: Boolean(v) })}
               />
-              Month-1 sync default (Meditate)
+              Month-1 sync research default (data flag — not a hardcoded title)
             </label>
+            <TrackSyncEligibilityPanel trackId={form.id} onChanged={() => void load()} />
             <div>
               <Label>Spotify URL</Label>
               <Input value={form.spotify_url ?? ""} onChange={(e) => setForm({ ...form, spotify_url: e.target.value })} />

@@ -22,8 +22,15 @@ import {
   type SongDnaApprovalState,
   type SongDnaVersion,
 } from "@/lib/songDna";
+import { dnaConflictsWithComputedEligibility } from "@/lib/syncEligibility";
+import TrackSyncEligibilityPanel from "@/components/admin/TrackSyncEligibilityPanel";
 
-type TrackOpt = { id: string; name: string };
+type TrackOpt = {
+  id: string;
+  name: string;
+  sync_eligible?: boolean | null;
+  sync_eligible_blockers?: string[] | null;
+};
 
 const emptyForm = {
   primary_genre: "",
@@ -226,9 +233,10 @@ const AdminSongDna: React.FC = () => {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Song DNA</h1>
         <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
-          Versioned music identity for campaign activation and sync readiness. Drafts never
+          Versioned music identity for campaign activation and playlist lanes. Drafts never
           auto-approve — only your signed-in admin identity can approve. Do not invent genre,
-          sample, or license facts.
+          sample, or license facts. DNA <code>sync_recommendation</code> is advisory here;
+          per-song sync eligibility is a separate Fendi control on the song register.
         </p>
         <p className="text-xs text-muted-foreground mt-2">
           <Link to="/admin/discovery-profiles" className="underline">
@@ -351,6 +359,24 @@ const AdminSongDna: React.FC = () => {
                 <SelectItem value="rejected">rejected</SelectItem>
               </SelectContent>
             </Select>
+            {formTrackId && (() => {
+              const t = tracks.find((x) => x.id === formTrackId);
+              const conflict = t
+                ? dnaConflictsWithComputedEligibility(form.sync_recommendation, t.sync_eligible === true)
+                : false;
+              return conflict ? (
+                <p className="text-[11px] text-destructive" data-testid="dna-sync-conflict">
+                  DNA recommendation is {form.sync_recommendation}; track{" "}
+                  <code>sync_eligible</code> is {t?.sync_eligible ? "true" : "false"}. Both are
+                  shown — this form does not overwrite the track gate.
+                </p>
+              ) : (
+                <p className="text-[11px] text-muted-foreground">
+                  Track stored sync_eligible: {t?.sync_eligible ? "true" : "false"}. Approving DNA
+                  lanes does not approve sync.
+                </p>
+              );
+            })()}
           </div>
           <div className="space-y-1.5 md:col-span-2">
             <Label>Song-specific short pitch ({"{{pitch}}"} only)</Label>
@@ -400,6 +426,9 @@ const AdminSongDna: React.FC = () => {
             </Button>
           )}
         </div>
+        {formTrackId ? (
+          <TrackSyncEligibilityPanel trackId={formTrackId} onChanged={() => void load()} />
+        ) : null}
       </Card>
 
       <div className="space-y-3">

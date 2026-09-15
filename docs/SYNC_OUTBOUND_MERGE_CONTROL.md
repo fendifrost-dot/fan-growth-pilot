@@ -173,8 +173,42 @@ Human-only, via Lovable — not `supabase functions deploy`:
 
 ---
 
+## Traffic now
+
+| PR | Role | Audit | Merge |
+|----|------|-------|-------|
+| [#32](https://github.com/fendifrost-dot/fan-growth-pilot/pull/32) | Mapper — path map + wiring tests + `.env.example` comments | **Pass.** Docs/tests only. No sender edits, no secrets, no live send. CI green. | **Merge first** (small sequential #1). |
+| Implementer | Sync business-domain From + logging | **Not filed yet.** | Merge second, after rebase onto `main` that includes #32. Update #32 gap-lock tests when adding `licensing_pitch_log` / Admin submit / `SYNC_FROM_EMAIL`. |
+| [#31](https://github.com/fendifrost-dot/fan-growth-pilot/pull/31) (this) | Controller | Living checklist | Merge last, or close if #32 lands and implementer is greenlit elsewhere. |
+
+**Still parked:** #24 / #13 / #12 / #8. A new playlist `drafted_by` agent is also out of this lane.
+
+### #32 review notes (2026-09-15)
+
+Passed checklist items that apply to a map PR:
+
+- No secrets in tree (secret **names** only; actor tests use dummy header values)
+- No Gmail From; `.env.example` now says From is never Gmail, Reply-To may be Gmail
+- No song-title send hardcoding
+- Playlist senders untouched (`execute-pitch`, `resend-pitch.ts`, `playlist-agent-run`)
+- No caller From spoofing introduced
+- Correctly documents missing `licensing_pitch_log` on Hub submit
+- No live Resend in tests
+
+**Implementer must treat these #32 tests as gap-locks, not forever-contracts:**
+
+- `submit must not yet write licensing_pitch_log`
+- Admin licensing UI must not contain `submit_sync_outreach`
+- `resend-webhook` must not mention `licensing_pitch_log` / `sync_research_pitch_drafts`
+- `provider-transport` must still default `FROM_EMAIL` → `pitches@` (keep that default; add optional `from` / `SYNC_FROM_EMAIL` for sync only)
+
+Mapper recommends keeping From as `pitches@` now and wiring `SYNC_FROM_EMAIL` later. The implementer mandate is business-domain outbound **now** — that is sequential, not a conflict. Prefer a dedicated env (`SYNC_FROM_EMAIL=sync@fendifrost.com` or Fendi-chosen local-part) without changing playlist `FROM_EMAIL`.
+
+---
+
 ## Status log
 
 | When | State |
 |------|--------|
 | 2026-09-15 audit start | `main` = `770b7c1`. No mapper/implementer PR yet. Baseline gaps documented. Lane PRs #8/#12/#13/#24 parked. |
+| 2026-09-15 mapper landed | [#32](https://github.com/fendifrost-dot/fan-growth-pilot/pull/32) reviewed. **Merge-first approved.** Implementer still running; cannot greenlight send code yet. |

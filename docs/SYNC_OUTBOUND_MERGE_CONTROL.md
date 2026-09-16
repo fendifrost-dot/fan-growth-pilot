@@ -26,9 +26,7 @@ Prefer **small sequential merges**. Do not land a mega-PR that rewrites playlist
 
 1. **Mapper PR (docs-only)** — merge first if it is accurate and does not edit senders.  
    If the mapper also changes code, treat that code as **out of order**: park it or fold only the facts into this file.
-2. **Implementer PR (steered scope only)** — merge second, after this checklist is green.  
-   Rebase onto `main` after #32 (or include the #32 gap-test updates if #32 is still open).  
-   Steered scope: **Submit via Hub UI** on existing `submit_sync_outreach`; write `licensing_pitch_log` + `resend_message_id`; **optional** `SYNC_FROM_EMAIL`; **no** playlist From changes; **no** Gmail From.
+2. **[#34](https://github.com/fendifrost-dot/fan-growth-pilot/pull/34) implementer (`eed709c`)** — **greenlight.** Merge second. Rebase onto #32; on the two colliding files (`.env.example`, `sync-playlist-outbound-gap.test.ts`) **keep #34**. #32's unique file is the map doc.
 3. **Coordinator reconcile PR** — only if mapper + implementer collide on the same files.  
    Resolve conflicts here; do not force-push either sibling branch.
 4. **Lovable apply (human)** — after merge: paste any new migration in Lovable SQL Editor; redeploy **only** the functions the implementer names. Do not redeploy playlist senders unless their diff is empty.
@@ -182,10 +180,10 @@ Human-only, via Lovable — not `supabase functions deploy`:
 
 | PR | Role | Audit | Merge |
 |----|------|-------|-------|
-| [#32](https://github.com/fendifrost-dot/fan-growth-pilot/pull/32) | Mapper | **Pass.** Open draft; CI green. | **Merge first.** |
-| [#34](https://github.com/fendifrost-dot/fan-growth-pilot/pull/34) | Implementer | **Required blockers closed.** CI green. | **Conditional greenlight** — merge second after rebase onto #32 + gap-lock flip. |
-| [#33](https://github.com/fendifrost-dot/fan-growth-pilot/pull/33) | Playlist `drafted_by` promote | Out of lane | **Do not merge into this sequence.** |
-| [#31](https://github.com/fendifrost-dot/fan-growth-pilot/pull/31) (this) | Controller | Living checklist | Merge last or close. |
+| [#32](https://github.com/fendifrost-dot/fan-growth-pilot/pull/32) | Mapper | **Pass.** Unique value: `docs/SYNC_VS_PLAYLIST_OUTBOUND_GAP.md`. | **Merge first.** On collide with #34, keep #32's **doc**; take #34's **test + `.env.example`**. |
+| [#34](https://github.com/fendifrost-dot/fan-growth-pilot/pull/34) `eed709c` | Implementer | **Greenlight.** All required boxes + optional `SYNC_FROM_EMAIL`. CI green. | **Merge second.** Rebase onto #32; keep this branch's gap tests. |
+| [#33](https://github.com/fendifrost-dot/fan-growth-pilot/pull/33) | Playlist `drafted_by` | Out of lane | Separate. |
+| [#31](https://github.com/fendifrost-dot/fan-growth-pilot/pull/31) (this) | Controller | Checklist | Close after #32+#34 land, or keep as traffic log. |
 
 **Still parked:** #24 / #13 / #12 / #8. A new playlist `drafted_by` agent is also out of this lane.
 
@@ -201,12 +199,7 @@ Passed checklist items that apply to a map PR:
 - Correctly documents missing `licensing_pitch_log` on Hub submit
 - No live Resend in tests
 
-**Implementer must treat these #32 tests as gap-locks, not forever-contracts:**
-
-- `submit must not yet write licensing_pitch_log`
-- Admin licensing UI must not contain `submit_sync_outreach`
-- `resend-webhook` must not mention `licensing_pitch_log` / `sync_research_pitch_drafts`
-- `provider-transport` must still default `FROM_EMAIL` → `pitches@` (keep that default; add optional `from` / `SYNC_FROM_EMAIL` for sync only)
+#34 `eed709c` now **owns the flipped** `sync-playlist-outbound-gap.test.ts`. After #32 merges, keep #34's copy of that file. Webhook remaining playlist-only is still an intentional Phase-4 gap.
 
 #32 From guidance (now the locked recommendation): short-term keep `pitches@` via `FROM_EMAIL`; preferred later `SYNC_FROM_EMAIL=sync@fendifrost.com`; never Gmail From. Principal steer matches: **optional** `SYNC_FROM_EMAIL`, required Hub Submit + licensing `resend_message_id`.
 
@@ -219,30 +212,23 @@ Passed checklist items that apply to a map PR:
 | 2026-09-15 audit start | `main` = `770b7c1`. No mapper/implementer PR yet. Baseline gaps documented. Lane PRs #8/#12/#13/#24 parked. |
 | 2026-09-15 mapper landed | [#32](https://github.com/fendifrost-dot/fan-growth-pilot/pull/32) reviewed. **Merge-first approved.** |
 | 2026-09-15 checklist lock | Checklist rewritten against #32 + steered implementer scope. **Implementer not greenlit** until Hub Submit + `licensing_pitch_log.resend_message_id` land without playlist/Gmail From changes. |
-| 2026-09-16 #34 review | Implementer PR reviewed. **Conditional greenlight.** #33 parked (playlist). |
+| 2026-09-16 #34 review | First #34 pass: **conditional** (alias + stale gap-locks). |
+| 2026-09-16 #34 `eed709c` | Re-audit. **Greenlight.** Alias removed; UI calls `submit_sync_outreach`; gap tests flipped; `SYNC_FROM_EMAIL` env-only + Gmail rejected; `resend-pitch.ts` / `execute-pitch` identical to `main`. |
 
-### #34 review (2026-09-16) — conditional greenlight
-
-Required boxes:
+### #34 review — greenlight at `eed709c`
 
 | Box | Result |
 |-----|--------|
-| Submit via Hub on existing CCA send | **Pass.** `/admin/licensing` Dry-run + **Send via Hub**. Calls alias `execute_sync_pitch` → same `submitSyncOutreach` (not a new edge). |
-| `licensing_pitch_log` + `resend_message_id` | **Pass.** Additive migration + insert after provider accept. Dry-run writes no row. Failure path does not insert `sent`. |
-| No playlist From / `FROM_EMAIL` changes | **Pass.** `execute-pitch` / `send-pitch-email` untouched. `resend-pitch.ts` only adds `defaultSyncPitchSubject`. `provider-transport` now *reads* the same helpers (split-sheet From stays `pitches@` default). |
-| No Gmail From | **Pass.** Defaults remain `pitches@` / `replies@`. No caller `from`. |
+| Submit via Hub on `submit_sync_outreach` | **Pass.** Pending drafts, Approve/Reject, Dry-run, **Submit via Hub**. No `execute_sync_pitch`. No new edge. |
+| `licensing_pitch_log` + `resend_message_id` | **Pass.** Insert after provider accept. `dispatched_via=submit_sync_outreach`. |
+| Playlist From / `resend-pitch.ts` / `execute-pitch` | **Pass.** Diff vs `main` is empty for those files. |
+| Gmail From rejected | **Pass.** `providerFromHeader` drops `@gmail.com` / `@googlemail.com` to `pitches@`. Env-only; no caller From. |
+| Optional `SYNC_FROM_EMAIL` | **Pass.** `useSyncFrom` only on sync submit. Split-sheet / default transport stay on `FROM_EMAIL`. Playlist helpers ignore it. |
 
-Optional `SYNC_FROM_EMAIL`: **not wired.** Not a block.
+`eed709c` also carries flipped gap tests (closes the earlier rebase condition).
 
-**Must do before merging #34 (merge traffic, not a product miss):**
+**Merge collide (expected, small):** #32 and #34 both add `.env.example` comments and `sync-playlist-outbound-gap.test.ts`. Resolve by **keeping #34** (closed-gap assertions + wired `SYNC_FROM_EMAIL` comment). Keep #32's `docs/SYNC_VS_PLAYLIST_OUTBOUND_GAP.md`.
 
-1. Merge #32 first.
-2. Rebase #34 onto that `main`. Flip #32 gap-locks:
-   - submit now **does** write `licensing_pitch_log` (today the lock looks for `from("licensing_pitch_log")` in `sync-control.ts`; #34 writes via `sync-registers.ts`, so the stale test would stay green and lie)
-   - Admin UI now **does** Hub-submit (`execute_sync_pitch` / `submit_sync_outreach`)
-   - keep provider-transport default From = `FROM_EMAIL` → `pitches@`
-3. Do not fold #33 / #24 / #13 / #12 / #8.
+**Residual (do not block):** log insert failure after live send still returns 200 with `licensing_pitch_log: null`. First **Submit via Hub** in prod is a real Resend send — Dry-run first.
 
-**Residual (do not block):** log insert failure after a live send returns 200 with `licensing_pitch_log: null` (console.error only). Idempotent replay of *old* submitted drafts may insert a log with weak contact fields. Alias name vs steered `submit_sync_outreach` string — same function, fine.
-
-**Redeploy after #34:** Lovable SQL Editor paste `20260916000000_licensing_pitch_log_hub_send.sql`; redeploy `control-center-api` + publish frontend. Do **not** redeploy `execute-pitch` / `send-pitch-email`. No live send in CI; first live click on Send via Hub is a real Resend send (`test_mode: false`).
+**Redeploy after #34:** Lovable SQL Editor paste `20260916000000_licensing_pitch_log_hub_send.sql`; set optional `SYNC_FROM_EMAIL` only if the mailbox exists; redeploy `control-center-api` + publish frontend. Do **not** redeploy `execute-pitch`.

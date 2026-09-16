@@ -20,6 +20,12 @@ import {
 import { rejectCallerSyncIdentity } from "./sync-research-config.ts";
 import { resolveCurrentApprovedDna } from "./track-dna-envelope.ts";
 import { outreachIdempotencyKey, sendProviderEmail } from "./provider-transport.ts";
+import {
+  defaultSyncPitchSubject,
+  htmlToPlainText,
+  pitchFromHeader,
+} from "./resend-pitch.ts";
+import { insertHubLicensingPitchLog } from "./sync-registers.ts";
 
 export type RunResult = { status: number; data: Record<string, unknown> };
 
@@ -28,6 +34,7 @@ export const SYNC_CONTROL_ACTIONS = [
   "approve_sync_outreach",
   "reject_sync_outreach",
   "submit_sync_outreach",
+  "execute_sync_pitch",
   "record_manual_sync_outreach_submission",
   "track_sync_responses",
   "escalate_sync_to_fendi",
@@ -36,6 +43,52 @@ export const SYNC_CONTROL_ACTIONS = [
 
 export function isSyncControlAction(action: string): boolean {
   return (SYNC_CONTROL_ACTIONS as readonly string[]).includes(action);
+}
+
+async function ensureLicensingPitchLogForHubSend(
+  sb: SupabaseClient,
+  args: {
+    draft: Record<string, unknown>;
+    trackName: string;
+    contactName: string;
+    contactEmail: string | null;
+    company: string | null;
+    supervisorId?: string | null;
+    subject: string;
+    emailBody: string;
+    fromAddress: string;
+    messageId: string;
+    sentBy: string;
+    sentByLabel: string;
+    sentAt: string;
+  },
+): Promise<Record<string, unknown> | null> {
+  const logged = await insertHubLicensingPitchLog(sb, {
+    supervisor_id: args.supervisorId ?? null,
+    contact_name: args.contactName,
+    contact_email: args.contactEmail,
+    company: args.company,
+    track_id: args.draft.track_id ? String(args.draft.track_id) : null,
+    track_name: args.trackName || "track",
+    pitched_at: args.sentAt,
+    approved_by: args.draft.approved_by ? String(args.draft.approved_by) : null,
+    approved_by_label: args.draft.approved_by_label ? String(args.draft.approved_by_label) : null,
+    approved_at: args.draft.approved_at ? String(args.draft.approved_at) : null,
+    sent_by: args.sentBy,
+    sent_by_label: args.sentByLabel,
+    sent_at: args.sentAt,
+    resend_message_id: args.messageId,
+    draft_id: String(args.draft.id),
+    subject: args.subject,
+    email_body: args.emailBody,
+    from_address: args.fromAddress,
+    dispatched_via: "hub_resend",
+  });
+  if (!logged.ok) {
+    console.error("licensing_pitch_log insert failed:", logged.error);
+    return null;
+  }
+  return logged.row;
 }
 
 async function requireCap(ops: OpsActor, cap: Parameters<typeof can>[1]): Promise<RunResult | null> {
@@ -316,6 +369,8 @@ export async function submitSyncOutreach(
   const clean = stripSpoofedAttribution(body);
   const draftId = String(clean.draft_id ?? clean.id ?? "").trim();
   if (!draftId) return { status: 400, data: { error: "draft_id required" } };
+  const dryRun = Boolean(clean.dry_run);
+  const testMode = Boolean(clean.test_mode);
 
   const channel = String(clean.submission_channel ?? "email").trim();
   if (channel !== "email" && channel !== "web_form") {
@@ -343,6 +398,26 @@ export async function submitSyncOutreach(
   if (error) return { status: 500, data: { error: error.message } };
   if (!draft) return { status: 404, data: { error: "draft not found" } };
   if (draft.status === "submitted" && draft.submission_message_id) {
+    const replayFrom = pitchFromHeader();
+    const { data: replayTrack } = await sb
+      .from("tracks")
+      .select("id, name")
+      .eq("id", draft.track_id)
+      .maybeSingle();
+    const replayLog = await ensureLicensingPitchLogForHubSend(sb, {
+      draft: draft as Record<string, unknown>,
+      trackName: String(replayTrack?.name ?? "").trim(),
+      contactName: String(draft.submitted_by_label ?? "sync contact"),
+      contactEmail: null,
+      company: null,
+      subject: String(draft.subject ?? "").trim() || defaultSyncPitchSubject(String(replayTrack?.name ?? "")),
+      emailBody: htmlToPlainText(String(draft.body ?? "")),
+      fromAddress: replayFrom,
+      messageId: String(draft.submission_message_id),
+      sentBy: String(draft.submitted_by ?? "unknown"),
+      sentByLabel: String(draft.submitted_by_label ?? "unknown"),
+      sentAt: String(draft.submitted_at ?? new Date().toISOString()),
+    });
     return {
       status: 200,
       data: {
@@ -351,6 +426,8 @@ export async function submitSyncOutreach(
         submitted: true,
         idempotent_replay: true,
         provider_message_id: draft.submission_message_id,
+        from_address: replayFrom,
+        licensing_pitch_log: replayLog,
       },
     };
   }
@@ -414,12 +491,18 @@ export async function submitSyncOutreach(
   const now = new Date().toISOString();
   const idempotencyKey = String(draft.send_idempotency_key || "").trim() ||
     outreachIdempotencyKey({ kind: "sync-outreach", id: String(draft.id), channel });
-
-  await sb.from("sync_research_pitch_drafts").update({
-    send_idempotency_key: idempotencyKey,
-    send_attempted_at: now,
-    updated_at: now,
-  }).eq("id", draftId);
+  const fromAddress = pitchFromHeader();
+  const { data: trackRow } = await sb
+    .from("tracks")
+    .select("id, name")
+    .eq("id", draft.track_id)
+    .maybeSingle();
+  const trackName = String(trackRow?.name ?? "").trim();
+  const companyName = String(target?.company_name ?? "").trim();
+  const subject = String(draft.subject ?? "").trim() ||
+    defaultSyncPitchSubject(trackName, companyName);
+  const bodyText = htmlToPlainText(String(draft.body ?? ""));
+  const recipientPreview = String(target?.verified_contact_path ?? "").trim();
 
   const binding = {
     track_id: draft.track_id,
@@ -434,6 +517,32 @@ export async function submitSyncOutreach(
       blockers: decision.blockers,
     },
   };
+
+  if (dryRun) {
+    return {
+      status: 200,
+      data: {
+        ok: true,
+        dry_run: true,
+        submitted: false,
+        would_send: channel === "email" && recipientPreview.includes("@"),
+        from_address: fromAddress,
+        to: channel === "email" ? recipientPreview || null : null,
+        subject,
+        submission_channel: channel,
+        binding,
+        eligibility: decision,
+        contractual_commitment: false,
+        monetary_authority: false,
+      },
+    };
+  }
+
+  await sb.from("sync_research_pitch_drafts").update({
+    send_idempotency_key: idempotencyKey,
+    send_attempted_at: now,
+    updated_at: now,
+  }).eq("id", draftId);
 
   if (channel !== "email") {
     const { data: updated, error: uErr } = await sb
@@ -479,10 +588,11 @@ export async function submitSyncOutreach(
 
   const send = await sendProviderEmail({
     to: [recipient],
-    subject: String(draft.subject ?? "Sync outreach"),
-    text: String(draft.body ?? ""),
-    html: String(draft.body ?? ""),
+    subject,
+    text: bodyText,
+    html: String(draft.body ?? "").trim() || bodyText.replace(/\n/g, "<br>"),
     idempotencyKey,
+    forceTestMode: testMode,
   });
 
   if (!send.ok) {
@@ -553,6 +663,35 @@ export async function submitSyncOutreach(
       .eq("id", draft.batch_id);
   }
 
+  let supervisorId: string | null = null;
+  if (recipient) {
+    const { data: sup } = await sb
+      .from("music_supervisors")
+      .select("id")
+      .eq("email", recipient)
+      .maybeSingle();
+    if (sup?.id) supervisorId = String(sup.id);
+  }
+  const contactName =
+    String(target?.person_name ?? "").trim() ||
+    companyName ||
+    recipient;
+  const licensingLog = await ensureLicensingPitchLogForHubSend(sb, {
+    draft: (updated ?? draft) as Record<string, unknown>,
+    trackName,
+    contactName,
+    contactEmail: recipient,
+    company: companyName || null,
+    supervisorId,
+    subject,
+    emailBody: bodyText,
+    fromAddress,
+    messageId: send.id,
+    sentBy: attr.actor_kind,
+    sentByLabel: attr.actor_label,
+    sentAt: now,
+  });
+
   return {
     status: 200,
     data: {
@@ -562,6 +701,8 @@ export async function submitSyncOutreach(
       submitted_at: now,
       submission_channel: "email",
       provider_message_id: send.id,
+      from_address: fromAddress,
+      licensing_pitch_log: licensingLog,
       binding,
       contractual_commitment: false,
       monetary_authority: false,
@@ -731,6 +872,7 @@ export async function runSyncControlAction(
     case "reject_sync_outreach":
       return rejectSyncOutreach(sb, body, ops);
     case "submit_sync_outreach":
+    case "execute_sync_pitch":
       return submitSyncOutreach(sb, body, ops);
     case "record_manual_sync_outreach_submission":
       return recordManualSyncOutreachSubmission(sb, body, ops);

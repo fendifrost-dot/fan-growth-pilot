@@ -64,8 +64,14 @@ Changes:
 | Default subject: `Fendi Frost — {track} for {playlist}` (not `Submission:`) | `playlist-agent-run.ts`, `execute-pitch` |
 | Plain `text` + `html` on playlist sends | `execute-pitch`, `send-pitch-email` |
 | `FROM_EMAIL` default `pitches@fendifrost.com` everywhere | `execute-pitch` (was `submissions@` fallback) |
+| Sync/licensing Hub execute uses the same From helpers | `_shared/resend-pitch.ts`, `_shared/provider-transport.ts`, `submit_sync_outreach` / `execute_sync_pitch` via `control-center-api` |
 
-Redeploy: **`send-pitch-email`**, **`execute-pitch`** after pull.
+Redeploy via Lovable → Edge Functions (Cloud), **not** `supabase functions deploy`:
+
+- **`control-center-api`** (required for sync Hub send + licensing log)
+- **`send-pitch-email`**, **`execute-pitch`** only if those functions are being republished for other reasons — playlist DNA/send path is unchanged
+
+Also paste migration `supabase/migrations/20260916000000_licensing_pitch_log_hub_send.sql` into Lovable → SQL Editor.
 
 Edge secrets (optional):
 

@@ -100,6 +100,7 @@ function installPreviewFetch(): () => void {
       action === "list_categories" ? { rows: [] } :
       action === "list_music_supervisors" ? { rows: [] } :
       action === "list_licensing_pitches" ? { rows: [] } :
+      action === "list_sync_pending_drafts" ? { drafts: [] } :
       action === "get_sync_eligibility" ? {
         ok: true,
         track: SEED_TRACKS.find((t) => t.id === body.track_id) ?? SEED_TRACKS[0],

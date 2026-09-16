@@ -1,7 +1,10 @@
 /**
  * Provider email transport. Test mode never calls Resend.
  * Sent is only true after the provider accepts the payload.
+ * From / Reply-To come from the shared resend-pitch helpers (FROM_EMAIL / REPLY_TO_EMAIL).
  */
+import { pitchFromHeader, pitchReplyTo } from "./resend-pitch.ts";
+
 export type ProviderSendInput = {
   to: string[];
   subject: string;
@@ -9,13 +12,16 @@ export type ProviderSendInput = {
   html?: string;
   idempotencyKey?: string;
   attachments?: Array<{ filename: string; content: string; contentType?: string }>;
+  /** Per-request mock — never hits Resend, even when env test flags are unset. */
+  forceTestMode?: boolean;
 };
 
 export type ProviderSendResult =
   | { ok: true; id: string; raw: Record<string, unknown> }
   | { ok: false; status: number; error: string; retryable: boolean };
 
-export function isProviderTestMode(): boolean {
+export function isProviderTestMode(input?: { forceTestMode?: boolean }): boolean {
+  if (input?.forceTestMode) return true;
   const flag = (Deno.env.get("AGH_PROVIDER_TEST_MODE") || Deno.env.get("AGH_TEST_MODE") || "")
     .trim()
     .toLowerCase();
@@ -32,7 +38,7 @@ export function sanitizeProviderError(raw: string): string {
 export async function sendProviderEmail(
   input: ProviderSendInput,
 ): Promise<ProviderSendResult> {
-  if (isProviderTestMode()) {
+  if (isProviderTestMode(input)) {
     const forced = (Deno.env.get("AGH_PROVIDER_FORCE_FAILURE") || "").trim();
     if (forced) {
       return {
@@ -45,7 +51,11 @@ export async function sendProviderEmail(
     return {
       ok: true,
       id: `test_${input.idempotencyKey || "msg"}`,
-      raw: { test_mode: true, id: `test_${input.idempotencyKey || "msg"}` },
+      raw: {
+        test_mode: true,
+        id: `test_${input.idempotencyKey || "msg"}`,
+        from: pitchFromHeader(),
+      },
     };
   }
 
@@ -54,9 +64,8 @@ export async function sendProviderEmail(
     return { ok: false, status: 500, error: "RESEND_API_KEY not configured", retryable: false };
   }
 
-  const fromRaw = (Deno.env.get("FROM_EMAIL") || "pitches@fendifrost.com").trim();
-  const from = fromRaw.includes("<") ? fromRaw : `Fendi Frost <${fromRaw}>`;
-  const replyTo = (Deno.env.get("REPLY_TO_EMAIL") || "replies@fendifrost.com").trim();
+  const from = pitchFromHeader();
+  const replyTo = pitchReplyTo();
   const payload: Record<string, unknown> = {
     from,
     to: input.to,

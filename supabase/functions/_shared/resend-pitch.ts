@@ -38,6 +38,15 @@ export function defaultPlaylistPitchSubject(trackName: string, playlistName?: st
   return `Fendi Frost — ${track}`;
 }
 
+/** Sync/licensing subject when an approved draft has no subject. Track name is caller-supplied. */
+export function defaultSyncPitchSubject(trackName: string, companyName?: string): string {
+  const track = trackName.trim();
+  const company = (companyName ?? "").trim();
+  if (track && company) return `Fendi Frost — ${track} for ${company}`;
+  if (track) return `Fendi Frost — ${track} for licensing`;
+  return "Fendi Frost — licensing";
+}
+
 export function buildResendPitchPayload(opts: {
   to: string[];
   subject: string;

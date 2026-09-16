@@ -1,8 +1,17 @@
 # Sync professional-email outbound — merge traffic control
 
 **Controller:** Cursor agent `bc-1f487a2e-49af-57c4-962b-a168c1b14ad4`  
-**Canonical repo:** `fendifrost-dot/fan-growth-pilot` @ `main` (`770b7c1` at audit start)  
-**This document is an audit + merge-order package.** It does not implement sync send.
+**Canonical repo:** `fendifrost-dot/fan-growth-pilot`  
+**Lane status: COMPLETE on `main`.** Sequential merges landed without a reconcile PR.
+
+| Step | Merge | SHA |
+|------|-------|-----|
+| #32 map | 2026-09-16T05:18Z | `c95b3a7` |
+| #34 implement (greenlit `eed709c`, landed `86c6b84`) | 2026-09-16T05:19Z | `2febf56` |
+
+Collide resolution on `main` matches the order: map doc from #32; `.env.example` + flipped `sync-playlist-outbound-gap.test.ts` from #34.
+
+**Remaining (human / Lovable, not git):** paste `20260916000000_licensing_pitch_log_hub_send.sql`; optional `SYNC_FROM_EMAIL`; redeploy `control-center-api` + publish frontend. Do not redeploy `execute-pitch`. This controller PR can close.
 
 Do **not**: Lovable chat, live email sends, force-push `main`, or fold unrelated playlist/DNA PRs into this lane.
 
@@ -214,6 +223,7 @@ Passed checklist items that apply to a map PR:
 | 2026-09-15 checklist lock | Checklist rewritten against #32 + steered implementer scope. **Implementer not greenlit** until Hub Submit + `licensing_pitch_log.resend_message_id` land without playlist/Gmail From changes. |
 | 2026-09-16 #34 review | First #34 pass: **conditional** (alias + stale gap-locks). |
 | 2026-09-16 #34 `eed709c` | Re-audit. **Greenlight.** Alias removed; UI calls `submit_sync_outreach`; gap tests flipped; `SYNC_FROM_EMAIL` env-only + Gmail rejected; `resend-pitch.ts` / `execute-pitch` identical to `main`. |
+| 2026-09-16 landed | #32 then #34 on `main` (`c95b3a7` → `2febf56`). Collide files resolved as specified. #33 merged separately after (`ac521fa`) — out of this lane. **Git traffic done.** |
 
 ### #34 review — greenlight at `eed709c`
 

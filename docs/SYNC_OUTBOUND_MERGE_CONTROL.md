@@ -16,7 +16,7 @@ Do **not**: Lovable chat, live email sends, force-push `main`, or fold unrelated
 | **Implement** sync business-domain outbound | [Sync Resend business From send path](https://cursor.com/agents/bc-ee51a93c-2b39-52d1-9d65-37b4cbc1c702) | Isolated sync From + logging. Must not change playlist send. |
 | **Audit / merge traffic** (this branch) | [Audit + merge traffic sync send](https://cursor.com/agents/bc-1f487a2e-49af-57c4-962b-a168c1b14ad4) | Checklist, collision map, sequential merge order, greenlight or reconcile. |
 
-At audit start, mapper and implementer had **no branches and no PRs**. Re-check `gh pr list` and remote branches before merging anything.
+Mapper product is [#32](https://github.com/fendifrost-dot/fan-growth-pilot/pull/32) (`docs/SYNC_VS_PLAYLIST_OUTBOUND_GAP.md` + `sync-playlist-outbound-gap.test.ts`). That map is the path-of-record. Implementer must extend the existing CCA path, not invent `execute-sync-pitch`.
 
 ---
 
@@ -26,8 +26,9 @@ Prefer **small sequential merges**. Do not land a mega-PR that rewrites playlist
 
 1. **Mapper PR (docs-only)** — merge first if it is accurate and does not edit senders.  
    If the mapper also changes code, treat that code as **out of order**: park it or fold only the facts into this file.
-2. **Implementer PR (sync From + sync logging only)** — merge second, after this checklist is green.  
-   Rebase onto `main` after the mapper merge (or onto `main` directly if the mapper PR is comments-only).
+2. **Implementer PR (steered scope only)** — merge second, after this checklist is green.  
+   Rebase onto `main` after #32 (or include the #32 gap-test updates if #32 is still open).  
+   Steered scope: **Submit via Hub UI** on existing `submit_sync_outreach`; write `licensing_pitch_log` + `resend_message_id`; **optional** `SYNC_FROM_EMAIL`; **no** playlist From changes; **no** Gmail From.
 3. **Coordinator reconcile PR** — only if mapper + implementer collide on the same files.  
    Resolve conflicts here; do not force-push either sibling branch.
 4. **Lovable apply (human)** — after merge: paste any new migration in Lovable SQL Editor; redeploy **only** the functions the implementer names. Do not redeploy playlist senders unless their diff is empty.
@@ -56,12 +57,18 @@ Prefer **small sequential merges**. Do not land a mega-PR that rewrites playlist
 
 Shared env `FROM_EMAIL` is the primary collision. Changing its default or meaning to “business domain” would retarget **playlist + split-sheet** From headers.
 
-### Confirmed gaps (implementer must close — or document why not)
+### Baseline blockers (greenlight only when all four are closed)
 
-1. **Sync From is playlist From.** `sendProviderEmail` has no `from` argument and no `SYNC_FROM_EMAIL` / business-domain secret. Sync supervisors currently receive mail as `Fendi Frost <pitches@fendifrost.com>`.
-2. **`licensing_pitch_log` is manual-only.** `log_licensing_pitch` in `sync-registers.ts` inserts operator-entered rows. `submit_sync_outreach` never writes the table. Schema has no `resend_message_id`, `from_email`, `draft_id`, or `dispatched_via`.
-3. **Gmail still hardcoded on playlist test path.** `execute-pitch` defaults `test_email` to `fendifrost@gmail.com`. Must not become a sync From. Docs (`FENDIFROST_RESEND_DNS_DELIVERABILITY.md`) still describe Gmail Reply-To; code default Reply-To is `replies@fendifrost.com`.
-4. **Caller From spoofing is currently blocked** (good). Transport builds From from env only. Implementer must keep it that way — no `body.from` / `body.from_email`.
+Confirmed by #32 and the original `main` audit. Implementer **must** close these:
+
+1. **No Hub Submit door.** `/admin/licensing` only records via `log_licensing_pitch`. Claude MCP cannot submit. Grok/Fendi can call CCA `submit_sync_outreach`, but there is no operator **Submit via Hub** button. That is why recent sync mail left from Gmail (side-channel compose), not because Resend is missing.
+2. **`licensing_pitch_log` is record-only.** `submit_sync_outreach` never writes it. Schema has no `resend_message_id`. A register row with `status=sent` can hide a Gmail compose.
+3. **Playlist From must stay untouched.** Shared `FROM_EMAIL` default `pitches@fendifrost.com` is the warmed playlist identity. Do not retarget it for sync.
+4. **Gmail must never be From.** Reply-To may be Gmail / `replies@`. `execute-pitch` `test_email` defaulting to `fendifrost@gmail.com` is playlist-only and must not be copied onto sync From.
+
+**Not a merge blocker (optional, preferred):** `SYNC_FROM_EMAIL` (e.g. `sync@fendifrost.com`) used only by `submitSyncOutreach`, falling back to `FROM_EMAIL`. Short-term From of `pitches@` is already a business domain — #32 says keep it until the mailbox exists. Dedicated local-part is reputation isolation, not the professional-From requirement.
+
+**Keep (already true on `main`):** caller From spoofing is impossible (env-only). Do not add `body.from`.
 
 ### Song-title hardcoding (do not regress)
 
@@ -71,14 +78,19 @@ Production send/routing must stay ID-driven (`ops_settings.sync_research_config`
 
 ## Collision surfaces (watch these files)
 
-**Implementer may touch (narrow):**
+**Implementer may touch (steered, narrow):**
 
-- `supabase/functions/_shared/provider-transport.ts` — only if From becomes an **optional argument** with playlist/split-sheet defaults unchanged
-- `supabase/functions/_shared/sync-control.ts` — pass business From; write `licensing_pitch_log`
-- `supabase/functions/_shared/sync-registers.ts` — only if logging helpers are shared
-- New helper e.g. `_shared/sync-resend.ts` (preferred over editing `resend-pitch.ts`)
-- `supabase/migrations/*` — additive columns on `licensing_pitch_log`
+- `src/pages/admin/AdminLicensing.tsx` (or new `AdminSyncOutreach.tsx`) — pending drafts + **Submit via Hub** → `callHubFn("submit_sync_outreach")` (and list/approve actions already on CCA)
+- `src/lib/hubApi.ts` — only if a typed wrapper is required
+- `supabase/functions/_shared/sync-control.ts` — after provider accept, write `licensing_pitch_log` with `resend_message_id`
+- `supabase/functions/_shared/sync-registers.ts` — do not default external `log_licensing_pitch` to `sent` without evidence (Phase 3 in #32)
+- `supabase/functions/_shared/provider-transport.ts` — optional `from` argument or `SYNC_FROM_EMAIL` read **only** from `submitSyncOutreach`; default From/Reply-To for other callers unchanged
+- `supabase/migrations/*` — additive `resend_message_id` (+ subject/body/draft_id/dispatched_via if following #32 Phase 3)
+- `src/integrations/supabase/types.ts` — generated column types
+- `supabase/functions/_shared/sync-playlist-outbound-gap.test.ts` — **must update** #32 gap-locks when gaps close
 - Tests next to those modules
+
+**Out of steered scope (do not require for greenlight):** new `execute-sync-pitch` edge, Grok MCP submit tools, `resend-webhook` sync bounce matching (nice follow-up).
 
 **Mapper may touch (docs only preferred):**
 
@@ -100,63 +112,56 @@ Production send/routing must stay ID-driven (`ops_settings.sync_research_config`
 
 ---
 
-## Audit checklist (implementer PR)
+## Audit checklist (implementer PR) — locked to #32 + steered scope
 
-Reviewer fills this on the implementer PR before greenlight.
+Reviewer fills this on the implementer PR. **Greenlight only when every required box is checked.**
 
-### Secrets / leakage
+### Required — Submit via Hub (closes Gmail side-channel)
 
-- [ ] No API keys, service-role material, or webhook secrets in the diff
-- [ ] Provider errors stay sanitized (`sanitizeProviderError` or equivalent)
-- [ ] Tests do not log full Resend payloads with Authorization headers
+- [ ] Admin UI lists pending sync drafts and has **Submit via Hub**
+- [ ] That button calls existing CCA `submit_sync_outreach` (via `callHubFn`), not a new edge, not Resend from the browser
+- [ ] Claude MCP still cannot submit
+- [ ] Record-only `log_licensing_pitch` remains available for true external mail and does **not** call Resend
 
-### From / domain / spoofing
+### Required — `licensing_pitch_log` + `resend_message_id`
 
-- [ ] Sync From is a **verified `@fendifrost.com` business mailbox** (or env with that default), not Gmail
-- [ ] Sync From is **not** `pitches@fendifrost.com` unless Fendi explicitly reused that mailbox
-- [ ] Playlist path still defaults `FROM_EMAIL` → `pitches@fendifrost.com`
-- [ ] Split-sheet delivery From unchanged unless a dedicated secret is documented
+- [ ] Additive migration adds `resend_message_id` (and #32 Phase 3 extras if present)
+- [ ] After provider **accept**, `submitSyncOutreach` inserts/upserts `licensing_pitch_log` with that id (`test_…` in test mode)
+- [ ] Failed send does **not** insert a `sent` licensing row
+- [ ] Draft row still gets `submission_message_id` (existing contract)
+- [ ] #32 gap-lock `submit must not yet write licensing_pitch_log` is updated, not deleted without replacement
+
+### Required — From identity
+
+- [ ] **No Gmail From** in code defaults, UI, or tests that set production From
+- [ ] **No playlist From changes:** `execute-pitch` / `send-pitch-email` / `resend-pitch.ts` / `FROM_EMAIL` default `pitches@fendifrost.com` unchanged
+- [ ] Split-sheet callers of `sendProviderEmail` still get the existing default unless they opt in
 - [ ] No caller-supplied `from` / `from_email` / display-name override
-- [ ] Reply-To is on-domain (or existing `REPLY_TO_EMAIL`); not hardcoded `fendifrost@gmail.com` as From
+- [ ] If `SYNC_FROM_EMAIL` is wired: optional; used only on sync submit; fallback is `FROM_EMAIL` / `pitches@`; never Gmail
 
-### Song identity
+### Required — safety / scope
 
-- [ ] No production `if (title === "Meditate")` (or DFM) send/From/logging branch
-- [ ] Track identity from `track_id` / approved draft / eligibility decision
+- [ ] No API keys or service-role material in the diff
+- [ ] Provider errors stay sanitized
+- [ ] `submit_sync_outreach` still Grok/Fendi-only; eligibility still runs before Resend
+- [ ] `AGH_PROVIDER_TEST_MODE` still skips live Resend; no live send in CI
+- [ ] No song-title send/From/logging branch
+- [ ] No Song DNA, playlist discovery, campaign, or #24 attribution rewrite
 
-### Playlist send integrity
+### Optional (do not block merge)
 
-- [ ] `execute-pitch` / `send-pitch-email` / `resend-pitch.ts` / `playlist-agent-run` diff empty or comment-only
-- [ ] Playlist `pitch_log` shape and draft-bind gates unchanged
-- [ ] No shared helper change that alters playlist subject/From/Reply-To/HTML
-
-### Logging
-
-- [ ] Successful sync email writes `licensing_pitch_log` (or a documented equivalent operator table)
-- [ ] Provider message id stored (new column or existing draft `submission_message_id` **and** operator log)
-- [ ] From address recorded or reconstructible from env name + deploy note
-- [ ] Failed send does not insert a `sent` licensing row
-- [ ] Manual `log_licensing_pitch` still works
-
-### Auth / send safety
-
-- [ ] `submit_sync_outreach` still capability-gated (Grok/Fendi; Claude denied)
-- [ ] Eligibility gate still runs before Resend
-- [ ] Test mode / `AGH_PROVIDER_TEST_MODE` still skips live Resend
-- [ ] No live send in CI
-
-### Scope
-
-- [ ] No Song DNA, playlist discovery, or campaign rewrite
-- [ ] Migration is additive (Lovable SQL Editor paste; not CLI apply)
+- [ ] `SYNC_FROM_EMAIL` default documented as `sync@` once the mailbox exists (ops: Resend identity + Cloudflare routing)
+- [ ] `resend-webhook` matches licensing / sync message ids
+- [ ] Dedicated `execute-sync-pitch` edge — **not requested**; reject if it reimplements send
+- [ ] Grok MCP submit tools
 
 ---
 
 ## Greenlight rule
 
-**Greenlight** the implementer PR only when every box above is checked or explicitly waived in a review comment with reason.
+**Greenlight** the implementer PR only when every **required** box above is checked or explicitly waived in a review comment with reason.
 
-**Block** (do not merge) if any of: secrets in tree, Gmail From, title-hardcoded send, playlist sender behavior change, caller From spoof, successful send without durable log, live send in tests.
+**Block** (do not merge) if any of: no Submit via Hub on `submit_sync_outreach`, successful Hub send without `licensing_pitch_log.resend_message_id`, Gmail From, playlist From/`FROM_EMAIL` change, caller From spoof, secrets in tree, title-hardcoded send, live send in tests. Missing optional `SYNC_FROM_EMAIL` is **not** a block if From stays `@fendifrost.com` via `FROM_EMAIL`.
 
 **Reconcile** on this controller branch if both siblings edit the same send helper. Sequential rebase: mapper facts → implementer code → this checklist update.
 
@@ -177,9 +182,9 @@ Human-only, via Lovable — not `supabase functions deploy`:
 
 | PR | Role | Audit | Merge |
 |----|------|-------|-------|
-| [#32](https://github.com/fendifrost-dot/fan-growth-pilot/pull/32) | Mapper — path map + wiring tests + `.env.example` comments | **Pass.** Docs/tests only. No sender edits, no secrets, no live send. CI green. | **Merge first** (small sequential #1). |
-| Implementer | Sync business-domain From + logging | **Not filed yet.** | Merge second, after rebase onto `main` that includes #32. Update #32 gap-lock tests when adding `licensing_pitch_log` / Admin submit / `SYNC_FROM_EMAIL`. |
-| [#31](https://github.com/fendifrost-dot/fan-growth-pilot/pull/31) (this) | Controller | Living checklist | Merge last, or close if #32 lands and implementer is greenlit elsewhere. |
+| [#32](https://github.com/fendifrost-dot/fan-growth-pilot/pull/32) | Mapper — `SYNC_VS_PLAYLIST_OUTBOUND_GAP.md` + wiring tests | **Pass.** Still open draft; CI green. Path-of-record. | **Merge first.** |
+| Implementer | Submit via Hub + licensing log + optional `SYNC_FROM_EMAIL` | **Not filed.** Steered to that exact scope. | Merge second. **Not greenlit.** |
+| [#31](https://github.com/fendifrost-dot/fan-growth-pilot/pull/31) (this) | Controller | Checklist now locked to #32 + steered scope | Merge last, or close if no reconcile. |
 
 **Still parked:** #24 / #13 / #12 / #8. A new playlist `drafted_by` agent is also out of this lane.
 
@@ -202,7 +207,7 @@ Passed checklist items that apply to a map PR:
 - `resend-webhook` must not mention `licensing_pitch_log` / `sync_research_pitch_drafts`
 - `provider-transport` must still default `FROM_EMAIL` → `pitches@` (keep that default; add optional `from` / `SYNC_FROM_EMAIL` for sync only)
 
-Mapper recommends keeping From as `pitches@` now and wiring `SYNC_FROM_EMAIL` later. The implementer mandate is business-domain outbound **now** — that is sequential, not a conflict. Prefer a dedicated env (`SYNC_FROM_EMAIL=sync@fendifrost.com` or Fendi-chosen local-part) without changing playlist `FROM_EMAIL`.
+#32 From guidance (now the locked recommendation): short-term keep `pitches@` via `FROM_EMAIL`; preferred later `SYNC_FROM_EMAIL=sync@fendifrost.com`; never Gmail From. Principal steer matches: **optional** `SYNC_FROM_EMAIL`, required Hub Submit + licensing `resend_message_id`.
 
 ---
 
@@ -211,4 +216,5 @@ Mapper recommends keeping From as `pitches@` now and wiring `SYNC_FROM_EMAIL` la
 | When | State |
 |------|--------|
 | 2026-09-15 audit start | `main` = `770b7c1`. No mapper/implementer PR yet. Baseline gaps documented. Lane PRs #8/#12/#13/#24 parked. |
-| 2026-09-15 mapper landed | [#32](https://github.com/fendifrost-dot/fan-growth-pilot/pull/32) reviewed. **Merge-first approved.** Implementer still running; cannot greenlight send code yet. |
+| 2026-09-15 mapper landed | [#32](https://github.com/fendifrost-dot/fan-growth-pilot/pull/32) reviewed. **Merge-first approved.** |
+| 2026-09-15 checklist lock | Checklist rewritten against #32 + steered implementer scope. **Implementer not greenlit** until Hub Submit + `licensing_pitch_log.resend_message_id` land without playlist/Gmail From changes. |

@@ -182,9 +182,10 @@ Human-only, via Lovable — not `supabase functions deploy`:
 
 | PR | Role | Audit | Merge |
 |----|------|-------|-------|
-| [#32](https://github.com/fendifrost-dot/fan-growth-pilot/pull/32) | Mapper — `SYNC_VS_PLAYLIST_OUTBOUND_GAP.md` + wiring tests | **Pass.** Still open draft; CI green. Path-of-record. | **Merge first.** |
-| Implementer | Submit via Hub + licensing log + optional `SYNC_FROM_EMAIL` | **Not filed.** Steered to that exact scope. | Merge second. **Not greenlit.** |
-| [#31](https://github.com/fendifrost-dot/fan-growth-pilot/pull/31) (this) | Controller | Checklist now locked to #32 + steered scope | Merge last, or close if no reconcile. |
+| [#32](https://github.com/fendifrost-dot/fan-growth-pilot/pull/32) | Mapper | **Pass.** Open draft; CI green. | **Merge first.** |
+| [#34](https://github.com/fendifrost-dot/fan-growth-pilot/pull/34) | Implementer | **Required blockers closed.** CI green. | **Conditional greenlight** — merge second after rebase onto #32 + gap-lock flip. |
+| [#33](https://github.com/fendifrost-dot/fan-growth-pilot/pull/33) | Playlist `drafted_by` promote | Out of lane | **Do not merge into this sequence.** |
+| [#31](https://github.com/fendifrost-dot/fan-growth-pilot/pull/31) (this) | Controller | Living checklist | Merge last or close. |
 
 **Still parked:** #24 / #13 / #12 / #8. A new playlist `drafted_by` agent is also out of this lane.
 
@@ -218,3 +219,30 @@ Passed checklist items that apply to a map PR:
 | 2026-09-15 audit start | `main` = `770b7c1`. No mapper/implementer PR yet. Baseline gaps documented. Lane PRs #8/#12/#13/#24 parked. |
 | 2026-09-15 mapper landed | [#32](https://github.com/fendifrost-dot/fan-growth-pilot/pull/32) reviewed. **Merge-first approved.** |
 | 2026-09-15 checklist lock | Checklist rewritten against #32 + steered implementer scope. **Implementer not greenlit** until Hub Submit + `licensing_pitch_log.resend_message_id` land without playlist/Gmail From changes. |
+| 2026-09-16 #34 review | Implementer PR reviewed. **Conditional greenlight.** #33 parked (playlist). |
+
+### #34 review (2026-09-16) — conditional greenlight
+
+Required boxes:
+
+| Box | Result |
+|-----|--------|
+| Submit via Hub on existing CCA send | **Pass.** `/admin/licensing` Dry-run + **Send via Hub**. Calls alias `execute_sync_pitch` → same `submitSyncOutreach` (not a new edge). |
+| `licensing_pitch_log` + `resend_message_id` | **Pass.** Additive migration + insert after provider accept. Dry-run writes no row. Failure path does not insert `sent`. |
+| No playlist From / `FROM_EMAIL` changes | **Pass.** `execute-pitch` / `send-pitch-email` untouched. `resend-pitch.ts` only adds `defaultSyncPitchSubject`. `provider-transport` now *reads* the same helpers (split-sheet From stays `pitches@` default). |
+| No Gmail From | **Pass.** Defaults remain `pitches@` / `replies@`. No caller `from`. |
+
+Optional `SYNC_FROM_EMAIL`: **not wired.** Not a block.
+
+**Must do before merging #34 (merge traffic, not a product miss):**
+
+1. Merge #32 first.
+2. Rebase #34 onto that `main`. Flip #32 gap-locks:
+   - submit now **does** write `licensing_pitch_log` (today the lock looks for `from("licensing_pitch_log")` in `sync-control.ts`; #34 writes via `sync-registers.ts`, so the stale test would stay green and lie)
+   - Admin UI now **does** Hub-submit (`execute_sync_pitch` / `submit_sync_outreach`)
+   - keep provider-transport default From = `FROM_EMAIL` → `pitches@`
+3. Do not fold #33 / #24 / #13 / #12 / #8.
+
+**Residual (do not block):** log insert failure after a live send returns 200 with `licensing_pitch_log: null` (console.error only). Idempotent replay of *old* submitted drafts may insert a log with weak contact fields. Alias name vs steered `submit_sync_outreach` string — same function, fine.
+
+**Redeploy after #34:** Lovable SQL Editor paste `20260916000000_licensing_pitch_log_hub_send.sql`; redeploy `control-center-api` + publish frontend. Do **not** redeploy `execute-pitch` / `send-pitch-email`. No live send in CI; first live click on Send via Hub is a real Resend send (`test_mode: false`).

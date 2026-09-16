@@ -2725,6 +2725,54 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
   if (action === "list_drafts") {
     const statuses = body.statuses ?? ["pending", "approved"];
     const includeTest = Boolean(body.include_test);
+    const awaitingHandoff = Boolean(body.awaiting_handoff);
+    if (awaitingHandoff) {
+      const limit = Math.min(Number(body.limit) || 200, 500);
+      const { data: recs, error: recErr } = await sb
+        .from("agh_handoff_records")
+        .select(
+          "id, batch_id, track_id, playlist_target_id, outreach_draft_id, queue_state, packet, song_dna_version_id",
+        )
+        .eq("submission_channel", "email")
+        .eq("queue_state", "AWAITING_GROK_REVIEW")
+        .limit(limit);
+      if (recErr) return { status: 500, data: { error: recErr.message } };
+      const draftIds = [...new Set((recs ?? [])
+        .map((r) => r.outreach_draft_id)
+        .filter(Boolean)
+        .map(String))];
+      let drafts: Record<string, unknown>[] = [];
+      if (draftIds.length) {
+        const { data: drows, error: dErr } = await sb
+          .from("outreach_drafts")
+          .select("*")
+          .in("id", draftIds)
+          .in("status", statuses as string[]);
+        if (dErr) return { status: 500, data: { error: dErr.message } };
+        drafts = (drows ?? []) as Record<string, unknown>[];
+      }
+      const byId = new Map(drafts.map((d) => [String(d.id), d]));
+      const rows = (recs ?? []).flatMap((r) => {
+        const packet = (r.packet && typeof r.packet === "object")
+          ? r.packet as Record<string, unknown>
+          : {};
+        const draft = r.outreach_draft_id ? byId.get(String(r.outreach_draft_id)) : undefined;
+        if (!draft) return [];
+        if (!includeTest && ((draft.env as string | null | undefined) ?? "production") !== "production") {
+          return [];
+        }
+        return [{
+          ...draft,
+          curator_email: packet.curator_email ?? draft.recipient ?? null,
+          outreach_draft_id: draft.id,
+          handoff_record_id: r.id,
+          batch_id: r.batch_id,
+          queue_state: r.queue_state,
+          email_sendable: packet.email_sendable ?? (String(draft.status) === "pending" || String(draft.status) === "approved"),
+        }];
+      });
+      return { status: 200, data: { ok: true, rows, awaiting_handoff: true } };
+    }
     const { data, error } = await sb.from("outreach_drafts").select("*").in("status", statuses as string[])
       .order("generated_at", { ascending: false }).limit(100);
     if (error) return { status: 500, data: { error: error.message } };

@@ -150,6 +150,7 @@ Deno.test("ACTION_SPEC gates daily-ops / handoff / sync-research / multichannel 
     "review_handoff_batch",
     "mark_manual_form_submitted",
     "mark_manual_ig_dm_submitted",
+    "materialize_email_handoff_drafts",
     "verify_submission_path",
     "build_web_form_packet",
     "build_instagram_dm_draft",

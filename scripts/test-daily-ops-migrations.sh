@@ -258,6 +258,7 @@ assert_eq "duplicates_cleared_after_reconcile" "${CLEAN_DUP}" "0"
 echo "==> Rerun guarded 160000 successfully after reconcile"
 apply_with_rollback "$ROOT/supabase/migrations/20260907160000_mcp_inventory_open_pair_guard_and_persist.sql"
 apply_with_rollback "$ROOT/supabase/migrations/20260915120000_playlist_inventory_drafted_by_promote.sql"
+apply_with_rollback "$ROOT/supabase/migrations/20260916120000_email_handoff_packet_materialize.sql"
 OPEN_IDX_AFTER=$(run_sql -c "select count(*) from pg_indexes where schemaname='public' and indexname='agh_handoff_records_open_pair_uidx';")
 assert_eq "open_pair_index_present_after_guard" "${OPEN_IDX_AFTER}" "1"
 PERSIST_OK=$(run_sql -c "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='agh_mcp_persist_playlist_inventory';")
@@ -585,6 +586,12 @@ REC_DRAFTED=$(run_sql -c "select drafted_by from public.agh_handoff_records wher
 assert_eq "persist_record_drafted_by" "${REC_DRAFTED}" "claude_playlist_discovery"
 BATCH_DRAFTED=$(run_sql -c "select drafted_by from public.agh_handoff_batches where track_id='11111111-1111-1111-1111-111111111111' and id <> '33333333-3333-3333-3333-333333333333' order by created_at desc limit 1;")
 assert_eq "persist_batch_drafted_by" "${BATCH_DRAFTED}" "claude_playlist_discovery"
+PKT_EMAIL=$(run_sql -c "select packet->>'curator_email' from public.agh_handoff_records where playlist_target_id='pl-inv-1' and queue_state not in ('REJECTED_BY_GROK','IMPORTED_TO_AGH') limit 1;")
+assert_eq "persist_packet_curator_email" "${PKT_EMAIL}" "a@test"
+PKT_DRAFT=$(run_sql -c "select (packet->>'outreach_draft_id') is not null and (packet->>'outreach_draft_id') = outreach_draft_id::text from public.agh_handoff_records where playlist_target_id='pl-inv-1' and queue_state not in ('REJECTED_BY_GROK','IMPORTED_TO_AGH') limit 1;")
+assert_eq "persist_packet_outreach_draft_id" "${PKT_DRAFT}" "t"
+PKT_COPY=$(run_sql -c "select (packet ? 'body') or (packet ? 'subject') from public.agh_handoff_records where playlist_target_id='pl-inv-1' and queue_state not in ('REJECTED_BY_GROK','IMPORTED_TO_AGH') limit 1;")
+assert_eq "persist_packet_no_copy" "${PKT_COPY}" "f"
 
 echo "==> Terminal draft retry allowed (rejected → new pending with same key)"
 run_sql_pretty <<'SQL'
@@ -600,6 +607,93 @@ RETRY_OK=$(run_sql -c "select public.agh_mcp_persist_playlist_inventory(
 assert_eq "terminal_retry_ok" "${RETRY_OK}" "true"
 ACTIVE_DRAFTS=$(run_sql -c "select count(*) from public.outreach_drafts where status in ('pending','approved') and ops_idempotency_key like '%pl-inv-1%';")
 assert_eq "terminal_retry_one_active" "${ACTIVE_DRAFTS}" "1"
+
+echo "==> Email handoff packet materialize (thin shells + terminal-unsent clone)"
+TITLE_HITS=$(grep -ciE 'meditate|designed for me|designedforme' "$ROOT/supabase/migrations/20260916120000_email_handoff_packet_materialize.sql" || true)
+assert_eq "materialize_migration_no_hardcoded_songs" "${TITLE_HITS:-0}" "0"
+MAT_FN=$(run_sql -c "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='agh_materialize_email_handoff_drafts';")
+assert_eq "materialize_fn_present" "${MAT_FN}" "1"
+
+run_sql_pretty <<'SQL'
+insert into public.playlist_targets (playlist_id, lane, verification_status, path_verified, contact_method, submission_method, curator_email)
+values
+  ('pl-mat-reject', 'rap_general', 'auto_verified', true, 'email', 'email', 'reject@test'),
+  ('pl-mat-sent', 'rap_general', 'auto_verified', true, 'email', 'email', 'sent@test'),
+  ('pl-mat-form', 'rap_general', 'auto_verified', true, 'web_form', 'web_form', null)
+on conflict (playlist_id) do update set curator_email = excluded.curator_email;
+
+insert into public.agh_handoff_batches (id, batch_kind, queue_state, track_id, song_dna_version_id, discovered_by, drafted_by)
+values (
+  '55555555-5555-5555-5555-555555555555',
+  'playlist', 'AWAITING_GROK_REVIEW',
+  '11111111-1111-1111-1111-111111111111',
+  '22222222-2222-2222-2222-222222222222',
+  'claude_playlist_discovery', 'claude_playlist_discovery'
+);
+
+insert into public.outreach_drafts (
+  id, playlist_id, track_id, track_name, song_dna_version_id, channel, status,
+  generated_by, subject, body, recipient, ops_idempotency_key
+) values
+  ('66666666-6666-6666-6666-666666666601', 'pl-mat-reject',
+   '11111111-1111-1111-1111-111111111111', 'Test Track',
+   '22222222-2222-2222-2222-222222222222', 'email', 'rejected',
+   'claude_playlist_discovery', 'subj-r', 'body-r', 'reject@test',
+   '11111111-1111-1111-1111-111111111111:pl-mat-reject:email:22222222-2222-2222-2222-222222222222'),
+  ('66666666-6666-6666-6666-666666666602', 'pl-mat-sent',
+   '11111111-1111-1111-1111-111111111111', 'Test Track',
+   '22222222-2222-2222-2222-222222222222', 'email', 'sent',
+   'claude_playlist_discovery', 'subj-s', 'body-s', 'sent@test',
+   '11111111-1111-1111-1111-111111111111:pl-mat-sent:email:22222222-2222-2222-2222-222222222222');
+
+insert into public.agh_handoff_records (
+  id, batch_id, record_kind, queue_state, track_id, playlist_target_id,
+  outreach_draft_id, submission_channel, song_dna_version_id, packet, drafted_by
+) values
+  ('77777777-7777-7777-7777-777777777701', '55555555-5555-5555-5555-555555555555',
+   'playlist_target', 'AWAITING_GROK_REVIEW',
+   '11111111-1111-1111-1111-111111111111', 'pl-mat-reject',
+   '66666666-6666-6666-6666-666666666601', 'email',
+   '22222222-2222-2222-2222-222222222222',
+   '{"packet_kind":"email_outreach_draft","channel":"email"}'::jsonb,
+   'claude_playlist_discovery'),
+  ('77777777-7777-7777-7777-777777777702', '55555555-5555-5555-5555-555555555555',
+   'playlist_target', 'AWAITING_GROK_REVIEW',
+   '11111111-1111-1111-1111-111111111111', 'pl-mat-sent',
+   '66666666-6666-6666-6666-666666666602', 'email',
+   '22222222-2222-2222-2222-222222222222',
+   '{"packet_kind":"email_outreach_draft","channel":"email"}'::jsonb,
+   'claude_playlist_discovery'),
+  ('77777777-7777-7777-7777-777777777703', '55555555-5555-5555-5555-555555555555',
+   'playlist_target', 'AWAITING_GROK_REVIEW',
+   '11111111-1111-1111-1111-111111111111', 'pl-mat-form',
+   null, 'web_form',
+   '22222222-2222-2222-2222-222222222222',
+   '{"packet_kind":"manual_web_form_packet","form_url":"https://form.test"}'::jsonb,
+   'claude_playlist_discovery');
+SQL
+
+DRY=$(run_sql -c "select public.agh_materialize_email_handoff_drafts(true) ->> 'cloned_pending';")
+assert_eq "materialize_dry_cloned" "${DRY}" "1"
+DRY_SENT=$(run_sql -c "select public.agh_materialize_email_handoff_drafts(true) ->> 'already_sent';")
+assert_eq "materialize_dry_already_sent" "${DRY_SENT}" "1"
+DRY_SCAN=$(run_sql -c "select public.agh_materialize_email_handoff_drafts(true) ->> 'scanned';")
+assert_eq "materialize_dry_scanned_email_only" "${DRY_SCAN}" "2"
+STILL_THIN=$(run_sql -c "select count(*) from public.agh_handoff_records where id='77777777-7777-7777-7777-777777777701' and coalesce(packet->>'curator_email','')='';")
+assert_eq "materialize_dry_run_no_write" "${STILL_THIN}" "1"
+
+WET=$(run_sql -c "select public.agh_materialize_email_handoff_drafts(false) ->> 'ok';")
+assert_eq "materialize_wet_ok" "${WET}" "true"
+NEW_PENDING=$(run_sql -c "select count(*) from public.outreach_drafts where playlist_id='pl-mat-reject' and status='pending';")
+assert_eq "materialize_cloned_pending" "${NEW_PENDING}" "1"
+RELINKED=$(run_sql -c "select (outreach_draft_id <> '66666666-6666-6666-6666-666666666601') and (packet->>'curator_email')='reject@test' and (packet->>'email_sendable')='true' from public.agh_handoff_records where id='77777777-7777-7777-7777-777777777701';")
+assert_eq "materialize_relink_packet" "${RELINKED}" "t"
+SENT_PKT=$(run_sql -c "select (packet->>'curator_email')='sent@test' and (packet->>'email_sendable')='false' and outreach_draft_id='66666666-6666-6666-6666-666666666602' from public.agh_handoff_records where id='77777777-7777-7777-7777-777777777702';")
+assert_eq "materialize_sent_not_cloned" "${SENT_PKT}" "t"
+FORM_UNTOUCHED=$(run_sql -c "select packet->>'packet_kind' from public.agh_handoff_records where id='77777777-7777-7777-7777-777777777703';")
+assert_eq "materialize_web_form_untouched" "${FORM_UNTOUCHED}" "manual_web_form_packet"
+IDEMP=$(run_sql -c "select public.agh_materialize_email_handoff_drafts(false) ->> 'cloned_pending';")
+assert_eq "materialize_second_pass_no_reclone" "${IDEMP}" "0"
 
 echo "==> Pitch campaigns current-state adoption (table absent)"
 apply_with_rollback "$ROOT/supabase/migrations/20260908000000_pitch_campaigns_current_state_adoption.sql"

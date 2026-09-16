@@ -758,6 +758,9 @@ Deno.test("create_playlist_draft_inventory happy path: atomic persist; no copy i
   assertEquals(pkt.body, undefined);
   assertEquals(pkt.subject, undefined);
   assertEquals(pkt.packet_kind, "email_outreach_draft");
+  assertEquals(pkt.curator_email, "ok@curator.test");
+  assertEquals(pkt.body, undefined);
+  assertEquals((persistItems![0].draft as Row).recipient, "ok@curator.test");
   assertEquals((persistItems![0].draft as Row).body, "server-composed DNA pitch only");
   assertEquals(res.data.queue_state, "AWAITING_GROK_REVIEW");
   assertEquals(tables.agh_handoff_batches[0].queue_state, "AWAITING_GROK_REVIEW");

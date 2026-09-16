@@ -49,6 +49,7 @@ export const HANDOFF_ACTIONS = [
   "get_handoff_batch",
   "mark_manual_form_submitted",
   "mark_manual_ig_dm_submitted",
+  "materialize_email_handoff_drafts",
 ] as const;
 
 export function isHandoffAction(action: string): boolean {
@@ -88,6 +89,21 @@ export const HANDOFF_TRANSITIONS: Record<HandoffQueueState, readonly HandoffQueu
 };
 
 const KNOWN_CHANNELS = new Set(["email", "web_form", "instagram_dm"]);
+
+/** Metadata-only email packet fields. Never pitch copy (body/subject). */
+export function mergeEmailHandoffPacketMeta(
+  packet: Record<string, unknown>,
+  opts: { curatorEmail: string; outreachDraftId: string; emailSendable?: boolean },
+): Record<string, unknown> {
+  const email = String(opts.curatorEmail ?? "").trim().toLowerCase();
+  const out: Record<string, unknown> = { ...packet };
+  out.packet_kind = out.packet_kind ?? "email_outreach_draft";
+  out.channel = "email";
+  out.curator_email = email;
+  out.outreach_draft_id = opts.outreachDraftId;
+  out.email_sendable = opts.emailSendable ?? true;
+  return out;
+}
 
 export function assertKnownChannel(channel: string | null | undefined): string | null {
   if (channel == null || channel === "") return null;
@@ -428,6 +444,48 @@ export async function addHandoffRecords(
       packet.pitch_copy_source = pitch.source;
       // Never persist playlist_targets.song_dna_version_id as authoritative.
       delete packet.playlist_target_song_dna_version_id;
+
+      if (channel === "email") {
+        const draftId = r.outreach_draft_id != null ? String(r.outreach_draft_id).trim() : "";
+        if (!draftId) {
+          return {
+            status: 422,
+            data: {
+              error: "email handoff requires outreach_draft_id",
+              code: "missing_outreach_draft_id",
+              playlist_id: playlistId,
+            },
+          };
+        }
+        let curatorEmail = String(packet.curator_email ?? "").trim();
+        if (!curatorEmail) {
+          const { data: tgt, error: tgtErr } = await sb
+            .from("playlist_targets")
+            .select("curator_email")
+            .eq("playlist_id", playlistId)
+            .maybeSingle();
+          if (tgtErr) return { status: 500, data: { error: tgtErr.message } };
+          curatorEmail = String(tgt?.curator_email ?? "").trim();
+        }
+        if (!curatorEmail) {
+          return {
+            status: 422,
+            data: {
+              error: "email handoff requires curator_email",
+              code: "missing_curator_email",
+              playlist_id: playlistId,
+            },
+          };
+        }
+        Object.assign(
+          packet,
+          mergeEmailHandoffPacketMeta(packet, {
+            curatorEmail,
+            outreachDraftId: draftId,
+            emailSendable: true,
+          }),
+        );
+      }
 
       rows.push({
         batch_id: batchId,
@@ -979,6 +1037,77 @@ export async function advanceClaudeReadyBatches(
   };
 }
 
+const MATERIALIZE_ACTORS = new Set([
+  "grok_playlist_control",
+  "fendi",
+  "claude",
+  "claude_playlist_discovery",
+  "human_admin",
+]);
+
+export async function materializeEmailHandoffDrafts(
+  sb: SupabaseClient,
+  body: Record<string, unknown>,
+  ops: OpsActor,
+): Promise<RunResult> {
+  if (!MATERIALIZE_ACTORS.has(ops.kind)) {
+    return {
+      status: 403,
+      data: {
+        error: `${ops.label} cannot materialize email handoff drafts`,
+        code: "authority_denied",
+      },
+    };
+  }
+  if (!can(ops, "write_playlist_ops") && !can(ops, "generate_playlist_drafts")) {
+    return {
+      status: 403,
+      data: { error: `${ops.label} lacks materialize capability`, code: "authority_denied" },
+    };
+  }
+
+  const clean = stripSpoofedAttribution(body);
+  const dryRun = clean.dry_run !== false;
+  const batchId = String(clean.batch_id ?? "").trim() || null;
+  const trackId = String(clean.track_id ?? "").trim() || null;
+
+  const { data, error } = await sb.rpc("agh_materialize_email_handoff_drafts", {
+    p_dry_run: dryRun,
+    p_batch_id: batchId,
+    p_track_id: trackId,
+  });
+
+  if (error) {
+    const msg = String(error.message || "");
+    const unavailable =
+      /could not find the function/i.test(msg) ||
+      /permission denied/i.test(msg) ||
+      error.code === "PGRST202" ||
+      error.code === "42883";
+    return {
+      status: unavailable ? 503 : 500,
+      data: {
+        error: unavailable
+          ? "agh_materialize_email_handoff_drafts RPC unavailable — apply 20260916120000 via Lovable SQL Editor"
+          : `materialize failed: ${msg}`,
+        code: unavailable ? "rpc_unavailable" : "rpc_failed",
+      },
+    };
+  }
+
+  const result = (data && typeof data === "object") ? data as Record<string, unknown> : {};
+  return {
+    status: 200,
+    data: {
+      ok: true,
+      dry_run: dryRun,
+      sent: false,
+      automated_submit: false,
+      ...result,
+    },
+  };
+}
+
 export async function runHandoffAction(
   action: string,
   body: Record<string, unknown>,
@@ -1042,6 +1171,8 @@ export async function runHandoffAction(
       return markManualFormSubmitted(sb, body, ops);
     case "mark_manual_ig_dm_submitted":
       return markManualIgDmSubmitted(sb, body, ops);
+    case "materialize_email_handoff_drafts":
+      return materializeEmailHandoffDrafts(sb, body, ops);
     default:
       return { status: 400, data: { error: `Unknown handoff action: ${action}` } };
   }

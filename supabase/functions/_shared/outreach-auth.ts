@@ -531,6 +531,11 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
     capability: 'send_playlist_pitches',
     surface: 'outreach-write',
   },
+  materialize_email_handoff_drafts: {
+    cls: 'capability',
+    capability: 'write_playlist_ops',
+    surface: 'outreach-write',
+  },
 
   // ---- Multichannel path verification -------------------------------------
   verify_submission_path: {

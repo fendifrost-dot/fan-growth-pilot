@@ -1202,11 +1202,24 @@ export async function createPlaylistDraftInventory(
           data: { error: "compose returned no body", playlist_id: playlistId },
         };
       }
+      const recipient = String(
+        composed.data.recipient ?? target.curator_email ?? "",
+      ).trim();
+      if (!recipient) {
+        return {
+          status: 422,
+          data: {
+            error: "email inventory requires curator_email",
+            code: "missing_curator_email",
+            playlist_id: playlistId,
+          },
+        };
+      }
       draftPayload = {
         track_name: composed.data.track_name ?? trackName,
         subject: composed.data.subject ?? null,
         body: composed.data.body,
-        recipient: composed.data.recipient ?? null,
+        recipient,
         pitch_copy_source: composed.data.pitch_copy_source ?? pitchProbe.source,
         pitch_copy_hash: composed.data.pitch_copy_hash ?? null,
         generated_by: composed.data.generated_by ?? ops.label,
@@ -1228,6 +1241,11 @@ export async function createPlaylistDraftInventory(
       automated_dm: false,
       ops_idempotency_key: key,
     };
+    if (channel === "email") {
+      packet.curator_email = String(draftPayload?.recipient ?? target.curator_email ?? "")
+        .trim()
+        .toLowerCase();
+    }
     if (channel === "web_form") {
       packet.form_url = target.form_url ?? target.submission_url ?? null;
     }

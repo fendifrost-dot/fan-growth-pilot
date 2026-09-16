@@ -334,6 +334,7 @@ export async function addHandoffRecords(
   }
 
   const discover = stampDiscover(ops);
+  const draft = stampDraft(ops);
   const rows: Record<string, unknown>[] = [];
   for (const raw of records) {
     const r = stripSpoofedAttribution(
@@ -442,6 +443,7 @@ export async function addHandoffRecords(
         song_dna_version_id: envelope.songDnaVersionId,
         packet,
         ...discover,
+        ...draft,
         updated_at: new Date().toISOString(),
       });
       continue;
@@ -469,6 +471,7 @@ export async function addHandoffRecords(
       song_dna_version_id: null,
       packet: typeof r.packet === "object" && r.packet ? r.packet : {},
       ...discover,
+      ...draft,
       updated_at: new Date().toISOString(),
     });
   }
@@ -496,6 +499,19 @@ export async function addHandoffRecords(
   }
 
   const recordCount = await recountBatchRecords(sb, batchId);
+  if (inserted > 0) {
+    // Inventory records are drafts — persist drafted_by on the batch if still null.
+    // Never overwrite an existing draft stamp.
+    await sb
+      .from("agh_handoff_batches")
+      .update({
+        drafted_by: draft.drafted_by,
+        drafted_by_label: draft.drafted_by_label,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", batchId)
+      .is("drafted_by", null);
+  }
   return {
     status: 200,
     data: { ok: true, inserted, duplicates, record_count: recordCount, rows: outRows },

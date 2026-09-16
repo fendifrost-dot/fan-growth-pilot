@@ -257,6 +257,7 @@ assert_eq "duplicates_cleared_after_reconcile" "${CLEAN_DUP}" "0"
 
 echo "==> Rerun guarded 160000 successfully after reconcile"
 apply_with_rollback "$ROOT/supabase/migrations/20260907160000_mcp_inventory_open_pair_guard_and_persist.sql"
+apply_with_rollback "$ROOT/supabase/migrations/20260915120000_playlist_inventory_drafted_by_promote.sql"
 OPEN_IDX_AFTER=$(run_sql -c "select count(*) from pg_indexes where schemaname='public' and indexname='agh_handoff_records_open_pair_uidx';")
 assert_eq "open_pair_index_present_after_guard" "${OPEN_IDX_AFTER}" "1"
 PERSIST_OK=$(run_sql -c "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='agh_mcp_persist_playlist_inventory';")
@@ -580,6 +581,10 @@ DRAFT_N=$(run_sql -c "select count(*) from public.outreach_drafts where status i
 REC_N=$(run_sql -c "select count(*) from public.agh_handoff_records where playlist_target_id='pl-inv-1' and queue_state not in ('REJECTED_BY_GROK','IMPORTED_TO_AGH');")
 assert_eq "concurrent_one_active_draft" "${DRAFT_N}" "1"
 assert_eq "concurrent_one_open_handoff" "${REC_N}" "1"
+REC_DRAFTED=$(run_sql -c "select drafted_by from public.agh_handoff_records where playlist_target_id='pl-inv-1' and queue_state not in ('REJECTED_BY_GROK','IMPORTED_TO_AGH') limit 1;")
+assert_eq "persist_record_drafted_by" "${REC_DRAFTED}" "claude_playlist_discovery"
+BATCH_DRAFTED=$(run_sql -c "select drafted_by from public.agh_handoff_batches where track_id='11111111-1111-1111-1111-111111111111' and id <> '33333333-3333-3333-3333-333333333333' order by created_at desc limit 1;")
+assert_eq "persist_batch_drafted_by" "${BATCH_DRAFTED}" "claude_playlist_discovery"
 
 echo "==> Terminal draft retry allowed (rejected → new pending with same key)"
 run_sql_pretty <<'SQL'

@@ -18,7 +18,7 @@ import { enforceTrackDnaLaneEnvelope, resolveCurrentApprovedDna } from "./track-
 import { resolveTrackPitchCopy } from "./pitch-copy.ts";
 import { rejectCallerPlaylistCopy } from "./pitch-descriptor-guard.ts";
 import { evaluateSubmissionPath } from "./multichannel-path.ts";
-import { reviewHandoffBatch } from "./handoff-queues.ts";
+import { advanceClaudeReadyBatches, reviewHandoffBatch } from "./handoff-queues.ts";
 import { startDailyStationRun, completeDailyStationRun } from "./daily-ops.ts";
 import { CLAUDE_STATION_IDS, isClaudeStationId } from "./chicago-time.ts";
 import { normalizeSpotifyPlaylistIdentity } from "./discovery-utils.ts";
@@ -931,6 +931,52 @@ export type InventoryDeps = {
   ) => Promise<{ data: Record<string, unknown> | null; error: { message: string; code?: string } | null }>;
 };
 
+function inventoryPersistAttr(ops: OpsActor): Record<string, string> {
+  const attr = attributionFrom(ops);
+  return {
+    discovered_by: attr.actor_kind,
+    discovered_by_label: attr.actor_label,
+    drafted_by: attr.actor_kind,
+    drafted_by_label: attr.actor_label,
+  };
+}
+
+/** Advance a persisted Claude inventory batch into the Grok review queue. */
+async function promotePlaylistInventoryBatch(
+  sb: SupabaseClient,
+  ops: OpsActor,
+  batchId: string | null | undefined,
+): Promise<{ error: ToolResult | null; queue_state: string | null }> {
+  const id = String(batchId ?? "").trim();
+  if (!id) return { error: null, queue_state: null };
+  const promoted = await advanceClaudeReadyBatches(
+    sb,
+    { batch_ids: [id], batch_kind: "playlist" },
+    ops,
+  );
+  if (promoted.status >= 400) {
+    return {
+      error: {
+        status: promoted.status,
+        data: {
+          ...promoted.data,
+          error: `inventory persisted but Grok promotion failed: ${
+            String(promoted.data.error ?? "unknown")
+          }`,
+          code: String(promoted.data.code ?? "promotion_failed"),
+          batch_id: id,
+          persisted: true,
+        },
+      },
+      queue_state: null,
+    };
+  }
+  const advanced = (promoted.data.advanced as Array<{ queue_state?: string }> | undefined) ?? [];
+  const skipped = (promoted.data.skipped as Array<{ queue_state?: string }> | undefined) ?? [];
+  const queueState = String(advanced[0]?.queue_state ?? skipped[0]?.queue_state ?? "") || null;
+  return { error: null, queue_state: queueState };
+}
+
 export async function createPlaylistDraftInventory(
   sb: SupabaseClient,
   ops: OpsActor,
@@ -1211,22 +1257,28 @@ export async function createPlaylistDraftInventory(
     });
   }
 
-  const attr = attributionFrom(ops);
+  const persistAttr = inventoryPersistAttr(ops);
 
   if (!items.length) {
+    const reusedBatchId = reusedPreview[0]?.batch_id != null
+      ? String(reusedPreview[0].batch_id)
+      : null;
+    const promoted = await promotePlaylistInventoryBatch(sb, ops, reusedBatchId);
+    if (promoted.error) return promoted.error;
     return {
       status: 200,
       data: {
         ok: true,
         idempotent: true,
-        batch_id: reusedPreview[0]?.batch_id ?? null,
+        batch_id: reusedBatchId,
         track_id: trackId,
         song_dna_version_id: songDnaVersionId,
         draft_status: "pending",
         approved: false,
         sent: false,
-        discovered_by: attr.actor_kind,
-        drafted_by: attr.actor_kind,
+        discovered_by: persistAttr.discovered_by,
+        drafted_by: persistAttr.drafted_by,
+        queue_state: promoted.queue_state,
         email_drafts: reusedPreview
           .filter((r) => r.channel === "email")
           .map((r) => ({
@@ -1265,10 +1317,7 @@ export async function createPlaylistDraftInventory(
   const { data: persisted, error: persistErr } = await persistInventory(sb, {
     track_id: trackId,
     song_dna_version_id: songDnaVersionId,
-    attr: {
-      discovered_by: attr.actor_kind,
-      discovered_by_label: attr.actor_label,
-    },
+    attr: persistAttr,
     items,
   });
 
@@ -1302,19 +1351,23 @@ export async function createPlaylistDraftInventory(
   }
 
   const resultItems = (result.items as Record<string, unknown>[]) ?? [];
+  const persistedBatchId = result.batch_id != null ? String(result.batch_id) : null;
+  const promoted = await promotePlaylistInventoryBatch(sb, ops, persistedBatchId);
+  if (promoted.error) return promoted.error;
   return {
     status: 200,
     data: {
       ok: true,
       idempotent: Boolean(result.idempotent),
-      batch_id: result.batch_id ?? null,
+      batch_id: persistedBatchId,
       track_id: trackId,
       song_dna_version_id: songDnaVersionId,
       draft_status: "pending",
       approved: false,
       sent: false,
-      discovered_by: attr.actor_kind,
-      drafted_by: attr.actor_kind,
+      discovered_by: persistAttr.discovered_by,
+      drafted_by: persistAttr.drafted_by,
+      queue_state: promoted.queue_state,
       email_drafts: result.email_drafts ?? [],
       manual_packets: result.manual_packets ?? [],
       reused_pairs: resultItems.filter((i) => i.reused),

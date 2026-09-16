@@ -19,13 +19,17 @@ import {
 } from "./sync-eligibility.ts";
 import { rejectCallerSyncIdentity } from "./sync-research-config.ts";
 import { resolveCurrentApprovedDna } from "./track-dna-envelope.ts";
-import { outreachIdempotencyKey, sendProviderEmail } from "./provider-transport.ts";
-import {
-  defaultSyncPitchSubject,
-  htmlToPlainText,
-  pitchFromHeader,
-} from "./resend-pitch.ts";
+import { outreachIdempotencyKey, providerFromHeader, sendProviderEmail } from "./provider-transport.ts";
+import { htmlToPlainText } from "./resend-pitch.ts";
 import { insertHubLicensingPitchLog } from "./sync-registers.ts";
+
+function syncPitchSubject(trackName: string, companyName?: string): string {
+  const track = trackName.trim();
+  const company = (companyName ?? "").trim();
+  if (track && company) return `Fendi Frost — ${track} for ${company}`;
+  if (track) return `Fendi Frost — ${track} for licensing`;
+  return "Fendi Frost — licensing";
+}
 
 export type RunResult = { status: number; data: Record<string, unknown> };
 
@@ -34,7 +38,6 @@ export const SYNC_CONTROL_ACTIONS = [
   "approve_sync_outreach",
   "reject_sync_outreach",
   "submit_sync_outreach",
-  "execute_sync_pitch",
   "record_manual_sync_outreach_submission",
   "track_sync_responses",
   "escalate_sync_to_fendi",
@@ -82,7 +85,10 @@ async function ensureLicensingPitchLogForHubSend(
     subject: args.subject,
     email_body: args.emailBody,
     from_address: args.fromAddress,
-    dispatched_via: "hub_resend",
+    dispatched_via: "submit_sync_outreach",
+    song_dna_version_id: args.draft.song_dna_version_id
+      ? String(args.draft.song_dna_version_id)
+      : null,
   });
   if (!logged.ok) {
     console.error("licensing_pitch_log insert failed:", logged.error);
@@ -398,7 +404,7 @@ export async function submitSyncOutreach(
   if (error) return { status: 500, data: { error: error.message } };
   if (!draft) return { status: 404, data: { error: "draft not found" } };
   if (draft.status === "submitted" && draft.submission_message_id) {
-    const replayFrom = pitchFromHeader();
+    const replayFrom = providerFromHeader({ useSyncFrom: true });
     const { data: replayTrack } = await sb
       .from("tracks")
       .select("id, name")
@@ -410,7 +416,7 @@ export async function submitSyncOutreach(
       contactName: String(draft.submitted_by_label ?? "sync contact"),
       contactEmail: null,
       company: null,
-      subject: String(draft.subject ?? "").trim() || defaultSyncPitchSubject(String(replayTrack?.name ?? "")),
+      subject: String(draft.subject ?? "").trim() || syncPitchSubject(String(replayTrack?.name ?? "")),
       emailBody: htmlToPlainText(String(draft.body ?? "")),
       fromAddress: replayFrom,
       messageId: String(draft.submission_message_id),
@@ -491,7 +497,7 @@ export async function submitSyncOutreach(
   const now = new Date().toISOString();
   const idempotencyKey = String(draft.send_idempotency_key || "").trim() ||
     outreachIdempotencyKey({ kind: "sync-outreach", id: String(draft.id), channel });
-  const fromAddress = pitchFromHeader();
+  const fromAddress = providerFromHeader({ useSyncFrom: true });
   const { data: trackRow } = await sb
     .from("tracks")
     .select("id, name")
@@ -500,7 +506,7 @@ export async function submitSyncOutreach(
   const trackName = String(trackRow?.name ?? "").trim();
   const companyName = String(target?.company_name ?? "").trim();
   const subject = String(draft.subject ?? "").trim() ||
-    defaultSyncPitchSubject(trackName, companyName);
+    syncPitchSubject(trackName, companyName);
   const bodyText = htmlToPlainText(String(draft.body ?? ""));
   const recipientPreview = String(target?.verified_contact_path ?? "").trim();
 
@@ -593,6 +599,7 @@ export async function submitSyncOutreach(
     html: String(draft.body ?? "").trim() || bodyText.replace(/\n/g, "<br>"),
     idempotencyKey,
     forceTestMode: testMode,
+    useSyncFrom: true,
   });
 
   if (!send.ok) {
@@ -872,7 +879,6 @@ export async function runSyncControlAction(
     case "reject_sync_outreach":
       return rejectSyncOutreach(sb, body, ops);
     case "submit_sync_outreach":
-    case "execute_sync_pitch":
       return submitSyncOutreach(sb, body, ops);
     case "record_manual_sync_outreach_submission":
       return recordManualSyncOutreachSubmission(sb, body, ops);

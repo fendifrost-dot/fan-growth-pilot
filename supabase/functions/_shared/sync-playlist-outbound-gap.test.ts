@@ -1,5 +1,6 @@
 /**
- * Wiring contract for docs/SYNC_VS_PLAYLIST_OUTBOUND_GAP.md.
+ * Wiring contract aligned to docs/SYNC_VS_PLAYLIST_OUTBOUND_GAP.md
+ * after the implementer close of Phase 1–3 send gaps.
  * Source-read + actor matrix only. No network. No live Resend.
  */
 import {
@@ -12,6 +13,7 @@ import { SYNC_DISCOVERY_TOOLS } from "./sync-discovery-mcp.ts";
 import { SYNC_REGISTER_ACTIONS } from "./sync-registers.ts";
 import { SYNC_CONTROL_ACTIONS } from "./sync-control.ts";
 import { pitchFromEmail, pitchReplyTo } from "./resend-pitch.ts";
+import { providerFromHeader } from "./provider-transport.ts";
 
 function req(headers: Record<string, string> = {}): Request {
   return new Request("https://example.test/", { method: "POST", headers });
@@ -38,7 +40,7 @@ function read(rel: string): string {
 }
 
 Deno.test("playlist From/Reply-To defaults are @fendifrost.com, never Gmail", () => {
-  withEnv({ FROM_EMAIL: "", REPLY_TO_EMAIL: "" }, () => {
+  withEnv({ FROM_EMAIL: "", REPLY_TO_EMAIL: "", SYNC_FROM_EMAIL: "sync@fendifrost.com" }, () => {
     Deno.env.delete("FROM_EMAIL");
     Deno.env.delete("REPLY_TO_EMAIL");
     const from = pitchFromEmail();
@@ -46,16 +48,27 @@ Deno.test("playlist From/Reply-To defaults are @fendifrost.com, never Gmail", ()
     assertEquals(from, "pitches@fendifrost.com");
     assertEquals(reply, "replies@fendifrost.com");
     assertFalse(from.includes("gmail.com"), "playlist From must not default to Gmail");
-    assertFalse(reply.includes("gmail.com"), "code default Reply-To is replies@, not Gmail");
+    assertFalse(from.includes("sync@"), "playlist helpers must ignore SYNC_FROM_EMAIL");
   });
 });
 
-Deno.test("provider-transport shares the same From/Reply-To defaults as playlist", () => {
+Deno.test("provider-transport defaults From/Reply-To to pitches@ and replies@", () => {
   const src = read("./provider-transport.ts");
   assert(src.includes('FROM_EMAIL") || "pitches@fendifrost.com"'), "sync transport must default From to pitches@");
   assert(src.includes('REPLY_TO_EMAIL") || "replies@fendifrost.com"'), "sync transport must default Reply-To to replies@");
+  assert(src.includes("SYNC_FROM_EMAIL"), "optional sync mailbox is env-only");
   assert(src.includes("https://api.resend.com/emails"), "provider-transport must call Resend");
-  assertFalse(/fendifrost@gmail\.com/.test(src), "provider-transport must not hard-code Gmail From");
+  assertFalse(/From:\s*fendifrost@gmail\.com/.test(src), "provider-transport must not hard-code Gmail From");
+});
+
+Deno.test("SYNC_FROM_EMAIL is opt-in for sync mailbox only and never Gmail", () => {
+  withEnv({ FROM_EMAIL: "pitches@fendifrost.com", SYNC_FROM_EMAIL: "sync@fendifrost.com" }, () => {
+    assertEquals(providerFromHeader(), "Fendi Frost <pitches@fendifrost.com>");
+    assertEquals(providerFromHeader({ useSyncFrom: true }), "Fendi Frost <sync@fendifrost.com>");
+  });
+  withEnv({ FROM_EMAIL: "pitches@fendifrost.com", SYNC_FROM_EMAIL: "fendifrost@gmail.com" }, () => {
+    assertFalse(providerFromHeader({ useSyncFrom: true }).includes("gmail.com"));
+  });
 });
 
 Deno.test("playlist execute-pitch is a dedicated Resend edge writing pitch_log", () => {
@@ -72,14 +85,15 @@ Deno.test("playlist execute-pitch is a dedicated Resend edge writing pitch_log",
   assert(agent.includes("/functions/v1/execute-pitch"), "approve_draft proxies execute-pitch");
 });
 
-Deno.test("sync submit uses CCA + sendProviderEmail; no execute-sync-pitch edge", () => {
+Deno.test("sync submit uses CCA + sendProviderEmail and writes licensing_pitch_log", () => {
   const control = read("./sync-control.ts");
   assert(control.includes("sendProviderEmail"), "submitSyncOutreach must wrap sendProviderEmail");
-  assert(control.includes("submission_message_id"), "sync ledger is the draft row, not pitch_log");
-  assertFalse(control.includes('from("licensing_pitch_log")'), "submit must not yet write licensing_pitch_log (documented gap)");
+  assert(control.includes("submission_message_id"), "sync draft still stores provider id");
+  assert(control.includes("insertHubLicensingPitchLog") || control.includes("licensing_pitch_log"), "submit writes licensing_pitch_log after accept");
+  assert(control.includes("useSyncFrom"), "sync submit opts into SYNC_FROM_EMAIL");
   assertFalse(control.includes('from("pitch_log")'), "sync must not write playlist pitch_log");
   assert(SYNC_CONTROL_ACTIONS.includes("submit_sync_outreach"));
-  assert(SYNC_CONTROL_ACTIONS.includes("record_manual_sync_outreach_submission"));
+  assertFalse((SYNC_CONTROL_ACTIONS as readonly string[]).includes("execute_sync_pitch"));
 
   const cca = read("../control-center-api/index.ts");
   assert(cca.includes("isSyncControlAction"), "CCA must route sync control");
@@ -92,10 +106,10 @@ Deno.test("sync submit uses CCA + sendProviderEmail; no execute-sync-pitch edge"
   } catch {
     executeSyncPitchExists = false;
   }
-  assertFalse(executeSyncPitchExists, "do not assume a dedicated execute-sync-pitch edge exists");
+  assertFalse(executeSyncPitchExists, "do not add a dedicated execute-sync-pitch edge");
 });
 
-Deno.test("licensing register is record-only and never mentions Resend", () => {
+Deno.test("licensing register actions never call Resend", () => {
   const src = read("./sync-registers.ts");
   assert(src.includes("No send path"), "sync-registers must keep the no-send contract comment");
   assertFalse(src.includes("api.resend.com"), "log_licensing_pitch must not call Resend");
@@ -137,19 +151,21 @@ Deno.test("only Grok and Fendi may submit sync outreach; Claude and human_admin 
   });
 });
 
-Deno.test("Admin licensing UI records pitches; it does not submit via Hub Resend", () => {
+Deno.test("Admin licensing UI submits via Hub Resend (Grok/Fendi CCA action)", () => {
   const ui = Deno.readTextFileSync(new URL("../../../src/pages/admin/AdminLicensing.tsx", import.meta.url));
-  assert(ui.includes("log_licensing_pitch"), "licensing UI records after the fact");
-  assertFalse(ui.includes("submit_sync_outreach"), "licensing UI has no Hub submit button (documented gap)");
+  assert(ui.includes("log_licensing_pitch"), "licensing UI still records after the fact");
+  assert(ui.includes("submit_sync_outreach"), "licensing UI Submit via Hub calls submit_sync_outreach");
+  assert(ui.includes("list_sync_pending_drafts"), "licensing UI lists pending sync drafts");
+  assert(ui.includes("Submit via Hub"), "operator label matches the mapper plan");
   assertFalse(ui.includes("sendProviderEmail"), "browser UI must never call the provider");
-  assert(ui.includes("Record a licensing pitch"), "copy still describes a register, not a send");
+  assertFalse(ui.includes("execute_sync_pitch"), "do not invent a parallel execute action");
 });
 
-Deno.test("resend-webhook only mutates playlist_targets, not sync ledgers", () => {
+Deno.test("resend-webhook still only mutates playlist_targets (phase-4 gap)", () => {
   const src = read("../resend-webhook/index.ts");
   assert(src.includes("playlist_targets"), "playlist bounce handling remains");
-  assertFalse(src.includes("licensing_pitch_log"), "webhook does not yet touch licensing log (gap)");
-  assertFalse(src.includes("sync_research_pitch_drafts"), "webhook does not yet touch sync drafts (gap)");
+  assertFalse(src.includes("licensing_pitch_log"), "webhook does not yet touch licensing log");
+  assertFalse(src.includes("sync_research_pitch_drafts"), "webhook does not yet touch sync drafts");
 });
 
 Deno.test("config.toml registers playlist send edges, not an execute-sync-pitch", () => {

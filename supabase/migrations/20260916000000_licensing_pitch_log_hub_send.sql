@@ -16,16 +16,17 @@ alter table public.licensing_pitch_log
   add column if not exists subject text,
   add column if not exists email_body text,
   add column if not exists from_address text,
-  add column if not exists dispatched_via text;
+  add column if not exists dispatched_via text,
+  add column if not exists song_dna_version_id uuid;
 
 comment on column public.licensing_pitch_log.approved_by is
   'Server-stamped approver of the sync draft (never caller-supplied).';
 comment on column public.licensing_pitch_log.sent_by is
   'Server-stamped sender of the Hub Resend execute (never caller-supplied).';
 comment on column public.licensing_pitch_log.from_address is
-  'Professional From header used on the Resend send (FROM_EMAIL / pitches@fendifrost.com).';
+  'Professional From header used on the Resend send (SYNC_FROM_EMAIL or FROM_EMAIL / pitches@fendifrost.com). Never Gmail.';
 comment on column public.licensing_pitch_log.dispatched_via is
-  'Transport path. Hub Resend sends use hub_resend. Manual register rows stay null.';
+  'Transport path. Hub Resend sends use submit_sync_outreach. Manual register rows stay null.';
 comment on column public.licensing_pitch_log.draft_id is
   'Optional sync_research_pitch_drafts.id for Hub-executed sends.';
 

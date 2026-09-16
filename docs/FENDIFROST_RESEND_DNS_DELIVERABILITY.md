@@ -64,7 +64,7 @@ Changes:
 | Default subject: `Fendi Frost — {track} for {playlist}` (not `Submission:`) | `playlist-agent-run.ts`, `execute-pitch` |
 | Plain `text` + `html` on playlist sends | `execute-pitch`, `send-pitch-email` |
 | `FROM_EMAIL` default `pitches@fendifrost.com` everywhere | `execute-pitch` (was `submissions@` fallback) |
-| Sync/licensing Hub execute uses the same From helpers | `_shared/resend-pitch.ts`, `_shared/provider-transport.ts`, `submit_sync_outreach` / `execute_sync_pitch` via `control-center-api` |
+| Sync Hub submit uses `sendProviderEmail` + optional `SYNC_FROM_EMAIL` | `_shared/provider-transport.ts`, CCA `submit_sync_outreach` — playlist `resend-pitch.ts` / `FROM_EMAIL` unchanged |
 
 Redeploy via Lovable → Edge Functions (Cloud), **not** `supabase functions deploy`:
 
@@ -73,10 +73,11 @@ Redeploy via Lovable → Edge Functions (Cloud), **not** `supabase functions dep
 
 Also paste migration `supabase/migrations/20260916000000_licensing_pitch_log_hub_send.sql` into Lovable → SQL Editor.
 
-Edge secrets (optional):
+Edge secrets (optional; names only):
 
-- `REPLY_TO_EMAIL` = `fendifrost@gmail.com` (default if unset)
-- `FROM_EMAIL` = `pitches@fendifrost.com`
+- `FROM_EMAIL` = `pitches@fendifrost.com` (playlist From; code default if unset)
+- `SYNC_FROM_EMAIL` = `sync@fendifrost.com` (optional; `submit_sync_outreach` only; else `FROM_EMAIL`)
+- `REPLY_TO_EMAIL` = `replies@fendifrost.com` or Gmail inbox (Reply-To only — never From)
 
 ---
 

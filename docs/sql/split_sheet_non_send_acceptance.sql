@@ -58,7 +58,7 @@ where table_schema = 'public'
     ))
     or (table_name = 'licensing_pitch_log' and column_name in (
       'approved_by', 'sent_by', 'resend_message_id', 'from_address',
-      'draft_id', 'dispatched_via'
+      'draft_id', 'dispatched_via', 'song_dna_version_id'
     ))
   )
 order by table_name, column_name;

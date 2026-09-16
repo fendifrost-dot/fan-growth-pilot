@@ -631,11 +631,6 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
     capability: 'submit_sync_outreach',
     surface: 'outreach-write',
   },
-  execute_sync_pitch: {
-    cls: 'capability',
-    capability: 'submit_sync_outreach',
-    surface: 'outreach-write',
-  },
   record_manual_sync_outreach_submission: {
     cls: 'capability',
     capability: 'submit_sync_outreach',

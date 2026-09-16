@@ -1,12 +1,11 @@
-import { assertEquals, assertStringIncludes } from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { assertEquals, assertFalse, assertStringIncludes } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
   buildResendPitchPayload,
-  defaultSyncPitchSubject,
   pitchFromEmail,
   pitchFromHeader,
   pitchReplyTo,
 } from "./resend-pitch.ts";
-import { isProviderTestMode, sendProviderEmail } from "./provider-transport.ts";
+import { isProviderTestMode, providerFromHeader, sendProviderEmail } from "./provider-transport.ts";
 
 function withEnv(vars: Record<string, string>, fn: () => void | Promise<void>) {
   const prev: Record<string, string | undefined> = {};
@@ -27,37 +26,51 @@ function withEnv(vars: Record<string, string>, fn: () => void | Promise<void>) {
   finish();
 }
 
-Deno.test("shared From wiring defaults to professional fendifrost.com mailbox", () => {
-  withEnv({ FROM_EMAIL: "", REPLY_TO_EMAIL: "" }, () => {
+Deno.test("playlist From/Reply-To helpers stay on fendifrost.com and ignore SYNC_FROM_EMAIL", () => {
+  withEnv({
+    FROM_EMAIL: "",
+    REPLY_TO_EMAIL: "",
+    SYNC_FROM_EMAIL: "sync@fendifrost.com",
+  }, () => {
     Deno.env.delete("FROM_EMAIL");
     Deno.env.delete("REPLY_TO_EMAIL");
     assertEquals(pitchFromEmail(), "pitches@fendifrost.com");
     assertEquals(pitchFromHeader(), "Fendi Frost <pitches@fendifrost.com>");
     assertEquals(pitchReplyTo(), "replies@fendifrost.com");
     const payload = buildResendPitchPayload({
-      to: ["supervisor@example.com"],
+      to: ["curator@example.com"],
       subject: "t",
       text: "hello",
     });
     assertEquals(payload.from, "Fendi Frost <pitches@fendifrost.com>");
-    assertEquals(payload.reply_to, "replies@fendifrost.com");
+    assertFalse(String(payload.from).includes("sync@"));
+    assertFalse(String(payload.from).includes("gmail.com"));
   });
 });
 
-Deno.test("FROM_EMAIL env override stays on the shared helper (no parallel mail stack)", () => {
-  withEnv({ FROM_EMAIL: "studio@fendifrost.com", REPLY_TO_EMAIL: "replies@fendifrost.com" }, () => {
-    assertEquals(pitchFromHeader(), "Fendi Frost <studio@fendifrost.com>");
-    assertStringIncludes(pitchFromHeader(), "@fendifrost.com");
+Deno.test("SYNC_FROM_EMAIL is env-only on the sync mailbox and never Gmail", () => {
+  withEnv({
+    FROM_EMAIL: "pitches@fendifrost.com",
+    SYNC_FROM_EMAIL: "sync@fendifrost.com",
+  }, () => {
+    assertEquals(providerFromHeader(), "Fendi Frost <pitches@fendifrost.com>");
+    assertEquals(providerFromHeader({ useSyncFrom: true }), "Fendi Frost <sync@fendifrost.com>");
+  });
+  withEnv({
+    FROM_EMAIL: "pitches@fendifrost.com",
+    SYNC_FROM_EMAIL: "fendifrost@gmail.com",
+  }, () => {
+    assertEquals(providerFromHeader({ useSyncFrom: true }), "Fendi Frost <pitches@fendifrost.com>");
+    assertFalse(providerFromHeader({ useSyncFrom: true }).includes("gmail.com"));
+  });
+  withEnv({ FROM_EMAIL: "fendifrost@gmail.com", SYNC_FROM_EMAIL: "" }, () => {
+    Deno.env.delete("SYNC_FROM_EMAIL");
+    assertEquals(providerFromHeader(), "Fendi Frost <pitches@fendifrost.com>");
+    assertStringIncludes(providerFromHeader(), "@fendifrost.com");
   });
 });
 
-Deno.test("default sync subject uses caller track name, never a hardcoded title", () => {
-  assertEquals(defaultSyncPitchSubject("Fixture Track", "Fixture Co"), "Fendi Frost — Fixture Track for Fixture Co");
-  assertEquals(defaultSyncPitchSubject("Fixture Track"), "Fendi Frost — Fixture Track for licensing");
-  assertEquals(defaultSyncPitchSubject(""), "Fendi Frost — licensing");
-});
-
-Deno.test("provider forceTestMode never calls Resend and reports shared From", async () => {
+Deno.test("provider forceTestMode never calls Resend", async () => {
   await withEnv({
     AGH_PROVIDER_TEST_MODE: "",
     AGH_TEST_MODE: "",
@@ -74,11 +87,12 @@ Deno.test("provider forceTestMode never calls Resend and reports shared From", a
       text: "t",
       idempotencyKey: "sync-dry",
       forceTestMode: true,
+      useSyncFrom: true,
     });
     assertEquals(sent.ok, true);
     if (sent.ok) {
       assertEquals(sent.id, "test_sync-dry");
-      assertEquals(sent.raw.from, pitchFromHeader());
+      assertEquals(sent.raw.from, providerFromHeader({ useSyncFrom: true }));
     }
   });
 });

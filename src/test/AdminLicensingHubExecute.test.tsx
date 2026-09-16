@@ -20,7 +20,7 @@ const trackRow = {
   is_month1_sync_default: false,
 };
 
-const approvedDraft = {
+const pendingDraft = {
   id: "draft-1",
   track_id: "track-generic",
   subject: "Fixture licensing subject",
@@ -29,15 +29,15 @@ const approvedDraft = {
   approved_by_label: "grok_playlist_control",
 };
 
-describe("AdminLicensing Hub Resend execute", () => {
+describe("AdminLicensing Submit via Hub", () => {
   beforeEach(() => {
     callHubFn.mockReset();
     callHubFn.mockImplementation(async (action: string, body?: Record<string, unknown>) => {
       if (action === "list_music_supervisors") return { rows: [] };
       if (action === "list_tracks") return { rows: [trackRow] };
       if (action === "list_licensing_pitches") return { rows: [] };
-      if (action === "list_sync_pending_drafts") return { drafts: [approvedDraft] };
-      if (action === "execute_sync_pitch") {
+      if (action === "list_sync_pending_drafts") return { drafts: [pendingDraft] };
+      if (action === "submit_sync_outreach") {
         return {
           ok: true,
           dry_run: Boolean(body?.dry_run),
@@ -52,7 +52,7 @@ describe("AdminLicensing Hub Resend execute", () => {
     });
   });
 
-  it("lists approved drafts and dry-runs execute_sync_pitch without sending", async () => {
+  it("lists pending drafts and dry-runs submit_sync_outreach without sending", async () => {
     render(
       <MemoryRouter>
         <AdminLicensing />
@@ -62,13 +62,17 @@ describe("AdminLicensing Hub Resend execute", () => {
     await waitFor(() => {
       expect(screen.getByTestId("sync-hub-execute")).toBeInTheDocument();
     });
+    expect(callHubFn).toHaveBeenCalledWith("list_sync_pending_drafts", expect.objectContaining({
+      status: "pending",
+    }));
     expect(screen.getByText("Fixture licensing subject")).toBeInTheDocument();
     expect(screen.getByText("Runway Music")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Submit via Hub" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Dry-run" }));
 
     await waitFor(() => {
-      expect(callHubFn).toHaveBeenCalledWith("execute_sync_pitch", expect.objectContaining({
+      expect(callHubFn).toHaveBeenCalledWith("submit_sync_outreach", expect.objectContaining({
         draft_id: "draft-1",
         dry_run: true,
         test_mode: false,
@@ -79,8 +83,9 @@ describe("AdminLicensing Hub Resend execute", () => {
     await waitFor(() => {
       expect(screen.getByTestId("sync-hub-dry-run-preview")).toHaveTextContent("pitches@fendifrost.com");
     });
-    expect(callHubFn.mock.calls.some(([action]) => action === "execute_sync_pitch" &&
-      (callHubFn.mock.calls.find(([a]) => a === "execute_sync_pitch")?.[1] as { dry_run?: boolean })?.dry_run === false,
+    expect(callHubFn.mock.calls.some(([, body]) =>
+      (body as { dry_run?: boolean } | undefined)?.dry_run === false &&
+      callHubFn.mock.calls.find(([a]) => a === "submit_sync_outreach"),
     )).toBe(false);
   });
 });

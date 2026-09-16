@@ -1,8 +1,8 @@
 // Operator-only song flags + music-supervisor roster + licensing pitch log.
 // Mirrors playlist pitch_log: who was pitched, when, whether they responded.
-// Manual rows: log_licensing_pitch. Hub Resend sends: insertHubLicensingPitchLog
-// (called from submit_sync_outreach / execute_sync_pitch).
-// Genre stamps are never gated by display-title literals.
+// No send path — recording only. log_licensing_pitch never calls Resend.
+// Hub Resend accept writes via insertHubLicensingPitchLog from sync-control
+// (submit_sync_outreach). Genre stamps are never gated by display-title literals.
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
@@ -277,6 +277,7 @@ export async function insertHubLicensingPitchLog(
     email_body?: string | null;
     from_address?: string | null;
     dispatched_via?: string | null;
+    song_dna_version_id?: string | null;
   },
 ): Promise<{ ok: true; row: Record<string, unknown> } | { ok: false; error: string }> {
   const trackName = String(row.track_name ?? "").trim();
@@ -318,7 +319,8 @@ export async function insertHubLicensingPitchLog(
     subject: row.subject ?? null,
     email_body: row.email_body ?? null,
     from_address: row.from_address ?? null,
-    dispatched_via: row.dispatched_via ?? "hub_resend",
+    dispatched_via: row.dispatched_via ?? "submit_sync_outreach",
+    song_dna_version_id: row.song_dna_version_id ?? null,
   }).select().single();
   if (error) return { ok: false, error: error.message };
   return { ok: true, row: data as Record<string, unknown> };

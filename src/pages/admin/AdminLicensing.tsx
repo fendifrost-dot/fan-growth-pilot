@@ -54,7 +54,7 @@ type PitchRow = {
   dispatched_via?: string | null;
 };
 
-type ApprovedDraft = {
+type PendingDraft = {
   id: string;
   track_id: string;
   subject: string | null;
@@ -94,7 +94,7 @@ const AdminLicensing: React.FC = () => {
   const [trackFilter, setTrackFilter] = useState("");
   const [editingNotesId, setEditingNotesId] = useState<string | null>(null);
   const [notesDraft, setNotesDraft] = useState("");
-  const [approvedDrafts, setApprovedDrafts] = useState<ApprovedDraft[]>([]);
+  const [pendingDrafts, setPendingDrafts] = useState<PendingDraft[]>([]);
   const [lastPreview, setLastPreview] = useState<Record<string, unknown> | null>(null);
 
   const defaultTrackId = useMemo(() => {
@@ -112,15 +112,15 @@ const AdminLicensing: React.FC = () => {
           only_pending_response: onlyPending,
           limit: 200,
         }),
-        callHubFn<{ drafts: ApprovedDraft[] }>("list_sync_pending_drafts", {
-          status: "approved",
+        callHubFn<{ drafts: PendingDraft[] }>("list_sync_pending_drafts", {
+          status: "pending",
           limit: 50,
-        }).catch(() => ({ drafts: [] as ApprovedDraft[] })),
+        }).catch(() => ({ drafts: [] as PendingDraft[] })),
       ]);
       setSupervisors(sup.rows ?? []);
       setTracks((tr.rows ?? []).map((r) => ({ id: r.id, name: r.name, is_month1_sync_default: r.is_month1_sync_default })));
       setPitches(lg.rows ?? []);
-      setApprovedDrafts(drafts.drafts ?? []);
+      setPendingDrafts(drafts.drafts ?? []);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to load licensing register");
     } finally {
@@ -215,13 +215,41 @@ const AdminLicensing: React.FC = () => {
     }
   };
 
-  const executeApproved = async (draftId: string, dryRun: boolean) => {
-    if (!dryRun && !confirm("Send this approved sync pitch via Hub Resend from the professional fendifrost.com From address?")) {
+  const approveDraft = async (draftId: string) => {
+    setSaving(draftId);
+    try {
+      await callHubFn("approve_sync_outreach", { draft_id: draftId });
+      toast.success("Draft approved (Grok/Fendi)");
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Approve failed");
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const rejectDraft = async (draftId: string) => {
+    const reason = window.prompt("Rejection reason");
+    if (!reason?.trim()) return;
+    setSaving(draftId);
+    try {
+      await callHubFn("reject_sync_outreach", { draft_id: draftId, rejection_reason: reason.trim() });
+      toast.success("Draft rejected");
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Reject failed");
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const submitViaHub = async (draftId: string, dryRun: boolean) => {
+    if (!dryRun && !confirm("Submit this approved sync pitch via Hub Resend? From will be @fendifrost.com, never Gmail.")) {
       return;
     }
     setSaving(draftId);
     try {
-      const res = await callHubFn<Record<string, unknown>>("execute_sync_pitch", {
+      const res = await callHubFn<Record<string, unknown>>("submit_sync_outreach", {
         draft_id: draftId,
         submission_channel: "email",
         dry_run: dryRun,
@@ -231,12 +259,12 @@ const AdminLicensing: React.FC = () => {
         setLastPreview(res);
         toast.success(`Dry run — From ${String(res.from_address ?? "professional domain")}`);
       } else {
-        toast.success("Sync pitch sent via Hub Resend");
+        toast.success("Submitted via Hub Resend");
         setLastPreview(null);
       }
       await load();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Execute failed");
+      toast.error(e instanceof Error ? e.message : "Submit failed");
     } finally {
       setSaving(null);
     }
@@ -262,23 +290,23 @@ const AdminLicensing: React.FC = () => {
         <Link to="/admin" className="text-xs text-muted-foreground hover:underline">← Command center</Link>
         <h1 className="text-2xl font-semibold tracking-tight mt-1">Licensing register</h1>
         <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
-          Same bookkeeping as playlist submissions: who was pitched, which song, when, whether they responded.
-          Approved sync drafts execute through Hub Resend (same <code className="text-xs">FROM_EMAIL</code> /
-          fendifrost.com pattern as playlist pitches) — not Gmail. Sync eligibility stays on the catalogue gate.
+          Record external pitches here. Hub email goes through <code className="text-xs">submit_sync_outreach</code>
+          (Grok/Fendi only) so From is <code className="text-xs">@fendifrost.com</code>, never Gmail.
+          Sync eligibility stays on the catalogue gate, separate from playlist.
         </p>
       </div>
 
       <Card className="p-5 space-y-4" data-testid="sync-hub-execute">
         <div>
-          <h2 className="font-medium">Execute approved sync pitch via Hub</h2>
+          <h2 className="font-medium">Pending sync drafts — Submit via Hub</h2>
           <p className="text-xs text-muted-foreground mt-1">
-            Dry-run first. Live send uses Resend secrets already configured for playlist execute
-            (<code>RESEND_API_KEY</code>, <code>FROM_EMAIL</code>, <code>REPLY_TO_EMAIL</code>)
-            and writes <code>licensing_pitch_log</code> with server-stamped approved_by / sent_by.
+            Same Resend path as playlist (<code>RESEND_API_KEY</code>, optional <code>SYNC_FROM_EMAIL</code>,
+            else <code>FROM_EMAIL</code>). Reply-To may be <code>replies@</code> or Gmail. Approve, then
+            Submit via Hub. Human admin can list/record only.
           </p>
         </div>
-        {approvedDrafts.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No approved sync drafts ready to execute.</p>
+        {pendingDrafts.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No pending sync drafts.</p>
         ) : (
           <div className="overflow-x-auto border rounded-lg">
             <table className="w-full text-sm">
@@ -286,35 +314,60 @@ const AdminLicensing: React.FC = () => {
                 <tr>
                   <th className="text-left p-3">Subject</th>
                   <th className="text-left p-3">Song</th>
+                  <th className="text-left p-3">Status</th>
                   <th className="text-left p-3">Approved by</th>
                   <th className="text-left p-3">Action</th>
                 </tr>
               </thead>
               <tbody>
-                {approvedDrafts.map((d) => {
+                {pendingDrafts.map((d) => {
                   const song = tracks.find((t) => t.id === d.track_id)?.name ?? d.track_id;
+                  const approved = d.status === "approved";
                   return (
                     <tr key={d.id} className="border-t">
                       <td className="p-3 text-xs">{d.subject || "—"}</td>
                       <td className="p-3 text-xs">{song}</td>
+                      <td className="p-3 text-xs">{d.status}</td>
                       <td className="p-3 text-xs">{d.approved_by_label || d.approved_by || "—"}</td>
                       <td className="p-3">
                         <div className="flex flex-wrap gap-2">
+                          {!approved && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={saving === d.id}
+                              onClick={() => approveDraft(d.id)}
+                            >
+                              Approve
+                            </Button>
+                          )}
                           <Button
                             size="sm"
-                            variant="outline"
+                            variant="ghost"
                             disabled={saving === d.id}
-                            onClick={() => executeApproved(d.id, true)}
+                            onClick={() => rejectDraft(d.id)}
                           >
-                            Dry-run
+                            Reject
                           </Button>
-                          <Button
-                            size="sm"
-                            disabled={saving === d.id}
-                            onClick={() => executeApproved(d.id, false)}
-                          >
-                            Send via Hub
-                          </Button>
+                          {approved && (
+                            <>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={saving === d.id}
+                                onClick={() => submitViaHub(d.id, true)}
+                              >
+                                Dry-run
+                              </Button>
+                              <Button
+                                size="sm"
+                                disabled={saving === d.id}
+                                onClick={() => submitViaHub(d.id, false)}
+                              >
+                                Submit via Hub
+                              </Button>
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -536,7 +589,7 @@ const AdminLicensing: React.FC = () => {
                     </td>
                     <td className="p-3 text-xs">{r.track_name}</td>
                     <td className="p-3 text-xs">
-                      <div>{r.from_address || (r.dispatched_via === "hub_resend" ? "Hub Resend" : "manual log")}</div>
+                      <div>{r.from_address || (r.dispatched_via === "submit_sync_outreach" ? "Hub Resend" : "manual log")}</div>
                       <div className="text-muted-foreground">{r.sent_by || r.approved_by || "—"}</div>
                     </td>
                     <td className="p-3">

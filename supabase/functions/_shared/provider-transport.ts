@@ -1,10 +1,11 @@
 /**
  * Provider email transport. Test mode never calls Resend.
  * Sent is only true after the provider accepts the payload.
- * From / Reply-To come from the shared resend-pitch helpers (FROM_EMAIL / REPLY_TO_EMAIL).
+ *
+ * Playlist execute-pitch / resend-pitch.ts From helpers are unchanged.
+ * Sync submit may opt into SYNC_FROM_EMAIL (env-only, never caller-supplied).
+ * From is never Gmail — Reply-To may be replies@ or a Gmail inbox.
  */
-import { pitchFromHeader, pitchReplyTo } from "./resend-pitch.ts";
-
 export type ProviderSendInput = {
   to: string[];
   subject: string;
@@ -14,6 +15,8 @@ export type ProviderSendInput = {
   attachments?: Array<{ filename: string; content: string; contentType?: string }>;
   /** Per-request mock — never hits Resend, even when env test flags are unset. */
   forceTestMode?: boolean;
+  /** Use SYNC_FROM_EMAIL when set; otherwise the shared FROM_EMAIL default. */
+  useSyncFrom?: boolean;
 };
 
 export type ProviderSendResult =
@@ -35,9 +38,26 @@ export function sanitizeProviderError(raw: string): string {
     .slice(0, 400);
 }
 
+function looksLikeGmailMailbox(raw: string): boolean {
+  const email = raw.replace(/^.*<([^>]+)>$/, "$1").trim().toLowerCase();
+  return email.endsWith("@gmail.com") || email.endsWith("@googlemail.com");
+}
+
+/** Professional From. Env-only. Gmail From is rejected (falls back to pitches@). */
+export function providerFromHeader(opts?: { useSyncFrom?: boolean }): string {
+  const syncRaw = opts?.useSyncFrom ? (Deno.env.get("SYNC_FROM_EMAIL") || "").trim() : "";
+  const fromRaw = (Deno.env.get("FROM_EMAIL") || "pitches@fendifrost.com").trim();
+  const chosen = syncRaw || fromRaw || "pitches@fendifrost.com";
+  if (looksLikeGmailMailbox(chosen)) {
+    return "Fendi Frost <pitches@fendifrost.com>";
+  }
+  return chosen.includes("<") ? chosen : `Fendi Frost <${chosen}>`;
+}
+
 export async function sendProviderEmail(
   input: ProviderSendInput,
 ): Promise<ProviderSendResult> {
+  const from = providerFromHeader({ useSyncFrom: Boolean(input.useSyncFrom) });
   if (isProviderTestMode(input)) {
     const forced = (Deno.env.get("AGH_PROVIDER_FORCE_FAILURE") || "").trim();
     if (forced) {
@@ -54,7 +74,7 @@ export async function sendProviderEmail(
       raw: {
         test_mode: true,
         id: `test_${input.idempotencyKey || "msg"}`,
-        from: pitchFromHeader(),
+        from,
       },
     };
   }
@@ -64,8 +84,7 @@ export async function sendProviderEmail(
     return { ok: false, status: 500, error: "RESEND_API_KEY not configured", retryable: false };
   }
 
-  const from = pitchFromHeader();
-  const replyTo = pitchReplyTo();
+  const replyTo = (Deno.env.get("REPLY_TO_EMAIL") || "replies@fendifrost.com").trim();
   const payload: Record<string, unknown> = {
     from,
     to: input.to,

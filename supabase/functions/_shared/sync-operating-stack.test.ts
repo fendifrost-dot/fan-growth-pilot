@@ -5,6 +5,7 @@
 import {
   assert,
   assertEquals,
+  assertFalse,
   assertStringIncludes,
 } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
@@ -508,7 +509,8 @@ Deno.test("ACTION_SPEC covers sync research, control, and gate actions", () => {
   }
   assertEquals(ACTION_SPEC.get_sync_eligibility.cls, "authenticated-read");
   assertEquals(isSyncControlAction("approve_sync_outreach"), true);
-  assertEquals(isSyncControlAction("execute_sync_pitch"), true);
+  assertEquals(isSyncControlAction("submit_sync_outreach"), true);
+  assertEquals(isSyncControlAction("execute_sync_pitch"), false);
   assertEquals(isSyncGateAction("approve_sync_eligibility"), true);
 });
 
@@ -750,12 +752,12 @@ Deno.test("authorizeAction denies Claude sync approve/submit", async () => {
     );
     assertEquals(gateDenied.ok, false);
 
-    const executeDenied = await authorizeAction(
-      "execute_sync_pitch",
+    const submitDenied = await authorizeAction(
+      "submit_sync_outreach",
       req({ "x-claude-sync-discovery-secret": "sync-secret" }),
       fakeSb,
     );
-    assertEquals(executeDenied.ok, false);
+    assertEquals(submitDenied.ok, false);
   });
 });
 
@@ -970,7 +972,8 @@ Deno.test("sync email submit: test-mode provider accept marks submitted; caller 
     assert(log);
     assertEquals(log.approved_by, "grok_playlist_control");
     assertEquals(log.sent_by, "grok_playlist_control");
-    assertEquals(log.dispatched_via, "hub_resend");
+    assertEquals(log.dispatched_via, "submit_sync_outreach");
+    assert(log.resend_message_id ? String(log.resend_message_id).startsWith("test_") : true);
     assertEquals(log.draft_id, draftId);
     assertStringIncludes(String(log.from_address ?? ""), "fendifrost.com");
     const replay = await submitSyncOutreach(sb as never, { draft_id: draftId, submission_channel: "email" }, grok);
@@ -1059,8 +1062,11 @@ Deno.test("sync email dry_run previews From address and does not mark submitted"
   });
 });
 
-Deno.test("execute_sync_pitch alias + per-request test_mode never calls live Resend", async () => {
-  await withEnv({ GROK_PLAYLIST_CONTROL_SECRET: "grok-secret" }, async () => {
+Deno.test("submit_sync_outreach test_mode + SYNC_FROM_EMAIL; Gmail From is rejected", async () => {
+  await withEnv({
+    GROK_PLAYLIST_CONTROL_SECRET: "grok-secret",
+    SYNC_FROM_EMAIL: "sync@fendifrost.com",
+  }, async () => {
     const draftId = crypto.randomUUID();
     const oppId = crypto.randomUUID();
     const targetId = crypto.randomUUID();
@@ -1087,7 +1093,7 @@ Deno.test("execute_sync_pitch alias + per-request test_mode never calls live Res
     });
     const grok = resolveOpsActor(null, req({ "x-grok-playlist-control-secret": "grok-secret" }));
     const sent = await runSyncControlAction(
-      "execute_sync_pitch",
+      "submit_sync_outreach",
       { draft_id: draftId, submission_channel: "email", test_mode: true },
       sb as never,
       null,
@@ -1096,10 +1102,53 @@ Deno.test("execute_sync_pitch alias + per-request test_mode never calls live Res
     assertEquals(sent.status, 200);
     assertEquals(sent.data.submitted, true);
     assert(String(sent.data.provider_message_id || "").startsWith("test_"));
-    const log = sent.data.licensing_pitch_log as { sent_by?: string; approved_by?: string } | null;
+    assertEquals(sent.data.from_address, "Fendi Frost <sync@fendifrost.com>");
+    const log = sent.data.licensing_pitch_log as {
+      sent_by?: string;
+      approved_by?: string;
+      resend_message_id?: string;
+      dispatched_via?: string;
+    } | null;
     assertEquals(log?.approved_by, "grok_playlist_control");
     assertEquals(log?.sent_by, grok.kind);
-    assertEquals(typeof grok.kind, "string");
+    assertEquals(log?.dispatched_via, "submit_sync_outreach");
+    assert(String(log?.resend_message_id || "").startsWith("test_"));
+  });
+
+  await withEnv({
+    GROK_PLAYLIST_CONTROL_SECRET: "grok-secret",
+    SYNC_FROM_EMAIL: "fendifrost@gmail.com",
+    FROM_EMAIL: "pitches@fendifrost.com",
+  }, async () => {
+    const draftId = crypto.randomUUID();
+    const oppId = crypto.randomUUID();
+    const targetId = crypto.randomUUID();
+    const sb = mockSb({
+      tracks: [eligibleTrack(MEDITATE_ID, "in-scope")],
+      dna: [approvedDna(MEDITATE_ID)],
+      targets: [{
+        id: targetId,
+        status: "verified",
+        verified_contact_path: "supervisor@example.com",
+      }],
+      opportunities: [{ id: oppId, sync_target_id: targetId }],
+      drafts: [{
+        id: draftId,
+        opportunity_id: oppId,
+        track_id: MEDITATE_ID,
+        status: "approved",
+        subject: "s",
+        body: "b",
+      }],
+    });
+    const grok = resolveOpsActor(null, req({ "x-grok-playlist-control-secret": "grok-secret" }));
+    const preview = await submitSyncOutreach(sb as never, {
+      draft_id: draftId,
+      submission_channel: "email",
+      dry_run: true,
+    }, grok);
+    assertEquals(preview.data.from_address, "Fendi Frost <pitches@fendifrost.com>");
+    assertFalse(String(preview.data.from_address ?? "").includes("gmail.com"));
   });
 });
 

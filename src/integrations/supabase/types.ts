@@ -2105,6 +2105,7 @@ export type Database = {
           sent_at: string | null
           sent_by: string | null
           sent_by_label: string | null
+          song_dna_version_id: string | null
           status: string
           subject: string | null
           supervisor_id: string | null
@@ -2134,6 +2135,7 @@ export type Database = {
           sent_at?: string | null
           sent_by?: string | null
           sent_by_label?: string | null
+          song_dna_version_id?: string | null
           status?: string
           subject?: string | null
           supervisor_id?: string | null
@@ -2163,6 +2165,7 @@ export type Database = {
           sent_at?: string | null
           sent_by?: string | null
           sent_by_label?: string | null
+          song_dna_version_id?: string | null
           status?: string
           subject?: string | null
           supervisor_id?: string | null

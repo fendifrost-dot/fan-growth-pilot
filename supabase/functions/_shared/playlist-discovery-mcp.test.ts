@@ -150,6 +150,31 @@ function stubSb(
         error: null,
       };
     }
+    if (name === "advance_agh_handoff_batch") {
+      const batch = (tables.agh_handoff_batches ?? []).find(
+        (b) => String(b.id) === String(args.p_batch_id),
+      );
+      if (!batch) {
+        return { data: { ok: false, code: "conflict", error: "batch not found" }, error: null };
+      }
+      if (String(batch.queue_state) !== String(args.p_expected_state)) {
+        return { data: { ok: false, code: "conflict", error: "state_mismatch" }, error: null };
+      }
+      batch.queue_state = String(args.p_next_state);
+      const stamps = (args.p_stamps as Row) ?? {};
+      Object.assign(batch, stamps);
+      for (const rec of tables.agh_handoff_records ?? []) {
+        if (String(rec.batch_id) !== String(batch.id)) continue;
+        rec.queue_state = String(args.p_next_state);
+        const next = String(args.p_next_state);
+        if (next === "CLAUDE_PLAYLIST_COMPLETE" || next === "AWAITING_GROK_REVIEW") {
+          rec.drafted_by = rec.drafted_by ?? stamps.drafted_by ?? batch.drafted_by;
+          rec.drafted_by_label = rec.drafted_by_label ?? stamps.drafted_by_label ??
+            batch.drafted_by_label;
+        }
+      }
+      return { data: { ok: true, batch, records_updated: 1 }, error: null };
+    }
     if (name === "agh_mcp_delete_empty_handoff_batch") {
       const id = String(args.p_batch_id);
       const batch = (tables.agh_handoff_batches ?? []).find((b) => String(b.id) === id);
@@ -612,6 +637,7 @@ Deno.test("create_playlist_draft_inventory happy path: atomic persist; no copy i
   const dnaId = "22222222-2222-2222-2222-222222222222";
   const playlistId = "0DAtAjCytSoXd6T42mP0CJ";
   let persistItems: Row[] | null = null;
+  let persistAttr: Row | null = null;
   const tables: Record<string, Row[]> = {
     tracks: [{ id: trackId, name: "Song", approved_song_dna_version_id: dnaId }],
     song_dna_versions: [{
@@ -661,6 +687,7 @@ Deno.test("create_playlist_draft_inventory happy path: atomic persist; no copy i
       }),
       persistInventory: async (_sb, args) => {
         persistItems = args.items as Row[];
+        persistAttr = args.attr as Row;
         const key = inventoryIdempotencyKey(trackId, playlistId, "email", dnaId);
         tables.outreach_drafts.push({
           id: "draft-99",
@@ -671,7 +698,14 @@ Deno.test("create_playlist_draft_inventory happy path: atomic persist; no copy i
           channel: "email",
           body: "server-composed DNA pitch only",
         });
-        tables.agh_handoff_batches.push({ id: "batch-1", record_count: 1 });
+        tables.agh_handoff_batches.push({
+          id: "batch-1",
+          record_count: 1,
+          batch_kind: "playlist",
+          queue_state: "CLAUDE_BATCH_READY",
+          discovered_by: "claude_playlist_discovery",
+          drafted_by: null,
+        });
         tables.agh_handoff_records.push({
           id: "rec-1",
           batch_id: "batch-1",
@@ -681,6 +715,7 @@ Deno.test("create_playlist_draft_inventory happy path: atomic persist; no copy i
           song_dna_version_id: dnaId,
           outreach_draft_id: "draft-99",
           queue_state: "CLAUDE_BATCH_READY",
+          drafted_by: null,
         });
         return {
           data: {
@@ -710,6 +745,11 @@ Deno.test("create_playlist_draft_inventory happy path: atomic persist; no copy i
   assertEquals(res.data.discovered_by, "claude_playlist_discovery");
   assertEquals(res.data.drafted_by, "claude_playlist_discovery");
   assert(persistItems);
+  assert(persistAttr);
+  assertEquals(persistAttr!.discovered_by, "claude_playlist_discovery");
+  assertEquals(persistAttr!.discovered_by_label, "claude_playlist_discovery");
+  assertEquals(persistAttr!.drafted_by, "claude_playlist_discovery");
+  assertEquals(persistAttr!.drafted_by_label, "claude_playlist_discovery");
   assertEquals(persistItems!.length, 1);
   assertEquals(persistItems![0].idempotency_key, inventoryIdempotencyKey(trackId, playlistId, "email", dnaId));
   const pkt = persistItems![0].packet as Row;
@@ -719,6 +759,116 @@ Deno.test("create_playlist_draft_inventory happy path: atomic persist; no copy i
   assertEquals(pkt.subject, undefined);
   assertEquals(pkt.packet_kind, "email_outreach_draft");
   assertEquals((persistItems![0].draft as Row).body, "server-composed DNA pitch only");
+  assertEquals(res.data.queue_state, "AWAITING_GROK_REVIEW");
+  assertEquals(tables.agh_handoff_batches[0].queue_state, "AWAITING_GROK_REVIEW");
+  assertEquals(tables.agh_handoff_batches[0].drafted_by, "claude_playlist_discovery");
+  assertEquals(tables.agh_handoff_records[0].queue_state, "AWAITING_GROK_REVIEW");
+  assertEquals(tables.agh_handoff_records[0].drafted_by, "claude_playlist_discovery");
+});
+
+Deno.test("inventory persist attr + promotion lifts CLAUDE_BATCH_READY drafted_by NULL into AWAITING_GROK_REVIEW", async () => {
+  const ops = playlistDiscoveryActor();
+  const trackId = "11111111-1111-1111-1111-111111111111";
+  const dnaId = "22222222-2222-2222-2222-222222222222";
+  const playlistId = "0DAtAjCytSoXd6T42mP0CJ";
+  let persistAttr: Row | null = null;
+  const tables: Record<string, Row[]> = {
+    tracks: [{ id: trackId, name: "Song", approved_song_dna_version_id: dnaId }],
+    song_dna_versions: [{
+      id: dnaId,
+      track_id: trackId,
+      approval_state: "approved",
+      approved_lanes: ["rap_general"],
+      excluded_lanes: ["house_general"],
+      short_pitch: "server-composed DNA pitch only",
+      primary_genre: "rap",
+    }],
+    playlist_targets: [{
+      playlist_id: playlistId,
+      contact_method: "email",
+      submission_method: "email",
+      path_verified: true,
+      verification_status: "auto_verified",
+      curator_email: "ok@curator.test",
+      lane: "rap_general",
+    }],
+    outreach_drafts: [],
+    agh_handoff_records: [],
+    agh_handoff_batches: [],
+  };
+
+  const res = await createPlaylistDraftInventory(
+    stubSb(tables),
+    ops,
+    { track_id: trackId, accepted_candidate_ids: [playlistId] },
+    {
+      composeDraft: async () => ({
+        status: 200,
+        data: {
+          ok: true,
+          composed: true,
+          persist: false,
+          channel: "email",
+          subject: "Subj",
+          body: "server-composed DNA pitch only",
+          recipient: "ok@curator.test",
+          track_name: "Song",
+          pitch_copy_source: "song_dna_versions.short_pitch",
+          pitch_copy_hash: "abc",
+          generated_by: "claude_playlist_discovery",
+          metadata: {},
+        },
+      }),
+      persistInventory: async (_sb, args) => {
+        persistAttr = args.attr as Row;
+        tables.agh_handoff_batches.push({
+          id: "batch-stranded",
+          record_count: 1,
+          batch_kind: "playlist",
+          queue_state: "CLAUDE_BATCH_READY",
+          discovered_by: persistAttr.discovered_by,
+          drafted_by: persistAttr.drafted_by,
+          drafted_by_label: persistAttr.drafted_by_label,
+        });
+        tables.agh_handoff_records.push({
+          id: "rec-stranded",
+          batch_id: "batch-stranded",
+          queue_state: "CLAUDE_BATCH_READY",
+          drafted_by: persistAttr.drafted_by,
+          drafted_by_label: persistAttr.drafted_by_label,
+        });
+        return {
+          data: {
+            ok: true,
+            idempotent: false,
+            batch_id: "batch-stranded",
+            inserted: 1,
+            record_count: 1,
+            items: [{ batch_id: "batch-stranded", reused: false }],
+          },
+          error: null,
+        };
+      },
+    },
+  );
+
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals(persistAttr?.drafted_by, "claude_playlist_discovery");
+  assertEquals(res.data.queue_state, "AWAITING_GROK_REVIEW");
+  assertEquals(tables.agh_handoff_batches[0].queue_state, "AWAITING_GROK_REVIEW");
+  assertEquals(tables.agh_handoff_batches[0].drafted_by, "claude_playlist_discovery");
+  assertEquals(tables.agh_handoff_records[0].queue_state, "AWAITING_GROK_REVIEW");
+  assertEquals(tables.agh_handoff_records[0].drafted_by, "claude_playlist_discovery");
+});
+
+Deno.test("persist inventory migration writes drafted_by on batches and records", () => {
+  const sql = Deno.readTextFileSync(
+    new URL("../../migrations/20260915120000_playlist_inventory_drafted_by_promote.sql", import.meta.url),
+  );
+  assert(sql.includes("drafted_by, drafted_by_label"));
+  assert(sql.includes("v_drafted_by := coalesce(nullif(p_attr->>'drafted_by', ''), v_discovered_by)"));
+  assert(sql.includes("coalesce(r.drafted_by, nullif(v_stamps->>'drafted_by', ''), v_batch.drafted_by)"));
+  assert(!/meditate|designed for me|designedforme/i.test(sql));
 });
 
 Deno.test("unverified candidates cannot enter draft inventory", async () => {
@@ -758,30 +908,32 @@ Deno.test("web-form inventory stays manual (no outreach_draft); channel preserve
   const trackId = "11111111-1111-1111-1111-111111111111";
   const dnaId = "22222222-2222-2222-2222-222222222222";
   let seen: Row[] = [];
+  const tables: Record<string, Row[]> = {
+    tracks: [{ id: trackId, name: "Song", approved_song_dna_version_id: dnaId }],
+    song_dna_versions: [{
+      id: dnaId,
+      track_id: trackId,
+      approval_state: "approved",
+      short_pitch: "pitch",
+      approved_lanes: ["rap_general"],
+      excluded_lanes: [],
+      primary_genre: "rap",
+    }],
+    playlist_targets: [{
+      playlist_id: "pl-form",
+      contact_method: "web_form",
+      submission_method: "web_form",
+      path_verified: true,
+      verification_status: "auto_verified",
+      form_url: "https://form.example/submit",
+      lane: "rap_general",
+    }],
+    outreach_drafts: [],
+    agh_handoff_records: [],
+    agh_handoff_batches: [],
+  };
   const res = await createPlaylistDraftInventory(
-    stubSb({
-      tracks: [{ id: trackId, name: "Song", approved_song_dna_version_id: dnaId }],
-      song_dna_versions: [{
-        id: dnaId,
-        track_id: trackId,
-        approval_state: "approved",
-        short_pitch: "pitch",
-        approved_lanes: ["rap_general"],
-        excluded_lanes: [],
-        primary_genre: "rap",
-      }],
-      playlist_targets: [{
-        playlist_id: "pl-form",
-        contact_method: "web_form",
-        submission_method: "web_form",
-        path_verified: true,
-        verification_status: "auto_verified",
-        form_url: "https://form.example/submit",
-        lane: "rap_general",
-      }],
-      outreach_drafts: [],
-      agh_handoff_records: [],
-    }),
+    stubSb(tables),
     ops,
     { track_id: trackId, accepted_candidate_ids: ["pl-form"] },
     {
@@ -790,6 +942,12 @@ Deno.test("web-form inventory stays manual (no outreach_draft); channel preserve
       },
       persistInventory: async (_sb, args) => {
         seen = args.items as Row[];
+        tables.agh_handoff_batches.push({
+          id: "b1",
+          batch_kind: "playlist",
+          queue_state: "CLAUDE_BATCH_READY",
+          record_count: 1,
+        });
         return {
           data: {
             ok: true,
@@ -1149,7 +1307,13 @@ Deno.test("inventory identical request retried returns existing (idempotent)", a
     playlist_id: "pl-d",
     channel: "email",
   });
-  tables.agh_handoff_batches.push({ id: "batch-d", record_count: 1 });
+  tables.agh_handoff_batches.push({
+    id: "batch-d",
+    record_count: 1,
+    batch_kind: "playlist",
+    queue_state: "CLAUDE_BATCH_READY",
+    drafted_by: null,
+  });
   tables.agh_handoff_records.push({
     id: "rec-d",
     batch_id: "batch-d",
@@ -1177,8 +1341,11 @@ Deno.test("inventory identical request retried returns existing (idempotent)", a
   assertEquals(res.status, 200, JSON.stringify(res.data));
   assertEquals(res.data.idempotent, true);
   assertEquals(res.data.batch_id, "batch-d");
+  assertEquals(res.data.queue_state, "AWAITING_GROK_REVIEW");
   assertEquals(tables.outreach_drafts.length, 1);
   assertEquals(tables.agh_handoff_records.length, 1);
+  assertEquals(tables.agh_handoff_batches[0].queue_state, "AWAITING_GROK_REVIEW");
+  assertEquals(tables.agh_handoff_batches[0].drafted_by, "claude_playlist_discovery");
 });
 
 Deno.test("terminal draft status allows retry with same idempotency key", async () => {
@@ -1212,7 +1379,12 @@ Deno.test("terminal draft status allows retry with same idempotency key", async 
           track_id: trackId,
           playlist_id: "pl-term",
         });
-        tables.agh_handoff_batches.push({ id: "batch-new", record_count: 1 });
+        tables.agh_handoff_batches.push({
+          id: "batch-new",
+          record_count: 1,
+          batch_kind: "playlist",
+          queue_state: "CLAUDE_BATCH_READY",
+        });
         tables.agh_handoff_records.push({
           id: "rec-new",
           batch_id: "batch-new",

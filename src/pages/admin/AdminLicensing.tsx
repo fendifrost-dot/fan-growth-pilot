@@ -47,6 +47,20 @@ type PitchRow = {
   placed: boolean;
   response_status: string;
   response_notes: string | null;
+  approved_by?: string | null;
+  sent_by?: string | null;
+  from_address?: string | null;
+  resend_message_id?: string | null;
+  dispatched_via?: string | null;
+};
+
+type PendingDraft = {
+  id: string;
+  track_id: string;
+  subject: string | null;
+  status: string;
+  approved_by?: string | null;
+  approved_by_label?: string | null;
 };
 
 const RESPONSE_LABEL: Record<LicensingResponse, string> = {
@@ -80,6 +94,8 @@ const AdminLicensing: React.FC = () => {
   const [trackFilter, setTrackFilter] = useState("");
   const [editingNotesId, setEditingNotesId] = useState<string | null>(null);
   const [notesDraft, setNotesDraft] = useState("");
+  const [pendingDrafts, setPendingDrafts] = useState<PendingDraft[]>([]);
+  const [lastPreview, setLastPreview] = useState<Record<string, unknown> | null>(null);
 
   const defaultTrackId = useMemo(() => {
     return tracks.find((t) => t.is_month1_sync_default)?.id ?? tracks[0]?.id ?? "";
@@ -88,7 +104,7 @@ const AdminLicensing: React.FC = () => {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [sup, tr, lg] = await Promise.all([
+      const [sup, tr, lg, drafts] = await Promise.all([
         callHubFn<{ rows: Supervisor[] }>("list_music_supervisors", {}),
         callHubFn<{ rows: TrackOpt[] }>("list_tracks", {}),
         callHubFn<{ rows: PitchRow[] }>("list_licensing_pitches", {
@@ -96,10 +112,15 @@ const AdminLicensing: React.FC = () => {
           only_pending_response: onlyPending,
           limit: 200,
         }),
+        callHubFn<{ drafts: PendingDraft[] }>("list_sync_pending_drafts", {
+          status: "pending",
+          limit: 50,
+        }).catch(() => ({ drafts: [] as PendingDraft[] })),
       ]);
       setSupervisors(sup.rows ?? []);
       setTracks((tr.rows ?? []).map((r) => ({ id: r.id, name: r.name, is_month1_sync_default: r.is_month1_sync_default })));
       setPitches(lg.rows ?? []);
+      setPendingDrafts(drafts.drafts ?? []);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to load licensing register");
     } finally {
@@ -194,6 +215,61 @@ const AdminLicensing: React.FC = () => {
     }
   };
 
+  const approveDraft = async (draftId: string) => {
+    setSaving(draftId);
+    try {
+      await callHubFn("approve_sync_outreach", { draft_id: draftId });
+      toast.success("Draft approved (Grok/Fendi)");
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Approve failed");
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const rejectDraft = async (draftId: string) => {
+    const reason = window.prompt("Rejection reason");
+    if (!reason?.trim()) return;
+    setSaving(draftId);
+    try {
+      await callHubFn("reject_sync_outreach", { draft_id: draftId, rejection_reason: reason.trim() });
+      toast.success("Draft rejected");
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Reject failed");
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const submitViaHub = async (draftId: string, dryRun: boolean) => {
+    if (!dryRun && !confirm("Submit this approved sync pitch via Hub Resend? From will be @fendifrost.com, never Gmail.")) {
+      return;
+    }
+    setSaving(draftId);
+    try {
+      const res = await callHubFn<Record<string, unknown>>("submit_sync_outreach", {
+        draft_id: draftId,
+        submission_channel: "email",
+        dry_run: dryRun,
+        test_mode: false,
+      });
+      if (dryRun) {
+        setLastPreview(res);
+        toast.success(`Dry run — From ${String(res.from_address ?? "professional domain")}`);
+      } else {
+        toast.success("Submitted via Hub Resend");
+        setLastPreview(null);
+      }
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Submit failed");
+    } finally {
+      setSaving(null);
+    }
+  };
+
   const saveNotes = async (rowId: string) => {
     setSaving(rowId);
     try {
@@ -214,11 +290,102 @@ const AdminLicensing: React.FC = () => {
         <Link to="/admin" className="text-xs text-muted-foreground hover:underline">← Command center</Link>
         <h1 className="text-2xl font-semibold tracking-tight mt-1">Licensing register</h1>
         <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
-          Same bookkeeping as playlist submissions: who was pitched, which song, when, whether they responded.
-          No licenses exist today — this log starts empty. The month-1 default is whichever
-          catalogue track has the data flag, not a hardcoded title.
+          Record external pitches here. Hub email goes through <code className="text-xs">submit_sync_outreach</code>
+          (Grok/Fendi only) so From is <code className="text-xs">@fendifrost.com</code>, never Gmail.
+          Sync eligibility stays on the catalogue gate, separate from playlist.
         </p>
       </div>
+
+      <Card className="p-5 space-y-4" data-testid="sync-hub-execute">
+        <div>
+          <h2 className="font-medium">Pending sync drafts — Submit via Hub</h2>
+          <p className="text-xs text-muted-foreground mt-1">
+            Same Resend path as playlist (<code>RESEND_API_KEY</code>, optional <code>SYNC_FROM_EMAIL</code>,
+            else <code>FROM_EMAIL</code>). Reply-To may be <code>replies@</code> or Gmail. Approve, then
+            Submit via Hub. Human admin can list/record only.
+          </p>
+        </div>
+        {pendingDrafts.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No pending sync drafts.</p>
+        ) : (
+          <div className="overflow-x-auto border rounded-lg">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/50">
+                <tr>
+                  <th className="text-left p-3">Subject</th>
+                  <th className="text-left p-3">Song</th>
+                  <th className="text-left p-3">Status</th>
+                  <th className="text-left p-3">Approved by</th>
+                  <th className="text-left p-3">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pendingDrafts.map((d) => {
+                  const song = tracks.find((t) => t.id === d.track_id)?.name ?? d.track_id;
+                  const approved = d.status === "approved";
+                  return (
+                    <tr key={d.id} className="border-t">
+                      <td className="p-3 text-xs">{d.subject || "—"}</td>
+                      <td className="p-3 text-xs">{song}</td>
+                      <td className="p-3 text-xs">{d.status}</td>
+                      <td className="p-3 text-xs">{d.approved_by_label || d.approved_by || "—"}</td>
+                      <td className="p-3">
+                        <div className="flex flex-wrap gap-2">
+                          {!approved && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={saving === d.id}
+                              onClick={() => approveDraft(d.id)}
+                            >
+                              Approve
+                            </Button>
+                          )}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={saving === d.id}
+                            onClick={() => rejectDraft(d.id)}
+                          >
+                            Reject
+                          </Button>
+                          {approved && (
+                            <>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={saving === d.id}
+                                onClick={() => submitViaHub(d.id, true)}
+                              >
+                                Dry-run
+                              </Button>
+                              <Button
+                                size="sm"
+                                disabled={saving === d.id}
+                                onClick={() => submitViaHub(d.id, false)}
+                              >
+                                Submit via Hub
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {lastPreview && (
+          <div className="text-xs rounded border p-3 space-y-1" data-testid="sync-hub-dry-run-preview">
+            <div><span className="text-muted-foreground">From:</span> {String(lastPreview.from_address ?? "—")}</div>
+            <div><span className="text-muted-foreground">To:</span> {String(lastPreview.to ?? "—")}</div>
+            <div><span className="text-muted-foreground">Subject:</span> {String(lastPreview.subject ?? "—")}</div>
+            <div><span className="text-muted-foreground">Would send:</span> {String(lastPreview.would_send)}</div>
+          </div>
+        )}
+      </Card>
 
       <Card className="p-5 space-y-4" data-testid="supervisor-roster">
         <div>
@@ -394,16 +561,17 @@ const AdminLicensing: React.FC = () => {
               <th className="text-left p-3">Pitched</th>
               <th className="text-left p-3">Contact</th>
               <th className="text-left p-3">Song</th>
+              <th className="text-left p-3">From / sent by</th>
               <th className="text-left p-3">Response</th>
               <th className="text-left p-3">Notes</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={5} className="p-4 text-muted-foreground">Loading…</td></tr>
+              <tr><td colSpan={6} className="p-4 text-muted-foreground">Loading…</td></tr>
             ) : pitches.length === 0 ? (
               <tr>
-                <td colSpan={5} className="p-6 text-muted-foreground text-center">
+                <td colSpan={6} className="p-6 text-muted-foreground text-center">
                   No licensing pitches yet. None are in the pipeline — log the first one above.
                 </td>
               </tr>
@@ -420,6 +588,10 @@ const AdminLicensing: React.FC = () => {
                       <div className="text-xs text-muted-foreground">{r.company || r.contact_email || "—"}</div>
                     </td>
                     <td className="p-3 text-xs">{r.track_name}</td>
+                    <td className="p-3 text-xs">
+                      <div>{r.from_address || (r.dispatched_via === "submit_sync_outreach" ? "Hub Resend" : "manual log")}</div>
+                      <div className="text-muted-foreground">{r.sent_by || r.approved_by || "—"}</div>
+                    </td>
                     <td className="p-3">
                       <Select
                         value={choice}

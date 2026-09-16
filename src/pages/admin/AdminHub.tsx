@@ -100,7 +100,7 @@ const AdminHub: React.FC = () => {
         </Card>
         <Card className="p-5">
           <h3 className="font-medium">Licensing register</h3>
-          <p className="text-sm text-muted-foreground mt-1">Supervisor roster + who / when / response</p>
+          <p className="text-sm text-muted-foreground mt-1">Supervisor roster, Hub Resend execute, who / when / response</p>
           <Button variant="outline" size="sm" className="mt-3" asChild>
             <Link to="/admin/licensing">Open →</Link>
           </Button>

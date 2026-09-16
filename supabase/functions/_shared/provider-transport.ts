@@ -1,6 +1,10 @@
 /**
  * Provider email transport. Test mode never calls Resend.
  * Sent is only true after the provider accepts the payload.
+ *
+ * Playlist execute-pitch / resend-pitch.ts From helpers are unchanged.
+ * Sync submit may opt into SYNC_FROM_EMAIL (env-only, never caller-supplied).
+ * From is never Gmail — Reply-To may be replies@ or a Gmail inbox.
  */
 export type ProviderSendInput = {
   to: string[];
@@ -9,13 +13,18 @@ export type ProviderSendInput = {
   html?: string;
   idempotencyKey?: string;
   attachments?: Array<{ filename: string; content: string; contentType?: string }>;
+  /** Per-request mock — never hits Resend, even when env test flags are unset. */
+  forceTestMode?: boolean;
+  /** Use SYNC_FROM_EMAIL when set; otherwise the shared FROM_EMAIL default. */
+  useSyncFrom?: boolean;
 };
 
 export type ProviderSendResult =
   | { ok: true; id: string; raw: Record<string, unknown> }
   | { ok: false; status: number; error: string; retryable: boolean };
 
-export function isProviderTestMode(): boolean {
+export function isProviderTestMode(input?: { forceTestMode?: boolean }): boolean {
+  if (input?.forceTestMode) return true;
   const flag = (Deno.env.get("AGH_PROVIDER_TEST_MODE") || Deno.env.get("AGH_TEST_MODE") || "")
     .trim()
     .toLowerCase();
@@ -29,10 +38,27 @@ export function sanitizeProviderError(raw: string): string {
     .slice(0, 400);
 }
 
+function looksLikeGmailMailbox(raw: string): boolean {
+  const email = raw.replace(/^.*<([^>]+)>$/, "$1").trim().toLowerCase();
+  return email.endsWith("@gmail.com") || email.endsWith("@googlemail.com");
+}
+
+/** Professional From. Env-only. Gmail From is rejected (falls back to pitches@). */
+export function providerFromHeader(opts?: { useSyncFrom?: boolean }): string {
+  const syncRaw = opts?.useSyncFrom ? (Deno.env.get("SYNC_FROM_EMAIL") || "").trim() : "";
+  const fromRaw = (Deno.env.get("FROM_EMAIL") || "pitches@fendifrost.com").trim();
+  const chosen = syncRaw || fromRaw || "pitches@fendifrost.com";
+  if (looksLikeGmailMailbox(chosen)) {
+    return "Fendi Frost <pitches@fendifrost.com>";
+  }
+  return chosen.includes("<") ? chosen : `Fendi Frost <${chosen}>`;
+}
+
 export async function sendProviderEmail(
   input: ProviderSendInput,
 ): Promise<ProviderSendResult> {
-  if (isProviderTestMode()) {
+  const from = providerFromHeader({ useSyncFrom: Boolean(input.useSyncFrom) });
+  if (isProviderTestMode(input)) {
     const forced = (Deno.env.get("AGH_PROVIDER_FORCE_FAILURE") || "").trim();
     if (forced) {
       return {
@@ -45,7 +71,11 @@ export async function sendProviderEmail(
     return {
       ok: true,
       id: `test_${input.idempotencyKey || "msg"}`,
-      raw: { test_mode: true, id: `test_${input.idempotencyKey || "msg"}` },
+      raw: {
+        test_mode: true,
+        id: `test_${input.idempotencyKey || "msg"}`,
+        from,
+      },
     };
   }
 
@@ -54,8 +84,6 @@ export async function sendProviderEmail(
     return { ok: false, status: 500, error: "RESEND_API_KEY not configured", retryable: false };
   }
 
-  const fromRaw = (Deno.env.get("FROM_EMAIL") || "pitches@fendifrost.com").trim();
-  const from = fromRaw.includes("<") ? fromRaw : `Fendi Frost <${fromRaw}>`;
   const replyTo = (Deno.env.get("REPLY_TO_EMAIL") || "replies@fendifrost.com").trim();
   const payload: Record<string, unknown> = {
     from,

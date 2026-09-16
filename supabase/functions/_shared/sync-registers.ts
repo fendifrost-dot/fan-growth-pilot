@@ -1,7 +1,8 @@
 // Operator-only song flags + music-supervisor roster + licensing pitch log.
 // Mirrors playlist pitch_log: who was pitched, when, whether they responded.
-// No send path — recording only. Licensing log starts empty (no seed rows).
-// Genre stamps are never gated by display-title literals.
+// No send path — recording only. log_licensing_pitch never calls Resend.
+// Hub Resend accept writes via insertHubLicensingPitchLog from sync-control
+// (submit_sync_outreach). Genre stamps are never gated by display-title literals.
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
@@ -251,4 +252,76 @@ export async function runSyncRegisterAction(
   }
 
   return { status: 400, data: { error: `Unknown sync-register action: ${action}` } };
+}
+
+/** Hub SoT row after a professional Resend send. Attribution is server-stamped. */
+export async function insertHubLicensingPitchLog(
+  sb: SupabaseClient,
+  row: {
+    supervisor_id?: string | null;
+    contact_name: string;
+    contact_email: string | null;
+    company?: string | null;
+    track_id: string | null;
+    track_name: string;
+    pitched_at?: string;
+    approved_by?: string | null;
+    approved_by_label?: string | null;
+    approved_at?: string | null;
+    sent_by?: string | null;
+    sent_by_label?: string | null;
+    sent_at?: string | null;
+    resend_message_id?: string | null;
+    draft_id?: string | null;
+    subject?: string | null;
+    email_body?: string | null;
+    from_address?: string | null;
+    dispatched_via?: string | null;
+    song_dna_version_id?: string | null;
+  },
+): Promise<{ ok: true; row: Record<string, unknown> } | { ok: false; error: string }> {
+  const trackName = String(row.track_name ?? "").trim();
+  const contactName = String(row.contact_name ?? "").trim();
+  if (!trackName) return { ok: false, error: "track_name required" };
+  if (!contactName) return { ok: false, error: "contact_name required" };
+
+  const draftId = row.draft_id ? String(row.draft_id) : null;
+  if (draftId) {
+    const { data: existing } = await sb
+      .from("licensing_pitch_log")
+      .select("*")
+      .eq("draft_id", draftId)
+      .maybeSingle();
+    if (existing) return { ok: true, row: existing as Record<string, unknown> };
+  }
+
+  const now = new Date().toISOString();
+  const { data, error } = await sb.from("licensing_pitch_log").insert({
+    supervisor_id: row.supervisor_id ?? null,
+    contact_name: contactName,
+    contact_email: row.contact_email ?? null,
+    company: row.company ?? null,
+    track_id: row.track_id ?? null,
+    track_name: trackName,
+    pitched_at: row.pitched_at ?? now,
+    status: "sent",
+    reply_received: false,
+    placed: false,
+    response_status: "awaiting",
+    approved_by: row.approved_by ?? null,
+    approved_by_label: row.approved_by_label ?? null,
+    approved_at: row.approved_at ?? null,
+    sent_by: row.sent_by ?? null,
+    sent_by_label: row.sent_by_label ?? null,
+    sent_at: row.sent_at ?? now,
+    resend_message_id: row.resend_message_id ?? null,
+    draft_id: draftId,
+    subject: row.subject ?? null,
+    email_body: row.email_body ?? null,
+    from_address: row.from_address ?? null,
+    dispatched_via: row.dispatched_via ?? "submit_sync_outreach",
+    song_dna_version_id: row.song_dna_version_id ?? null,
+  }).select().single();
+  if (error) return { ok: false, error: error.message };
+  return { ok: true, row: data as Record<string, unknown> };
 }

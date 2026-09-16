@@ -5,6 +5,7 @@
 import {
   assert,
   assertEquals,
+  assertFalse,
   assertStringIncludes,
 } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
@@ -36,7 +37,7 @@ import {
   getSyncDiscoveryWork,
   setSyncOperatingScope,
 } from "./sync-research.ts";
-import { SYNC_CONTROL_ACTIONS, isSyncControlAction, submitSyncOutreach, recordManualSyncOutreachSubmission } from "./sync-control.ts";
+import { SYNC_CONTROL_ACTIONS, isSyncControlAction, submitSyncOutreach, recordManualSyncOutreachSubmission, runSyncControlAction } from "./sync-control.ts";
 import { upsertOpsSetting, FENDI_LOCKED_OPS_SETTING_KEYS } from "./daily-ops.ts";
 import {
   SYNC_GATE_ACTIONS,
@@ -97,6 +98,8 @@ function mockSb(store: {
   batches?: Record<string, unknown>[];
   records?: Record<string, unknown>[];
   sheets?: Record<string, unknown>[];
+  licensingPitches?: Record<string, unknown>[];
+  supervisors?: Record<string, unknown>[];
 }) {
   const state = {
     settings: store.settings ?? {},
@@ -109,6 +112,8 @@ function mockSb(store: {
     batches: store.batches ?? [],
     records: store.records ?? [],
     sheets: store.sheets ?? [],
+    licensingPitches: store.licensingPitches ?? [],
+    supervisors: store.supervisors ?? [],
   };
 
   function table(name: string) {
@@ -137,6 +142,10 @@ function mockSb(store: {
           return state.records;
         case "split_sheets":
           return state.sheets;
+        case "licensing_pitch_log":
+          return state.licensingPitches;
+        case "music_supervisors":
+          return state.supervisors;
         default:
           return [];
       }
@@ -192,6 +201,8 @@ function mockSb(store: {
         if (name === "sync_research_pitch_drafts") state.drafts.push(...inserted);
         if (name === "agh_handoff_batches") state.batches.push(...inserted);
         if (name === "agh_handoff_records") state.records.push(...inserted);
+        if (name === "licensing_pitch_log") state.licensingPitches.push(...inserted);
+        if (name === "music_supervisors") state.supervisors.push(...inserted);
         return {
           select: () => ({
             single: async () => ({ data: inserted[0], error: null }),
@@ -498,6 +509,8 @@ Deno.test("ACTION_SPEC covers sync research, control, and gate actions", () => {
   }
   assertEquals(ACTION_SPEC.get_sync_eligibility.cls, "authenticated-read");
   assertEquals(isSyncControlAction("approve_sync_outreach"), true);
+  assertEquals(isSyncControlAction("submit_sync_outreach"), true);
+  assertEquals(isSyncControlAction("execute_sync_pitch"), false);
   assertEquals(isSyncGateAction("approve_sync_eligibility"), true);
 });
 
@@ -738,6 +751,13 @@ Deno.test("authorizeAction denies Claude sync approve/submit", async () => {
       fakeSb,
     );
     assertEquals(gateDenied.ok, false);
+
+    const submitDenied = await authorizeAction(
+      "submit_sync_outreach",
+      req({ "x-claude-sync-discovery-secret": "sync-secret" }),
+      fakeSb,
+    );
+    assertEquals(submitDenied.ok, false);
   });
 });
 
@@ -911,6 +931,8 @@ Deno.test("sync email submit: test-mode provider accept marks submitted; caller 
         status: "verified",
         date_verified: "2026-09-01T00:00:00Z",
         verified_contact_path: "supervisor@example.com",
+        person_name: "Fixture Supervisor",
+        company_name: "Fixture Co",
       }],
       opportunities: [{ id: oppId, sync_target_id: targetId, status: "drafted" }],
       drafts: [{
@@ -921,6 +943,9 @@ Deno.test("sync email submit: test-mode provider accept marks submitted; caller 
         subject: "server subject",
         body: "server body",
         song_dna_version_id: "dna-1",
+        approved_by: "grok_playlist_control",
+        approved_by_label: "grok_playlist_control",
+        approved_at: "2026-09-15T12:00:00Z",
       }],
     });
     const grok = resolveOpsActor(null, req({ "x-grok-playlist-control-secret": "grok-secret" }));
@@ -936,6 +961,21 @@ Deno.test("sync email submit: test-mode provider accept marks submitted; caller 
     assertEquals(sent.status, 200);
     assertEquals(sent.data.submitted, true);
     assert(String(sent.data.provider_message_id || "").startsWith("test_"));
+    assertStringIncludes(String(sent.data.from_address ?? ""), "fendifrost.com");
+    const log = sent.data.licensing_pitch_log as {
+      approved_by?: string;
+      sent_by?: string;
+      from_address?: string;
+      dispatched_via?: string;
+      draft_id?: string;
+    } | null;
+    assert(log);
+    assertEquals(log.approved_by, "grok_playlist_control");
+    assertEquals(log.sent_by, "grok_playlist_control");
+    assertEquals(log.dispatched_via, "submit_sync_outreach");
+    assert(log.resend_message_id ? String(log.resend_message_id).startsWith("test_") : true);
+    assertEquals(log.draft_id, draftId);
+    assertStringIncludes(String(log.from_address ?? ""), "fendifrost.com");
     const replay = await submitSyncOutreach(sb as never, { draft_id: draftId, submission_channel: "email" }, grok);
     assertEquals(replay.data.idempotent_replay, true);
   });
@@ -974,6 +1014,141 @@ Deno.test("sync email submit: forced provider failure stays send_failed and retr
     assertEquals(failed.data.submitted, false);
     assertEquals(failed.data.retryable, true);
     assertEquals((failed.data.draft as { status: string }).status, "send_failed");
+  });
+});
+
+Deno.test("sync email dry_run previews From address and does not mark submitted", async () => {
+  await withEnv({
+    GROK_PLAYLIST_CONTROL_SECRET: "grok-secret",
+    FROM_EMAIL: "pitches@fendifrost.com",
+  }, async () => {
+    const draftId = crypto.randomUUID();
+    const oppId = crypto.randomUUID();
+    const targetId = crypto.randomUUID();
+    const sb = mockSb({
+      tracks: [eligibleTrack(MEDITATE_ID, "in-scope")],
+      dna: [approvedDna(MEDITATE_ID)],
+      targets: [{
+        id: targetId,
+        status: "verified",
+        verified_contact_path: "supervisor@example.com",
+        company_name: "Fixture Co",
+      }],
+      opportunities: [{ id: oppId, sync_target_id: targetId }],
+      drafts: [{
+        id: draftId,
+        opportunity_id: oppId,
+        track_id: MEDITATE_ID,
+        status: "approved",
+        subject: "server subject",
+        body: "server body",
+      }],
+      licensingPitches: [],
+    });
+    const grok = resolveOpsActor(null, req({ "x-grok-playlist-control-secret": "grok-secret" }));
+    const preview = await submitSyncOutreach(sb as never, {
+      draft_id: draftId,
+      submission_channel: "email",
+      dry_run: true,
+    }, grok);
+    assertEquals(preview.status, 200);
+    assertEquals(preview.data.dry_run, true);
+    assertEquals(preview.data.submitted, false);
+    assertEquals(preview.data.would_send, true);
+    assertEquals(preview.data.from_address, "Fendi Frost <pitches@fendifrost.com>");
+    assertEquals(preview.data.to, "supervisor@example.com");
+    assertEquals((sb as { _state: { drafts: { status: string }[] } })._state.drafts[0].status, "approved");
+    assertEquals((sb as { _state: { licensingPitches: unknown[] } })._state.licensingPitches.length, 0);
+  });
+});
+
+Deno.test("submit_sync_outreach test_mode + SYNC_FROM_EMAIL; Gmail From is rejected", async () => {
+  await withEnv({
+    GROK_PLAYLIST_CONTROL_SECRET: "grok-secret",
+    SYNC_FROM_EMAIL: "sync@fendifrost.com",
+  }, async () => {
+    const draftId = crypto.randomUUID();
+    const oppId = crypto.randomUUID();
+    const targetId = crypto.randomUUID();
+    const sb = mockSb({
+      tracks: [eligibleTrack(MEDITATE_ID, "in-scope")],
+      dna: [approvedDna(MEDITATE_ID)],
+      targets: [{
+        id: targetId,
+        status: "verified",
+        verified_contact_path: "supervisor@example.com",
+        person_name: "Fixture Supervisor",
+      }],
+      opportunities: [{ id: oppId, sync_target_id: targetId }],
+      drafts: [{
+        id: draftId,
+        opportunity_id: oppId,
+        track_id: MEDITATE_ID,
+        status: "approved",
+        subject: "server subject",
+        body: "server body",
+        approved_by: "grok_playlist_control",
+        approved_by_label: "grok_playlist_control",
+      }],
+    });
+    const grok = resolveOpsActor(null, req({ "x-grok-playlist-control-secret": "grok-secret" }));
+    const sent = await runSyncControlAction(
+      "submit_sync_outreach",
+      { draft_id: draftId, submission_channel: "email", test_mode: true },
+      sb as never,
+      null,
+      req({ "x-grok-playlist-control-secret": "grok-secret" }),
+    );
+    assertEquals(sent.status, 200);
+    assertEquals(sent.data.submitted, true);
+    assert(String(sent.data.provider_message_id || "").startsWith("test_"));
+    assertEquals(sent.data.from_address, "Fendi Frost <sync@fendifrost.com>");
+    const log = sent.data.licensing_pitch_log as {
+      sent_by?: string;
+      approved_by?: string;
+      resend_message_id?: string;
+      dispatched_via?: string;
+    } | null;
+    assertEquals(log?.approved_by, "grok_playlist_control");
+    assertEquals(log?.sent_by, grok.kind);
+    assertEquals(log?.dispatched_via, "submit_sync_outreach");
+    assert(String(log?.resend_message_id || "").startsWith("test_"));
+  });
+
+  await withEnv({
+    GROK_PLAYLIST_CONTROL_SECRET: "grok-secret",
+    SYNC_FROM_EMAIL: "fendifrost@gmail.com",
+    FROM_EMAIL: "pitches@fendifrost.com",
+  }, async () => {
+    const draftId = crypto.randomUUID();
+    const oppId = crypto.randomUUID();
+    const targetId = crypto.randomUUID();
+    const sb = mockSb({
+      tracks: [eligibleTrack(MEDITATE_ID, "in-scope")],
+      dna: [approvedDna(MEDITATE_ID)],
+      targets: [{
+        id: targetId,
+        status: "verified",
+        verified_contact_path: "supervisor@example.com",
+      }],
+      opportunities: [{ id: oppId, sync_target_id: targetId }],
+      drafts: [{
+        id: draftId,
+        opportunity_id: oppId,
+        track_id: MEDITATE_ID,
+        status: "approved",
+        subject: "s",
+        body: "b",
+      }],
+    });
+    const grok = resolveOpsActor(null, req({ "x-grok-playlist-control-secret": "grok-secret" }));
+    const preview = await submitSyncOutreach(sb as never, {
+      draft_id: draftId,
+      submission_channel: "email",
+      dry_run: true,
+    }, grok);
+    assertEquals(preview.data.from_address, "Fendi Frost <pitches@fendifrost.com>");
+    assertFalse(String(preview.data.from_address ?? "").includes("gmail.com"));
   });
 });
 

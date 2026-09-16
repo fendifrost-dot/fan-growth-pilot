@@ -56,6 +56,10 @@ where table_schema = 'public'
     or (table_name = 'sync_research_pitch_drafts' and column_name in (
       'send_idempotency_key', 'provider_response', 'send_attempted_at', 'status'
     ))
+    or (table_name = 'licensing_pitch_log' and column_name in (
+      'approved_by', 'sent_by', 'resend_message_id', 'from_address',
+      'draft_id', 'dispatched_via', 'song_dna_version_id'
+    ))
   )
 order by table_name, column_name;
 
@@ -90,7 +94,8 @@ where schemaname = 'public'
   and indexname in (
     'split_sheets_one_current_per_track',
     'split_sheet_deliveries_idempotency_uidx',
-    'sync_research_pitch_drafts_send_idempotency_uidx'
+    'sync_research_pitch_drafts_send_idempotency_uidx',
+    'licensing_pitch_log_draft_id_uidx'
   )
 order by indexname;
 

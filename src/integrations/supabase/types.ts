@@ -2084,57 +2084,103 @@ export type Database = {
       }
       licensing_pitch_log: {
         Row: {
+          approved_at: string | null
+          approved_by: string | null
+          approved_by_label: string | null
           company: string | null
           contact_email: string | null
           contact_name: string
           created_at: string
+          dispatched_via: string | null
+          draft_id: string | null
+          email_body: string | null
+          from_address: string | null
           id: string
           pitched_at: string
           placed: boolean
           reply_received: boolean
+          resend_message_id: string | null
           response_notes: string | null
           response_status: string
+          sent_at: string | null
+          sent_by: string | null
+          sent_by_label: string | null
+          song_dna_version_id: string | null
           status: string
+          subject: string | null
           supervisor_id: string | null
           track_id: string | null
           track_name: string
           updated_at: string
         }
         Insert: {
+          approved_at?: string | null
+          approved_by?: string | null
+          approved_by_label?: string | null
           company?: string | null
           contact_email?: string | null
           contact_name: string
           created_at?: string
+          dispatched_via?: string | null
+          draft_id?: string | null
+          email_body?: string | null
+          from_address?: string | null
           id?: string
           pitched_at?: string
           placed?: boolean
           reply_received?: boolean
+          resend_message_id?: string | null
           response_notes?: string | null
           response_status?: string
+          sent_at?: string | null
+          sent_by?: string | null
+          sent_by_label?: string | null
+          song_dna_version_id?: string | null
           status?: string
+          subject?: string | null
           supervisor_id?: string | null
           track_id?: string | null
           track_name: string
           updated_at?: string
         }
         Update: {
+          approved_at?: string | null
+          approved_by?: string | null
+          approved_by_label?: string | null
           company?: string | null
           contact_email?: string | null
           contact_name?: string
           created_at?: string
+          dispatched_via?: string | null
+          draft_id?: string | null
+          email_body?: string | null
+          from_address?: string | null
           id?: string
           pitched_at?: string
           placed?: boolean
           reply_received?: boolean
+          resend_message_id?: string | null
           response_notes?: string | null
           response_status?: string
+          sent_at?: string | null
+          sent_by?: string | null
+          sent_by_label?: string | null
+          song_dna_version_id?: string | null
           status?: string
+          subject?: string | null
           supervisor_id?: string | null
           track_id?: string | null
           track_name?: string
           updated_at?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "licensing_pitch_log_draft_id_fkey"
+            columns: ["draft_id"]
+            isOneToOne: false
+            referencedRelation: "sync_research_pitch_drafts"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "licensing_pitch_log_supervisor_id_fkey"
             columns: ["supervisor_id"]

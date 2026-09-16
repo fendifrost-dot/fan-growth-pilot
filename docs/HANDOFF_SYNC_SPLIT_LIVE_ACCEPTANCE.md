@@ -20,8 +20,9 @@ Do this only after the Lovable SQL apply + `control-center-api` redeploy (see [`
    - `web_form` → `awaiting_manual_submission`, `sent=false`
    - `email` in test mode → `sent` only with `provider_message_id` prefixed `test_`
    - failure flag → `delivery_result=failed`, retryable
-6. **Sync submit** — Grok `submit_sync_outreach` in test mode:
-   - email → `submitted` only after mock provider id
+6. **Sync submit** — Grok `submit_sync_outreach` in test mode (or `dry_run: true`):
+   - email → `submitted` only after mock provider id; `licensing_pitch_log` row with `resend_message_id` / `approved_by` / `sent_by` / `from_address` / `dispatched_via=submit_sync_outreach`
+   - `dry_run: true` → preview From (`SYNC_FROM_EMAIL` or `FROM_EMAIL` / `pitches@fendifrost.com`); no send, no log
    - web_form → `awaiting_manual_submission` until `record_manual_sync_outreach_submission`
    - caller `subject`/`body` rejected
 7. **Acceptance SQL** — re-run `docs/sql/split_sheet_non_send_acceptance.sql`. Zero false-ready tracks. Zero email `sent` rows without provider id.

@@ -791,6 +791,27 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
     capability: 'draft_split_sheet',
     surface: 'admin-write',
   },
+
+  // ---- YouTube native share seeding (operator-only; Fendi/human admin) -----
+  // Reads are capability-gated (not open authenticated-read) so machine
+  // credentials cannot enumerate the pilot without an explicit projection.
+  list_youtube_share_campaigns: { cls: 'capability', capability: 'manage_youtube_shares', surface: 'admin-write' },
+  get_youtube_share_campaign: { cls: 'capability', capability: 'manage_youtube_shares', surface: 'admin-write' },
+  list_youtube_share_targets: { cls: 'capability', capability: 'manage_youtube_shares', surface: 'admin-write' },
+  list_youtube_share_moments: { cls: 'capability', capability: 'manage_youtube_shares', surface: 'admin-write' },
+  list_youtube_share_outreach: { cls: 'capability', capability: 'manage_youtube_shares', surface: 'admin-write' },
+  list_youtube_share_events: { cls: 'capability', capability: 'manage_youtube_shares', surface: 'admin-write' },
+  get_youtube_share_measurement: { cls: 'capability', capability: 'manage_youtube_shares', surface: 'admin-write' },
+  upsert_youtube_share_campaign: { cls: 'capability', capability: 'manage_youtube_shares', surface: 'admin-write' },
+  upsert_youtube_share_target: { cls: 'capability', capability: 'manage_youtube_shares', surface: 'admin-write' },
+  set_youtube_share_target_stage: { cls: 'capability', capability: 'manage_youtube_shares', surface: 'admin-write' },
+  upsert_youtube_share_moment: { cls: 'capability', capability: 'manage_youtube_shares', surface: 'admin-write' },
+  delete_youtube_share_moment: { cls: 'capability', capability: 'manage_youtube_shares', surface: 'admin-write' },
+  upsert_youtube_share_outreach: { cls: 'capability', capability: 'manage_youtube_shares', surface: 'admin-write' },
+  record_youtube_share_event: { cls: 'capability', capability: 'manage_youtube_shares', surface: 'admin-write' },
+  verify_youtube_share_event: { cls: 'capability', capability: 'manage_youtube_shares', surface: 'admin-write' },
+  reject_youtube_share_event: { cls: 'capability', capability: 'manage_youtube_shares', surface: 'admin-write' },
+  record_youtube_share_metric: { cls: 'capability', capability: 'manage_youtube_shares', surface: 'admin-write' },
 };
 
 /**

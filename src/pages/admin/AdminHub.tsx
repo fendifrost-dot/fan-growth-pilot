@@ -147,6 +147,13 @@ const AdminHub: React.FC = () => {
             <Link to="/admin/radio">Open →</Link>
           </Button>
         </Card>
+        <Card className="p-5">
+          <h3 className="font-medium">YouTube Shares</h3>
+          <p className="text-sm text-muted-foreground mt-1">Native share seeding · targets · moments · verify · Observed Lift</p>
+          <Button variant="outline" size="sm" className="mt-3" asChild>
+            <Link to="/admin/youtube-shares">Open →</Link>
+          </Button>
+        </Card>
       </div>
     </div>
   );

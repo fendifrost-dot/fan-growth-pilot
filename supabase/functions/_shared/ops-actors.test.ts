@@ -172,6 +172,7 @@ Deno.test("manage_* admin surfaces denied to Claude / Grok / service / scheduler
       "manage_sync_registers",
       "manage_radio",
       "manage_fan_engagement",
+      "manage_youtube_shares",
     ] as const;
 
     const claude = resolveOpsActor(null, req({ "x-claude-agent-secret": "claude-secret" }));

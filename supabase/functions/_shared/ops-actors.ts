@@ -105,7 +105,8 @@ export type OpsCapability =
   | "manage_smart_links"
   | "manage_sync_registers"
   | "manage_radio"
-  | "manage_fan_engagement";
+  | "manage_fan_engagement"
+  | "manage_youtube_shares";
 
 /** Narrow remote-connector actor — draft-only playlist discovery. No DNA mutation, approve, send, inbox, fan/radio. */
 const CLAUDE_PLAYLIST_DISCOVERY_CAPS = new Set<OpsCapability>([
@@ -231,6 +232,7 @@ const ADMIN_SURFACE = new Set<OpsCapability>([
   "manage_sync_registers",
   "manage_radio",
   "manage_fan_engagement",
+  "manage_youtube_shares",
 ]);
 
 const FENDI_CAPS = new Set<OpsCapability>([

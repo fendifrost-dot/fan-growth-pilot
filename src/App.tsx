@@ -38,6 +38,7 @@ import AdminDailyOps from "./pages/admin/AdminDailyOps";
 import AdminOpportunities from "./pages/admin/AdminOpportunities";
 import AdminMcpPlaylistAuthorize from "./pages/admin/AdminMcpPlaylistAuthorize";
 import AdminMcpSyncAuthorize from "./pages/admin/AdminMcpSyncAuthorize";
+import AdminYouTubeShares from "./pages/admin/AdminYouTubeShares";
 import RegisterPreview from "./pages/dev/RegisterPreview";
 
 const queryClient = new QueryClient();
@@ -99,6 +100,7 @@ const App = () => {
             <Route path="split-sheets" element={<AdminSplitSheets />} />
             <Route path="discovery-profiles" element={<AdminDiscoveryProfiles />} />
             <Route path="daily-ops" element={<AdminDailyOps />} />
+            <Route path="youtube-shares" element={<AdminYouTubeShares />} />
             <Route path="mcp-playlist-authorize" element={<AdminMcpPlaylistAuthorize />} />
             <Route path="mcp-sync-authorize" element={<AdminMcpSyncAuthorize />} />
           </Route>

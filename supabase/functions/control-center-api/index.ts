@@ -32,6 +32,7 @@ import {
 } from '../_shared/split-sheet-delivery.ts';
 import { buildDiscoveryCapacityPlan } from '../_shared/discovery-capacity.ts';
 import { isClaudeSyncDiscoveryCredential } from '../_shared/ops-actors.ts';
+import { isYouTubeShareAction, runYouTubeShareAction } from '../_shared/youtube-shares.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -223,6 +224,14 @@ Deno.serve(async (req) => {
 
     if (isSplitSheetDeliveryAction(action)) {
       const result = await runSplitSheetDeliveryAction(action, body, supabase, actor, req);
+      return new Response(JSON.stringify(result.data), {
+        status: result.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isYouTubeShareAction(action)) {
+      const result = await runYouTubeShareAction(action, body, supabase, authDecision.opsActor);
       return new Response(JSON.stringify(result.data), {
         status: result.status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },

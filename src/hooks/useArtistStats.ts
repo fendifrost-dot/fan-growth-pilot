@@ -50,6 +50,14 @@ export interface ArtistStats {
   };
   soundcloud: SoundCloudStats;
   updated_at: string | null;
+  /** Per-source last-updated timestamps, for staleness indicators. */
+  sources: {
+    spotify: string | null;
+    instagram: string | null;
+    facebook: string | null;
+    youtube: string | null;
+    soundcloud: string | null;
+  };
 }
 
 /**
@@ -125,24 +133,53 @@ export const useArtistStats = () => {
         },
         soundcloud: soundcloudStats,
         updated_at: spotify?.updated_at ?? null,
+        sources: {
+          spotify: spotify?.updated_at ?? null,
+          instagram: instagram?.updated_at ?? null,
+          facebook: facebook?.updated_at ?? null,
+          youtube: youtube?.updated_at ?? null,
+          soundcloud: soundcloud?.updated_at ?? null,
+        },
       };
     },
     staleTime: 5 * 60 * 1000, // 5 minutes
     refetchOnWindowFocus: true,
   });
 
-  // Trigger a refresh by calling both Spotify and YouTube edge functions in parallel
+  // Trigger a refresh across every platform in parallel.
+  //
+  // Spotify/Instagram/Facebook artist metrics are populated by
+  // `scrape-chartmetric` (Firecrawl → Chartmetric → fan_data). That function
+  // accepts the signed-in user's JWT and writes rows for that user, so we can
+  // drive it straight from the dashboard.
+  //
+  // NOTE (previous bug): the old refresh invoked `fetch-public-spotify-data`
+  // with an empty body. That function *requires* spotify_followers /
+  // monthly_listeners / ig_followers / fb_followers in the request body and
+  // returns HTTP 400 when they're missing — so the Spotify numbers never
+  // updated from the client. `scrape-chartmetric` is the correct on-demand
+  // source. See docs/SPOTIFY_METRICS.md for the full root-cause writeup.
   const refreshMutation = useMutation({
     mutationFn: async () => {
-      const [spotifyResult] = await Promise.allSettled([
-        supabase.functions.invoke("fetch-public-spotify-data"),
+      const results = await Promise.allSettled([
+        supabase.functions.invoke("scrape-chartmetric", { body: {} }),
         supabase.functions.invoke("youtube-stats", { body: {} }),
         supabase.functions.invoke("soundcloud-stats", { body: {} }),
       ]);
-      if (spotifyResult.status === "rejected") throw spotifyResult.reason;
-      const { error } = spotifyResult.value;
+
+      const [chartmetric] = results;
+
+      // Surface a hard failure of the primary (Spotify/IG/FB) source so the UI
+      // can toast it. YouTube/SoundCloud depend on optional OAuth connections,
+      // so their failures are non-fatal and left silent.
+      if (chartmetric.status === "rejected") {
+        throw chartmetric.reason instanceof Error
+          ? chartmetric.reason
+          : new Error("Failed to refresh Spotify metrics");
+      }
+      const { error } = chartmetric.value;
       if (error) throw error;
-      return spotifyResult.value.data as ArtistStats;
+      return chartmetric.value.data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["artist-stats"] });

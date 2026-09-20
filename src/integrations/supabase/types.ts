@@ -4897,40 +4897,79 @@ export type Database = {
       }
       split_sheet_contributors: {
         Row: {
+          confirmation_evidence_id: string | null
+          confirmation_method: string | null
+          confirmation_status: string
+          confirmed_at: string | null
+          confirmed_by: string | null
+          contact_email: string | null
+          contact_phone: string | null
           created_at: string
           id: string
           ipi_number: string | null
           legal_name: string | null
           notes: string | null
+          ownership_side: string
           pro_affiliation: string | null
+          professional_name: string | null
+          publisher_name: string | null
+          publishing_administrator: string | null
           role: string
+          share_controlled: boolean | null
           sort_order: number
           split_percent: number | null
           split_sheet_id: string
+          updated_at: string
         }
         Insert: {
+          confirmation_evidence_id?: string | null
+          confirmation_method?: string | null
+          confirmation_status?: string
+          confirmed_at?: string | null
+          confirmed_by?: string | null
+          contact_email?: string | null
+          contact_phone?: string | null
           created_at?: string
           id?: string
           ipi_number?: string | null
           legal_name?: string | null
           notes?: string | null
+          ownership_side?: string
           pro_affiliation?: string | null
+          professional_name?: string | null
+          publisher_name?: string | null
+          publishing_administrator?: string | null
           role?: string
+          share_controlled?: boolean | null
           sort_order?: number
           split_percent?: number | null
           split_sheet_id: string
+          updated_at?: string
         }
         Update: {
+          confirmation_evidence_id?: string | null
+          confirmation_method?: string | null
+          confirmation_status?: string
+          confirmed_at?: string | null
+          confirmed_by?: string | null
+          contact_email?: string | null
+          contact_phone?: string | null
           created_at?: string
           id?: string
           ipi_number?: string | null
           legal_name?: string | null
           notes?: string | null
+          ownership_side?: string
           pro_affiliation?: string | null
+          professional_name?: string | null
+          publisher_name?: string | null
+          publishing_administrator?: string | null
           role?: string
+          share_controlled?: boolean | null
           sort_order?: number
           split_percent?: number | null
           split_sheet_id?: string
+          updated_at?: string
         }
         Relationships: [
           {
@@ -4940,19 +4979,281 @@ export type Database = {
             referencedRelation: "split_sheets"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "split_sheet_contributors_confirmation_evidence_id_fkey"
+            columns: ["confirmation_evidence_id"]
+            isOneToOne: false
+            referencedRelation: "split_sheet_evidence"
+            referencedColumns: ["id"]
+          },
         ]
-      }
+      },
+      split_sheet_deliveries: {
+        Row: {
+          approval_identity: string | null
+          approval_required: boolean
+          created_at: string
+          delivered_by: string
+          delivered_by_label: string
+          delivery_channel: string
+          delivery_error: string | null
+          delivery_reason: string
+          delivery_result: string
+          document_hash: string
+          document_kind: string
+          document_storage_path: string | null
+          document_version: number
+          follow_up_required: boolean
+          id: string
+          idempotency_key: string | null
+          authorized_by: string | null
+          provider_message_id: string | null
+          provider_response: Json | null
+          requested_by: string | null
+          recipient_email: string | null
+          recipient_name: string | null
+          recipient_organization: string | null
+          response_notes: string | null
+          secure_link_expires_at: string | null
+          split_sheet_id: string
+          sync_opportunity_id: string | null
+          sync_target_id: string | null
+          track_id: string
+        }
+        Insert: {
+          approval_identity?: string | null
+          approval_required?: boolean
+          created_at?: string
+          delivered_by: string
+          delivered_by_label: string
+          delivery_channel?: string
+          delivery_error?: string | null
+          delivery_reason: string
+          delivery_result?: string
+          document_hash: string
+          document_kind: string
+          document_storage_path?: string | null
+          document_version: number
+          follow_up_required?: boolean
+          id?: string
+          idempotency_key?: string | null
+          authorized_by?: string | null
+          provider_message_id?: string | null
+          provider_response?: Json | null
+          requested_by?: string | null
+          recipient_email?: string | null
+          recipient_name?: string | null
+          recipient_organization?: string | null
+          response_notes?: string | null
+          secure_link_expires_at?: string | null
+          split_sheet_id: string
+          sync_opportunity_id?: string | null
+          sync_target_id?: string | null
+          track_id: string
+        }
+        Update: {
+          approval_identity?: string | null
+          approval_required?: boolean
+          created_at?: string
+          delivered_by?: string
+          delivered_by_label?: string
+          delivery_channel?: string
+          delivery_error?: string | null
+          delivery_reason?: string
+          delivery_result?: string
+          document_hash?: string
+          document_kind?: string
+          document_storage_path?: string | null
+          document_version?: number
+          follow_up_required?: boolean
+          id?: string
+          idempotency_key?: string | null
+          authorized_by?: string | null
+          provider_message_id?: string | null
+          provider_response?: Json | null
+          requested_by?: string | null
+          recipient_email?: string | null
+          recipient_name?: string | null
+          recipient_organization?: string | null
+          response_notes?: string | null
+          secure_link_expires_at?: string | null
+          split_sheet_id?: string
+          sync_opportunity_id?: string | null
+          sync_target_id?: string | null
+          track_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "split_sheet_deliveries_split_sheet_id_fkey"
+            columns: ["split_sheet_id"]
+            isOneToOne: false
+            referencedRelation: "split_sheets"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "split_sheet_deliveries_track_id_fkey"
+            columns: ["track_id"]
+            isOneToOne: false
+            referencedRelation: "tracks"
+            referencedColumns: ["id"]
+          },
+        ]
+      },
+      split_sheet_evidence: {
+        Row: {
+          created_at: string
+          document_hash: string | null
+          evidence_kind: string
+          id: string
+          mime_type: string | null
+          notes: string | null
+          object_bytes_sha256: string | null
+          provider_reference: string | null
+          signer_contributor_id: string | null
+          split_sheet_id: string
+          storage_path: string | null
+          track_id: string
+          uploaded_by: string | null
+          verification_status: string
+          verified_at: string | null
+          verified_by: string | null
+        }
+        Insert: {
+          created_at?: string
+          document_hash?: string | null
+          evidence_kind: string
+          id?: string
+          mime_type?: string | null
+          notes?: string | null
+          object_bytes_sha256?: string | null
+          provider_reference?: string | null
+          signer_contributor_id?: string | null
+          split_sheet_id: string
+          storage_path?: string | null
+          track_id: string
+          uploaded_by?: string | null
+          verification_status?: string
+          verified_at?: string | null
+          verified_by?: string | null
+        }
+        Update: {
+          created_at?: string
+          document_hash?: string | null
+          evidence_kind?: string
+          id?: string
+          mime_type?: string | null
+          notes?: string | null
+          object_bytes_sha256?: string | null
+          provider_reference?: string | null
+          signer_contributor_id?: string | null
+          split_sheet_id?: string
+          storage_path?: string | null
+          track_id?: string
+          uploaded_by?: string | null
+          verification_status?: string
+          verified_at?: string | null
+          verified_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "split_sheet_evidence_split_sheet_id_fkey"
+            columns: ["split_sheet_id"]
+            isOneToOne: false
+            referencedRelation: "split_sheets"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "split_sheet_evidence_track_id_fkey"
+            columns: ["track_id"]
+            isOneToOne: false
+            referencedRelation: "tracks"
+            referencedColumns: ["id"]
+          },
+        ]
+      },
+      split_sheet_master_owners: {
+        Row: {
+          created_at: string
+          evidence_reference: string | null
+          id: string
+          label_name: string | null
+          legal_name: string
+          may_license_master: boolean
+          notes: string | null
+          ownership_percent: number
+          professional_name: string | null
+          sort_order: number
+          split_sheet_id: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          evidence_reference?: string | null
+          id?: string
+          label_name?: string | null
+          legal_name: string
+          may_license_master?: boolean
+          notes?: string | null
+          ownership_percent: number
+          professional_name?: string | null
+          sort_order?: number
+          split_sheet_id: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          evidence_reference?: string | null
+          id?: string
+          label_name?: string | null
+          legal_name?: string
+          may_license_master?: boolean
+          notes?: string | null
+          ownership_percent?: number
+          professional_name?: string | null
+          sort_order?: number
+          split_sheet_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "split_sheet_master_owners_split_sheet_id_fkey"
+            columns: ["split_sheet_id"]
+            isOneToOne: false
+            referencedRelation: "split_sheets"
+            referencedColumns: ["id"]
+          },
+        ]
+      },
       split_sheets: {
         Row: {
           action_items: Json
+          awaiting_confirmation_at: string | null
+          composition_total_percent: number | null
+          confirmation_summary: Json
           created_at: string
           created_by: string | null
+          dispute_reason: string | null
+          document_hash: string | null
+          document_kind: string
           document_mime: string | null
           document_storage_path: string | null
+          fendi_approved_at: string | null
+          fendi_approved_by: string | null
+          fendi_reviewed_at: string | null
+          fendi_reviewed_by: string | null
+          finalized_at: string | null
+          finalized_by: string | null
           generated_html: string | null
           id: string
+          is_current: boolean
+          master_controlled: boolean
+          master_total_percent: number | null
           notes: string | null
+          one_stop_master: boolean
+          publishing_controlled: boolean
+          rights_readiness: Json
           status: string
+          superseded_by: string | null
           title: string | null
           track_id: string
           updated_at: string
@@ -4961,14 +5262,33 @@ export type Database = {
         }
         Insert: {
           action_items?: Json
+          awaiting_confirmation_at?: string | null
+          composition_total_percent?: number | null
+          confirmation_summary?: Json
           created_at?: string
           created_by?: string | null
+          dispute_reason?: string | null
+          document_hash?: string | null
+          document_kind?: string
           document_mime?: string | null
           document_storage_path?: string | null
+          fendi_approved_at?: string | null
+          fendi_approved_by?: string | null
+          fendi_reviewed_at?: string | null
+          fendi_reviewed_by?: string | null
+          finalized_at?: string | null
+          finalized_by?: string | null
           generated_html?: string | null
           id?: string
+          is_current?: boolean
+          master_controlled?: boolean
+          master_total_percent?: number | null
           notes?: string | null
+          one_stop_master?: boolean
+          publishing_controlled?: boolean
+          rights_readiness?: Json
           status?: string
+          superseded_by?: string | null
           title?: string | null
           track_id: string
           updated_at?: string
@@ -4977,14 +5297,33 @@ export type Database = {
         }
         Update: {
           action_items?: Json
+          awaiting_confirmation_at?: string | null
+          composition_total_percent?: number | null
+          confirmation_summary?: Json
           created_at?: string
           created_by?: string | null
+          dispute_reason?: string | null
+          document_hash?: string | null
+          document_kind?: string
           document_mime?: string | null
           document_storage_path?: string | null
+          fendi_approved_at?: string | null
+          fendi_approved_by?: string | null
+          fendi_reviewed_at?: string | null
+          fendi_reviewed_by?: string | null
+          finalized_at?: string | null
+          finalized_by?: string | null
           generated_html?: string | null
           id?: string
+          is_current?: boolean
+          master_controlled?: boolean
+          master_total_percent?: number | null
           notes?: string | null
+          one_stop_master?: boolean
+          publishing_controlled?: boolean
+          rights_readiness?: Json
           status?: string
+          superseded_by?: string | null
           title?: string | null
           track_id?: string
           updated_at?: string
@@ -4999,9 +5338,70 @@ export type Database = {
             referencedRelation: "tracks"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "split_sheets_superseded_by_fkey"
+            columns: ["superseded_by"]
+            isOneToOne: false
+            referencedRelation: "split_sheets"
+            referencedColumns: ["id"]
+          },
         ]
-      }
-      sync_research_opportunities: {
+      },
+      rights_document_audit_events: {
+        Row: {
+          actor_kind: string
+          actor_label: string
+          actor_user_id: string | null
+          created_at: string
+          detail: Json
+          document_hash: string | null
+          event_kind: string
+          id: string
+          split_sheet_id: string | null
+          track_id: string | null
+        }
+        Insert: {
+          actor_kind: string
+          actor_label: string
+          actor_user_id?: string | null
+          created_at?: string
+          detail?: Json
+          document_hash?: string | null
+          event_kind: string
+          id?: string
+          split_sheet_id?: string | null
+          track_id?: string | null
+        }
+        Update: {
+          actor_kind?: string
+          actor_label?: string
+          actor_user_id?: string | null
+          created_at?: string
+          detail?: Json
+          document_hash?: string | null
+          event_kind?: string
+          id?: string
+          split_sheet_id?: string | null
+          track_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "rights_document_audit_events_split_sheet_id_fkey"
+            columns: ["split_sheet_id"]
+            isOneToOne: false
+            referencedRelation: "split_sheets"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "rights_document_audit_events_track_id_fkey"
+            columns: ["track_id"]
+            isOneToOne: false
+            referencedRelation: "tracks"
+            referencedColumns: ["id"]
+          },
+        ]
+      },
+sync_research_opportunities: {
         Row: {
           batch_id: string | null
           compensation_public: string | null
@@ -5124,6 +5524,9 @@ export type Database = {
           drafted_by_label: string
           id: string
           opportunity_id: string
+          provider_response: Json | null
+          send_attempted_at: string | null
+          send_idempotency_key: string | null
           song_dna_version_id: string | null
           status: string
           subject: string | null
@@ -5137,6 +5540,9 @@ export type Database = {
           drafted_by_label: string
           id?: string
           opportunity_id: string
+          provider_response?: Json | null
+          send_attempted_at?: string | null
+          send_idempotency_key?: string | null
           song_dna_version_id?: string | null
           status?: string
           subject?: string | null
@@ -5150,6 +5556,9 @@ export type Database = {
           drafted_by_label?: string
           id?: string
           opportunity_id?: string
+          provider_response?: Json | null
+          send_attempted_at?: string | null
+          send_idempotency_key?: string | null
           song_dna_version_id?: string | null
           status?: string
           subject?: string | null
@@ -5595,6 +6004,10 @@ export type Database = {
           short_pitch: string | null
           soundcloud_url: string | null
           splits_ready: boolean
+          splits_ready_legacy: boolean | null
+          splits_ready_source: string
+          current_split_sheet_id: string | null
+          split_sheet_delivery_policy: string
           spotify_url: string | null
           status: string
           sync_approved_at: string | null
@@ -5636,6 +6049,10 @@ export type Database = {
           short_pitch?: string | null
           soundcloud_url?: string | null
           splits_ready?: boolean
+          splits_ready_legacy?: boolean | null
+          splits_ready_source?: string
+          current_split_sheet_id?: string | null
+          split_sheet_delivery_policy?: string
           spotify_url?: string | null
           status?: string
           sync_approved_at?: string | null
@@ -5677,6 +6094,10 @@ export type Database = {
           short_pitch?: string | null
           soundcloud_url?: string | null
           splits_ready?: boolean
+          splits_ready_legacy?: boolean | null
+          splits_ready_source?: string
+          current_split_sheet_id?: string | null
+          split_sheet_delivery_policy?: string
           spotify_url?: string | null
           status?: string
           sync_approved_at?: string | null
@@ -5720,399 +6141,6 @@ export type Database = {
           user_id?: string
         }
         Relationships: []
-      }
-      youtube_share_campaigns: {
-        Row: {
-          campaign_type: string
-          content_guardrails: string | null
-          created_at: string
-          id: string
-          notes: string | null
-          status: string
-          track_id: string | null
-          track_label: string
-          updated_at: string
-          youtube_video_id: string | null
-        }
-        Insert: {
-          campaign_type?: string
-          content_guardrails?: string | null
-          created_at?: string
-          id?: string
-          notes?: string | null
-          status?: string
-          track_id?: string | null
-          track_label: string
-          updated_at?: string
-          youtube_video_id?: string | null
-        }
-        Update: {
-          campaign_type?: string
-          content_guardrails?: string | null
-          created_at?: string
-          id?: string
-          notes?: string | null
-          status?: string
-          track_id?: string | null
-          track_label?: string
-          updated_at?: string
-          youtube_video_id?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "youtube_share_campaigns_track_id_fkey"
-            columns: ["track_id"]
-            isOneToOne: false
-            referencedRelation: "tracks"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      youtube_share_events: {
-        Row: {
-          campaign_id: string
-          created_at: string
-          id: string
-          moment_id: string | null
-          notes: string | null
-          observed_at: string | null
-          rejected_reason: string | null
-          share_type: string
-          share_url: string | null
-          target_id: string
-          updated_at: string
-          verification_status: string
-          verified_at: string | null
-          verified_by: string | null
-          verified_by_label: string | null
-        }
-        Insert: {
-          campaign_id: string
-          created_at?: string
-          id?: string
-          moment_id?: string | null
-          notes?: string | null
-          observed_at?: string | null
-          rejected_reason?: string | null
-          share_type?: string
-          share_url?: string | null
-          target_id: string
-          updated_at?: string
-          verification_status?: string
-          verified_at?: string | null
-          verified_by?: string | null
-          verified_by_label?: string | null
-        }
-        Update: {
-          campaign_id?: string
-          created_at?: string
-          id?: string
-          moment_id?: string | null
-          notes?: string | null
-          observed_at?: string | null
-          rejected_reason?: string | null
-          share_type?: string
-          share_url?: string | null
-          target_id?: string
-          updated_at?: string
-          verification_status?: string
-          verified_at?: string | null
-          verified_by?: string | null
-          verified_by_label?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "youtube_share_events_campaign_id_fkey"
-            columns: ["campaign_id"]
-            isOneToOne: false
-            referencedRelation: "youtube_share_campaigns"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "youtube_share_events_moment_id_fkey"
-            columns: ["moment_id"]
-            isOneToOne: false
-            referencedRelation: "youtube_share_moments"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "youtube_share_events_target_id_fkey"
-            columns: ["target_id"]
-            isOneToOne: false
-            referencedRelation: "youtube_share_targets"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      youtube_share_metrics: {
-        Row: {
-          campaign_id: string
-          captured_at: string
-          comments: number | null
-          created_at: string
-          id: string
-          impressions: number | null
-          likes: number | null
-          notes: string | null
-          share_event_id: string | null
-          source: string
-          target_id: string | null
-          views: number | null
-          window_label: string
-        }
-        Insert: {
-          campaign_id: string
-          captured_at?: string
-          comments?: number | null
-          created_at?: string
-          id?: string
-          impressions?: number | null
-          likes?: number | null
-          notes?: string | null
-          share_event_id?: string | null
-          source?: string
-          target_id?: string | null
-          views?: number | null
-          window_label: string
-        }
-        Update: {
-          campaign_id?: string
-          captured_at?: string
-          comments?: number | null
-          created_at?: string
-          id?: string
-          impressions?: number | null
-          likes?: number | null
-          notes?: string | null
-          share_event_id?: string | null
-          source?: string
-          target_id?: string | null
-          views?: number | null
-          window_label?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "youtube_share_metrics_campaign_id_fkey"
-            columns: ["campaign_id"]
-            isOneToOne: false
-            referencedRelation: "youtube_share_campaigns"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "youtube_share_metrics_share_event_id_fkey"
-            columns: ["share_event_id"]
-            isOneToOne: false
-            referencedRelation: "youtube_share_events"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "youtube_share_metrics_target_id_fkey"
-            columns: ["target_id"]
-            isOneToOne: false
-            referencedRelation: "youtube_share_targets"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      youtube_share_moments: {
-        Row: {
-          angle: string | null
-          audience_segment: string | null
-          campaign_id: string
-          created_at: string
-          id: string
-          is_primary: boolean
-          sort_rank: number
-          suggested_caption: string | null
-          timestamp_label: string | null
-          timestamp_seconds: number | null
-          updated_at: string
-          why_audience_cares: string | null
-        }
-        Insert: {
-          angle?: string | null
-          audience_segment?: string | null
-          campaign_id: string
-          created_at?: string
-          id?: string
-          is_primary?: boolean
-          sort_rank?: number
-          suggested_caption?: string | null
-          timestamp_label?: string | null
-          timestamp_seconds?: number | null
-          updated_at?: string
-          why_audience_cares?: string | null
-        }
-        Update: {
-          angle?: string | null
-          audience_segment?: string | null
-          campaign_id?: string
-          created_at?: string
-          id?: string
-          is_primary?: boolean
-          sort_rank?: number
-          suggested_caption?: string | null
-          timestamp_label?: string | null
-          timestamp_seconds?: number | null
-          updated_at?: string
-          why_audience_cares?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "youtube_share_moments_campaign_id_fkey"
-            columns: ["campaign_id"]
-            isOneToOne: false
-            referencedRelation: "youtube_share_campaigns"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      youtube_share_outreach: {
-        Row: {
-          campaign_id: string
-          channel: string
-          contacted_at: string | null
-          created_at: string
-          id: string
-          message_body: string | null
-          moment_id: string | null
-          offer_type: string
-          responded_at: string | null
-          response_notes: string | null
-          status: string
-          suggested_caption: string | null
-          target_id: string
-          updated_at: string
-        }
-        Insert: {
-          campaign_id: string
-          channel?: string
-          contacted_at?: string | null
-          created_at?: string
-          id?: string
-          message_body?: string | null
-          moment_id?: string | null
-          offer_type?: string
-          responded_at?: string | null
-          response_notes?: string | null
-          status?: string
-          suggested_caption?: string | null
-          target_id: string
-          updated_at?: string
-        }
-        Update: {
-          campaign_id?: string
-          channel?: string
-          contacted_at?: string | null
-          created_at?: string
-          id?: string
-          message_body?: string | null
-          moment_id?: string | null
-          offer_type?: string
-          responded_at?: string | null
-          response_notes?: string | null
-          status?: string
-          suggested_caption?: string | null
-          target_id?: string
-          updated_at?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "youtube_share_outreach_campaign_id_fkey"
-            columns: ["campaign_id"]
-            isOneToOne: false
-            referencedRelation: "youtube_share_campaigns"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "youtube_share_outreach_moment_id_fkey"
-            columns: ["moment_id"]
-            isOneToOne: false
-            referencedRelation: "youtube_share_moments"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "youtube_share_outreach_target_id_fkey"
-            columns: ["target_id"]
-            isOneToOne: false
-            referencedRelation: "youtube_share_targets"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      youtube_share_targets: {
-        Row: {
-          activity_score: number | null
-          audience_fit_score: number | null
-          authenticity_score: number | null
-          campaign_id: string
-          category: string | null
-          channel_name: string
-          channel_url: string | null
-          channel_youtube_id: string | null
-          created_at: string
-          discovered_by: string | null
-          disqualified_reason: string | null
-          estimated_impact_score: number | null
-          funnel_stage: string
-          id: string
-          notes: string | null
-          qualification_status: string
-          share_probability_score: number | null
-          subscriber_count: number | null
-          updated_at: string
-        }
-        Insert: {
-          activity_score?: number | null
-          audience_fit_score?: number | null
-          authenticity_score?: number | null
-          campaign_id: string
-          category?: string | null
-          channel_name: string
-          channel_url?: string | null
-          channel_youtube_id?: string | null
-          created_at?: string
-          discovered_by?: string | null
-          disqualified_reason?: string | null
-          estimated_impact_score?: number | null
-          funnel_stage?: string
-          id?: string
-          notes?: string | null
-          qualification_status?: string
-          share_probability_score?: number | null
-          subscriber_count?: number | null
-          updated_at?: string
-        }
-        Update: {
-          activity_score?: number | null
-          audience_fit_score?: number | null
-          authenticity_score?: number | null
-          campaign_id?: string
-          category?: string | null
-          channel_name?: string
-          channel_url?: string | null
-          channel_youtube_id?: string | null
-          created_at?: string
-          discovered_by?: string | null
-          disqualified_reason?: string | null
-          estimated_impact_score?: number | null
-          funnel_stage?: string
-          id?: string
-          notes?: string | null
-          qualification_status?: string
-          share_probability_score?: number | null
-          subscriber_count?: number | null
-          updated_at?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "youtube_share_targets_campaign_id_fkey"
-            columns: ["campaign_id"]
-            isOneToOne: false
-            referencedRelation: "youtube_share_campaigns"
-            referencedColumns: ["id"]
-          },
-        ]
       }
     }
     Views: {
@@ -6280,20 +6308,6 @@ export type Database = {
           orphan_count: number
           sample_ids: string
         }[]
-      }
-      agh_email_handoff_packet_merge: {
-        Args: {
-          p_curator_email: string
-          p_email_sendable: boolean
-          p_outreach_draft_id: string
-          p_packet: Json
-          p_strip_copy?: boolean
-        }
-        Returns: Json
-      }
-      agh_materialize_email_handoff_drafts: {
-        Args: { p_batch_id?: string; p_dry_run?: boolean; p_track_id?: string }
-        Returns: Json
       }
       agh_mcp_compensate_inventory_attempt: {
         Args: { p_batch_id: string; p_draft_ids: string[] }

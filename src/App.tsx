@@ -3,8 +3,17 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import Index from "./pages/Index";
+import ArtistLayout from "@/components/hub/ArtistLayout";
+import HubDashboard from "./pages/hub/HubDashboard";
+import HubSmartLinks from "./pages/hub/HubSmartLinks";
+import HubSpotify from "./pages/hub/HubSpotify";
+import HubAppleMusic from "./pages/hub/HubAppleMusic";
+import HubYouTube from "./pages/hub/HubYouTube";
+import HubSocial from "./pages/hub/HubSocial";
+import HubPlaylist from "./pages/hub/HubPlaylist";
+import HubSync from "./pages/hub/HubSync";
 import NotFound from "./pages/NotFound";
 import SmartLinkPage from "./pages/SmartLinkPage";
 import Unsubscribe from "./pages/Unsubscribe";
@@ -47,9 +56,11 @@ const RootRoute = () => {
   if (window.location.hostname.startsWith('links.')) {
     return <NotFound />;
   }
+  // The artist console (hamburger nav + routed sections) is now the home
+  // experience. The legacy single-page dashboard remains reachable at /legacy.
   return (
     <RequireAuth>
-      <Index />
+      <Navigate to="/hub" replace />
     </RequireAuth>
   );
 };
@@ -64,6 +75,23 @@ const App = () => {
         <Routes>
           <Route path="/" element={<RootRoute />} />
           <Route path="/auth" element={<Auth />} />
+
+          {/* Legacy single-page dashboard (kept for reference / fallback) */}
+          <Route path="/legacy" element={<RequireAuth><Index /></RequireAuth>} />
+
+          {/* Artist console — hamburger nav + routed section pages */}
+          <Route path="/hub" element={<RequireAuth><ArtistLayout /></RequireAuth>}>
+            <Route index element={<HubDashboard />} />
+            <Route path="smart-links" element={<HubSmartLinks />} />
+            <Route path="spotify" element={<HubSpotify />} />
+            <Route path="apple-music" element={<HubAppleMusic />} />
+            <Route path="youtube" element={<HubYouTube />} />
+            <Route path="youtube/native-share" element={<AdminYouTubeShares />} />
+            <Route path="social" element={<HubSocial />} />
+            <Route path="playlist" element={<HubPlaylist />} />
+            <Route path="sync" element={<HubSync />} />
+          </Route>
+
           {/* Public unsubscribe endpoint — receives links from emails */}
           <Route path="/unsubscribe" element={<Unsubscribe />} />
 

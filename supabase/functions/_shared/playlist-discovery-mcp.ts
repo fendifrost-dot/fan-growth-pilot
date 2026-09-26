@@ -13,12 +13,17 @@ import {
   stripSpoofedAttribution,
   type OpsActor,
 } from "./ops-actors.ts";
-import { buildDiscoveryCapacityPlan } from "./discovery-capacity.ts";
+import { buildDiscoveryCapacityPlan, dailyTargetFromPlan } from "./discovery-capacity.ts";
 import { enforceTrackDnaLaneEnvelope, resolveCurrentApprovedDna } from "./track-dna-envelope.ts";
 import { resolveTrackPitchCopy } from "./pitch-copy.ts";
 import { rejectCallerPlaylistCopy } from "./pitch-descriptor-guard.ts";
-import { evaluateSubmissionPath } from "./multichannel-path.ts";
-import { advanceClaudeReadyBatches, reviewHandoffBatch } from "./handoff-queues.ts";
+import { evaluateSubmissionPath, isValidFormUrl, isValidIgAccount } from "./multichannel-path.ts";
+import {
+  advanceClaudeReadyBatches,
+  CLAUDE_SIDE_STATES,
+  type HandoffQueueState,
+  reviewHandoffBatch,
+} from "./handoff-queues.ts";
 import { startDailyStationRun, completeDailyStationRun } from "./daily-ops.ts";
 import { CLAUDE_STATION_IDS, isClaudeStationId } from "./chicago-time.ts";
 import { normalizeSpotifyPlaylistIdentity } from "./discovery-utils.ts";
@@ -148,11 +153,18 @@ export function buildDiscoveryPlaylistTargetInsert(opts: {
   /** Canonical Spotify URL from normalization — stored in research_context only. */
   playlistUrl: string | null;
   rawSourceUrl?: string | null;
+  /**
+   * false for route-only targets (first-party route + name verified, no platform id).
+   * Persisted in research_context.identity_resolved so review/dedupe can tell them apart.
+   */
+  identityResolved?: boolean;
 }): Record<string, unknown> {
   const researchContext: Record<string, unknown> = {
     source: "claude_playlist_discovery",
     discovered_at: new Date().toISOString(),
+    identity_resolved: opts.identityResolved !== false,
   };
+  if (opts.identityResolved === false) researchContext.identity_kind = "route_only";
   if (opts.playlistUrl) researchContext.playlist_url = opts.playlistUrl;
   if (opts.rawSourceUrl && opts.rawSourceUrl !== opts.playlistUrl) {
     researchContext.source_url = opts.rawSourceUrl;
@@ -218,6 +230,8 @@ export const PLAYLIST_DISCOVERY_TOOLS = [
   "start_claude_playlist_station",
   "complete_claude_playlist_station",
   "get_own_playlist_batches",
+  "advance_playlist_batches",
+  "get_batch_candidates",
 ] as const;
 
 export type PlaylistDiscoveryTool = (typeof PLAYLIST_DISCOVERY_TOOLS)[number];
@@ -355,6 +369,27 @@ export const PLAYLIST_DISCOVERY_TOOL_SCHEMAS: Record<
       limit: { type: "integer", minimum: 1, maximum: 100 },
     },
   },
+  advance_playlist_batches: {
+    type: "object",
+    required: ["batch_ids"],
+    additionalProperties: false,
+    properties: {
+      batch_ids: {
+        type: "array",
+        minItems: 1,
+        maxItems: 100,
+        items: { type: "string", minLength: 1, maxLength: 64 },
+      },
+    },
+  },
+  get_batch_candidates: {
+    type: "object",
+    required: ["batch_id"],
+    additionalProperties: false,
+    properties: {
+      batch_id: { type: "string", minLength: 1, maxLength: 64 },
+    },
+  },
 };
 
 /** Runtime enforcement of published MCP JSON Schemas (nested objects included). */
@@ -480,6 +515,198 @@ function isVerifiedEligible(row: Record<string, unknown>): boolean {
   return pathOk && (VERIFIED_STATUSES as readonly string[]).includes(status);
 }
 
+/** Prefix for route-only playlist_targets ids (never 22-char Spotify-shaped). */
+export const ROUTE_ONLY_ID_PREFIX = "route-";
+
+export type RouteOnlyIdentity = {
+  playlist_id: string;
+  channel: "email" | "web_form" | "instagram_dm";
+  /** Normalized route value used for identity and dedupe. */
+  route: string;
+  /** Raw route value as supplied (for exact-match dedupe against older rows). */
+  raw_route: string;
+  column: "curator_email" | "form_url" | "ig_curator_account";
+};
+
+function normalizePlaylistName(name: string): string {
+  return name.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function normalizeFormUrl(raw: string): string {
+  try {
+    const u = new URL(raw.trim());
+    u.hash = "";
+    for (const k of [...u.searchParams.keys()]) {
+      if (k.toLowerCase().startsWith("utm_")) u.searchParams.delete(k);
+    }
+    const path = u.pathname.replace(/\/+$/, "");
+    const q = u.searchParams.toString();
+    return `${u.protocol}//${u.host.toLowerCase()}${path}${q ? `?${q}` : ""}`;
+  } catch {
+    return raw.trim();
+  }
+}
+
+async function sha256HexShort(input: string, len = 32): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, len);
+}
+
+/**
+ * Deterministic identity for a candidate with no resolvable platform id but a
+ * first-party route + playlist name. Returns null when either is missing.
+ * The id is stable for (channel, normalized route, normalized name), so resubmitting
+ * the same curator route + playlist dedupes onto the same target.
+ */
+export async function routeOnlyPlaylistIdentity(opts: {
+  playlistName: string;
+  submissionChannel?: string | null;
+  curatorEmail?: string | null;
+  formUrl?: string | null;
+  igAccount?: string | null;
+}): Promise<RouteOnlyIdentity | null> {
+  const name = normalizePlaylistName(opts.playlistName ?? "");
+  if (!name) return null;
+  const email = String(opts.curatorEmail ?? "").trim();
+  const form = String(opts.formUrl ?? "").trim();
+  const ig = String(opts.igAccount ?? "").trim();
+  const requested = String(opts.submissionChannel ?? "").trim().toLowerCase();
+
+  const pick = (ch: string): RouteOnlyIdentity["channel"] | null => {
+    if (ch === "email" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return "email";
+    if (ch === "web_form" && isValidFormUrl(form)) return "web_form";
+    if (ch === "instagram_dm" && isValidIgAccount(ig)) return "instagram_dm";
+    return null;
+  };
+  const channel = requested
+    ? pick(requested)
+    : pick("email") ?? pick("web_form") ?? pick("instagram_dm");
+  if (!channel) return null;
+
+  let route: string;
+  let raw: string;
+  let column: RouteOnlyIdentity["column"];
+  if (channel === "email") {
+    raw = email;
+    route = email.toLowerCase();
+    column = "curator_email";
+  } else if (channel === "web_form") {
+    raw = form;
+    route = normalizeFormUrl(form);
+    column = "form_url";
+  } else {
+    raw = ig;
+    route = ig.replace(/^@/, "").toLowerCase();
+    column = "ig_curator_account";
+  }
+  const hash = await sha256HexShort(`${channel}|${route}|${name}`);
+  return { playlist_id: `${ROUTE_ONLY_ID_PREFIX}${hash}`, channel, route, raw_route: raw, column };
+}
+
+/**
+ * Dedupe a route-only candidate against existing catalog rows that share its route and
+ * playlist name (e.g. a row that already has a real Spotify id). Query errors surface.
+ */
+async function findExistingTargetByRoute(
+  sb: SupabaseClient,
+  route: RouteOnlyIdentity,
+  playlistName: string,
+): Promise<{ playlist_id: string | null; error: string | null }> {
+  const values = [...new Set([route.raw_route, route.route].filter(Boolean))];
+  const { data, error } = await sb
+    .from("playlist_targets")
+    .select("playlist_id, playlist_name")
+    .in(route.column, values)
+    .limit(50);
+  if (error) return { playlist_id: null, error: error.message };
+  const want = normalizePlaylistName(playlistName);
+  const hit = (data ?? []).find((r) =>
+    normalizePlaylistName(String(r.playlist_name ?? "")) === want
+  );
+  return { playlist_id: hit?.playlist_id ? String(hit.playlist_id) : null, error: null };
+}
+
+/**
+ * Re-verify a manually_verified catalog row's submission route with fresh candidate
+ * evidence. Never changes verification_status (the human verification stands) and never
+ * overwrites existing route values — only fills gaps, sets path_verified and the channel
+ * when the row had none. Lane/DNA/pair eligibility is re-checked by the caller.
+ */
+export async function reverifyManuallyVerifiedTarget(
+  sb: SupabaseClient,
+  ops: OpsActor,
+  opts: { playlistId: string; evidence: string; candidate: Record<string, unknown> },
+): Promise<
+  | { ok: true; reverified: boolean; reason: string; channel: string | null }
+  | { ok: false; error: string }
+> {
+  const { data: row, error } = await sb
+    .from("playlist_targets")
+    .select(
+      "playlist_id, verification_status, path_verified, contact_method, submission_method, curator_email, form_url, submission_url, ig_curator_account, curator_instagram, form_source_evidence, ig_source_evidence",
+    )
+    .eq("playlist_id", opts.playlistId)
+    .maybeSingle();
+  if (error) return { ok: false, error: `manual_reverify_lookup_failed:${error.message}` };
+  if (!row || String(row.verification_status) !== "manually_verified") {
+    return { ok: true, reverified: false, reason: "not_manually_verified", channel: null };
+  }
+  const c = opts.candidate;
+  const str = (v: unknown) => (v == null ? "" : String(v).trim());
+  const email = str(row.curator_email) || str(c.curator_email);
+  const form = str(row.form_url) || str(c.form_url);
+  const ig = str(row.ig_curator_account) || str(row.curator_instagram) || str(c.ig_curator_account);
+  const rowChannel = resolveTargetChannel(row as Record<string, unknown>);
+  const channel = rowChannel ?? (str(c.submission_channel) || null);
+
+  const path = await evaluateSubmissionPath(
+    {
+      submission_channel: channel,
+      curator_email: email || null,
+      form_url: form || null,
+      form_source_evidence: opts.evidence,
+      ig_curator_account: ig || null,
+      ig_source_evidence: opts.evidence,
+      submission_url: form || str(row.submission_url) || null,
+    },
+    { sb },
+  );
+  if (!path.path_verified || !path.channel) {
+    return { ok: true, reverified: false, reason: path.reason, channel: path.channel };
+  }
+
+  const patch: Record<string, unknown> = {
+    path_verified: true,
+    path_verification_notes: `re-verified by ${ops.label}: ${path.reason}`,
+    last_verified_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  if (!rowChannel) {
+    patch.contact_method = path.channel;
+    patch.submission_method = path.channel;
+  }
+  if (!str(row.curator_email) && email) patch.curator_email = email;
+  if (!str(row.form_url) && form) patch.form_url = form;
+  if (!str(row.ig_curator_account) && ig) patch.ig_curator_account = ig;
+  if (!str(row.form_source_evidence) && path.channel === "web_form") {
+    patch.form_source_evidence = opts.evidence;
+  }
+  if (!str(row.ig_source_evidence) && path.channel === "instagram_dm") {
+    patch.ig_source_evidence = opts.evidence;
+  }
+  const schemaErr = Object.keys(patch).find((k) => !PLAYLIST_TARGETS_SCHEMA_INSERT_KEYS.has(k));
+  if (schemaErr) return { ok: false, error: `manual_reverify_schema:unknown_key:${schemaErr}` };
+
+  const { error: upErr, count } = await sb
+    .from("playlist_targets")
+    .update(patch, { count: "exact" })
+    .eq("playlist_id", opts.playlistId)
+    .eq("verification_status", "manually_verified");
+  const w = assertWriteOk("manual_reverify_update", upErr, count, 1);
+  if (!w.ok) return { ok: false, error: w.error };
+  return { ok: true, reverified: true, reason: path.reason, channel: path.channel };
+}
+
 export async function getPlaylistDiscoveryWork(
   sb: SupabaseClient,
   ops: OpsActor,
@@ -552,15 +779,12 @@ export async function getPlaylistDiscoveryWork(
     };
   }
 
+  // Measurement failures are surfaced inside daily_target (measurement_status /
+  // warnings) rather than failing the whole projection — the research budget stays usable.
   let capacity: Record<string, unknown>;
   try {
     const plan = await buildDiscoveryCapacityPlan(sb, tracks.length || trackIds.length);
-    capacity = {
-      daily_raw_requirement: plan.daily_raw_requirement,
-      effective_raw_target: plan.effective_raw_target,
-      effective_verified_target: plan.effective_verified_target,
-      active_pitching_songs: plan.active_pitching_songs,
-    };
+    capacity = dailyTargetFromPlan(plan);
   } catch (e) {
     return {
       status: 500,
@@ -585,7 +809,48 @@ export async function getPlaylistDiscoveryWork(
         approved_lanes: p.approved_lanes ?? [],
       })),
       daily_target: capacity,
+      manually_verified_supply: await loadManuallyVerifiedSupply(sb),
     },
+  };
+}
+
+/**
+ * Catalog rows a human marked manually_verified that are not yet draftable by this
+ * actor (no verified submission path / no known channel). Submitting one of these
+ * playlist_ids through submit_playlist_candidates re-verifies its route and, if it
+ * passes (plus the normal lane/DNA/pair checks), makes it draftable.
+ */
+async function loadManuallyVerifiedSupply(sb: SupabaseClient): Promise<Record<string, unknown>> {
+  const { data, error } = await sb
+    .from("playlist_targets")
+    .select(
+      "playlist_id, playlist_name, lane, contact_method, submission_method, path_verified, curator_email, form_url, ig_curator_account",
+    )
+    .eq("verification_status", "manually_verified")
+    .eq("is_active", true)
+    .limit(200);
+  if (error) {
+    return { status: "query_failed", error: error.message, rows: [] };
+  }
+  const needsReverify = (data ?? []).filter((r) =>
+    r.path_verified !== true || resolveTargetChannel(r as Record<string, unknown>) == null
+  );
+  return {
+    status: "ok",
+    total_scanned: (data ?? []).length,
+    needs_reverify_count: needsReverify.length,
+    rows: needsReverify.slice(0, 25).map((r) => ({
+      playlist_id: r.playlist_id,
+      playlist_name: r.playlist_name ?? null,
+      lane: r.lane ?? null,
+      channel: resolveTargetChannel(r as Record<string, unknown>),
+      path_verified: r.path_verified === true,
+      has_email: Boolean(r.curator_email),
+      has_form_url: Boolean(r.form_url),
+      has_ig: Boolean(r.ig_curator_account),
+    })),
+    how_to_use:
+      "Submit the playlist_id (plus lane, source_evidence and the route fields) via submit_playlist_candidates to re-verify and make it draftable.",
   };
 }
 
@@ -677,23 +942,74 @@ export async function submitPlaylistCandidates(
     }
 
     const normalized = normalizeSpotifyPlaylistIdentity(rawId, rawPlaylistUrl);
-    if (!normalized && !rawId && !rawPlaylistUrl && !rawSourceUrl) {
-      rejected.push({ reason: "missing_playlist_identity", candidate: c });
-      continue;
+    let id: string;
+    let playlistUrl: string | null;
+    // false only for a NEW route-only target (no platform id, route + name verified).
+    let identityResolved = true;
+
+    if (normalized) {
+      id = normalized.playlist_id;
+      playlistUrl = normalized.playlist_url;
+    } else {
+      // (a) Direct reference to an existing catalog row by its stored playlist_id
+      //     (catalog rows are not always Spotify-shaped, e.g. form-only curators).
+      let catalogId: string | null = null;
+      if (rawId) {
+        const { data: cat, error: catErr } = await sb
+          .from("playlist_targets")
+          .select("playlist_id")
+          .eq("playlist_id", rawId)
+          .maybeSingle();
+        if (catErr) {
+          rejected.push({ playlist_id: rawId, reason: `dedupe_query_failed:${catErr.message}` });
+          continue;
+        }
+        if (cat) catalogId = rawId;
+      }
+
+      if (catalogId) {
+        id = catalogId;
+        playlistUrl = null;
+      } else {
+        // (b) Route-only identity: first-party route + playlist name + evidence.
+        const route = await routeOnlyPlaylistIdentity({
+          playlistName: name,
+          submissionChannel: c.submission_channel != null ? String(c.submission_channel) : null,
+          curatorEmail: c.curator_email != null ? String(c.curator_email) : null,
+          formUrl: c.form_url != null ? String(c.form_url) : null,
+          igAccount: c.ig_curator_account != null ? String(c.ig_curator_account) : null,
+        });
+        if (!route) {
+          if (!rawId && !rawPlaylistUrl && !rawSourceUrl) {
+            rejected.push({ reason: "missing_playlist_identity", candidate: c });
+            continue;
+          }
+          // Fail closed: never key a target off source_url (shared across candidates) or an
+          // unnormalizable raw id — that silently merges several playlists into one target.
+          rejected.push({
+            reason: "unresolvable_playlist_identity",
+            code: "unresolvable_playlist_identity",
+            detail:
+              "need a Spotify playlist id/url, an existing catalog playlist_id, or playlist_name + a first-party route (curator_email, form_url or ig_curator_account)",
+            playlist_id: rawId || null,
+            playlist_url: rawPlaylistUrl || null,
+          });
+          continue;
+        }
+        const match = await findExistingTargetByRoute(sb, route, name);
+        if (match.error) {
+          rejected.push({ playlist_id: route.playlist_id, reason: `dedupe_query_failed:${match.error}` });
+          continue;
+        }
+        if (match.playlist_id) {
+          id = match.playlist_id;
+        } else {
+          id = route.playlist_id;
+          identityResolved = false;
+        }
+        playlistUrl = null;
+      }
     }
-    if (!normalized) {
-      // Fail closed: never key a target off source_url (shared across candidates) or an
-      // unnormalizable raw id — that silently merges several playlists into one target.
-      rejected.push({
-        reason: "unresolvable_playlist_identity",
-        code: "unresolvable_playlist_identity",
-        playlist_id: rawId || null,
-        playlist_url: rawPlaylistUrl || null,
-      });
-      continue;
-    }
-    const id = normalized.playlist_id;
-    const playlistUrl = normalized.playlist_url;
 
     const { data: existing, error: existErr } = await sb
       .from("playlist_targets")
@@ -705,14 +1021,47 @@ export async function submitPlaylistCandidates(
       continue;
     }
     if (existing) {
-      const classified = await classifyExistingPlaylistTarget(sb, {
+      let classified = await classifyExistingPlaylistTarget(sb, {
         trackId,
         playlistId: id,
         songDnaVersionId: dna.songDnaVersionId!,
         actor: ops,
         trackName,
       });
-      existingClassified.push(classified);
+      // manually_verified catalog rows are supply, not just dedupe fodder: re-verify the
+      // route (fresh evidence) and re-classify under the normal lane/DNA/pair checks.
+      let manualReverify: Record<string, unknown> | null = null;
+      if (
+        (classified.classification === "existing_unverified" &&
+          classified.reason === "manually_verified") ||
+        (classified.classification === "existing_verified_eligible" && !classified.channel)
+      ) {
+        const re = await reverifyManuallyVerifiedTarget(sb, ops, {
+          playlistId: id,
+          evidence,
+          candidate: c,
+        });
+        if (!re.ok) {
+          rejected.push({
+            playlist_id: id,
+            reason: re.error,
+            code: "db_error",
+            classification: "manual_reverify_failed",
+          });
+          continue;
+        }
+        manualReverify = { reverified: re.reverified, reason: re.reason, channel: re.channel };
+        if (re.reverified) {
+          classified = await classifyExistingPlaylistTarget(sb, {
+            trackId,
+            playlistId: id,
+            songDnaVersionId: dna.songDnaVersionId!,
+            actor: ops,
+            trackName,
+          });
+        }
+      }
+      existingClassified.push(manualReverify ? { ...classified, manual_reverify: manualReverify } : classified);
       if (classified.classification === "classification_failed") {
         rejected.push({
           playlist_id: id,
@@ -731,6 +1080,7 @@ export async function submitPlaylistCandidates(
           song_dna_version_id: dna.songDnaVersionId,
           classification: classified.classification,
           reused_existing_target: true,
+          ...(manualReverify?.reverified ? { reverified_manual_target: true } : {}),
         });
       } else if (classified.classification === "existing_unverified") {
         acceptedUnverified.push({
@@ -739,6 +1089,7 @@ export async function submitPlaylistCandidates(
           classification: classified.classification,
           reason: classified.reason ?? null,
           reused_existing_target: true,
+          ...(manualReverify ? { manual_reverify: manualReverify } : {}),
         });
       } else {
         duplicates.push({
@@ -777,6 +1128,20 @@ export async function submitPlaylistCandidates(
       { sb },
     );
 
+    if (!identityResolved && !path.path_verified) {
+      // Route-only candidates are accepted only on a verified first-party route —
+      // without it there is neither a platform identity nor a usable route.
+      rejected.push({
+        reason: "unresolvable_playlist_identity",
+        code: "unresolvable_playlist_identity",
+        detail: "route-only candidate (no platform id) requires a verified first-party route",
+        path_reason: path.reason,
+        playlist_id: id,
+        identity_resolved: false,
+      });
+      continue;
+    }
+
     const channel = path.channel;
     const formUrl = c.form_url != null ? String(c.form_url) : null;
     const igAccount = c.ig_curator_account != null ? String(c.ig_curator_account) : null;
@@ -802,6 +1167,7 @@ export async function submitPlaylistCandidates(
         songDnaVersionId: dna.songDnaVersionId,
         playlistUrl,
         rawSourceUrl: rawSourceUrl || rawPlaylistUrl || null,
+        identityResolved,
       });
     } catch (e) {
       rejected.push({
@@ -886,6 +1252,7 @@ export async function submitPlaylistCandidates(
       verification_status: path.path_verified ? path.status : "unverified",
       song_dna_version_id: dna.songDnaVersionId,
       path_reason: path.reason,
+      identity_resolved: identityResolved,
     };
     if (path.path_verified && (VERIFIED_STATUSES as readonly string[]).includes(path.status)) {
       acceptedVerified.push(entry);
@@ -1462,7 +1829,7 @@ export async function getOwnPlaylistBatches(
     .select(
       "id, batch_kind, queue_state, track_id, song_dna_version_id, record_count, discovered_by, drafted_by, business_date_ct, created_at, updated_at",
     )
-    .eq("discovered_by", "claude_playlist_discovery")
+    .eq("discovered_by", OWN_ACTOR)
     .order("created_at", { ascending: false })
     .limit(limit);
   if (error) return { status: 500, data: { error: error.message, code: "db_error" } };
@@ -1472,6 +1839,252 @@ export async function getOwnPlaylistBatches(
       ok: true,
       rows: data ?? [],
       scoped_to: "claude_playlist_discovery",
+    },
+  };
+}
+
+const OWN_ACTOR = "claude_playlist_discovery";
+
+/**
+ * Advance this actor's own playlist batches from CLAUDE_BATCH_READY (or
+ * CLAUDE_PLAYLIST_COMPLETE) to AWAITING_GROK_REVIEW — independent of station runs and
+ * business date, so batches that missed their day's playlist_tranche_final close are
+ * never stranded. Ceiling is AWAITING_GROK_REVIEW: the caller cannot choose a state.
+ */
+export async function advancePlaylistBatches(
+  sb: SupabaseClient,
+  ops: OpsActor,
+  body: Record<string, unknown>,
+): Promise<ToolResult> {
+  const denied = denyUnlessCan(ops, "create_handoff_batch");
+  if (denied) return denied;
+  const clean = stripSpoofedAttribution(body);
+  const ids = Array.isArray(clean.batch_ids)
+    ? [...new Set(clean.batch_ids.map((v) => String(v ?? "").trim()).filter(Boolean))]
+    : [];
+  if (!ids.length) return { status: 400, data: { error: "batch_ids[] required", code: "invalid_args" } };
+
+  const { data: rows, error } = await sb
+    .from("agh_handoff_batches")
+    .select("id, batch_kind, queue_state, discovered_by, business_date_ct")
+    .in("id", ids);
+  if (error) {
+    return { status: 500, data: { error: `batch_query_failed:${error.message}`, code: "db_error" } };
+  }
+  const byId = new Map((rows ?? []).map((r) => [String(r.id), r]));
+
+  const eligible: string[] = [];
+  const skipped: Record<string, unknown>[] = [];
+  const failed: Record<string, unknown>[] = [];
+  const pending = new Set<string>(["CLAUDE_BATCH_READY", "CLAUDE_PLAYLIST_COMPLETE"]);
+  for (const id of ids) {
+    const b = byId.get(id);
+    if (!b) {
+      failed.push({ batch_id: id, code: "batch_not_found" });
+      continue;
+    }
+    if (String(b.discovered_by ?? "") !== OWN_ACTOR) {
+      // Foreign batches look exactly like missing ones — no state leak.
+      failed.push({ batch_id: id, code: "batch_not_found" });
+      continue;
+    }
+    if (String(b.batch_kind ?? "") !== "playlist") {
+      failed.push({ batch_id: id, code: "not_playlist_batch" });
+      continue;
+    }
+    const state = String(b.queue_state);
+    if (state === "AWAITING_GROK_REVIEW") {
+      skipped.push({ batch_id: id, queue_state: state, reason: "already_awaiting_grok_review" });
+      continue;
+    }
+    if (!pending.has(state)) {
+      skipped.push({ batch_id: id, queue_state: state, reason: "not_claude_pending" });
+      continue;
+    }
+    eligible.push(id);
+  }
+
+  let advanced: Record<string, unknown>[] = [];
+  if (eligible.length) {
+    const res = await advanceClaudeReadyBatches(
+      sb,
+      { batch_ids: eligible, batch_kind: "playlist" },
+      ops,
+    );
+    if (res.status >= 500 || res.status === 403) {
+      return { status: res.status, data: { ...res.data, code: String(res.data.code ?? "advance_failed") } };
+    }
+    advanced = (res.data.advanced as Record<string, unknown>[] | undefined) ?? [];
+    for (const sk of (res.data.skipped as Record<string, unknown>[] | undefined) ?? []) skipped.push(sk);
+    for (const f of (res.data.failed as Record<string, unknown>[] | undefined) ?? []) failed.push(f);
+  }
+
+  // Defense in depth: nothing this tool returns may sit past the Claude-side ceiling.
+  for (const a of advanced) {
+    if (!CLAUDE_SIDE_STATES.has(String(a.queue_state) as HandoffQueueState)) {
+      return {
+        status: 500,
+        data: { error: "internal: advanced beyond Claude-side ceiling", code: "ceiling_violation" },
+      };
+    }
+  }
+
+  return {
+    status: failed.length > 0 && advanced.length === 0 && skipped.length === 0 ? 422 : 200,
+    data: {
+      ok: failed.length === 0,
+      target_state: "AWAITING_GROK_REVIEW",
+      advanced,
+      advanced_count: advanced.length,
+      skipped,
+      failed,
+      scoped_to: OWN_ACTOR,
+    },
+  };
+}
+
+/**
+ * Read-only: full candidate records inside one of this actor's own batches, joined to
+ * their playlist_targets rows. No pitch copy (subject/body) is returned.
+ */
+export async function getBatchCandidates(
+  sb: SupabaseClient,
+  ops: OpsActor,
+  body: Record<string, unknown>,
+): Promise<ToolResult> {
+  const denied = denyUnlessCan(ops, "read_own_playlist_batches");
+  if (denied) return denied;
+  const batchId = String(body.batch_id ?? "").trim();
+  if (!batchId) return { status: 400, data: { error: "batch_id required", code: "invalid_args" } };
+
+  const { data: batch, error: bErr } = await sb
+    .from("agh_handoff_batches")
+    .select(
+      "id, batch_kind, queue_state, track_id, song_dna_version_id, record_count, discovered_by, drafted_by, business_date_ct, created_at, updated_at",
+    )
+    .eq("id", batchId)
+    .maybeSingle();
+  if (bErr) return { status: 500, data: { error: `batch_query_failed:${bErr.message}`, code: "db_error" } };
+  if (!batch || String(batch.discovered_by ?? "") !== OWN_ACTOR) {
+    return { status: 404, data: { error: "batch not found for this actor", code: "batch_not_found" } };
+  }
+
+  const { data: records, error: rErr } = await sb
+    .from("agh_handoff_records")
+    .select(
+      "id, record_kind, queue_state, track_id, playlist_target_id, outreach_draft_id, submission_channel, song_dna_version_id, discovered_by, verified_by, drafted_by, reviewed_by, rejection_reason, packet, created_at, updated_at",
+    )
+    .eq("batch_id", batchId)
+    .order("created_at", { ascending: true });
+  if (rErr) {
+    return { status: 500, data: { error: `records_query_failed:${rErr.message}`, code: "db_error" } };
+  }
+
+  const targetIds = [
+    ...new Set((records ?? []).map((r) => String(r.playlist_target_id ?? "")).filter(Boolean)),
+  ];
+  const targets = new Map<string, Record<string, unknown>>();
+  if (targetIds.length) {
+    const { data: tRows, error: tErr } = await sb
+      .from("playlist_targets")
+      .select(
+        "playlist_id, playlist_name, platform, curator_name, curator_email, curator_url, form_url, submission_url, ig_curator_account, lane, contact_method, submission_method, verification_status, path_verified, path_verification_notes, form_source_evidence, ig_source_evidence, notes, research_context, follower_count, last_verified_at, discovered_by, is_active",
+      )
+      .in("playlist_id", targetIds);
+    if (tErr) {
+      return { status: 500, data: { error: `targets_query_failed:${tErr.message}`, code: "db_error" } };
+    }
+    for (const t of tRows ?? []) targets.set(String(t.playlist_id), t as Record<string, unknown>);
+  }
+
+  const draftIds = [
+    ...new Set((records ?? []).map((r) => String(r.outreach_draft_id ?? "")).filter(Boolean)),
+  ];
+  const draftStatus = new Map<string, string>();
+  if (draftIds.length) {
+    const { data: dRows, error: dErr } = await sb
+      .from("outreach_drafts")
+      .select("id, status")
+      .in("id", draftIds);
+    if (dErr) {
+      return { status: 500, data: { error: `drafts_query_failed:${dErr.message}`, code: "db_error" } };
+    }
+    for (const d of dRows ?? []) draftStatus.set(String(d.id), String(d.status ?? ""));
+  }
+
+  const candidates = (records ?? []).map((r) => {
+    const t = targets.get(String(r.playlist_target_id ?? "")) ?? null;
+    const rc = (t?.research_context ?? {}) as Record<string, unknown>;
+    const packet = { ...((r.packet ?? {}) as Record<string, unknown>) };
+    for (const k of ["body", "subject", "pitch", "draft_body", "ig_dm_draft"]) delete packet[k];
+    return {
+      handoff_record_id: r.id,
+      record_kind: r.record_kind,
+      queue_state: r.queue_state,
+      track_id: r.track_id,
+      song_dna_version_id: r.song_dna_version_id,
+      submission_channel: r.submission_channel,
+      outreach_draft_id: r.outreach_draft_id ?? null,
+      outreach_draft_status: r.outreach_draft_id
+        ? draftStatus.get(String(r.outreach_draft_id)) ?? null
+        : null,
+      discovered_by: r.discovered_by ?? null,
+      verified_by: r.verified_by ?? null,
+      drafted_by: r.drafted_by ?? null,
+      reviewed_by: r.reviewed_by ?? null,
+      rejection_reason: r.rejection_reason ?? null,
+      packet,
+      playlist: t
+        ? {
+          playlist_id: t.playlist_id,
+          playlist_name: t.playlist_name ?? null,
+          platform: t.platform ?? null,
+          playlist_url: rc.playlist_url ?? null,
+          identity_resolved: rc.identity_resolved !== false,
+          curator_name: t.curator_name ?? null,
+          curator_url: t.curator_url ?? null,
+          lane: t.lane ?? null,
+          follower_count: t.follower_count ?? null,
+          is_active: t.is_active ?? null,
+        }
+        : { playlist_id: r.playlist_target_id ?? null, missing_target_row: true },
+      route: t
+        ? {
+          channel: resolveTargetChannel(t),
+          curator_email: t.curator_email ?? null,
+          form_url: t.form_url ?? null,
+          submission_url: t.submission_url ?? null,
+          ig_curator_account: t.ig_curator_account ?? null,
+        }
+        : null,
+      verification: t
+        ? {
+          verification_status: t.verification_status ?? null,
+          path_verified: t.path_verified === true,
+          path_verification_notes: t.path_verification_notes ?? null,
+          last_verified_at: t.last_verified_at ?? null,
+        }
+        : null,
+      evidence: t
+        ? {
+          form_source_evidence: t.form_source_evidence ?? null,
+          ig_source_evidence: t.ig_source_evidence ?? null,
+          notes: t.notes ?? null,
+          source_url: rc.source_url ?? null,
+        }
+        : null,
+      created_at: r.created_at,
+    };
+  });
+
+  return {
+    status: 200,
+    data: {
+      ok: true,
+      batch,
+      candidate_count: candidates.length,
+      candidates,
+      scoped_to: OWN_ACTOR,
     },
   };
 }
@@ -1510,6 +2123,10 @@ export async function runPlaylistDiscoveryTool(
       return completeClaudePlaylistStation(sb, ops, args);
     case "get_own_playlist_batches":
       return getOwnPlaylistBatches(sb, ops, args);
+    case "advance_playlist_batches":
+      return advancePlaylistBatches(sb, ops, args);
+    case "get_batch_candidates":
+      return getBatchCandidates(sb, ops, args);
     default:
       return { status: 400, data: { error: `Unknown MCP tool: ${tool}`, code: "unknown_tool" } };
   }

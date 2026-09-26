@@ -677,7 +677,9 @@ DRY=$(run_sql -c "select public.agh_materialize_email_handoff_drafts(true) ->> '
 assert_eq "materialize_dry_cloned" "${DRY}" "1"
 DRY_SENT=$(run_sql -c "select public.agh_materialize_email_handoff_drafts(true) ->> 'already_sent';")
 assert_eq "materialize_dry_already_sent" "${DRY_SENT}" "1"
-DRY_SCAN=$(run_sql -c "select public.agh_materialize_email_handoff_drafts(true) ->> 'scanned';")
+# Scope to the fixture batch: earlier sections leave CLAUDE_BATCH_READY email records
+# behind, which the (unscoped) materializer also scans. The batch holds 2 email + 1 web-form.
+DRY_SCAN=$(run_sql -c "select public.agh_materialize_email_handoff_drafts(true, '55555555-5555-5555-5555-555555555555'::uuid) ->> 'scanned';")
 assert_eq "materialize_dry_scanned_email_only" "${DRY_SCAN}" "2"
 STILL_THIN=$(run_sql -c "select count(*) from public.agh_handoff_records where id='77777777-7777-7777-7777-777777777701' and coalesce(packet->>'curator_email','')='';")
 assert_eq "materialize_dry_run_no_write" "${STILL_THIN}" "1"

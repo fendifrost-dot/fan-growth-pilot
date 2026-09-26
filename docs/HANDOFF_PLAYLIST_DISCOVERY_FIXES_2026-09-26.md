@@ -10,7 +10,6 @@ in the task brief were treated as authoritative).
 |------|-------|-----------|
 | Redeploy edge function **`mcp-playlist-discovery`** | Lovable → Edge Functions | **Yes**: new tools and the capacity change ship here |
 | Redeploy edge function **`control-center-api`** | Lovable → Edge Functions | Yes: `get_discovery_capacity_plan` uses the same `_shared/discovery-capacity.ts` |
-| Paste `supabase/migrations/20260926120000_discovery_capacity_research_budget.sql` | Lovable → SQL Editor | Optional: adds `research_budget_raw_per_song: 90` to `ops_settings.discovery_capacity`. It only adds the key when missing and never overwrites a value |
 | Frontend Publish | — | Not needed (no `src/` changes) |
 
 After redeploy, reconnect or refresh the Claude connector so `tools/list` picks up the two new
@@ -48,14 +47,16 @@ tools. The server version is now `1.2.0`.
   - measurement: `numerator`, `denominator`, `sample_size`, `window`, `conversion_rate`,
     `measurement_status`, `measurement_error`, `funnel`
   - fallback: `fallback_used`, `fallback_rate`
-  - estimate and budget: `daily_raw_requirement_basis`, `objective_verified_total`,
-    `research_budget_*`
+  - estimate: `daily_raw_requirement_basis`, `objective_verified_total`,
+    `raw_research_capped` (always `false`)
   - `warnings`, `settings_status`
-- **Research budget separate from the objective.**
-  - `effective_raw_target` is now `research_budget_raw_per_song × active songs`. The default
-    is 90 per song, which matches the last real measurement (~35%).
-  - `daily_raw_requirement` is now an *advisory* estimate from `raw → verified` only. It is
-    `null` when it can't be estimated, and `research_budget_covers_estimate` compares the two.
+- **No research cap (updated 2026-09-26, follow-up).** Raw research is uncapped: the agent
+  keeps researching until the verified objective is met or its sources saturate.
+  - `effective_raw_target` equals `daily_raw_requirement`: the estimate from `raw → verified`
+    only. It is guidance, not a limit, and is `null` when it can't be estimated.
+  - The research budget that PR #38 briefly added (`research_budget_raw_per_song`) has been
+    removed. Its optional SQL was deleted. If that SQL was already applied, the leftover
+    `ops_settings` key is ignored.
   - The objective (`target_verified_per_song_per_day`, 30) is unchanged.
 
 **Semantics change to note.** `effective_raw_target` no longer equals

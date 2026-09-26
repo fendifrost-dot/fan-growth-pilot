@@ -780,7 +780,7 @@ export async function getPlaylistDiscoveryWork(
   }
 
   // Measurement failures are surfaced inside daily_target (measurement_status /
-  // warnings) rather than failing the whole projection — the research budget stays usable.
+  // warnings) rather than failing the whole projection — the objective stays usable.
   let capacity: Record<string, unknown>;
   try {
     const plan = await buildDiscoveryCapacityPlan(sb, tracks.length || trackIds.length);

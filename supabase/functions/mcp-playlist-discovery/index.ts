@@ -72,9 +72,9 @@ function pathOf(req: Request): string {
 function toolDescription(name: string): string {
   switch (name) {
     case "get_playlist_discovery_work":
-      return "Read active pitching tracks (ids/titles), current approved DNA, lanes, profiles, daily target. No ISRCs.";
+      return "Read active pitching tracks (ids/titles), current approved DNA, lanes, profiles, daily target (objective, research budget, and the funnel measurement behind it), and manually_verified catalog rows needing re-verification. No ISRCs.";
     case "submit_playlist_candidates":
-      return "Submit structured playlist candidate facts + evidence. Server dedupes, verifies (DB-backed), enforces DNA lanes. Returns verified_eligible vs accepted_unverified.";
+      return "Submit structured playlist candidate facts + evidence. Server dedupes, verifies (DB-backed), enforces DNA lanes. Returns verified_eligible vs accepted_unverified. Candidates without a Spotify id are accepted route-only (identity_resolved:false) when playlist_name + a verified first-party route are present. Existing catalog playlist_ids (incl. manually_verified rows) are re-verified.";
     case "create_playlist_draft_inventory":
       return "Create Claude-side pending inventory from verified_eligible IDs only. Email → outreach_drafts; form/IG → manual packets. No approve/send. No caller pitch copy.";
     case "start_claude_playlist_station":
@@ -83,6 +83,10 @@ function toolDescription(name: string): string {
       return "Complete a Claude-owned playlist discovery station run.";
     case "get_own_playlist_batches":
       return "List handoff batches attributed to claude_playlist_discovery only.";
+    case "advance_playlist_batches":
+      return "Move own playlist batches at CLAUDE_BATCH_READY to AWAITING_GROK_REVIEW (any business date, array of batch_ids). Cannot set any other state.";
+    case "get_batch_candidates":
+      return "Read-only: full candidate records (playlist identity, route, evidence, verification) for one of your own batches. No pitch copy.";
     default:
       return name;
   }
@@ -139,7 +143,7 @@ async function handleMcp(
       result: {
         protocolVersion: "2025-03-26",
         capabilities: { tools: {} },
-        serverInfo: { name: "agh-playlist-discovery", version: "1.1.0" },
+        serverInfo: { name: "agh-playlist-discovery", version: "1.2.0" },
       },
     });
   }

@@ -31,6 +31,10 @@ import {
   assertPlaylistTargetInsertSchema,
   buildDiscoveryPlaylistTargetInsert,
   PLAYLIST_TARGETS_FORBIDDEN_INSERT_KEYS,
+  advancePlaylistBatches,
+  getBatchCandidates,
+  routeOnlyPlaylistIdentity,
+  ROUTE_ONLY_ID_PREFIX,
 } from "./playlist-discovery-mcp.ts";
 import { startDailyStationRun } from "./daily-ops.ts";
 import {
@@ -485,7 +489,9 @@ Deno.test("Claude cannot operate Grok stations; Grok retains approve/send with F
 
 Deno.test("unknown MCP tools fail closed; schemas are strict", () => {
   assertEquals(isPlaylistDiscoveryTool("approve_draft"), false);
-  assertEquals(PLAYLIST_DISCOVERY_TOOLS.length, 6);
+  assertEquals(PLAYLIST_DISCOVERY_TOOLS.length, 8);
+  assert(isPlaylistDiscoveryTool("advance_playlist_batches"));
+  assert(isPlaylistDiscoveryTool("get_batch_candidates"));
   for (const t of PLAYLIST_DISCOVERY_TOOLS) {
     const schema = PLAYLIST_DISCOVERY_TOOL_SCHEMAS[t];
     assertEquals(schema.additionalProperties, false);
@@ -2036,4 +2042,304 @@ Deno.test("downstream Grok work hard-blocks after upstream failed/blocked/partia
       }
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 2 — advance_playlist_batches (own batches, any business date, ceiling AWAITING_GROK_REVIEW)
+// ---------------------------------------------------------------------------
+
+function batchFixture(): Record<string, Row[]> {
+  return {
+    agh_handoff_batches: [
+      // Stranded: created two days ago, after that day's tranche_final closed.
+      { id: "b-stranded", batch_kind: "playlist", queue_state: "CLAUDE_BATCH_READY", discovered_by: "claude_playlist_discovery", business_date_ct: "2026-09-18", record_count: 5 },
+      { id: "b-today", batch_kind: "playlist", queue_state: "CLAUDE_BATCH_READY", discovered_by: "claude_playlist_discovery", business_date_ct: "2026-09-20", record_count: 2 },
+      { id: "b-review", batch_kind: "playlist", queue_state: "AWAITING_GROK_REVIEW", discovered_by: "claude_playlist_discovery", business_date_ct: "2026-09-19", record_count: 1 },
+      { id: "b-approved", batch_kind: "playlist", queue_state: "APPROVED_FOR_SEND", discovered_by: "claude_playlist_discovery", business_date_ct: "2026-09-17", record_count: 1 },
+      { id: "b-foreign", batch_kind: "playlist", queue_state: "CLAUDE_BATCH_READY", discovered_by: "claude", business_date_ct: "2026-09-18", record_count: 3 },
+    ],
+    agh_handoff_records: [
+      { id: "r1", batch_id: "b-stranded", queue_state: "CLAUDE_BATCH_READY", playlist_target_id: "p-form", submission_channel: "web_form", packet: { packet_kind: "manual_web_form_packet", body: "should never leak" } },
+    ],
+  };
+}
+
+Deno.test("advance_playlist_batches clears a stranded prior-day batch backlog in one call", async () => {
+  const sb = stubSb(batchFixture());
+  const res = await runPlaylistDiscoveryTool(
+    "advance_playlist_batches",
+    { batch_ids: ["b-stranded", "b-today", "b-review", "b-approved", "b-foreign", "b-missing"] },
+    sb,
+  );
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  const byId = new Map((sb._tables.agh_handoff_batches as Row[]).map((b) => [b.id, b]));
+  assertEquals(byId.get("b-stranded")!.queue_state, "AWAITING_GROK_REVIEW");
+  assertEquals(byId.get("b-today")!.queue_state, "AWAITING_GROK_REVIEW");
+  // Never walks anything forward past the Claude-side ceiling or backwards.
+  assertEquals(byId.get("b-review")!.queue_state, "AWAITING_GROK_REVIEW");
+  assertEquals(byId.get("b-approved")!.queue_state, "APPROVED_FOR_SEND");
+  // Foreign batches are untouched and indistinguishable from missing ones.
+  assertEquals(byId.get("b-foreign")!.queue_state, "CLAUDE_BATCH_READY");
+  const failed = res.data.failed as Row[];
+  assertEquals(failed.find((f) => f.batch_id === "b-foreign")?.code, "batch_not_found");
+  assertEquals(failed.find((f) => f.batch_id === "b-missing")?.code, "batch_not_found");
+  assertEquals(res.data.advanced_count, 2);
+  for (const a of res.data.advanced as Row[]) assertEquals(a.queue_state, "AWAITING_GROK_REVIEW");
+  const skipped = res.data.skipped as Row[];
+  assertEquals(skipped.find((x) => x.batch_id === "b-review")?.reason, "already_awaiting_grok_review");
+  assertEquals(skipped.find((x) => x.batch_id === "b-approved")?.reason, "not_claude_pending");
+});
+
+Deno.test("advance_playlist_batches cannot target any other state", async () => {
+  const sb = stubSb(batchFixture());
+  const res = await runPlaylistDiscoveryTool(
+    "advance_playlist_batches",
+    { batch_ids: ["b-stranded"], queue_state: "APPROVED_FOR_SEND" },
+    sb,
+  );
+  assertEquals(res.status, 400);
+  assertEquals(res.data.code, "invalid_args");
+  const b = (sb._tables.agh_handoff_batches as Row[]).find((x) => x.id === "b-stranded")!;
+  assertEquals(b.queue_state, "CLAUDE_BATCH_READY");
+  // Non-array input rejected by the published schema.
+  const bad = await runPlaylistDiscoveryTool("advance_playlist_batches", { batch_ids: "b-stranded" }, sb);
+  assertEquals(bad.status, 400);
+});
+
+Deno.test("advance_playlist_batches surfaces batch query failure", async () => {
+  const sb = stubSb(batchFixture(), { failTables: { agh_handoff_batches: "boom" } });
+  const res = await advancePlaylistBatches(sb, playlistDiscoveryActor(), { batch_ids: ["b-stranded"] });
+  assertEquals(res.status, 500);
+  assertEquals(res.data.code, "db_error");
+});
+
+// ---------------------------------------------------------------------------
+// Fix 3 — get_batch_candidates (read-only, own batches only, no pitch copy)
+// ---------------------------------------------------------------------------
+
+Deno.test("get_batch_candidates returns full records for an own batch; no pitch copy", async () => {
+  const t = batchFixture();
+  t.playlist_targets = [{
+    playlist_id: "p-form",
+    playlist_name: "Fixture Form List",
+    platform: "spotify",
+    form_url: "https://curator.example/submit",
+    contact_method: "web_form",
+    lane: "rap_general",
+    verification_status: "auto_verified",
+    path_verified: true,
+    form_source_evidence: "https://curator.example/about",
+    research_context: { identity_resolved: false, source_url: "https://blog.example/list" },
+  }];
+  const sb = stubSb(t);
+  const res = await runPlaylistDiscoveryTool("get_batch_candidates", { batch_id: "b-stranded" }, sb);
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals(res.data.candidate_count, 1);
+  const c = (res.data.candidates as Row[])[0];
+  assertEquals((c.playlist as Row).playlist_name, "Fixture Form List");
+  assertEquals((c.playlist as Row).identity_resolved, false);
+  assertEquals((c.route as Row).channel, "web_form");
+  assertEquals((c.route as Row).form_url, "https://curator.example/submit");
+  assertEquals((c.verification as Row).path_verified, true);
+  assertEquals((c.evidence as Row).form_source_evidence, "https://curator.example/about");
+  assertEquals((c.packet as Row).packet_kind, "manual_web_form_packet");
+  assertEquals("body" in (c.packet as Row), false);
+  // Read-only: nothing written.
+  assertEquals(sb._writes.length, 0);
+});
+
+Deno.test("get_batch_candidates hides batches owned by other actors", async () => {
+  const sb = stubSb(batchFixture());
+  const res = await getBatchCandidates(sb, playlistDiscoveryActor(), { batch_id: "b-foreign" });
+  assertEquals(res.status, 404);
+  assertEquals(res.data.code, "batch_not_found");
+});
+
+// ---------------------------------------------------------------------------
+// Fix 4 — route-only candidates (identity_resolved:false) instead of hard reject
+// ---------------------------------------------------------------------------
+
+const RT_TRACK = "11111111-1111-1111-1111-111111111111";
+const RT_DNA = "22222222-2222-2222-2222-222222222222";
+
+function routeFixture(extraTargets: Row[] = []): Record<string, Row[]> {
+  return {
+    tracks: [{ id: RT_TRACK, name: "Fixture Track", approved_song_dna_version_id: RT_DNA }],
+    song_dna_versions: [{
+      id: RT_DNA,
+      track_id: RT_TRACK,
+      approval_state: "approved",
+      approved_lanes: ["rap_general"],
+      excluded_lanes: [],
+      short_pitch: "Fixture DNA pitch",
+      primary_genre: "rap",
+    }],
+    playlist_targets: extraTargets,
+    domain_blocklist: [],
+    non_curator_domains: [],
+  };
+}
+
+Deno.test("route-only candidate (form + name + evidence, no Spotify id) is accepted with identity_resolved:false", async () => {
+  const writes: { table: string; op: string; row: Row }[] = [];
+  const sb = stubSb(routeFixture(), { writes });
+  const cand = {
+    playlist_name: "Iframe Curator Rap List",
+    lane: "rap_general",
+    source_evidence: "https://curator.example/rap — Spotify player iframe, submission form linked",
+    submission_channel: "web_form",
+    form_url: "https://curator.example/submit?utm_source=x",
+  };
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: RT_TRACK,
+    candidates: [cand],
+  });
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals(res.data.rejected_count, 0, JSON.stringify(res.data));
+  assertEquals(res.data.verified_eligible_count, 1);
+  const v = (res.data.verified_eligible as Row[])[0];
+  assertEquals(v.identity_resolved, false);
+  assert(String(v.playlist_id).startsWith(ROUTE_ONLY_ID_PREFIX));
+
+  const insert = writes.find((w) => w.table === "playlist_targets" && w.op === "insert")!;
+  assertEquals(assertPlaylistTargetInsertSchema(insert.row), null);
+  assertEquals("playlist_url" in insert.row, false);
+  const rc = insert.row.research_context as Row;
+  assertEquals(rc.identity_resolved, false);
+  assertEquals(rc.identity_kind, "route_only");
+  assertEquals(rc.playlist_url, undefined);
+
+  // Same route + name again (utm noise differs) dedupes onto the same target.
+  const again = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: RT_TRACK,
+    candidates: [{ ...cand, form_url: "https://Curator.example/submit/" }],
+  });
+  assertEquals(again.status, 200);
+  assertEquals((sb._tables.playlist_targets as Row[]).length, 1);
+  assertEquals(
+    (again.data.eligible_existing_playlist_ids as string[])[0] ??
+      ((again.data.duplicates as Row[])[0]?.playlist_id),
+    v.playlist_id,
+  );
+});
+
+Deno.test("route-only still rejects when the route is not verifiable", async () => {
+  const sb = stubSb(routeFixture());
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: RT_TRACK,
+    candidates: [{
+      playlist_name: "No Route List",
+      lane: "rap_general",
+      source_evidence: "blog mention only",
+      playlist_url: "https://soundcloud.com/some/set",
+    }],
+  });
+  assertEquals(res.status, 200);
+  assertEquals(res.data.rejected_count, 1);
+  assertEquals((res.data.rejected as Row[])[0].reason, "unresolvable_playlist_identity");
+  assertEquals((sb._tables.playlist_targets as Row[]).length, 0);
+});
+
+Deno.test("route-only dedupes onto an existing target with the same route + name", async () => {
+  const sb = stubSb(routeFixture([{
+    playlist_id: "0DAtAjCytSoXd6T42mP0NW",
+    playlist_name: "Iframe Curator Rap List",
+    form_url: "https://curator.example/submit",
+    contact_method: "web_form",
+    verification_status: "auto_verified",
+    path_verified: true,
+    lane: "rap_general",
+  }]));
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: RT_TRACK,
+    candidates: [{
+      playlist_name: "iframe curator rap list",
+      lane: "rap_general",
+      source_evidence: "https://curator.example/rap",
+      submission_channel: "web_form",
+      form_url: "https://curator.example/submit",
+    }],
+  });
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals((sb._tables.playlist_targets as Row[]).length, 1);
+  assertEquals(res.data.eligible_existing_playlist_ids, ["0DAtAjCytSoXd6T42mP0NW"]);
+});
+
+Deno.test("routeOnlyPlaylistIdentity requires name + a valid first-party route", async () => {
+  assertEquals(await routeOnlyPlaylistIdentity({ playlistName: "", formUrl: "https://a.example/f" }), null);
+  assertEquals(await routeOnlyPlaylistIdentity({ playlistName: "X", formUrl: "not a url" }), null);
+  assertEquals(
+    await routeOnlyPlaylistIdentity({ playlistName: "X", submissionChannel: "email", formUrl: "https://a.example/f" }),
+    null,
+  );
+  const a = await routeOnlyPlaylistIdentity({ playlistName: "X  List", igAccount: "@Curator.One" });
+  const b = await routeOnlyPlaylistIdentity({ playlistName: "x list", igAccount: "curator.one" });
+  assertEquals(a?.channel, "instagram_dm");
+  assertEquals(a?.playlist_id, b?.playlist_id);
+});
+
+// ---------------------------------------------------------------------------
+// Fix 5 — manually_verified rows can be re-verified and drafted
+// ---------------------------------------------------------------------------
+
+Deno.test("manually_verified catalog row is re-verified and becomes verified_eligible", async () => {
+  const sb = stubSb(routeFixture([{
+    playlist_id: "catalog-form-0042",
+    playlist_name: "Catalog Form Curator",
+    verification_status: "manually_verified",
+    verified_by: "fendi",
+    path_verified: false,
+    contact_method: null,
+    submission_method: null,
+    form_url: null,
+    lane: "rap_general",
+  }]));
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: RT_TRACK,
+    candidates: [{
+      playlist_id: "catalog-form-0042",
+      playlist_name: "Catalog Form Curator",
+      lane: "rap_general",
+      source_evidence: "https://curator.example/submit is live (checked 2026-09-26)",
+      submission_channel: "web_form",
+      form_url: "https://curator.example/submit",
+    }],
+  });
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals(res.data.verified_eligible_count, 1, JSON.stringify(res.data));
+  const v = (res.data.verified_eligible as Row[])[0];
+  assertEquals(v.reverified_manual_target, true);
+  assertEquals(v.channel, "web_form");
+  const row = (sb._tables.playlist_targets as Row[])[0];
+  assertEquals(row.path_verified, true);
+  assertEquals(row.contact_method, "web_form");
+  assertEquals(row.form_url, "https://curator.example/submit");
+  // Human verification is preserved, never rewritten by the connector.
+  assertEquals(row.verification_status, "manually_verified");
+  assertEquals(row.verified_by, "fendi");
+});
+
+Deno.test("manually_verified row without a verifiable route stays unverified (no silent promote)", async () => {
+  const sb = stubSb(routeFixture([{
+    playlist_id: "catalog-form-0043",
+    playlist_name: "Catalog No Route",
+    verification_status: "manually_verified",
+    path_verified: false,
+    contact_method: null,
+    lane: "rap_general",
+  }]));
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: RT_TRACK,
+    candidates: [{
+      playlist_id: "catalog-form-0043",
+      playlist_name: "Catalog No Route",
+      lane: "rap_general",
+      source_evidence: "no route found",
+    }],
+  });
+  assertEquals(res.status, 200);
+  assertEquals(res.data.verified_eligible_count, 0);
+  const u = (res.data.accepted_unverified as Row[])[0];
+  assertEquals((u.manual_reverify as Row).reverified, false);
+  assertEquals((sb._tables.playlist_targets as Row[])[0].path_verified, false);
 });

@@ -23,6 +23,7 @@ import {
   rejectCallerPlaylistCopy,
 } from "./pitch-descriptor-guard.ts";
 import { resolveTrackPitchCopy } from "./pitch-copy.ts";
+import { curatorContactContext } from "./curator-contact.ts";
 import {
   checkTargetSubmissionReady,
   holdFailingRecordsInBatch,
@@ -900,6 +901,34 @@ async function markManualHandoffSubmission(
         code: "route_not_submission_ready",
         route_code: readiness.code,
         submission_terms: readiness.submission_terms,
+      },
+    };
+  }
+
+  // Existing per-song contact rule, applied at curator identity (sibling playlists that
+  // share the same form / IG account / email).
+  const { data: targetRow, error: targetErr } = await sb
+    .from("playlist_targets")
+    .select("playlist_id, curator_email, form_url, ig_curator_account, curator_instagram")
+    .eq("playlist_id", playlistId)
+    .maybeSingle();
+  if (targetErr) return { status: 500, data: { error: targetErr.message, code: "curator_check_failed" } };
+  const contact = await curatorContactContext(sb, {
+    target: (targetRow ?? { playlist_id: playlistId }) as Record<string, unknown>,
+    trackId,
+    trackName: null,
+  });
+  if (contact.error) {
+    return { status: 500, data: { error: `curator contact check failed: ${contact.error}`, code: "curator_check_failed" } };
+  }
+  if (contact.same_song_block) {
+    return {
+      status: 422,
+      data: {
+        error: "this curator already received this song within the existing cooldown (via a sibling playlist)",
+        code: "curator_cooldown_same_song",
+        prior_contact: contact.same_song_block,
+        cooldown_days: contact.cooldown_days,
       },
     };
   }

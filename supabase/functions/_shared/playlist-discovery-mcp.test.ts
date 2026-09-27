@@ -2519,3 +2519,42 @@ Deno.test("submit: a Spotify track link is rejected as the wrong entity type", a
   });
   assertEquals((res.data.rejected as Row[])[0].code, "wrong_spotify_entity_type");
 });
+
+Deno.test("cross-song reuse: each receiving song passes its own DNA independently", async () => {
+  const OTHER_TRACK = "33333333-3333-3333-3333-333333333333";
+  const OTHER_DNA = "44444444-4444-4444-4444-444444444444";
+  const tables = routeFixture([{
+    playlist_id: "3tfKhtLN08PQcIH6nk6qk0",
+    playlist_name: "Club Music 2025",
+    verification_status: "auto_verified",
+    path_verified: true,
+    contact_method: "web_form",
+    submission_method: "web_form",
+    form_url: "https://dailyplaylists.com/submit-song/add-song",
+    form_source_evidence: "DailyPlaylists free house list",
+    lane: "rap_general",
+  }]);
+  (tables.tracks as Row[]).push({ id: OTHER_TRACK, name: "Other Song", approved_song_dna_version_id: OTHER_DNA });
+  (tables.song_dna_versions as Row[]).push({
+    id: OTHER_DNA,
+    track_id: OTHER_TRACK,
+    approval_state: "approved",
+    approved_lanes: ["deep_house_groove"],
+    excluded_lanes: ["rap_general"],
+    short_pitch: "Other pitch",
+    primary_genre: "house",
+  });
+  const sb = stubSb(tables);
+  const cand = {
+    playlist_id: "3tfKhtLN08PQcIH6nk6qk0",
+    playlist_name: "Club Music 2025",
+    lane: "rap_general",
+    source_evidence: "DailyPlaylists free house list",
+  };
+  const a = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), { track_id: RT_TRACK, candidates: [cand] });
+  assertEquals(a.data.eligible_existing_playlist_ids, ["3tfKhtLN08PQcIH6nk6qk0"], JSON.stringify(a.data));
+  // rap_general is a discovery hint, not proof of fit: the other song's DNA excludes it.
+  const b = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), { track_id: OTHER_TRACK, candidates: [cand] });
+  assertEquals(b.data.verified_eligible_count, 0, JSON.stringify(b.data));
+  assertEquals((b.data.eligible_existing_playlist_ids as string[]).length, 0);
+});

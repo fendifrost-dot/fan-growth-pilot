@@ -10,6 +10,7 @@ import {
 } from "../_shared/outreach-eligibility.ts";
 import { evaluateOutreachDecision } from "../_shared/outreach-decision.ts";
 import { checkTargetSubmissionReady } from "../_shared/submission-route.ts";
+import { curatorContactContext } from "../_shared/curator-contact.ts";
 import {
   verifyApprovedContentHash,
   verifyDraftPitchIntegrity,
@@ -461,6 +462,19 @@ async function handleEmailPitch(
     if (existing?.id) {
       const until = existing.cooldown_until ? new Date(existing.cooldown_until as string).toLocaleDateString() : "?";
       return jsonPitch({ ok:false, method_used:method, action_taken:"skipped", cooldown_until:existing.cooldown_until as string, message_to_user:"⏳ Already pitched *" + playlistName + "* for *" + trackName + "*. Cooldown until *" + until + "*." });
+    }
+    // Same rule at curator level: the same song must not reach this curator again
+    // through a sibling playlist inside the cooldown window.
+    const curator = await curatorContactContext(sb, {
+      target: { ...row, curator_email: curatorEmail || row.curator_email },
+      trackId: identity.trackId ?? null,
+      trackName,
+    });
+    if (curator.error) {
+      return jsonPitch({ ok:false, method_used:method, action_taken:"error", cooldown_until:null, message_to_user:"❌ Curator contact check failed: " + curator.error }, 500);
+    }
+    if (curator.same_song_block) {
+      return jsonPitch({ ok:false, method_used:method, action_taken:"skipped", cooldown_until:curator.same_song_block.cooldown_until, message_to_user:"⏳ This curator already received *" + trackName + "* via another playlist. Cooldown until *" + (curator.same_song_block.cooldown_until ? new Date(curator.same_song_block.cooldown_until).toLocaleDateString() : "?") + "*." });
     }
     if (!batchOverrideCap) {
       const since = new Date(Date.now() - 86400000).toISOString();

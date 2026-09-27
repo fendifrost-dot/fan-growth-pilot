@@ -23,7 +23,9 @@ import {
   assertSubmissionReady,
   assessSubmissionRoute,
   releaseRouteHoldsForTarget,
+  submissionTerms,
 } from "./submission-route.ts";
+import { curatorContactContext } from "./curator-contact.ts";
 import {
   advanceClaudeReadyBatches,
   CLAUDE_SIDE_STATES,
@@ -2234,7 +2236,7 @@ export async function getBatchCandidates(
   const { data: records, error: rErr } = await sb
     .from("agh_handoff_records")
     .select(
-      "id, record_kind, queue_state, track_id, playlist_target_id, outreach_draft_id, submission_channel, song_dna_version_id, discovered_by, verified_by, drafted_by, reviewed_by, rejection_reason, packet, created_at, updated_at",
+      "id, record_kind, queue_state, track_id, playlist_target_id, outreach_draft_id, submission_channel, song_dna_version_id, discovered_by, verified_by, drafted_by, reviewed_by, rejection_reason, packet, submitted_at, created_at, updated_at",
     )
     .eq("batch_id", batchId)
     .order("created_at", { ascending: true });
@@ -2250,7 +2252,7 @@ export async function getBatchCandidates(
     const { data: tRows, error: tErr } = await sb
       .from("playlist_targets")
       .select(
-        "playlist_id, playlist_name, platform, curator_name, curator_email, curator_url, form_url, submission_url, ig_curator_account, lane, contact_method, submission_method, verification_status, path_verified, path_verification_notes, form_source_evidence, ig_source_evidence, notes, research_context, follower_count, last_verified_at, discovered_by, is_active",
+        "playlist_id, playlist_name, platform, curator_name, curator_email, curator_url, form_url, submission_url, ig_curator_account, curator_instagram, lane, contact_method, submission_method, verification_status, path_verified, path_verification_notes, form_source_evidence, ig_source_evidence, notes, research_context, follower_count, last_verified_at, discovered_by, is_active, submission_cost",
       )
       .in("playlist_id", targetIds);
     if (tErr) {
@@ -2272,6 +2274,20 @@ export async function getBatchCandidates(
       return { status: 500, data: { error: `drafts_query_failed:${dErr.message}`, code: "db_error" } };
     }
     for (const d of dRows ?? []) draftStatus.set(String(d.id), String(d.status ?? ""));
+  }
+
+  // Shared-curator relationships (same email / form / IG across playlists) for Grok.
+  const curatorByRecord = new Map<string, Record<string, unknown>>();
+  for (const r of (records ?? []) as Record<string, unknown>[]) {
+    const t = targets.get(String(r.playlist_target_id ?? ""));
+    if (!t || r.submitted_at) continue;
+    const ctx = await curatorContactContext(sb, { target: t, trackId: String(r.track_id ?? "") || null, trackName: null });
+    curatorByRecord.set(String(r.id), ctx.error ? { error: ctx.error } : {
+      shared_with_playlists: ctx.sibling_playlist_ids.filter((p) => p !== String(r.playlist_target_id)),
+      same_song_cooldown: ctx.same_song_block,
+      other_song_contacts_in_window: ctx.other_song_contacts.length,
+      cooldown_days: ctx.cooldown_days,
+    });
   }
 
   const candidates = (records ?? []).map((r) => {
@@ -2317,6 +2333,7 @@ export async function getBatchCandidates(
           form_url: t.form_url ?? null,
           submission_url: t.submission_url ?? null,
           ig_curator_account: t.ig_curator_account ?? null,
+          submission_terms: submissionTerms(t),
         }
         : null,
       verification: t
@@ -2335,6 +2352,14 @@ export async function getBatchCandidates(
           source_url: rc.source_url ?? null,
         }
         : null,
+      route_hold: (r.packet as Record<string, unknown> | null)?.route_hold ?? null,
+      route_check: t
+        ? (() => {
+          const v = assertSubmissionReady(t, String(r.submission_channel ?? "") || null);
+          return { ok: v.ok, code: v.code, reason: v.reason };
+        })()
+        : { ok: false, code: "target_missing", reason: "playlist target not found" },
+      curator_contact: curatorByRecord.get(String(r.id)) ?? null,
       created_at: r.created_at,
     };
   });

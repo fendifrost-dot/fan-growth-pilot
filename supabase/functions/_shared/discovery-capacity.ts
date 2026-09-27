@@ -1,21 +1,20 @@
 /**
  * Discovery capacity planning from ops_settings (editable) — not code constants.
  *
- * Two separate things live here and must never be conflated:
+ * OBJECTIVE — how many verified targets we want per day
+ * (target_verified_per_song_per_day × active songs; default 30/song).
  *
- *   1. OBJECTIVE — how many verified targets we want per day
- *      (target_verified_per_song_per_day × active songs; default 30/song).
- *   2. RESEARCH BUDGET — how many raw research passes are authorized to chase it
- *      (research_budget_raw_per_song × active songs). Deliberately configured, never
- *      derived from a conversion estimate. This is `effective_raw_target`.
+ * Raw research is UNCAPPED: there is no research budget or ceiling on raw passes. The
+ * agent keeps researching until the verified objective is met (or sources saturate).
+ * `effective_raw_target` is only the measured estimate of how many raw passes that will
+ * take — guidance, never a limit.
  *
  * The funnel is measured as two independent stages so an agent can audit the number:
  *
  *   raw → verified   (discovery + route-finding yield) — station-run metrics
  *   verified → draft (compose + persist yield, ALL channels) — targets → handoff records
  *
- * Only raw → verified is used to estimate raw demand (`daily_raw_requirement`), and that
- * estimate is advisory: it is reported next to the budget, it never replaces it.
+ * Only raw → verified is used to estimate raw demand (`daily_raw_requirement`).
  *
  * Every measurement carries an explicit status so "no data", "query failed" and
  * "measured zero" can never collapse into the same silent fallback number:
@@ -43,11 +42,6 @@ export const DISCOVERY_CAPACITY_DEFAULTS = {
   trailing_conversion_lookback_days: 7,
   /** Fallback raw→verified rate — only ever applied when status is `no_data`. */
   min_conversion_rate: 0.05,
-  /**
-   * Authorized raw research passes per active song per day. 90/song ≈ the last real
-   * measurement (2026-09-08: 173 raw for 60 verified ≈ 35% yield) — not a derived value.
-   */
-  research_budget_raw_per_song: 90,
 } as const;
 
 export type MeasurementStatus = "measured" | "measured_zero" | "no_data" | "query_failed";
@@ -84,16 +78,12 @@ export type DiscoveryCapacityPlan = {
   /** Advisory raw-pass estimate from raw→verified only. null when not estimable. */
   daily_raw_requirement: number | null;
   daily_raw_requirement_basis: RawEstimateBasis;
-  /** Configured research budget (authorized raw passes). */
-  research_budget_raw_per_song: number;
-  research_budget_raw_total: number;
-  research_budget_source: "ops_settings" | "default";
-  /** true/false when an estimate exists; null when it does not. */
-  research_budget_covers_estimate: boolean | null;
+  /** Always false: raw research has no ceiling; research continues until the objective is met. */
+  raw_research_capped: false;
   interim_raw_floor_total: number;
   interim_verified_floor_total: number;
-  /** Authorized raw passes = research budget. Never objective ÷ fallback rate. */
-  effective_raw_target: number;
+  /** Estimated raw passes to reach the objective (= daily_raw_requirement). Guidance, not a cap. */
+  effective_raw_target: number | null;
   effective_verified_target: number;
   lookback_days: number;
   fallback_used: boolean;
@@ -117,7 +107,7 @@ function num(v: unknown, fallback: number): number {
 
 /**
  * Legacy pure helper: ceil((perSong × songs) ÷ max(rate, floor)).
- * NOT used to size the research budget any more — kept for callers/tests that want the
+ * NOT used by buildDiscoveryCapacityPlan — kept for callers/tests that want the
  * raw formula. buildDiscoveryCapacityPlan never feeds it a silent fallback.
  */
 export function computeDailyRawRequirement(opts: {
@@ -138,8 +128,6 @@ export type DiscoveryCapacitySettingsLoad = {
   settings: Record<string, unknown>;
   status: "loaded" | "defaults_no_row" | "query_failed";
   error: string | null;
-  /** Keys explicitly present in the stored ops_settings row. */
-  explicit_keys: string[];
 };
 
 export async function loadDiscoveryCapacitySettingsDetailed(
@@ -167,16 +155,11 @@ export async function loadDiscoveryCapacitySettingsDetailed(
       d.trailing_conversion_lookback_days,
     ),
     min_conversion_rate: num(v.min_conversion_rate, d.min_conversion_rate),
-    research_budget_raw_per_song: num(
-      v.research_budget_raw_per_song,
-      d.research_budget_raw_per_song,
-    ),
   };
   return {
     settings,
     status: error ? "query_failed" : data ? "loaded" : "defaults_no_row",
     error: error ? String(error.message) : null,
-    explicit_keys: Object.keys(v).filter((k) => v[k] != null && Number.isFinite(Number(v[k]))),
   };
 }
 
@@ -421,14 +404,6 @@ export function assembleDiscoveryCapacityPlan(input: {
   const fallbackRate = num(settings.min_conversion_rate, d.min_conversion_rate);
   const lookback = num(settings.trailing_conversion_lookback_days, d.trailing_conversion_lookback_days);
   const objective = Math.ceil(perSong * songs);
-  const budgetPerSong = Math.max(
-    0,
-    num(settings.research_budget_raw_per_song, d.research_budget_raw_per_song),
-  );
-  const budgetTotal = Math.ceil(budgetPerSong * songs);
-  const budgetSource = input.settingsLoad.explicit_keys.includes("research_budget_raw_per_song")
-    ? "ops_settings"
-    : "default";
 
   const warnings: string[] = [];
   const r2v = input.rawToVerified;
@@ -473,11 +448,6 @@ export function assembleDiscoveryCapacityPlan(input: {
       `ops_settings.discovery_capacity query failed (${input.settingsLoad.error}) — defaults in use`,
     );
   }
-  if (estimate != null && estimate > budgetTotal) {
-    warnings.push(
-      `estimated raw need ${estimate} exceeds research budget ${budgetTotal} — objective may be missed at this budget`,
-    );
-  }
 
   const rawFloor = Math.ceil(num(settings.interim_raw_floor_per_song, d.interim_raw_floor_per_song) * songs);
   const verifiedFloor = Math.ceil(
@@ -490,13 +460,10 @@ export function assembleDiscoveryCapacityPlan(input: {
     objective_verified_total: objective,
     daily_raw_requirement: estimate,
     daily_raw_requirement_basis: basis,
-    research_budget_raw_per_song: budgetPerSong,
-    research_budget_raw_total: budgetTotal,
-    research_budget_source: budgetSource,
-    research_budget_covers_estimate: estimate == null ? null : budgetTotal >= estimate,
+    raw_research_capped: false,
     interim_raw_floor_total: rawFloor,
     interim_verified_floor_total: verifiedFloor,
-    effective_raw_target: budgetTotal,
+    effective_raw_target: estimate,
     effective_verified_target: verifiedFloor,
     lookback_days: lookback,
     fallback_used: fallbackUsed,
@@ -545,12 +512,9 @@ export function dailyTargetFromPlan(plan: DiscoveryCapacityPlan): Record<string,
     effective_raw_target: plan.effective_raw_target,
     effective_verified_target: plan.effective_verified_target,
     active_pitching_songs: plan.active_pitching_songs,
-    // Objective vs budget — separate, both explicit.
+    // Objective; raw research is uncapped (effective_raw_target is guidance only).
     objective_verified_total: plan.objective_verified_total,
-    research_budget_raw_total: plan.research_budget_raw_total,
-    research_budget_raw_per_song: plan.research_budget_raw_per_song,
-    research_budget_source: plan.research_budget_source,
-    research_budget_covers_estimate: plan.research_budget_covers_estimate,
+    raw_research_capped: plan.raw_research_capped,
     // The working behind the estimate.
     daily_raw_requirement_basis: plan.daily_raw_requirement_basis,
     measurement_status: plan.measurement_status,

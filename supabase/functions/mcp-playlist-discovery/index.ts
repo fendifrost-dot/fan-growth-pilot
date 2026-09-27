@@ -72,7 +72,7 @@ function pathOf(req: Request): string {
 function toolDescription(name: string): string {
   switch (name) {
     case "get_playlist_discovery_work":
-      return "Read active pitching tracks (ids/titles), current approved DNA, lanes, profiles, daily target (objective, research budget, and the funnel measurement behind it), and manually_verified catalog rows needing re-verification. No ISRCs.";
+      return "Read active pitching tracks (ids/titles), current approved DNA, lanes, profiles, daily target (verified objective; raw research is uncapped — effective_raw_target is an estimate, not a limit; plus the funnel measurement behind it), and manually_verified catalog rows needing re-verification. No ISRCs.";
     case "submit_playlist_candidates":
       return "Submit structured playlist candidate facts + evidence. Server dedupes, verifies (DB-backed), enforces DNA lanes. Returns verified_eligible vs accepted_unverified. Candidates without a Spotify id are accepted route-only (identity_resolved:false) when playlist_name + a verified first-party route are present. Existing catalog playlist_ids (incl. manually_verified rows) are re-verified.";
     case "create_playlist_draft_inventory":

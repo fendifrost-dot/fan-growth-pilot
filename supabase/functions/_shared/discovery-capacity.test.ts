@@ -1,6 +1,6 @@
 /**
  * Discovery capacity (Fix 1): split funnel, all-channel draft denominator, explicit
- * measured / no_data / query_failed / measured_zero states, configurable research budget.
+ * measured / no_data / query_failed / measured_zero states, uncapped raw research.
  */
 import { assert, assertEquals, assertNotEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
@@ -72,7 +72,7 @@ const BASE_TABLES = (): Record<string, Row[]> => ({
   outreach_drafts: [],
 });
 
-Deno.test("capacity: normal measured raw→verified rate sizes the estimate; budget is separate", async () => {
+Deno.test("capacity: normal measured raw→verified rate sizes the (uncapped) raw target", async () => {
   const t = BASE_TABLES();
   t.daily_ops_station_runs = [run(100, 35), run(73, 25)]; // 60 / 173
   const plan = await buildDiscoveryCapacityPlan(stubSb(t), 2, { now: NOW });
@@ -87,18 +87,16 @@ Deno.test("capacity: normal measured raw→verified rate sizes the estimate; bud
   assertEquals(plan.objective_verified_total, 60);
   // ceil(60 / (60/173)) = 173 — the 2026-09-08 number, from the right funnel stage.
   assertEquals(dt.daily_raw_requirement, 173);
-  // Research budget is configured, not derived: default 90/song × 2 songs.
-  assertEquals(dt.effective_raw_target, 180);
-  assertEquals(dt.research_budget_raw_total, 180);
-  assertEquals(dt.research_budget_source, "default");
-  assertEquals(dt.research_budget_covers_estimate, true);
+  // No research cap: the raw target is the estimate itself.
+  assertEquals(dt.effective_raw_target, 173);
+  assertEquals(dt.raw_research_capped, false);
   assertEquals(dt.effective_verified_target, 60);
   const w = dt.window as { lookback_days: number; since: string; until: string };
   assertEquals(w.lookback_days, 7);
   assertEquals(w.until, NOW.toISOString());
 });
 
-Deno.test("capacity: missing data → no_data with fallback_used=true (estimate labeled fallback, budget unchanged)", async () => {
+Deno.test("capacity: missing data → no_data with fallback_used=true (estimate labeled fallback)", async () => {
   const t = BASE_TABLES();
   // A run that never reported raw_discoveries is not a sample.
   t.daily_ops_station_runs = [run(0, 12)];
@@ -112,9 +110,8 @@ Deno.test("capacity: missing data → no_data with fallback_used=true (estimate 
   assertEquals(dt.sample_size, 0);
   assertEquals(dt.daily_raw_requirement_basis, "fallback");
   assertEquals(dt.daily_raw_requirement, 1200);
-  // The 1200 fallback estimate never becomes the authorized research budget.
-  assertEquals(dt.effective_raw_target, 180);
-  assertEquals(dt.research_budget_covers_estimate, false);
+  // Labeled as a fallback estimate, never passed off as a measurement.
+  assertEquals(dt.effective_raw_target, 1200);
   assert((dt.warnings as string[]).some((w) => w.includes("fallback rate")));
 });
 
@@ -136,7 +133,7 @@ Deno.test("capacity: query failure → query_failed flag + error, never a 0 that
   assertEquals(dt.daily_raw_requirement, null);
   assertEquals(dt.daily_raw_requirement_basis, "query_failed");
   assert(String(dt.measurement_error).includes("relation does not exist"));
-  assertEquals(dt.effective_raw_target, 180);
+  assertEquals(dt.effective_raw_target, null);
   assert((dt.warnings as string[]).some((w) => w.includes("query failed")));
 });
 
@@ -243,7 +240,6 @@ Deno.test("capacity: verified→draft never sizes the raw target", () => {
     settings: {},
     status: "loaded" as const,
     error: null,
-    explicit_keys: [],
   };
   const r2v = classifyFunnelStage({
     stage: "raw_to_verified",
@@ -276,20 +272,19 @@ Deno.test("capacity: verified→draft never sizes the raw target", () => {
   assertEquals(a.effective_raw_target, b.effective_raw_target);
 });
 
-Deno.test("capacity: research budget is configurable via ops_settings and reported as such", async () => {
+Deno.test("capacity: raw research has no cap — a large estimate is passed through untouched", async () => {
   const t = BASE_TABLES();
-  t.ops_settings = [{
-    setting_key: "discovery_capacity",
-    setting_value: { research_budget_raw_per_song: 120, target_verified_per_song_per_day: 30 },
-  }];
-  t.daily_ops_station_runs = [run(100, 35)];
+  // 5.6% yield (the live 2026-09-26 measurement) → ~1076 raw for 60 verified.
+  t.daily_ops_station_runs = [run(2941, 164)];
+  // A leftover research_budget_raw_per_song key (from the optional 2026-09-26 SQL) is ignored.
+  t.ops_settings = [{ setting_key: "discovery_capacity", setting_value: { research_budget_raw_per_song: 90 } }];
   const plan = await buildDiscoveryCapacityPlan(stubSb(t), 2, { now: NOW });
-  assertEquals(plan.research_budget_raw_per_song, 120);
-  assertEquals(plan.research_budget_raw_total, 240);
-  assertEquals(plan.research_budget_source, "ops_settings");
-  assertEquals(plan.effective_raw_target, 240);
-  // Objective untouched.
+  assertEquals(plan.daily_raw_requirement, 1076);
+  assertEquals(plan.effective_raw_target, 1076);
+  assertEquals(plan.raw_research_capped, false);
   assertEquals(plan.objective_verified_total, 60);
+  assert(!plan.warnings.some((w) => w.includes("budget")));
+  assertEquals("research_budget_raw_total" in dailyTargetFromPlan(plan), false);
 });
 
 Deno.test("capacity: ops_settings query failure is flagged (defaults in use), not silent", async () => {
@@ -300,5 +295,5 @@ Deno.test("capacity: ops_settings query failure is flagged (defaults in use), no
   });
   assertEquals(plan.settings_status, "query_failed");
   assert(plan.warnings.some((w) => w.includes("ops_settings")));
-  assertEquals(plan.research_budget_raw_total, 180);
+  assertEquals(plan.effective_raw_target, 172);
 });

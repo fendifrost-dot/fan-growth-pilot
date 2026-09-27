@@ -72,7 +72,7 @@ function pathOf(req: Request): string {
 function toolDescription(name: string): string {
   switch (name) {
     case "get_playlist_discovery_work":
-      return "Read active pitching tracks (ids/titles), current approved DNA, lanes, profiles, daily target (verified objective; raw research is uncapped — effective_raw_target is an estimate, not a limit; plus the funnel measurement behind it), and manually_verified catalog rows needing re-verification. No ISRCs.";
+      return "Read active pitching tracks (ids/titles), current approved DNA, lanes, profiles, daily target (raw research uncapped; effective_raw_target is an estimate), per_song_funnel (actual submissions vs goal, packets in flight, remaining need and raw_candidates_needed per song, stop guidance), and manually_verified rows needing re-verification. No ISRCs.";
     case "submit_playlist_candidates":
       return "Submit structured playlist candidate facts + evidence. Server dedupes, verifies (DB-backed), enforces DNA lanes. Returns verified_eligible vs accepted_unverified. Candidates without a Spotify id are accepted route-only (identity_resolved:false) when playlist_name + a verified first-party route are present. Existing catalog playlist_ids (incl. manually_verified rows) are re-verified.";
     case "create_playlist_draft_inventory":
@@ -86,7 +86,7 @@ function toolDescription(name: string): string {
     case "advance_playlist_batches":
       return "Move own playlist batches at CLAUDE_BATCH_READY to AWAITING_GROK_REVIEW (any business date, array of batch_ids). Cannot set any other state.";
     case "get_batch_candidates":
-      return "Read-only: full candidate records (playlist identity, route, evidence, verification) for one of your own batches. No pitch copy.";
+      return "Read-only: full candidate records for one of your own batches — identity, route, evidence, verification, route_check (shared rules), route_hold, submission_terms and curator_contact (shared-curator relationships). No pitch copy.";
     default:
       return name;
   }

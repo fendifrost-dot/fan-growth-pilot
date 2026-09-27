@@ -935,6 +935,7 @@ Deno.test("web-form inventory stays manual (no outreach_draft); channel preserve
       path_verified: true,
       verification_status: "auto_verified",
       form_url: "https://form.example/submit",
+      form_source_evidence: "Curator site links this submission form",
       lane: "rap_general",
     }],
     outreach_drafts: [],
@@ -2342,4 +2343,55 @@ Deno.test("manually_verified row without a verifiable route stays unverified (no
   const u = (res.data.accepted_unverified as Row[])[0];
   assertEquals((u.manual_reverify as Row).reverified, false);
   assertEquals((sb._tables.playlist_targets as Row[])[0].path_verified, false);
+});
+
+// ---------------------------------------------------------------------------
+// 2026-09-27 route correctness — replay of batch 2ec6577b candidates
+// ---------------------------------------------------------------------------
+
+Deno.test("submit: Spotify identity + genre + no route never becomes verified_eligible", async () => {
+  const sb = stubSb(routeFixture());
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: RT_TRACK,
+    candidates: [
+      {
+        playlist_id: "1ApnlS1I4dNX4ZKAQIyu62",
+        playlist_name: "Deep Groove House",
+        lane: "rap_general",
+        submission_channel: "web_form",
+        source_evidence:
+          "Spotify playlist 'Deep Groove House' by curator Chosic. Surfaced via deep-house groove curator search; no submission route confirmed at time of check.",
+      },
+      {
+        playlist_id: "370YtLfVc3bwtUp3uhyyAO",
+        playlist_name: "Melodic House & Techno 2026",
+        lane: "rap_general",
+        submission_channel: "web_form",
+        form_url: "https://open.spotify.com/playlist/370YtLfVc3bwtUp3uhyyAO",
+        source_evidence: "Spotify playlist by curator House Music Radar, surfaced via house curator search.",
+      },
+    ],
+  });
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals(res.data.verified_eligible_count, 0, JSON.stringify(res.data));
+  for (const row of (sb._tables.playlist_targets as Row[])) {
+    assertEquals(row.path_verified === true, false);
+  }
+});
+
+Deno.test("submit: a valid evidenced form still becomes verified_eligible", async () => {
+  const sb = stubSb(routeFixture());
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: RT_TRACK,
+    candidates: [{
+      playlist_id: "3tfKhtLN08PQcIH6nk6qk0",
+      playlist_name: "Club Music 2025",
+      lane: "rap_general",
+      submission_channel: "web_form",
+      form_url: "https://dailyplaylists.com/submit-song/add-song",
+      source_evidence: "DailyPlaylists free house list: Club Music 2025 (73,487 followers)",
+    }],
+  });
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals(res.data.verified_eligible_count, 1, JSON.stringify(res.data));
 });

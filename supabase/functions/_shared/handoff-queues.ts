@@ -23,6 +23,11 @@ import {
   rejectCallerPlaylistCopy,
 } from "./pitch-descriptor-guard.ts";
 import { resolveTrackPitchCopy } from "./pitch-copy.ts";
+import {
+  checkTargetSubmissionReady,
+  holdFailingRecordsInBatch,
+  recordRouteHold,
+} from "./submission-route.ts";
 
 export type RunResult = { status: number; data: Record<string, unknown> };
 
@@ -736,7 +741,33 @@ export async function reviewHandoffBatch(
   } else if (decision === "reviewed" || decision === "") {
     next = "GROK_REVIEWED";
   }
-  return advanceHandoffBatch(sb, { ...clean, queue_state: next }, ops);
+
+  // Route boundary: records whose submission route fails the shared rules never move
+  // forward with the batch — they go to a Claude-side repair batch (audit trail kept),
+  // and the rest of the batch continues. Fails closed if the check is unavailable.
+  let routeHeld: Record<string, unknown>[] = [];
+  if (next === "GROK_REVIEWED" || next === "APPROVED_FOR_SEND") {
+    const batchId = String(clean.batch_id ?? "").trim();
+    if (batchId) {
+      const hold = await holdFailingRecordsInBatch(sb, batchId, ops.label);
+      if (!hold.ok) {
+        return {
+          status: hold.code === "migration_required" ? 503 : 500,
+          data: {
+            error: `route check blocked ${next}: ${hold.error}`,
+            code: hold.code ?? "route_check_failed",
+            failing_records: hold.held,
+          },
+        };
+      }
+      routeHeld = hold.held;
+    }
+  }
+  const res = await advanceHandoffBatch(sb, { ...clean, queue_state: next }, ops);
+  if (routeHeld.length) {
+    res.data = { ...res.data, route_held: routeHeld, route_held_count: routeHeld.length };
+  }
+  return res;
 }
 
 export async function markManualFormSubmitted(
@@ -836,6 +867,41 @@ async function markManualHandoffSubmission(
   }
   if (!playlistId) {
     return { status: 422, data: { error: "missing playlist_target_id on handoff record", code: "missing_playlist_id" } };
+  }
+
+  // Route boundary: old packets verified under the defective rules cannot be submitted.
+  const hold = recordRouteHold(record);
+  if (hold) {
+    return {
+      status: 422,
+      data: {
+        error: `record is on route hold: ${String(hold.reason ?? hold.code ?? "route_hold")}`,
+        code: "route_hold",
+        route_hold: hold,
+      },
+    };
+  }
+  const recordChannel = String(record.submission_channel ?? "").trim();
+  if (recordChannel && recordChannel !== channel) {
+    return {
+      status: 422,
+      data: {
+        error: `record channel is ${recordChannel}, not ${channel}`,
+        code: "channel_mismatch",
+      },
+    };
+  }
+  const readiness = await checkTargetSubmissionReady(sb, playlistId, channel);
+  if (!readiness.ok) {
+    return {
+      status: readiness.query_error ? 500 : 422,
+      data: {
+        error: `submission route not ready: ${readiness.reason}`,
+        code: "route_not_submission_ready",
+        route_code: readiness.code,
+        submission_terms: readiness.submission_terms,
+      },
+    };
   }
 
   const envelope = await enforceTrackDnaLaneEnvelope(sb, {
@@ -999,6 +1065,24 @@ export async function advanceClaudeReadyBatches(
     let state = String(batch.queue_state);
     if (!pending.includes(state as HandoffQueueState)) {
       skipped.push({ batch_id: batchId, queue_state: state, reason: "not_claude_pending" });
+      continue;
+    }
+    // Repair batches go back to Grok only once every route hold is resolved.
+    const { data: heldRecs, error: hErr } = await sb
+      .from("agh_handoff_records")
+      .select("id, packet")
+      .eq("batch_id", batchId);
+    if (hErr) return { status: 500, data: { error: hErr.message } };
+    const unresolved = ((heldRecs ?? []) as Record<string, unknown>[])
+      .filter((r) => recordRouteHold(r))
+      .map((r) => ({ record_id: r.id, route_hold: recordRouteHold(r) }));
+    if (unresolved.length) {
+      skipped.push({
+        batch_id: batchId,
+        queue_state: state,
+        reason: "route_hold_unresolved",
+        held_records: unresolved,
+      });
       continue;
     }
     let stepFailed: RunResult | null = null;

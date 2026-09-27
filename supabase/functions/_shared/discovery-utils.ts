@@ -251,37 +251,95 @@ export function extractPlaylistIdsFromText(blob: string): string[] {
   return out;
 }
 
+const SPOTIFY_ID_RE = /^[a-zA-Z0-9]{22}$/;
+const SPOTIFY_ENTITY_TYPES = ["playlist", "track", "album", "artist", "show", "episode", "user"];
+
+export type SpotifyPlaylistIdParse =
+  | { ok: true; id: string }
+  | { ok: false; code: "empty" | "wrong_entity_type" | "malformed" | "editorial"; entity?: string };
+
+/**
+ * Parse ONE supported Spotify playlist reference into its canonical 22-char id.
+ * Supported: bare id, spotify:ID (this codebase's stored-key form), spotify:playlist:ID,
+ * spotify:user:<u>:playlist:ID, and open.spotify.com[/intl-xx][/embed]/playlist/ID URLs.
+ * Other entity types (track/album/artist/…) fail with wrong_entity_type — prefixes are
+ * never stripped blindly. Editorial algorithmic playlists (37i9dQZF…) fail: nobody to pitch.
+ */
+export function parseSpotifyPlaylistId(raw: string | null | undefined): SpotifyPlaylistIdParse {
+  const v = String(raw ?? "").trim();
+  if (!v) return { ok: false, code: "empty" };
+  let id: string | null = null;
+
+  if (/^https?:\/\//i.test(v) || /^open\.spotify\.com\//i.test(v)) {
+    let path: string;
+    try {
+      const u = new URL(/^https?:/i.test(v) ? v : `https://${v}`);
+      if (!/(^|\.)spotify\.com$/i.test(u.hostname)) return { ok: false, code: "malformed" };
+      path = u.pathname;
+    } catch {
+      return { ok: false, code: "malformed" };
+    }
+    const segs = path.split("/").filter(Boolean).filter((s) => !/^intl-[a-z]{2}(-[a-z]{2})?$/i.test(s) && s !== "embed");
+    const typeIdx = segs.findIndex((s) => SPOTIFY_ENTITY_TYPES.includes(s.toLowerCase()) && s.toLowerCase() !== "user");
+    if (typeIdx < 0) return { ok: false, code: "malformed" };
+    const entity = segs[typeIdx].toLowerCase();
+    if (entity !== "playlist") return { ok: false, code: "wrong_entity_type", entity };
+    id = segs[typeIdx + 1] ?? null;
+  } else if (/^spotify:/i.test(v)) {
+    const parts = v.split(":");
+    if (parts.length === 2) {
+      id = parts[1]; // spotify:ID — stored-key form used by pitch_log / placements
+    } else {
+      const pi = parts.findIndex((p, k) => k > 0 && p.toLowerCase() === "playlist");
+      if (pi < 0) {
+        const entity = parts[1]?.toLowerCase();
+        return entity && SPOTIFY_ENTITY_TYPES.includes(entity)
+          ? { ok: false, code: "wrong_entity_type", entity }
+          : { ok: false, code: "malformed" };
+      }
+      id = parts[pi + 1] ?? null;
+    }
+  } else {
+    id = v;
+  }
+
+  if (!id || !SPOTIFY_ID_RE.test(id)) return { ok: false, code: "malformed" };
+  if (id.startsWith("37i9dQZF")) return { ok: false, code: "editorial" };
+  return { ok: true, id };
+}
+
+/**
+ * Every playlist_targets key under which the same Spotify playlist may already be
+ * stored. `spotify:<id>` is a legitimate stored-key convention in this codebase
+ * (placements, pitch_log), so lookups must check all forms instead of renaming rows.
+ */
+export function playlistTargetKeyAliases(canonicalId: string): string[] {
+  return [canonicalId, `spotify:${canonicalId}`, `spotify:playlist:${canonicalId}`];
+}
+
 /**
  * Normalize a Spotify playlist id and/or URL to a canonical pair before insert.
- * Accepts raw 22-char ids, spotify:playlist:ID, open.spotify.com URLs.
- * Editorial algorithmic ids (37i9dQZF…) are rejected. Returns null when unresolvable.
+ * Returns null when unresolvable, the wrong entity type, or editorial.
  */
 export function normalizeSpotifyPlaylistIdentity(
   rawId?: string | null,
   rawUrl?: string | null,
 ): { playlist_id: string; playlist_url: string } | null {
-  const idIn = String(rawId ?? "").trim();
-  const urlIn = String(rawUrl ?? "").trim();
-  let id = "";
-
-  const fromSpotifyUri = idIn.match(/^spotify:playlist:([a-zA-Z0-9]{22})$/i);
-  if (fromSpotifyUri) id = fromSpotifyUri[1];
-  else if (/^[a-zA-Z0-9]{22}$/.test(idIn)) id = idIn;
-  else if (idIn.toLowerCase().startsWith("spotify:")) {
-    const stripped = idIn.replace(/^spotify:(playlist:)?/i, "");
-    if (/^[a-zA-Z0-9]{22}$/.test(stripped)) id = stripped;
-  }
-
-  if (!id && urlIn) {
-    const found = extractPlaylistIdsFromText(urlIn);
-    if (found[0]) id = found[0];
-  }
-  if (!id && idIn) {
-    const found = extractPlaylistIdsFromText(idIn);
-    if (found[0]) id = found[0];
+  let id: string | null = null;
+  const fromId = parseSpotifyPlaylistId(rawId);
+  if (fromId.ok) id = fromId.id;
+  else if (!(fromId.code === "wrong_entity_type" || fromId.code === "editorial")) {
+    const fromUrl = parseSpotifyPlaylistId(rawUrl);
+    if (fromUrl.ok) id = fromUrl.id;
+    else if (fromId.code === "empty" || fromId.code === "malformed") {
+      // Last resort: a playlist URL embedded in free text.
+      const found = extractPlaylistIdsFromText(String(rawUrl ?? "")).concat(
+        extractPlaylistIdsFromText(String(rawId ?? "")),
+      );
+      if (found[0] && fromUrl.code !== "wrong_entity_type" && fromUrl.code !== "editorial") id = found[0];
+    }
   }
   if (!id) return null;
-  if (id.startsWith("37i9dQZF")) return null;
   return {
     playlist_id: id,
     playlist_url: `https://open.spotify.com/playlist/${id}`,

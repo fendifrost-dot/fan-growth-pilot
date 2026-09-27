@@ -19,6 +19,11 @@ import { resolveTrackPitchCopy } from "./pitch-copy.ts";
 import { rejectCallerPlaylistCopy } from "./pitch-descriptor-guard.ts";
 import { evaluateSubmissionPath, isValidFormUrl, isValidIgAccount } from "./multichannel-path.ts";
 import {
+  assertSubmissionReady,
+  assessSubmissionRoute,
+  releaseRouteHoldsForTarget,
+} from "./submission-route.ts";
+import {
   advanceClaudeReadyBatches,
   CLAUDE_SIDE_STATES,
   type HandoffQueueState,
@@ -510,9 +515,8 @@ function resolveTargetChannel(row: Record<string, unknown>): string | null {
 }
 
 function isVerifiedEligible(row: Record<string, unknown>): boolean {
-  const pathOk = row.path_verified === true;
-  const status = String(row.verification_status ?? "");
-  return pathOk && (VERIFIED_STATUSES as readonly string[]).includes(status);
+  // Flag + status + the stored route itself must pass (catches pre-fix false verifications).
+  return assertSubmissionReady(row).ok;
 }
 
 /** Prefix for route-only playlist_targets ids (never 22-char Spotify-shaped). */
@@ -627,10 +631,12 @@ async function findExistingTargetByRoute(
 }
 
 /**
- * Re-verify a manually_verified catalog row's submission route with fresh candidate
- * evidence. Never changes verification_status (the human verification stands) and never
- * overwrites existing route values — only fills gaps, sets path_verified and the channel
- * when the row had none. Lane/DNA/pair eligibility is re-checked by the caller.
+ * Re-verify an existing catalog row's submission route with fresh candidate evidence.
+ * manually_verified rows keep their status (the human verification stands); other rows
+ * become auto_verified only when the route passes the shared rules. Valid stored route
+ * values are never overwritten; a stored value that FAILS the shared route rules (e.g. a
+ * Spotify playlist URL in form_url) may be replaced, and the old value is kept in
+ * path_verification_notes for audit. Lane/DNA/pair eligibility is re-checked by the caller.
  */
 export async function reverifyManuallyVerifiedTarget(
   sb: SupabaseClient,
@@ -648,13 +654,16 @@ export async function reverifyManuallyVerifiedTarget(
     .eq("playlist_id", opts.playlistId)
     .maybeSingle();
   if (error) return { ok: false, error: `manual_reverify_lookup_failed:${error.message}` };
-  if (!row || String(row.verification_status) !== "manually_verified") {
-    return { ok: true, reverified: false, reason: "not_manually_verified", channel: null };
+  if (!row) {
+    return { ok: true, reverified: false, reason: "target_missing", channel: null };
   }
+  const priorStatus = String(row.verification_status ?? "");
   const c = opts.candidate;
   const str = (v: unknown) => (v == null ? "" : String(v).trim());
+  const rowFormOk = !!str(row.form_url) &&
+    assessSubmissionRoute({ form_url: row.form_url, form_source_evidence: "stored" }, "web_form").ok;
   const email = str(row.curator_email) || str(c.curator_email);
-  const form = str(row.form_url) || str(c.form_url);
+  const form = (rowFormOk ? str(row.form_url) : "") || str(c.form_url);
   const ig = str(row.ig_curator_account) || str(row.curator_instagram) || str(c.ig_curator_account);
   const rowChannel = resolveTargetChannel(row as Record<string, unknown>);
   const channel = rowChannel ?? (str(c.submission_channel) || null);
@@ -667,7 +676,8 @@ export async function reverifyManuallyVerifiedTarget(
       form_source_evidence: opts.evidence,
       ig_curator_account: ig || null,
       ig_source_evidence: opts.evidence,
-      submission_url: form || str(row.submission_url) || null,
+      // Only a real form URL counts; legacy submission_url often holds the playlist URL.
+      submission_url: form || null,
     },
     { sb },
   );
@@ -675,9 +685,12 @@ export async function reverifyManuallyVerifiedTarget(
     return { ok: true, reverified: false, reason: path.reason, channel: path.channel };
   }
 
+  const replacedForm = str(row.form_url) && !rowFormOk && form && form !== str(row.form_url)
+    ? ` (replaced invalid form_url ${str(row.form_url)})`
+    : "";
   const patch: Record<string, unknown> = {
     path_verified: true,
-    path_verification_notes: `re-verified by ${ops.label}: ${path.reason}`,
+    path_verification_notes: `re-verified by ${ops.label}: ${path.reason}${replacedForm}`,
     last_verified_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
@@ -686,7 +699,11 @@ export async function reverifyManuallyVerifiedTarget(
     patch.submission_method = path.channel;
   }
   if (!str(row.curator_email) && email) patch.curator_email = email;
-  if (!str(row.form_url) && form) patch.form_url = form;
+  if ((!str(row.form_url) || !rowFormOk) && form) {
+    patch.form_url = form;
+    patch.submission_url = form;
+  }
+  if (priorStatus !== "manually_verified") patch.verification_status = path.status;
   if (!str(row.ig_curator_account) && ig) patch.ig_curator_account = ig;
   if (!str(row.form_source_evidence) && path.channel === "web_form") {
     patch.form_source_evidence = opts.evidence;
@@ -700,8 +717,7 @@ export async function reverifyManuallyVerifiedTarget(
   const { error: upErr, count } = await sb
     .from("playlist_targets")
     .update(patch, { count: "exact" })
-    .eq("playlist_id", opts.playlistId)
-    .eq("verification_status", "manually_verified");
+    .eq("playlist_id", opts.playlistId);
   const w = assertWriteOk("manual_reverify_update", upErr, count, 1);
   if (!w.ok) return { ok: false, error: w.error };
   return { ok: true, reverified: true, reason: path.reason, channel: path.channel };
@@ -1031,9 +1047,9 @@ export async function submitPlaylistCandidates(
       // manually_verified catalog rows are supply, not just dedupe fodder: re-verify the
       // route (fresh evidence) and re-classify under the normal lane/DNA/pair checks.
       let manualReverify: Record<string, unknown> | null = null;
+      // Also covers rows whose stored route fails the shared route rules.
       if (
-        (classified.classification === "existing_unverified" &&
-          classified.reason === "manually_verified") ||
+        classified.classification === "existing_unverified" ||
         (classified.classification === "existing_verified_eligible" && !classified.channel)
       ) {
         const re = await reverifyManuallyVerifiedTarget(sb, ops, {
@@ -1052,6 +1068,12 @@ export async function submitPlaylistCandidates(
         }
         manualReverify = { reverified: re.reverified, reason: re.reason, channel: re.channel };
         if (re.reverified) {
+          // Records held for this target's bad route can go back through review now.
+          const rel = await releaseRouteHoldsForTarget(sb, id, ops.label);
+          if (rel.released.length || rel.error) {
+            manualReverify.route_holds_released = rel.released;
+            if (rel.error) manualReverify.route_hold_release_error = rel.error;
+          }
           classified = await classifyExistingPlaylistTarget(sb, {
             trackId,
             playlistId: id,
@@ -1123,7 +1145,9 @@ export async function submitPlaylistCandidates(
         form_source_evidence: evidence,
         ig_curator_account: c.ig_curator_account != null ? String(c.ig_curator_account) : null,
         ig_source_evidence: evidence,
-        submission_url: (c.form_url != null ? String(c.form_url) : null) || playlistUrl,
+        // Never fall back to the playlist's own URL: a playlist page is not a route.
+        submission_url: c.form_url != null ? String(c.form_url) : null,
+        playlist_url: playlistUrl,
       },
       { sb },
     );
@@ -1446,7 +1470,7 @@ export async function createPlaylistDraftInventory(
     const { data: target, error: tErr } = await sb
       .from("playlist_targets")
       .select(
-        "playlist_id, contact_method, submission_method, path_verified, verification_status, form_url, submission_url, curator_email, ig_curator_account, curator_instagram, lane",
+        "playlist_id, contact_method, submission_method, path_verified, verification_status, form_url, submission_url, curator_email, ig_curator_account, curator_instagram, form_source_evidence, ig_source_evidence, research_context, lane",
       )
       .eq("playlist_id", playlistId)
       .maybeSingle();
@@ -1462,12 +1486,15 @@ export async function createPlaylistDraftInventory(
         data: { error: "playlist target not found", code: "target_not_found", playlist_id: playlistId },
       };
     }
-    if (!isVerifiedEligible(target as Record<string, unknown>)) {
+    const routeCheck = assertSubmissionReady(target as Record<string, unknown>);
+    if (!routeCheck.ok) {
       return {
         status: 422,
         data: {
           error: "only verified_eligible candidates may enter draft inventory",
           code: "not_verified_eligible",
+          route_code: routeCheck.code,
+          route_reason: routeCheck.reason,
           playlist_id: playlistId,
           path_verified: target.path_verified ?? false,
           verification_status: target.verification_status ?? null,

@@ -804,4 +804,100 @@ PAUSED_EXCLUDED=$(run_sql -c "select count(*) from public.pitch_campaigns c
  where c.status='active' and t.name='Fixture Partial Track' and c.song_dna_version_id is null;")
 assert_eq "incomplete_not_active" "${PAUSED_EXCLUDED}" "0"
 
+echo "==> Route hold + candidate log (2026-09-27 false route verification)"
+run_sql_pretty <<'SQL' >/dev/null
+alter table public.playlist_targets
+  add column if not exists submission_url text,
+  add column if not exists curator_instagram text,
+  add column if not exists contact_method text,
+  add column if not exists submission_method text,
+  add column if not exists curator_email text,
+  add column if not exists path_verification_notes text,
+  add column if not exists updated_at timestamptz;
+SQL
+apply_with_rollback "$ROOT/supabase/migrations/20260927120000_route_hold_and_candidate_log.sql"
+
+# Rule parity with submission-route.ts
+RC_NULL=$(run_sql -c "select public.agh_route_failure_code('web_form','auto_verified',true,null,null,null,'Spotify playlist by curator X. no submission route confirmed at time of check.',null,null);")
+assert_eq "route_rule_null_form" "${RC_NULL}" "missing_form_url"
+RC_SPOT=$(run_sql -c "select public.agh_route_failure_code('web_form','auto_verified',true,null,'https://open.spotify.com/playlist/370YtLfVc3bwtUp3uhyyAO',null,'Spotify playlist by curator',null,null);")
+assert_eq "route_rule_spotify_form" "${RC_SPOT}" "spotify_url_as_form"
+RC_NEG=$(run_sql -c "select public.agh_route_failure_code('web_form','auto_verified',true,null,'https://curator.example/submit',null,'Curator page; no submission route confirmed at time of check.',null,null);")
+assert_eq "route_rule_negated_evidence" "${RC_NEG}" "evidence_negates_route"
+RC_OK=$(run_sql -c "select coalesce(public.agh_route_failure_code('web_form','auto_verified',true,null,'https://dailyplaylists.com/submit-song/add-song',null,'DailyPlaylists free house list: Club Music 2025',null,null),'ok');")
+assert_eq "route_rule_valid_form" "${RC_OK}" "ok"
+RC_SP=$(run_sql -c "select coalesce(public.agh_route_failure_code('web_form','auto_verified',true,null,'https://soundplate.com/submit-music/',null,'Soundplate curator submission page for the playlist',null,null),'ok');")
+assert_eq "route_rule_soundplate_form" "${RC_SP}" "ok"
+RC_EMAIL=$(run_sql -c "select coalesce(public.agh_route_failure_code('email','auto_verified',false,'curator@label.test',null,'https://open.spotify.com/playlist/x',null,null,null),'ok');")
+assert_eq "route_rule_legacy_email_ok" "${RC_EMAIL}" "ok"
+RC_UNV=$(run_sql -c "select public.agh_route_failure_code('web_form','auto_verified',false,null,'https://curator.example/submit',null,'form linked from curator site',null,null);")
+assert_eq "route_rule_form_needs_path_flag" "${RC_UNV}" "route_not_verified"
+
+run_sql_pretty <<'SQL' >/dev/null
+insert into public.playlist_targets (playlist_id, lane, verification_status, path_verified, contact_method, submission_method, form_url, submission_url, form_source_evidence, path_verification_notes)
+values
+  ('rh-null-1', 'deep_house_groove', 'auto_verified', true, 'web_form', 'web_form', null, null,
+   'Spotify playlist ''Deep Groove House'' by curator Chosic. no submission route confirmed at time of check.',
+   'web form URL + source evidence verified (no automated submit)'),
+  ('rh-spot-1', 'house_general', 'auto_verified', true, 'web_form', 'web_form',
+   'https://open.spotify.com/playlist/370YtLfVc3bwtUp3uhyyAO', 'https://open.spotify.com/playlist/370YtLfVc3bwtUp3uhyyAO',
+   'Spotify playlist by curator House Music Radar', 'web form URL + source evidence verified (no automated submit)'),
+  ('rh-ok-1', 'house_club', 'auto_verified', true, 'web_form', 'web_form',
+   'https://dailyplaylists.com/submit-song/add-song', 'https://dailyplaylists.com/submit-song/add-song',
+   'DailyPlaylists free house list: Club Music 2025', 'web form URL + source evidence verified (no automated submit)');
+
+insert into public.agh_handoff_batches (id, batch_kind, queue_state, track_id, song_dna_version_id, discovered_by, drafted_by, record_count)
+values ('abababab-0000-0000-0000-000000000001', 'playlist', 'AWAITING_GROK_REVIEW',
+        '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222',
+        'claude_playlist_discovery', 'claude_playlist_discovery', 3);
+
+insert into public.agh_handoff_records (id, batch_id, record_kind, queue_state, track_id, playlist_target_id, submission_channel, song_dna_version_id, packet, drafted_by)
+values
+  ('abababab-0000-0000-0000-0000000000a1', 'abababab-0000-0000-0000-000000000001', 'playlist_target', 'AWAITING_GROK_REVIEW',
+   '11111111-1111-1111-1111-111111111111', 'rh-null-1', 'web_form', '22222222-2222-2222-2222-222222222222',
+   '{"packet_kind":"manual_web_form_packet","form_url":null}'::jsonb, 'claude_playlist_discovery'),
+  ('abababab-0000-0000-0000-0000000000a2', 'abababab-0000-0000-0000-000000000001', 'playlist_target', 'AWAITING_GROK_REVIEW',
+   '11111111-1111-1111-1111-111111111111', 'rh-spot-1', 'web_form', '22222222-2222-2222-2222-222222222222',
+   '{"packet_kind":"manual_web_form_packet","form_url":"https://open.spotify.com/playlist/370YtLfVc3bwtUp3uhyyAO"}'::jsonb, 'claude_playlist_discovery'),
+  ('abababab-0000-0000-0000-0000000000a3', 'abababab-0000-0000-0000-000000000001', 'playlist_target', 'AWAITING_GROK_REVIEW',
+   '11111111-1111-1111-1111-111111111111', 'rh-ok-1', 'web_form', '22222222-2222-2222-2222-222222222222',
+   '{"packet_kind":"manual_web_form_packet","form_url":"https://dailyplaylists.com/submit-song/add-song"}'::jsonb, 'claude_playlist_discovery');
+SQL
+
+echo "route audit preview (whole fixture DB): $(run_sql -c "select public.agh_route_hold_audit(false)->'by_code';")"
+PREVIEW=$(run_sql -c "select count(*) from jsonb_array_elements(public.agh_route_hold_audit(false)->'records') i where i->>'batch_id'='abababab-0000-0000-0000-000000000001';")
+assert_eq "route_audit_preview_count" "${PREVIEW}" "2"
+STILL=$(run_sql -c "select count(*) from public.agh_handoff_records where batch_id='abababab-0000-0000-0000-000000000001';")
+assert_eq "route_audit_preview_no_write" "${STILL}" "3"
+
+APPLIED=$(run_sql -c "select count(*) from jsonb_array_elements(public.agh_route_hold_audit(true)->'hold_result'->'held') h where h->>'from_batch_id'='abababab-0000-0000-0000-000000000001';")
+assert_eq "route_audit_held" "${APPLIED}" "2"
+KEPT=$(run_sql -c "select string_agg(playlist_target_id, ',') from public.agh_handoff_records where batch_id='abababab-0000-0000-0000-000000000001';")
+assert_eq "route_audit_valid_record_stays" "${KEPT}" "rh-ok-1"
+SRC_COUNT=$(run_sql -c "select record_count from public.agh_handoff_batches where id='abababab-0000-0000-0000-000000000001';")
+assert_eq "route_audit_source_count" "${SRC_COUNT}" "1"
+SRC_STATE=$(run_sql -c "select queue_state from public.agh_handoff_batches where id='abababab-0000-0000-0000-000000000001';")
+assert_eq "route_audit_source_state_untouched" "${SRC_STATE}" "AWAITING_GROK_REVIEW"
+REPAIR=$(run_sql -c "select queue_state || ':' || record_count || ':' || (payload->>'route_hold_repair') from public.agh_handoff_batches where payload->>'route_hold_source_batch'='abababab-0000-0000-0000-000000000001';")
+assert_eq "route_audit_repair_batch" "${REPAIR}" "CLAUDE_BATCH_READY:2:true"
+HOLD_CODES=$(run_sql -c "select string_agg(packet->'route_hold'->>'code', ',' order by playlist_target_id) from public.agh_handoff_records where packet ? 'route_hold' and id::text like 'abababab%';")
+assert_eq "route_audit_hold_codes" "${HOLD_CODES}" "missing_form_url,spotify_url_as_form"
+PRIOR=$(run_sql -c "select count(*) from public.agh_handoff_records where packet->'route_hold'->>'prior_queue_state'='AWAITING_GROK_REVIEW' and packet->'route_hold'->>'prior_batch_id'='abababab-0000-0000-0000-000000000001';")
+assert_eq "route_audit_history_preserved" "${PRIOR}" "2"
+TGT=$(run_sql -c "select count(*) from public.playlist_targets where playlist_id in ('rh-null-1','rh-spot-1') and path_verified=false and path_verification_notes like 'ROUTE_HOLD:%prior: web form URL%';")
+assert_eq "route_audit_targets_marked" "${TGT}" "2"
+OK_TGT=$(run_sql -c "select path_verified from public.playlist_targets where playlist_id='rh-ok-1';")
+assert_eq "route_audit_valid_target_untouched" "${OK_TGT}" "t"
+AGAIN=$(run_sql -c "select count(*) from jsonb_array_elements(public.agh_route_hold_audit(true)->'hold_result'->'held') h where (h->>'refreshed')::boolean and h->>'record_id' like 'abababab%';")
+assert_eq "route_audit_idempotent_refresh_only" "${AGAIN}" "2"
+BATCHES=$(run_sql -c "select count(*) from public.agh_handoff_batches where payload->>'route_hold_source_batch'='abababab-0000-0000-0000-000000000001';")
+assert_eq "route_audit_single_repair_batch" "${BATCHES}" "1"
+
+run_sql_pretty <<'SQL' >/dev/null
+select public.agh_log_candidate_evaluation(date '2026-09-27', '11111111-1111-1111-1111-111111111111', 'spotify:1ApnlS1I4dNX4ZKAQIyu62', '1ApnlS1I4dNX4ZKAQIyu62', 'verified_eligible_new', null, true);
+select public.agh_log_candidate_evaluation(date '2026-09-27', '11111111-1111-1111-1111-111111111111', 'spotify:1ApnlS1I4dNX4ZKAQIyu62', '1ApnlS1I4dNX4ZKAQIyu62', 'duplicate', 'existing_pair_already_drafted', false);
+SQL
+EVAL=$(run_sql -c "select outcome || ':' || attempts || ':' || created_target from public.agh_playlist_candidate_evaluations where identity_key='spotify:1ApnlS1I4dNX4ZKAQIyu62';")
+assert_eq "candidate_log_retry_keeps_best" "${EVAL}" "verified_eligible_new:2:true"
+
 echo "==> PASS: daily-ops migrations applied + authoritative RPC assertions verified"

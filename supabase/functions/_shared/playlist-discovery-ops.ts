@@ -5,7 +5,7 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import type { OpsActor } from "./ops-actors.ts";
 import { enforceTrackDnaLaneEnvelope } from "./track-dna-envelope.ts";
-import { VERIFIED_STATUSES } from "./verify-target.ts";
+import { assertSubmissionReady } from "./submission-route.ts";
 
 export const ACTIVE_DRAFT_STATUSES = ["pending", "approved"] as const;
 
@@ -28,9 +28,8 @@ export function inventoryIdempotencyKey(
 }
 
 export function isVerifiedEligibleRow(row: Record<string, unknown>): boolean {
-  const pathOk = row.path_verified === true;
-  const status = String(row.verification_status ?? "");
-  return pathOk && (VERIFIED_STATUSES as readonly string[]).includes(status);
+  // Status flags alone are not enough: the stored route must still pass the shared rules.
+  return assertSubmissionReady(row).ok;
 }
 
 function classificationFailed(
@@ -75,7 +74,7 @@ export async function classifyExistingPlaylistTarget(
   const { data: target, error } = await sb
     .from("playlist_targets")
     .select(
-      "playlist_id, contact_method, submission_method, path_verified, verification_status, lane, curator_email, form_url, ig_curator_account",
+      "playlist_id, contact_method, submission_method, path_verified, verification_status, lane, curator_email, form_url, submission_url, ig_curator_account, curator_instagram, form_source_evidence, ig_source_evidence",
     )
     .eq("playlist_id", opts.playlistId)
     .maybeSingle();

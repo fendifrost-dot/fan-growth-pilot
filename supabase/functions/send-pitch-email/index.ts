@@ -1,6 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendResendEmail } from "../_shared/resend-pitch.ts";
 import { evaluateOutreachDecision } from "../_shared/outreach-decision.ts";
+import { checkTargetSubmissionReady } from "../_shared/submission-route.ts";
 import {
   verifyApprovedContentHash,
   verifyDraftPitchIntegrity,
@@ -135,6 +136,18 @@ Deno.serve(async (req) => {
         decision_code: decision.code,
         errors: decision.errors,
       }, 422);
+    }
+
+    // Route boundary: the address being emailed must be a usable, verified route.
+    const routeReady = await checkTargetSubmissionReady(supabase, playlistId, "email", {
+      curator_email: curatorEmail || null,
+    });
+    if (!routeReady.ok) {
+      return json({
+        error: `submission route not ready: ${routeReady.reason}`,
+        code: "route_not_submission_ready",
+        route_code: routeReady.code,
+      }, routeReady.query_error ? 500 : 422);
     }
 
     const resolvedTrackName = decision.trackName || trackName;

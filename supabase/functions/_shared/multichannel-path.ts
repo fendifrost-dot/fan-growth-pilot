@@ -20,6 +20,7 @@ import {
   rejectCallerPlaylistCopy,
 } from "./pitch-descriptor-guard.ts";
 import { resolveTrackPitchCopy } from "./pitch-copy.ts";
+import { assessSubmissionRoute, isNonFormHost } from "./submission-route.ts";
 
 export type RunResult = { status: number; data: Record<string, unknown> };
 
@@ -55,6 +56,8 @@ export type PathVerifyInput = {
   ig_source_evidence?: string | null;
   submission_url?: string | null;
   curator_instagram?: string | null;
+  /** The playlist's own URL — never accepted as a form route. */
+  playlist_url?: string | null;
   song_dna_version_id?: string | null;
 };
 
@@ -90,11 +93,13 @@ export async function evaluateSubmissionPath(
     }
   }
 
-  // Infer channel when not supplied.
+  // Infer channel when not supplied. A platform/listening URL (e.g. the playlist's own
+  // Spotify link) never implies a web-form route.
   let channel = channelRaw;
   if (!channel) {
+    const formCandidate = input.form_url ?? input.submission_url;
     if ((input.curator_email ?? "").trim()) channel = "email";
-    else if (isValidFormUrl(input.form_url ?? input.submission_url)) channel = "web_form";
+    else if (isValidFormUrl(formCandidate) && !isNonFormHost(String(formCandidate))) channel = "web_form";
     else if (isValidIgAccount(input.ig_curator_account ?? input.curator_instagram)) {
       channel = "instagram_dm";
     }
@@ -111,28 +116,30 @@ export async function evaluateSubmissionPath(
   }
 
   if (channel === "email") {
-    if (!opts?.sb) {
-      const email = (input.curator_email ?? "").trim();
-      if (!email) {
-        return {
-          ok: false,
-          path_verified: false,
-          channel,
-          status: "unverified",
-          reason: "no email on file",
-          code: "no_email",
-        };
-      }
-      // Without DB, only format gate — caller should prefer full verifyEmail.
+    const email = (input.curator_email ?? "").trim();
+    if (!email) {
       return {
-        ok: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email),
-        path_verified: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email),
+        ok: false,
+        path_verified: false,
         channel,
-        status: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? "auto_verified" : "unverified",
-        reason: "format-only check (no DB)",
+        status: "unverified",
+        reason: "no email on file",
+        code: "no_email",
       };
     }
-    const verdict = await verifyEmail(opts.sb, input.curator_email ?? "", opts.bounceCount ?? 0);
+    if (!opts?.sb) {
+      // Without DB, only format gate — caller should prefer full verifyEmail.
+      const okFmt = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+      return {
+        ok: okFmt,
+        path_verified: okFmt,
+        channel,
+        status: okFmt ? "auto_verified" : "unverified",
+        reason: "format-only check (no DB)",
+        ...(okFmt ? {} : { code: "invalid_curator_email" }),
+      };
+    }
+    const verdict = await verifyEmail(opts.sb, email, opts.bounceCount ?? 0);
     return {
       ok: verdict.ok,
       path_verified: verdict.ok,
@@ -142,27 +149,26 @@ export async function evaluateSubmissionPath(
     };
   }
 
-  if (channel === "web_form") {
-    const url = (input.form_url ?? input.submission_url ?? "").trim();
-    const evidence = (input.form_source_evidence ?? "").trim();
-    if (!isValidFormUrl(url)) {
+  if (channel === "web_form" || channel === "instagram_dm") {
+    // One shared rule set (submission-route.ts) for every boundary.
+    const route = assessSubmissionRoute(
+      {
+        form_url: input.form_url ?? input.submission_url ?? null,
+        form_source_evidence: input.form_source_evidence ?? null,
+        ig_curator_account: input.ig_curator_account ?? input.curator_instagram ?? null,
+        ig_source_evidence: input.ig_source_evidence ?? null,
+        playlist_url: input.playlist_url ?? null,
+      },
+      channel,
+    );
+    if (!route.ok) {
       return {
         ok: false,
         path_verified: false,
         channel,
         status: "unverified",
-        reason: "official form URL missing or invalid",
-        code: "invalid_form_url",
-      };
-    }
-    if (!evidence) {
-      return {
-        ok: false,
-        path_verified: false,
-        channel,
-        status: "unverified",
-        reason: "form source evidence required",
-        code: "missing_form_evidence",
+        reason: route.reason,
+        code: route.code,
       };
     }
     return {
@@ -170,39 +176,9 @@ export async function evaluateSubmissionPath(
       path_verified: true,
       channel,
       status: "auto_verified",
-      reason: "web form URL + source evidence verified (no automated submit)",
-    };
-  }
-
-  if (channel === "instagram_dm") {
-    const handle = (input.ig_curator_account ?? input.curator_instagram ?? "").trim();
-    const evidence = (input.ig_source_evidence ?? "").trim();
-    if (!isValidIgAccount(handle)) {
-      return {
-        ok: false,
-        path_verified: false,
-        channel,
-        status: "unverified",
-        reason: "curator Instagram account missing or invalid",
-        code: "invalid_ig_account",
-      };
-    }
-    if (!evidence) {
-      return {
-        ok: false,
-        path_verified: false,
-        channel,
-        status: "unverified",
-        reason: "IG source evidence required",
-        code: "missing_ig_evidence",
-      };
-    }
-    return {
-      ok: true,
-      path_verified: true,
-      channel,
-      status: "auto_verified",
-      reason: "IG curator account + source evidence verified (draft-only; no bulk DM)",
+      reason: channel === "web_form"
+        ? "web form URL + source evidence verified (no automated submit)"
+        : "IG curator account + source evidence verified (draft-only; no bulk DM)",
     };
   }
 

@@ -9,6 +9,7 @@ import {
   eligibilitySkipLog,
 } from "../_shared/outreach-eligibility.ts";
 import { evaluateOutreachDecision } from "../_shared/outreach-decision.ts";
+import { checkTargetSubmissionReady } from "../_shared/submission-route.ts";
 import {
   verifyApprovedContentHash,
   verifyDraftPitchIntegrity,
@@ -296,6 +297,21 @@ Deno.serve(async (req) => {
     if (bulk && NON_BULK_METHODS.has(method)) return jsonPitch({ ok:true, method_used:method, action_taken:"skipped", cooldown_until:null, message_to_user:"⏭️ Skipped *" + (row.playlist_name ?? playlistId) + "* — method *" + method + "* needs a manual pass." });
     const tierRaw = row.tier;
     const tier = typeof tierRaw === "number" ? tierRaw : tierRaw != null && tierRaw !== "" ? Number(tierRaw) : null;
+    if (method === "email") {
+      // Route boundary: the address being emailed must be a usable, verified route.
+      const routeReady = await checkTargetSubmissionReady(sb, playlistId, "email", {
+        curator_email: (draft.recipient as string | null)?.trim() || null,
+      });
+      if (!routeReady.ok) {
+        return jsonPitch({
+          ok: false,
+          method_used: method,
+          action_taken: "skipped",
+          cooldown_until: null,
+          message_to_user: "🚫 submission route not ready: " + routeReady.reason,
+        }, routeReady.query_error ? 500 : 422);
+      }
+    }
     if (tier === 3 && !tierConfirmed) return jsonPitch({ ok:false, method_used:method, action_taken:"tier_gate", cooldown_until:null, message_to_user:"⚠️ *Tier 3 playlist* — *" + (row.playlist_name ?? playlistId) + "*\n\nFlagged for verify-first pitching. Reply *confirm* to send." });
     if (method === "email") {
       return await handleEmailPitch(

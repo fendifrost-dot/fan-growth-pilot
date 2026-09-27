@@ -15,7 +15,7 @@ import {
   reviewHandoffBatch,
 } from "./handoff-queues.ts";
 import { rejectCallerPlaylistCopy } from "./pitch-descriptor-guard.ts";
-import { normalizeSpotifyPlaylistIdentity } from "./discovery-utils.ts";
+import { normalizeSpotifyPlaylistIdentity, parseSpotifyPlaylistId } from "./discovery-utils.ts";
 import {
   PLAYLIST_DISCOVERY_TOOLS,
   PLAYLIST_DISCOVERY_TOOL_SCHEMAS,
@@ -935,6 +935,7 @@ Deno.test("web-form inventory stays manual (no outreach_draft); channel preserve
       path_verified: true,
       verification_status: "auto_verified",
       form_url: "https://form.example/submit",
+      form_source_evidence: "Curator site links this submission form",
       lane: "rap_general",
     }],
     outreach_drafts: [],
@@ -2342,4 +2343,218 @@ Deno.test("manually_verified row without a verifiable route stays unverified (no
   const u = (res.data.accepted_unverified as Row[])[0];
   assertEquals((u.manual_reverify as Row).reverified, false);
   assertEquals((sb._tables.playlist_targets as Row[])[0].path_verified, false);
+});
+
+// ---------------------------------------------------------------------------
+// 2026-09-27 route correctness — replay of batch 2ec6577b candidates
+// ---------------------------------------------------------------------------
+
+Deno.test("submit: Spotify identity + genre + no route never becomes verified_eligible", async () => {
+  const sb = stubSb(routeFixture());
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: RT_TRACK,
+    candidates: [
+      {
+        playlist_id: "1ApnlS1I4dNX4ZKAQIyu62",
+        playlist_name: "Deep Groove House",
+        lane: "rap_general",
+        submission_channel: "web_form",
+        source_evidence:
+          "Spotify playlist 'Deep Groove House' by curator Chosic. Surfaced via deep-house groove curator search; no submission route confirmed at time of check.",
+      },
+      {
+        playlist_id: "370YtLfVc3bwtUp3uhyyAO",
+        playlist_name: "Melodic House & Techno 2026",
+        lane: "rap_general",
+        submission_channel: "web_form",
+        form_url: "https://open.spotify.com/playlist/370YtLfVc3bwtUp3uhyyAO",
+        source_evidence: "Spotify playlist by curator House Music Radar, surfaced via house curator search.",
+      },
+    ],
+  });
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals(res.data.verified_eligible_count, 0, JSON.stringify(res.data));
+  for (const row of (sb._tables.playlist_targets as Row[])) {
+    assertEquals(row.path_verified === true, false);
+  }
+});
+
+Deno.test("submit: a valid evidenced form still becomes verified_eligible", async () => {
+  const sb = stubSb(routeFixture());
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: RT_TRACK,
+    candidates: [{
+      playlist_id: "3tfKhtLN08PQcIH6nk6qk0",
+      playlist_name: "Club Music 2025",
+      lane: "rap_general",
+      submission_channel: "web_form",
+      form_url: "https://dailyplaylists.com/submit-song/add-song",
+      source_evidence: "DailyPlaylists free house list: Club Music 2025 (73,487 followers)",
+    }],
+  });
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals(res.data.verified_eligible_count, 1, JSON.stringify(res.data));
+});
+
+// ---------------------------------------------------------------------------
+// 2026-09-27 Spotify ID normalization / key aliases
+// ---------------------------------------------------------------------------
+
+Deno.test("spotify id: supported playlist formats normalize to one canonical id", () => {
+  const id = "5wvhQwlEYjBYyzVHDQV5GL";
+  for (const raw of [
+    id,
+    `spotify:${id}`,
+    `spotify:playlist:${id}`,
+    `spotify:user:somecurator:playlist:${id}`,
+    `https://open.spotify.com/playlist/${id}?si=abc`,
+    `https://open.spotify.com/intl-de/playlist/${id}`,
+    `https://open.spotify.com/embed/playlist/${id}`,
+    `open.spotify.com/playlist/${id}`,
+  ]) {
+    const p = parseSpotifyPlaylistId(raw);
+    assert(p.ok, raw);
+    assertEquals((p as { id: string }).id, id, raw);
+  }
+});
+
+Deno.test("spotify id: wrong entity types and malformed values fail", () => {
+  const id = "5wvhQwlEYjBYyzVHDQV5GL";
+  assertEquals((parseSpotifyPlaylistId(`spotify:track:${id}`) as { code: string }).code, "wrong_entity_type");
+  assertEquals((parseSpotifyPlaylistId(`https://open.spotify.com/track/${id}`) as { code: string }).code, "wrong_entity_type");
+  assertEquals((parseSpotifyPlaylistId(`https://open.spotify.com/artist/${id}`) as { code: string }).code, "wrong_entity_type");
+  assertEquals((parseSpotifyPlaylistId("spotify:sfa:abc123") as { code: string }).code, "malformed");
+  assertEquals((parseSpotifyPlaylistId("spotify:tooShort") as { code: string }).code, "malformed");
+  assertEquals((parseSpotifyPlaylistId("https://example.com/playlist/" + id) as { code: string }).code, "malformed");
+  assertEquals((parseSpotifyPlaylistId("37i9dQZF1DXcBWIGoYBM5M") as { code: string }).code, "editorial");
+  assertEquals(normalizeSpotifyPlaylistIdentity(`spotify:track:${id}`, null), null);
+});
+
+Deno.test("submit: spotify:-prefixed catalog row is found and re-verified (no new unverified row)", async () => {
+  const sb = stubSb(routeFixture([{
+    playlist_id: "spotify:5wvhQwlEYjBYyzVHDQV5GL",
+    playlist_name: "DEEP HOUSE 2026",
+    verification_status: "manually_verified",
+    path_verified: false,
+    contact_method: "email",
+    curator_email: null,
+    lane: "rap_general",
+  }]));
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: RT_TRACK,
+    candidates: [{
+      playlist_url: "https://open.spotify.com/playlist/5wvhQwlEYjBYyzVHDQV5GL",
+      playlist_name: "DEEP HOUSE 2026",
+      lane: "rap_general",
+      submission_channel: "web_form",
+      form_url: "https://curator.example/submit",
+      source_evidence: "Curator site links this submission form for the playlist",
+    }],
+  });
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  const rows = sb._tables.playlist_targets as Row[];
+  // Same row, no duplicate canonical row created.
+  assertEquals(rows.length, 1);
+  assertEquals(rows[0].playlist_id, "spotify:5wvhQwlEYjBYyzVHDQV5GL");
+  assertEquals((res.data.rejected as Row[]).length, 0, JSON.stringify(res.data));
+  // Found via the canonical id and re-verified from the candidate's evidenced form.
+  assertEquals(rows[0].path_verified, true);
+  assertEquals(rows[0].contact_method, "web_form");
+  assertEquals(rows[0].verification_status, "manually_verified");
+});
+
+Deno.test("submit: normalization alone never grants route verification", async () => {
+  const sb = stubSb(routeFixture([{
+    playlist_id: "spotify:5wvhQwlEYjBYyzVHDQV5GL",
+    playlist_name: "DEEP HOUSE 2026",
+    verification_status: "manually_verified",
+    path_verified: false,
+    contact_method: "email",
+    curator_email: null,
+    lane: "rap_general",
+  }]));
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: RT_TRACK,
+    candidates: [{
+      playlist_id: "spotify:5wvhQwlEYjBYyzVHDQV5GL",
+      playlist_name: "DEEP HOUSE 2026",
+      lane: "rap_general",
+      source_evidence: "Spotify playlist page only",
+    }],
+  });
+  assertEquals(res.status, 200);
+  assertEquals(res.data.verified_eligible_count, 0);
+  assertEquals((sb._tables.playlist_targets as Row[]).length, 1);
+  assertEquals((sb._tables.playlist_targets as Row[])[0].path_verified, false);
+});
+
+Deno.test("submit: identity stored under two key forms is a collision, never merged", async () => {
+  const sb = stubSb(routeFixture([
+    { playlist_id: "spotify:4cYfYj9cEXilMAsRJxn6Wk", playlist_name: "A", verification_status: "manually_verified", lane: "rap_general" },
+    { playlist_id: "4cYfYj9cEXilMAsRJxn6Wk", playlist_name: "A", verification_status: "auto_verified", lane: "rap_general" },
+  ]));
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: RT_TRACK,
+    candidates: [{
+      playlist_id: "4cYfYj9cEXilMAsRJxn6Wk",
+      playlist_name: "A",
+      lane: "rap_general",
+      source_evidence: "listing",
+    }],
+  });
+  assertEquals((res.data.rejected as Row[])[0].code, "identity_alias_collision");
+  assertEquals((sb._tables.playlist_targets as Row[]).length, 2);
+});
+
+Deno.test("submit: a Spotify track link is rejected as the wrong entity type", async () => {
+  const sb = stubSb(routeFixture());
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: RT_TRACK,
+    candidates: [{
+      playlist_url: "https://open.spotify.com/track/5wvhQwlEYjBYyzVHDQV5GL",
+      playlist_name: "Not a playlist",
+      lane: "rap_general",
+      source_evidence: "x",
+    }],
+  });
+  assertEquals((res.data.rejected as Row[])[0].code, "wrong_spotify_entity_type");
+});
+
+Deno.test("cross-song reuse: each receiving song passes its own DNA independently", async () => {
+  const OTHER_TRACK = "33333333-3333-3333-3333-333333333333";
+  const OTHER_DNA = "44444444-4444-4444-4444-444444444444";
+  const tables = routeFixture([{
+    playlist_id: "3tfKhtLN08PQcIH6nk6qk0",
+    playlist_name: "Club Music 2025",
+    verification_status: "auto_verified",
+    path_verified: true,
+    contact_method: "web_form",
+    submission_method: "web_form",
+    form_url: "https://dailyplaylists.com/submit-song/add-song",
+    form_source_evidence: "DailyPlaylists free house list",
+    lane: "rap_general",
+  }]);
+  (tables.tracks as Row[]).push({ id: OTHER_TRACK, name: "Other Song", approved_song_dna_version_id: OTHER_DNA });
+  (tables.song_dna_versions as Row[]).push({
+    id: OTHER_DNA,
+    track_id: OTHER_TRACK,
+    approval_state: "approved",
+    approved_lanes: ["deep_house_groove"],
+    excluded_lanes: ["rap_general"],
+    short_pitch: "Other pitch",
+    primary_genre: "house",
+  });
+  const sb = stubSb(tables);
+  const cand = {
+    playlist_id: "3tfKhtLN08PQcIH6nk6qk0",
+    playlist_name: "Club Music 2025",
+    lane: "rap_general",
+    source_evidence: "DailyPlaylists free house list",
+  };
+  const a = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), { track_id: RT_TRACK, candidates: [cand] });
+  assertEquals(a.data.eligible_existing_playlist_ids, ["3tfKhtLN08PQcIH6nk6qk0"], JSON.stringify(a.data));
+  // rap_general is a discovery hint, not proof of fit: the other song's DNA excludes it.
+  const b = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), { track_id: OTHER_TRACK, candidates: [cand] });
+  assertEquals(b.data.verified_eligible_count, 0, JSON.stringify(b.data));
+  assertEquals((b.data.eligible_existing_playlist_ids as string[]).length, 0);
 });

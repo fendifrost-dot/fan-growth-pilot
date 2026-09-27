@@ -2,6 +2,7 @@
  * Shared playlist-agent handlers — used by standalone edge functions AND control-center-api.
  * Workaround: Lovable Publish redeploys existing functions only; new function names 404 until registered.
  */
+import { checkTargetSubmissionReady } from "./submission-route.ts";
 import { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import { trackSyncFields } from "./sync-registers.ts";
 import type { Actor } from "./outreach-auth.ts";
@@ -730,6 +731,27 @@ export async function runApproveDraft(
         decision_code: sendDecision.code,
         errors: sendDecision.errors,
         contradiction: sendDecision.contradictionExplanation,
+      },
+    };
+  }
+
+  // Route boundary: approval requires a usable submission route for the draft's channel
+  // (drafts created under the pre-2026-09-27 route rules are re-checked here).
+  const draftChannelForRoute = String((draft as { channel?: string | null }).channel ?? "email").trim() || "email";
+  const routeReady = await checkTargetSubmissionReady(
+    sb,
+    String(draft.playlist_id),
+    draftChannelForRoute,
+    draftChannelForRoute === "email" ? { curator_email: (draft as { recipient?: string | null }).recipient } : undefined,
+  );
+  if (!routeReady.ok) {
+    return {
+      status: routeReady.query_error ? 500 : 422,
+      data: {
+        error: `submission route not ready: ${routeReady.reason}`,
+        code: "route_not_submission_ready",
+        route_code: routeReady.code,
+        submission_terms: routeReady.submission_terms,
       },
     };
   }

@@ -23,6 +23,12 @@ import {
   rejectCallerPlaylistCopy,
 } from "./pitch-descriptor-guard.ts";
 import { resolveTrackPitchCopy } from "./pitch-copy.ts";
+import { curatorContactContext } from "./curator-contact.ts";
+import {
+  checkTargetSubmissionReady,
+  holdFailingRecordsInBatch,
+  recordRouteHold,
+} from "./submission-route.ts";
 
 export type RunResult = { status: number; data: Record<string, unknown> };
 
@@ -50,6 +56,7 @@ export const HANDOFF_ACTIONS = [
   "mark_manual_form_submitted",
   "mark_manual_ig_dm_submitted",
   "materialize_email_handoff_drafts",
+  "playlist_pipeline_report",
 ] as const;
 
 export function isHandoffAction(action: string): boolean {
@@ -736,7 +743,33 @@ export async function reviewHandoffBatch(
   } else if (decision === "reviewed" || decision === "") {
     next = "GROK_REVIEWED";
   }
-  return advanceHandoffBatch(sb, { ...clean, queue_state: next }, ops);
+
+  // Route boundary: records whose submission route fails the shared rules never move
+  // forward with the batch — they go to a Claude-side repair batch (audit trail kept),
+  // and the rest of the batch continues. Fails closed if the check is unavailable.
+  let routeHeld: Record<string, unknown>[] = [];
+  if (next === "GROK_REVIEWED" || next === "APPROVED_FOR_SEND") {
+    const batchId = String(clean.batch_id ?? "").trim();
+    if (batchId) {
+      const hold = await holdFailingRecordsInBatch(sb, batchId, ops.label);
+      if (!hold.ok) {
+        return {
+          status: hold.code === "migration_required" ? 503 : 500,
+          data: {
+            error: `route check blocked ${next}: ${hold.error}`,
+            code: hold.code ?? "route_check_failed",
+            failing_records: hold.held,
+          },
+        };
+      }
+      routeHeld = hold.held;
+    }
+  }
+  const res = await advanceHandoffBatch(sb, { ...clean, queue_state: next }, ops);
+  if (routeHeld.length) {
+    res.data = { ...res.data, route_held: routeHeld, route_held_count: routeHeld.length };
+  }
+  return res;
 }
 
 export async function markManualFormSubmitted(
@@ -836,6 +869,69 @@ async function markManualHandoffSubmission(
   }
   if (!playlistId) {
     return { status: 422, data: { error: "missing playlist_target_id on handoff record", code: "missing_playlist_id" } };
+  }
+
+  // Route boundary: old packets verified under the defective rules cannot be submitted.
+  const hold = recordRouteHold(record);
+  if (hold) {
+    return {
+      status: 422,
+      data: {
+        error: `record is on route hold: ${String(hold.reason ?? hold.code ?? "route_hold")}`,
+        code: "route_hold",
+        route_hold: hold,
+      },
+    };
+  }
+  const recordChannel = String(record.submission_channel ?? "").trim();
+  if (recordChannel && recordChannel !== channel) {
+    return {
+      status: 422,
+      data: {
+        error: `record channel is ${recordChannel}, not ${channel}`,
+        code: "channel_mismatch",
+      },
+    };
+  }
+  const readiness = await checkTargetSubmissionReady(sb, playlistId, channel);
+  if (!readiness.ok) {
+    return {
+      status: readiness.query_error ? 500 : 422,
+      data: {
+        error: `submission route not ready: ${readiness.reason}`,
+        code: "route_not_submission_ready",
+        route_code: readiness.code,
+        submission_terms: readiness.submission_terms,
+      },
+    };
+  }
+
+  // Existing per-song contact rule, applied at curator identity (sibling playlists that
+  // share the same form / IG account / email).
+  const { data: targetRow, error: targetErr } = await sb
+    .from("playlist_targets")
+    .select("playlist_id, curator_email, form_url, ig_curator_account, curator_instagram")
+    .eq("playlist_id", playlistId)
+    .maybeSingle();
+  if (targetErr) return { status: 500, data: { error: targetErr.message, code: "curator_check_failed" } };
+  const contact = await curatorContactContext(sb, {
+    target: (targetRow ?? { playlist_id: playlistId }) as Record<string, unknown>,
+    trackId,
+    trackName: null,
+  });
+  if (contact.error) {
+    return { status: 500, data: { error: `curator contact check failed: ${contact.error}`, code: "curator_check_failed" } };
+  }
+  if (contact.same_song_block) {
+    return {
+      status: 422,
+      data: {
+        error: "this curator already received this song within the existing cooldown (via a sibling playlist)",
+        code: "curator_cooldown_same_song",
+        prior_contact: contact.same_song_block,
+        cooldown_days: contact.cooldown_days,
+      },
+    };
   }
 
   const envelope = await enforceTrackDnaLaneEnvelope(sb, {
@@ -1001,6 +1097,24 @@ export async function advanceClaudeReadyBatches(
       skipped.push({ batch_id: batchId, queue_state: state, reason: "not_claude_pending" });
       continue;
     }
+    // Repair batches go back to Grok only once every route hold is resolved.
+    const { data: heldRecs, error: hErr } = await sb
+      .from("agh_handoff_records")
+      .select("id, packet")
+      .eq("batch_id", batchId);
+    if (hErr) return { status: 500, data: { error: hErr.message } };
+    const unresolved = ((heldRecs ?? []) as Record<string, unknown>[])
+      .filter((r) => recordRouteHold(r))
+      .map((r) => ({ record_id: r.id, route_hold: recordRouteHold(r) }));
+    if (unresolved.length) {
+      skipped.push({
+        batch_id: batchId,
+        queue_state: state,
+        reason: "route_hold_unresolved",
+        held_records: unresolved,
+      });
+      continue;
+    }
     let stepFailed: RunResult | null = null;
     for (const next of ["CLAUDE_PLAYLIST_COMPLETE", "AWAITING_GROK_REVIEW"] as const) {
       if (state === next) continue;
@@ -1033,6 +1147,118 @@ export async function advanceClaudeReadyBatches(
         batch_kind: batchKind || null,
         business_date_ct: businessDate,
       },
+    },
+  };
+}
+
+/**
+ * Queue health for the Claude → Grok → send pipeline. Reviewed ≠ approved ≠ submitted:
+ * each is counted separately. Includes a stranded-batch check (Claude-side batches that
+ * were never advanced) so promotion regressions are visible.
+ */
+export async function playlistPipelineReport(
+  sb: SupabaseClient,
+  body: Record<string, unknown>,
+  ops: OpsActor,
+): Promise<RunResult> {
+  const now = new Date();
+  const staleHours = Math.max(1, Number(body.stranded_after_hours) || 2);
+  let bq = sb
+    .from("agh_handoff_batches")
+    .select("id, queue_state, track_id, record_count, created_at, updated_at, payload, discovered_by, business_date_ct")
+    .eq("batch_kind", "playlist")
+    .order("created_at", { ascending: true })
+    .limit(2000);
+  if (!unscopedHandoffReader(ops)) bq = bq.eq("discovered_by", ops.kind);
+  const { data: batches, error: bErr } = await bq;
+  if (bErr) return { status: 500, data: { error: `batch_query_failed:${bErr.message}`, code: "db_error" } };
+  const batchRows = (batches ?? []) as Record<string, unknown>[];
+  const batchIds = batchRows.map((b) => String(b.id));
+
+  const records: Record<string, unknown>[] = [];
+  for (let i = 0; i < batchIds.length; i += 200) {
+    const { data, error } = await sb
+      .from("agh_handoff_records")
+      .select("id, batch_id, queue_state, track_id, submitted_at, created_at, packet, rejection_reason, submission_channel")
+      .in("batch_id", batchIds.slice(i, i + 200));
+    if (error) return { status: 500, data: { error: `records_query_failed:${error.message}`, code: "db_error" } };
+    records.push(...((data ?? []) as Record<string, unknown>[]));
+  }
+
+  const ageHours = (iso: unknown) => {
+    const t = Date.parse(String(iso ?? ""));
+    return Number.isFinite(t) ? Math.round((now.getTime() - t) / 36e5 * 10) / 10 : null;
+  };
+  const isRepair = (b: Record<string, unknown>) =>
+    String((b.payload as Record<string, unknown> | null)?.route_hold_repair ?? "") === "true";
+
+  const byState: Record<string, { batches: number; records: number }> = {};
+  for (const b of batchRows) {
+    const st = String(b.queue_state);
+    byState[st] ??= { batches: 0, records: 0 };
+    byState[st].batches++;
+  }
+  for (const r of records) {
+    const st = String(r.queue_state);
+    byState[st] ??= { batches: 0, records: 0 };
+    byState[st].records++;
+  }
+
+  const pendingReview = batchRows.filter((b) => b.queue_state === "AWAITING_GROK_REVIEW");
+  const oldestPending = pendingReview[0] ?? null;
+  const stranded = batchRows.filter((b) =>
+    (b.queue_state === "CLAUDE_BATCH_READY" || b.queue_state === "CLAUDE_PLAYLIST_COMPLETE") &&
+    !isRepair(b) && (ageHours(b.created_at) ?? 0) >= staleHours
+  );
+  const repair = batchRows.filter((b) => isRepair(b) && b.queue_state === "CLAUDE_BATCH_READY");
+
+  const holdReasons: Record<string, number> = {};
+  const rejectionReasons: Record<string, number> = {};
+  for (const r of records) {
+    const hold = (r.packet as Record<string, unknown> | null)?.route_hold as Record<string, unknown> | undefined;
+    if (hold && !r.submitted_at) {
+      const code = String(hold.code ?? "route_hold");
+      holdReasons[code] = (holdReasons[code] ?? 0) + 1;
+    }
+    if (r.queue_state === "REJECTED_BY_GROK") {
+      const why = String(r.rejection_reason ?? "unspecified").slice(0, 80);
+      rejectionReasons[why] = (rejectionReasons[why] ?? 0) + 1;
+    }
+  }
+  const submitted = records.filter((r) => r.submitted_at);
+
+  return {
+    status: 200,
+    data: {
+      ok: true,
+      scoped: !unscopedHandoffReader(ops),
+      generated_at: now.toISOString(),
+      by_state: byState,
+      review_backlog: {
+        batches: pendingReview.length,
+        records: records.filter((r) => r.queue_state === "AWAITING_GROK_REVIEW").length,
+        oldest_pending_batch_id: oldestPending?.id ?? null,
+        oldest_pending_age_hours: oldestPending ? ageHours(oldestPending.created_at) : null,
+      },
+      reviewed_not_approved_records: records.filter((r) => r.queue_state === "GROK_REVIEWED").length,
+      approved_not_submitted_records: records.filter((r) =>
+        (r.queue_state === "APPROVED_FOR_SEND" || r.queue_state === "AWAITING_AGH_IMPORT") && !r.submitted_at
+      ).length,
+      manual_submissions_recorded: submitted.length,
+      rejected_records: records.filter((r) => r.queue_state === "REJECTED_BY_GROK").length,
+      rejection_reasons: rejectionReasons,
+      route_holds: {
+        records: Object.values(holdReasons).reduce((a, b) => a + b, 0),
+        by_code: holdReasons,
+        repair_batches: repair.map((b) => ({ id: b.id, record_count: b.record_count, created_at: b.created_at })),
+      },
+      stranded_claude_batches: {
+        threshold_hours: staleHours,
+        count: stranded.length,
+        batch_ids: stranded.map((b) => b.id),
+        note: "Claude-side batches older than the threshold that never reached AWAITING_GROK_REVIEW. Clear with advance_playlist_batches.",
+      },
+      note: "Reviewed, approved and submitted are separate counts. Email sends are counted in pitch_log (see per-song funnel in get_playlist_discovery_work).",
     },
   };
 }
@@ -1129,20 +1355,39 @@ export async function runHandoffAction(
       return reviewHandoffBatch(sb, body, ops);
     case "list_handoff_batches": {
       const limit = Math.min(Number(body.limit) || 40, 100);
+      const offset = Math.max(0, Math.floor(Number(body.offset) || 0));
+      // oldest_first lets a reviewer drain a backlog without older batches falling off
+      // the first page (a newest-first page of 40 hides the oldest pending work).
+      const oldestFirst = String(body.order ?? "").toLowerCase() === "oldest_first";
       let q = sb
         .from("agh_handoff_batches")
-        .select("*")
-        .order("created_at", { ascending: false })
-        .limit(limit);
+        .select("*", { count: "exact" })
+        .order("created_at", { ascending: oldestFirst });
+      q = offset > 0 ? q.range(offset, offset + limit - 1) : q.limit(limit);
       if (typeof body.queue_state === "string") q = q.eq("queue_state", body.queue_state);
       if (typeof body.batch_kind === "string") q = q.eq("batch_kind", body.batch_kind);
       if (!unscopedHandoffReader(ops)) {
         q = q.eq("discovered_by", ops.kind);
       }
-      const { data, error } = await q;
+      const { data, error, count } = await q;
       if (error) return { status: 500, data: { error: error.message } };
-      return { status: 200, data: { ok: true, rows: data ?? [], scoped: !unscopedHandoffReader(ops) } };
+      const rows = data ?? [];
+      const total = typeof count === "number" ? count : null;
+      return {
+        status: 200,
+        data: {
+          ok: true,
+          rows,
+          scoped: !unscopedHandoffReader(ops),
+          total_count: total,
+          offset,
+          order: oldestFirst ? "oldest_first" : "newest_first",
+          has_more: total != null ? offset + rows.length < total : rows.length === limit,
+        },
+      };
     }
+    case "playlist_pipeline_report":
+      return playlistPipelineReport(sb, body, ops);
     case "get_handoff_batch": {
       const id = String(body.batch_id ?? body.id ?? "").trim();
       if (!id) return { status: 400, data: { error: "batch_id required" } };

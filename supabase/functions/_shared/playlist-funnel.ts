@@ -1,0 +1,210 @@
+/**
+ * Per-song daily funnel for the playlist pipeline (CT business date).
+ *
+ * The business goal is ACTUAL SUBMISSIONS per song (default 30). Drafts, reviews and
+ * approvals are reported separately and never counted as submissions. A station run can
+ * finish successfully while the business target is unmet — the two are reported apart.
+ *
+ * Units:
+ *   raw candidate  = one distinct song–playlist candidate evaluated that day
+ *                    (agh_playlist_candidate_evaluations; retries collapse)
+ *   eligible packet = a handoff record created for the song (route + fit verified)
+ *   submission      = email pitch_log row status=sent with a provider message id, or a
+ *                     manual web-form / IG record with submitted_at (evidence recorded)
+ */
+import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import { chicagoBusinessDate } from "./chicago-time.ts";
+
+export type SongFunnel = {
+  track_id: string;
+  title: string | null;
+  business_date_ct: string;
+  // discovery
+  raw_candidates_evaluated: number;
+  net_new_identities: number;
+  existing_playlists_newly_matched: number;
+  duplicates_skipped: number;
+  candidates_rejected: number;
+  candidates_accepted_unverified: number;
+  // packets
+  verified_eligible_packets_today: number;
+  drafts_awaiting_review: number;
+  drafts_awaiting_review_today: number;
+  oldest_pending_review_age_hours: number | null;
+  reviewed_not_approved: number;
+  approved_not_submitted: number;
+  // outcomes
+  submissions_today: number;
+  submissions_email_today: number;
+  submissions_manual_today: number;
+  send_failures_today: number;
+  rejected_by_grok: number;
+  route_holds: number;
+  hold_reasons: Record<string, number>;
+  // target
+  objective_submissions: number;
+  business_target_met: boolean;
+  submission_shortfall: number;
+  remaining_eligible_packets_needed: number;
+  raw_candidates_needed: number | null;
+  raw_candidates_needed_basis: string;
+};
+
+export type FunnelResult = {
+  ok: boolean;
+  songs: SongFunnel[];
+  errors: string[];
+  evaluation_log_available: boolean;
+};
+
+const OPEN_REVIEW_STATES = new Set(["CLAUDE_BATCH_READY", "CLAUDE_PLAYLIST_COMPLETE", "AWAITING_GROK_REVIEW"]);
+
+function isMissingRelation(msg: string): boolean {
+  return /does not exist|could not find the table|PGRST205|42P01/i.test(msg);
+}
+
+/** Pure: remaining need and raw candidates required, with coherent units. */
+export function computeRemainingNeed(opts: {
+  objective: number;
+  submissionsToday: number;
+  approvedNotSubmitted: number;
+  awaitingReviewToday: number;
+  rawToEligibleRate: number | null;
+}): { shortfall: number; remainingPackets: number; rawNeeded: number | null; basis: string } {
+  const shortfall = Math.max(0, opts.objective - opts.submissionsToday);
+  // Packets already produced today and still in flight count toward today's need; they
+  // are not guaranteed to convert, so this is a floor on remaining work, not a promise.
+  const remainingPackets = Math.max(0, shortfall - opts.approvedNotSubmitted - opts.awaitingReviewToday);
+  if (remainingPackets === 0) return { shortfall, remainingPackets, rawNeeded: 0, basis: "no_remaining_need" };
+  if (opts.rawToEligibleRate == null) return { shortfall, remainingPackets, rawNeeded: null, basis: "no_yield_measurement" };
+  if (opts.rawToEligibleRate <= 0) return { shortfall, remainingPackets, rawNeeded: null, basis: "measured_zero_yield" };
+  return {
+    shortfall,
+    remainingPackets,
+    rawNeeded: Math.ceil(remainingPackets / opts.rawToEligibleRate),
+    basis: "measured_yield",
+  };
+}
+
+export async function buildPerSongFunnel(
+  sb: SupabaseClient,
+  tracks: { track_id: string; title?: string | null }[],
+  opts: { objectivePerSong: number; rawToEligibleRate: number | null; now?: Date },
+): Promise<FunnelResult> {
+  const now = opts.now ?? new Date();
+  const today = chicagoBusinessDate(now);
+  const ids = tracks.map((t) => t.track_id).filter(Boolean);
+  const errors: string[] = [];
+  if (!ids.length) return { ok: true, songs: [], errors, evaluation_log_available: true };
+  const sinceIso = new Date(now.getTime() - 36 * 3600 * 1000).toISOString();
+  const isToday = (iso: unknown) => !!iso && chicagoBusinessDate(new Date(String(iso))) === today;
+
+  // Candidate evaluations (server-side raw denominator).
+  let evalRows: Record<string, unknown>[] = [];
+  let evalAvailable = true;
+  {
+    const { data, error } = await sb
+      .from("agh_playlist_candidate_evaluations")
+      .select("track_id, outcome, created_target, business_date_ct")
+      .eq("business_date_ct", today)
+      .in("track_id", ids);
+    if (error) {
+      if (isMissingRelation(String(error.message))) evalAvailable = false;
+      else errors.push(`candidate_evaluations_query_failed:${error.message}`);
+    } else evalRows = (data ?? []) as Record<string, unknown>[];
+  }
+
+  // Handoff records (all open + today's).
+  let recs: Record<string, unknown>[] = [];
+  {
+    const { data, error } = await sb
+      .from("agh_handoff_records")
+      .select("id, track_id, queue_state, submitted_at, manual_submit_result, created_at, packet, record_kind")
+      .in("track_id", ids);
+    if (error) errors.push(`handoff_records_query_failed:${error.message}`);
+    else recs = ((data ?? []) as Record<string, unknown>[]).filter((r) => (r.record_kind ?? "playlist_target") === "playlist_target");
+  }
+
+  // Email sends with provider evidence (and failures) since yesterday.
+  let sends: Record<string, unknown>[] = [];
+  {
+    const { data, error } = await sb
+      .from("pitch_log")
+      .select("track_id, status, sent_at, pitched_at, resend_message_id")
+      .in("track_id", ids)
+      .gte("pitched_at", sinceIso);
+    if (error) errors.push(`pitch_log_query_failed:${error.message}`);
+    else sends = (data ?? []) as Record<string, unknown>[];
+  }
+
+  const songs: SongFunnel[] = tracks.map((t) => {
+    const ev = evalRows.filter((r) => String(r.track_id) === t.track_id);
+    const rs = recs.filter((r) => String(r.track_id) === t.track_id);
+    const sl = sends.filter((r) => String(r.track_id) === t.track_id);
+
+    const count = (pred: (r: Record<string, unknown>) => boolean, arr = rs) => arr.filter(pred).length;
+    const pending = rs.filter((r) => OPEN_REVIEW_STATES.has(String(r.queue_state)) && !(r.packet as Record<string, unknown> | null)?.route_hold);
+    const oldest = pending.reduce<number | null>((min, r) => {
+      const ts = Date.parse(String(r.created_at ?? ""));
+      if (!Number.isFinite(ts)) return min;
+      return min == null || ts < min ? ts : min;
+    }, null);
+    const holdReasons: Record<string, number> = {};
+    for (const r of rs) {
+      const hold = (r.packet as Record<string, unknown> | null)?.route_hold as Record<string, unknown> | undefined;
+      if (hold && !r.submitted_at) {
+        const code = String(hold.code ?? "route_hold");
+        holdReasons[code] = (holdReasons[code] ?? 0) + 1;
+      }
+    }
+
+    const emailSubmissions = count((r) => String(r.status) === "sent" && !!r.resend_message_id && isToday(r.sent_at ?? r.pitched_at), sl);
+    const manualSubmissions = count((r) => isToday(r.submitted_at));
+    const submissions = emailSubmissions + manualSubmissions;
+    const approvedNotSubmitted = count((r) =>
+      (r.queue_state === "APPROVED_FOR_SEND" || r.queue_state === "AWAITING_AGH_IMPORT") && !r.submitted_at
+    );
+    const awaitingToday = pending.filter((r) => isToday(r.created_at)).length;
+
+    const need = computeRemainingNeed({
+      objective: opts.objectivePerSong,
+      submissionsToday: submissions,
+      approvedNotSubmitted,
+      awaitingReviewToday: awaitingToday,
+      rawToEligibleRate: opts.rawToEligibleRate,
+    });
+
+    return {
+      track_id: t.track_id,
+      title: t.title ?? null,
+      business_date_ct: today,
+      raw_candidates_evaluated: ev.length,
+      net_new_identities: count((r) => r.created_target === true, ev),
+      existing_playlists_newly_matched: count((r) => r.outcome === "verified_eligible_existing", ev),
+      duplicates_skipped: count((r) => r.outcome === "duplicate", ev),
+      candidates_rejected: count((r) => r.outcome === "rejected", ev),
+      candidates_accepted_unverified: count((r) => r.outcome === "accepted_unverified", ev),
+      verified_eligible_packets_today: count((r) => isToday(r.created_at)),
+      drafts_awaiting_review: pending.length,
+      drafts_awaiting_review_today: awaitingToday,
+      oldest_pending_review_age_hours: oldest == null ? null : Math.round((now.getTime() - oldest) / 36e5 * 10) / 10,
+      reviewed_not_approved: count((r) => r.queue_state === "GROK_REVIEWED"),
+      approved_not_submitted: approvedNotSubmitted,
+      submissions_today: submissions,
+      submissions_email_today: emailSubmissions,
+      submissions_manual_today: manualSubmissions,
+      send_failures_today: count((r) => String(r.status) === "error" && isToday(r.pitched_at), sl),
+      rejected_by_grok: count((r) => r.queue_state === "REJECTED_BY_GROK"),
+      route_holds: Object.values(holdReasons).reduce((a, b) => a + b, 0),
+      hold_reasons: holdReasons,
+      objective_submissions: opts.objectivePerSong,
+      business_target_met: submissions >= opts.objectivePerSong,
+      submission_shortfall: need.shortfall,
+      remaining_eligible_packets_needed: need.remainingPackets,
+      raw_candidates_needed: need.rawNeeded,
+      raw_candidates_needed_basis: need.basis,
+    };
+  });
+
+  return { ok: errors.length === 0, songs, errors, evaluation_log_available: evalAvailable };
+}

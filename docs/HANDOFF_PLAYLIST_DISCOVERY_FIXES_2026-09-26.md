@@ -1,5 +1,7 @@
 # Playlist-discovery connector fixes — 2026-09-26
 
+> **Superseded in part by [HANDOFF_PLAYLIST_ROUTES_THROUGHPUT_2026-09-27.md](HANDOFF_PLAYLIST_ROUTES_THROUGHPUT_2026-09-27.md):** route verification rules, yield measurement (candidate log), per-song funnel, Spotify key aliases, and the standing rules that retire the station-close promotion workaround.
+
 Covers the six defects from `cursor-handoff-capacity-metric.md` and
 `agh-consolidated-correction-2026-09-20.md` (neither file is in this repo; the summaries
 in the task brief were treated as authoritative).

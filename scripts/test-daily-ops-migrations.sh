@@ -813,6 +813,8 @@ alter table public.playlist_targets
   add column if not exists submission_method text,
   add column if not exists curator_email text,
   add column if not exists path_verification_notes text,
+  add column if not exists research_context jsonb,
+  add column if not exists is_active boolean default true,
   add column if not exists updated_at timestamptz;
 SQL
 apply_with_rollback "$ROOT/supabase/migrations/20260927120000_route_hold_and_candidate_log.sql"
@@ -832,6 +834,16 @@ RC_EMAIL=$(run_sql -c "select coalesce(public.agh_route_failure_code('email','au
 assert_eq "route_rule_legacy_email_ok" "${RC_EMAIL}" "ok"
 RC_UNV=$(run_sql -c "select public.agh_route_failure_code('web_form','auto_verified',false,null,'https://curator.example/submit',null,'form linked from curator site',null,null);")
 assert_eq "route_rule_form_needs_path_flag" "${RC_UNV}" "route_not_verified"
+RC_UNLINKED=$(run_sql -c "select public.agh_route_failure_code('web_form','auto_verified',true,null,'https://dailyplaylists.com/',null,'Spotify playlist by curator Spot, surfaced in a search for rap playlists accepting free 2026 submissions.',null,null);")
+assert_eq "route_rule_unlinked_evidence" "${RC_UNLINKED}" "evidence_not_linked_to_form"
+RC_LINKED=$(run_sql -c "select coalesce(public.agh_route_failure_code('web_form','auto_verified',true,null,'https://dailyplaylists.com/',null,'owned by curator Daily Playlists, whose own submission portal is dailyplaylists.com.',null,null),'ok');")
+assert_eq "route_rule_linked_evidence" "${RC_LINKED}" "ok"
+RC_SRC=$(run_sql -c "select coalesce(public.agh_route_failure_code('web_form','auto_verified',true,null,'https://play.soundplate.com/theunder',null,'listed with a submit link',null,null,'https://soundplate.com/some-post/'),'ok');")
+assert_eq "route_rule_source_url_links" "${RC_SRC}" "ok"
+RC_GF=$(run_sql -c "select coalesce(public.agh_route_failure_code('web_form','auto_verified',true,null,'https://forms.gle/AbC123',null,'curator bio links a submission form',null,null),'ok');")
+assert_eq "route_rule_form_builder" "${RC_GF}" "ok"
+RC_INACTIVE=$(run_sql -c "select public.agh_route_failure_code('email','auto_verified',false,'jointheplaylist@teamspecific.com',null,null,null,null,null,null,false);")
+assert_eq "route_rule_inactive" "${RC_INACTIVE}" "target_inactive"
 
 run_sql_pretty <<'SQL' >/dev/null
 insert into public.playlist_targets (playlist_id, lane, verification_status, path_verified, contact_method, submission_method, form_url, submission_url, form_source_evidence, path_verification_notes)

@@ -656,7 +656,7 @@ export async function reverifyManuallyVerifiedTarget(
   const { data: row, error } = await sb
     .from("playlist_targets")
     .select(
-      "playlist_id, verification_status, path_verified, contact_method, submission_method, curator_email, form_url, submission_url, ig_curator_account, curator_instagram, form_source_evidence, ig_source_evidence",
+      "playlist_id, verification_status, path_verified, contact_method, submission_method, curator_email, form_url, submission_url, ig_curator_account, curator_instagram, form_source_evidence, ig_source_evidence, research_context",
     )
     .eq("playlist_id", opts.playlistId)
     .maybeSingle();
@@ -668,7 +668,10 @@ export async function reverifyManuallyVerifiedTarget(
   const c = opts.candidate;
   const str = (v: unknown) => (v == null ? "" : String(v).trim());
   const rowFormOk = !!str(row.form_url) &&
-    assessSubmissionRoute({ form_url: row.form_url, form_source_evidence: "stored" }, "web_form").ok;
+    assessSubmissionRoute(
+      { form_url: row.form_url, form_source_evidence: row.form_source_evidence, research_context: row.research_context },
+      "web_form",
+    ).ok;
   const email = str(row.curator_email) || str(c.curator_email);
   const form = (rowFormOk ? str(row.form_url) : "") || str(c.form_url);
   const ig = str(row.ig_curator_account) || str(row.curator_instagram) || str(c.ig_curator_account);
@@ -1304,6 +1307,7 @@ export async function submitPlaylistCandidates(
           // Never fall back to the playlist's own URL: a playlist page is not a route.
           submission_url: c.form_url != null ? String(c.form_url) : null,
           playlist_url: playlistUrl,
+          source_url: rawSourceUrl || null,
         },
         { sb },
       );
@@ -1659,7 +1663,7 @@ export async function createPlaylistDraftInventory(
     const { data: target, error: tErr } = await sb
       .from("playlist_targets")
       .select(
-        "playlist_id, contact_method, submission_method, path_verified, verification_status, form_url, submission_url, curator_email, ig_curator_account, curator_instagram, form_source_evidence, ig_source_evidence, research_context, lane",
+        "playlist_id, contact_method, submission_method, path_verified, verification_status, form_url, submission_url, curator_email, ig_curator_account, curator_instagram, form_source_evidence, ig_source_evidence, research_context, is_active, lane",
       )
       .eq("playlist_id", playlistId)
       .maybeSingle();

@@ -58,6 +58,8 @@ export type PathVerifyInput = {
   curator_instagram?: string | null;
   /** The playlist's own URL — never accepted as a form route. */
   playlist_url?: string | null;
+  /** Listing page the candidate came from (may name the form's site). */
+  source_url?: string | null;
   song_dna_version_id?: string | null;
 };
 
@@ -158,6 +160,7 @@ export async function evaluateSubmissionPath(
         ig_curator_account: input.ig_curator_account ?? input.curator_instagram ?? null,
         ig_source_evidence: input.ig_source_evidence ?? null,
         playlist_url: input.playlist_url ?? null,
+        source_url: input.source_url ?? null,
       },
       channel,
     );

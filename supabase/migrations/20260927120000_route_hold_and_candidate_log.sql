@@ -28,7 +28,9 @@ create or replace function public.agh_route_failure_code(
   p_submission_url text,
   p_form_evidence text,
   p_ig_account text,
-  p_ig_evidence text
+  p_ig_evidence text,
+  p_source_url text default null,
+  p_is_active boolean default null
 ) returns text
 language plpgsql
 immutable
@@ -39,6 +41,8 @@ declare
   v_status text := lower(coalesce(trim(p_verification_status), ''));
   v_form text := coalesce(nullif(trim(p_form_url), ''), nullif(trim(p_submission_url), ''));
   v_host text;
+  v_label text;
+  v_src_label text;
   v_ev text;
   v_negation text :=
     '(\yno (submission )?(route|path|form|contact|email)s? (was |were )?(confirmed|found|available|listed|located|identified)\y)'
@@ -48,6 +52,9 @@ declare
     || '|(\ysubmissions? (are |is )?closed\y)'
     || '|(\yno (public )?(way|means) to submit\y)';
 begin
+  if p_is_active is false then
+    return 'target_inactive';
+  end if;
   if v_channel is null or v_channel not in ('email', 'web_form', 'instagram_dm') then
     return 'no_route_channel';
   end if;
@@ -90,6 +97,26 @@ begin
     if v_ev ~* v_negation then
       return 'evidence_negates_route';
     end if;
+    -- Evidence (or the listing page) must name the form's site; hosted form builders
+    -- identify a specific form by URL.
+    if v_host in ('docs.google.com', 'forms.gle', 'typeform.com', 'jotform.com', 'tally.so', 'airtable.com',
+                  'forms.office.com', 'formstack.com', 'wufoo.com')
+       or v_host like '%.typeform.com' or v_host like '%.jotform.com' then
+      return null;
+    end if;
+    v_label := regexp_replace(coalesce(
+      substring(v_host from '([^.]+)\.(co|com|org|net|ac|gov)\.[a-z]{2}$'),
+      substring(v_host from '([^.]+)\.[^.]+$'),
+      v_host), '[^a-z0-9]', '', 'g');
+    if length(v_label) >= 3
+       and position(v_label in regexp_replace(lower(v_ev), '[^a-z0-9]', '', 'g')) = 0 then
+      v_src_label := regexp_replace(coalesce(
+        substring(regexp_replace(lower(substring(coalesce(p_source_url, '') from '^[A-Za-z]+://([^/:?#]+)')), '^www\.', '')
+                  from '([^.]+)\.[^.]+$'), ''), '[^a-z0-9]', '', 'g');
+      if v_src_label is distinct from v_label then
+        return 'evidence_not_linked_to_form';
+      end if;
+    end if;
     return null;
   end if;
 
@@ -111,7 +138,7 @@ begin
 end;
 $$;
 
-comment on function public.agh_route_failure_code(text, text, boolean, text, text, text, text, text, text) is
+comment on function public.agh_route_failure_code(text, text, boolean, text, text, text, text, text, text, text, boolean) is
   'SQL mirror of submission-route.ts: NULL when the route is submission-ready, else a failure code.';
 
 -- ---------------------------------------------------------------------------
@@ -259,7 +286,8 @@ begin
              coalesce(r.submission_channel, pt.contact_method, pt.submission_method),
              pt.verification_status, pt.path_verified, pt.curator_email, pt.form_url,
              pt.submission_url, pt.form_source_evidence,
-             coalesce(pt.ig_curator_account, pt.curator_instagram), pt.ig_source_evidence
+             coalesce(pt.ig_curator_account, pt.curator_instagram), pt.ig_source_evidence,
+             pt.research_context->>'source_url', pt.is_active
            ) as code
       from public.agh_handoff_records r
       join public.agh_handoff_batches b on b.id = r.batch_id and b.batch_kind = 'playlist'

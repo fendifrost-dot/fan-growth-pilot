@@ -79,6 +79,50 @@ export function isSpotifyUrl(url: string): boolean {
     h === "spoti.fi");
 }
 
+/** Hosted form builders: the URL itself identifies one specific form. */
+const FORM_BUILDER_HOSTS = [
+  "docs.google.com",
+  "forms.gle",
+  "typeform.com",
+  "jotform.com",
+  "tally.so",
+  "airtable.com",
+  "forms.office.com",
+  "formstack.com",
+  "wufoo.com",
+];
+
+function alnum(v: string): string {
+  return v.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/** Registrable-name label of a host, e.g. play.soundplate.com → "soundplate". */
+export function hostLabel(host: string): string {
+  const parts = host.toLowerCase().replace(/^www\./, "").split(".").filter(Boolean);
+  if (parts.length < 2) return parts[0] ?? "";
+  const secondLevel = ["co", "com", "org", "net", "ac", "gov"];
+  if (parts.length >= 3 && secondLevel.includes(parts[parts.length - 2]) && parts[parts.length - 1].length === 2) {
+    return parts[parts.length - 3];
+  }
+  return parts[parts.length - 2];
+}
+
+/**
+ * Evidence must connect THIS playlist to THIS route: the evidence text (or the listing page
+ * it came from) has to name the form's site. A generic "found in a search for playlists
+ * accepting submissions" plus somebody else's homepage is not a verified form.
+ */
+export function evidenceSupportsForm(formUrl: string, evidence: string, sourceUrl?: string | null): boolean {
+  const host = hostOf(formUrl);
+  if (!host) return false;
+  if (FORM_BUILDER_HOSTS.some((h) => host === h || host.endsWith(`.${h}`))) return true;
+  const label = alnum(hostLabel(host));
+  if (label.length < 3) return true; // too short to match reliably; rely on other checks
+  if (alnum(evidence).includes(label)) return true;
+  const srcHost = sourceUrl ? hostOf(sourceUrl) : null;
+  return !!srcHost && alnum(hostLabel(srcHost)) === label;
+}
+
 export function evidenceNegatesRoute(evidence: string | null | undefined): boolean {
   const e = String(evidence ?? "");
   return NEGATED_ROUTE_EVIDENCE.some((re) => re.test(e));
@@ -173,6 +217,17 @@ export function assessSubmissionRoute(
         route: formUrl,
       };
     }
+    const researchContext = (input.research_context ?? null) as Record<string, unknown> | null;
+    const sourceUrl = str(input.source_url) || str(researchContext?.source_url) || null;
+    if (!evidenceSupportsForm(formUrl, evidence, sourceUrl)) {
+      return {
+        ok: false,
+        channel,
+        code: "evidence_not_linked_to_form",
+        reason: `evidence does not tie this playlist to the form's site (${hostLabel(hostOf(formUrl) ?? "")})`,
+        route: formUrl,
+      };
+    }
     return { ok: true, channel, code: "route_ok", reason: "web form URL with supporting evidence", route: formUrl };
   }
 
@@ -207,6 +262,15 @@ export function assertSubmissionReady(
   if (!target) {
     return { ok: false, channel: normalizeChannel(channel), code: "target_missing", reason: "playlist target not found", route: null };
   }
+  if (target.is_active === false) {
+    return {
+      ok: false,
+      channel: normalizeChannel(channel),
+      code: "target_inactive",
+      reason: "playlist target is inactive (e.g. hard bounce / delisted)",
+      route: null,
+    };
+  }
   const status = str(target.verification_status).toLowerCase();
   const effectiveChannel = normalizeChannel(channel) ??
     normalizeChannel(target.contact_method) ?? normalizeChannel(target.submission_method);
@@ -240,7 +304,7 @@ export function isBlank(v: unknown): boolean {
 type SbLike = SupabaseClient;
 
 export const TARGET_ROUTE_COLUMNS =
-  "playlist_id, verification_status, path_verified, path_verification_notes, contact_method, submission_method, curator_email, form_url, submission_url, ig_curator_account, curator_instagram, form_source_evidence, ig_source_evidence, submission_cost, form_cost";
+  "playlist_id, verification_status, path_verified, path_verification_notes, contact_method, submission_method, curator_email, form_url, submission_url, ig_curator_account, curator_instagram, form_source_evidence, ig_source_evidence, submission_cost, form_cost, is_active, research_context";
 
 export type SubmissionTerms = "free" | "paid" | "tip_appreciated" | "unknown";
 

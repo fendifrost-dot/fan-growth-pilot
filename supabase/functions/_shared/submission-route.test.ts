@@ -383,3 +383,49 @@ Deno.test("boundary: email readiness uses the draft recipient and fails closed o
   assertEquals(failed.ok, false);
   assertEquals(failed.code, "route_check_failed");
 });
+
+Deno.test("route: evidence must tie the playlist to the form's site (live batch af913aa5)", () => {
+  // Another curator's playlist + the DailyPlaylists homepage + generic search evidence → not a route.
+  const unlinked = assertSubmissionReady(webFormTarget({
+    form_url: "https://dailyplaylists.com/",
+    form_source_evidence:
+      "Spotify playlist 'Best New Hip Hop (2026)' by curator Daily Fresh Finds, surfaced in a search for rap playlists accepting free 2026 submissions.",
+  }), "web_form");
+  assertEquals(unlinked.code, "evidence_not_linked_to_form");
+  // Same homepage, but the evidence names the curator's own portal → route.
+  assertEquals(assertSubmissionReady(webFormTarget({
+    form_url: "https://dailyplaylists.com/",
+    form_source_evidence: "Spotify playlist 'Hip Hop Daily' owned by curator Daily Playlists, whose own submission portal is dailyplaylists.com.",
+  }), "web_form").ok, true);
+  // Soundplate / playlistdock / help-music packets from 2026-09-27 stay valid.
+  assertEquals(assertSubmissionReady(webFormTarget({
+    form_url: "https://play.soundplate.com/nauhh",
+    form_source_evidence: "soundplate.com/new-and-undiscovered-hip-hop-spotify-playlist-submit-music-here/ fetched 2026-09-23; play.soundplate.com/nauhh fetched same run.",
+  }), "web_form").ok, true);
+  assertEquals(assertSubmissionReady(webFormTarget({
+    form_url: "https://playlistdock.com/playlist.php?slug=rap-frequency-rap-hip-ho-trap-concious-rap",
+    form_source_evidence: "playlistdock.com/playlist.php?slug=rap-frequency fetched 2026-09-23",
+  }), "web_form").ok, true);
+  assertEquals(assertSubmissionReady(webFormTarget({
+    form_url: "https://www.help-music.com/proponi-il-tuo-brano/",
+    form_source_evidence: "description states \"all genres added directly from the artists. www.help-music.com\"",
+  }), "web_form").ok, true);
+  // The listing page (source_url) naming the site also links it.
+  assertEquals(assertSubmissionReady(webFormTarget({
+    form_url: "https://play.soundplate.com/theunder",
+    form_source_evidence: "listed with a submit link",
+    research_context: { source_url: "https://soundplate.com/slimdog-productions-presents-the-undergrizzle/" },
+  }), "web_form").ok, true);
+  // Hosted form builders identify one specific form by URL.
+  assertEquals(assessSubmissionRoute({ form_url: "https://forms.gle/AbC123", form_source_evidence: "curator bio links a submission form" }, "web_form").ok, true);
+});
+
+Deno.test("route: inactive (hard-bounced) targets are never submission-ready", () => {
+  const r = assertSubmissionReady({
+    verification_status: "auto_verified",
+    contact_method: "email",
+    curator_email: "jointheplaylist@teamspecific.com",
+    is_active: false,
+  }, "email");
+  assertEquals(r.code, "target_inactive");
+});

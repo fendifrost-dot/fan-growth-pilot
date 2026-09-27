@@ -74,7 +74,7 @@ export async function classifyExistingPlaylistTarget(
   const { data: target, error } = await sb
     .from("playlist_targets")
     .select(
-      "playlist_id, contact_method, submission_method, path_verified, verification_status, lane, curator_email, form_url, submission_url, ig_curator_account, curator_instagram, form_source_evidence, ig_source_evidence",
+      "playlist_id, contact_method, submission_method, path_verified, verification_status, lane, curator_email, form_url, submission_url, ig_curator_account, curator_instagram, form_source_evidence, ig_source_evidence, research_context, is_active",
     )
     .eq("playlist_id", opts.playlistId)
     .maybeSingle();

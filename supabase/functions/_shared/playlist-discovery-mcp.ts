@@ -31,7 +31,11 @@ import {
 } from "./handoff-queues.ts";
 import { startDailyStationRun, completeDailyStationRun } from "./daily-ops.ts";
 import { CLAUDE_STATION_IDS, isClaudeStationId } from "./chicago-time.ts";
-import { normalizeSpotifyPlaylistIdentity } from "./discovery-utils.ts";
+import {
+  normalizeSpotifyPlaylistIdentity,
+  parseSpotifyPlaylistId,
+  playlistTargetKeyAliases,
+} from "./discovery-utils.ts";
 import { runDraftPitch } from "./playlist-agent-run.ts";
 import { VERIFIED_STATUSES } from "./verify-target.ts";
 import {
@@ -666,7 +670,11 @@ export async function reverifyManuallyVerifiedTarget(
   const form = (rowFormOk ? str(row.form_url) : "") || str(c.form_url);
   const ig = str(row.ig_curator_account) || str(row.curator_instagram) || str(c.ig_curator_account);
   const rowChannel = resolveTargetChannel(row as Record<string, unknown>);
-  const channel = rowChannel ?? (str(c.submission_channel) || null);
+  // The stored channel wins only when the row actually holds a route value for it.
+  const rowHasRoute = (rowChannel === "email" && !!str(row.curator_email)) ||
+    (rowChannel === "web_form" && rowFormOk) ||
+    (rowChannel === "instagram_dm" && !!(str(row.ig_curator_account) || str(row.curator_instagram)));
+  const channel = (rowHasRoute ? rowChannel : null) ?? (str(c.submission_channel) || rowChannel || null);
 
   const path = await evaluateSubmissionPath(
     {
@@ -694,7 +702,7 @@ export async function reverifyManuallyVerifiedTarget(
     last_verified_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
-  if (!rowChannel) {
+  if (!rowChannel || rowChannel !== path.channel) {
     patch.contact_method = path.channel;
     patch.submission_method = path.channel;
   }
@@ -721,6 +729,22 @@ export async function reverifyManuallyVerifiedTarget(
   const w = assertWriteOk("manual_reverify_update", upErr, count, 1);
   if (!w.ok) return { ok: false, error: w.error };
   return { ok: true, reverified: true, reason: path.reason, channel: path.channel };
+}
+
+/**
+ * Find the stored playlist_targets key for a canonical Spotify playlist id across its
+ * legitimate key forms. More than one stored form = collision (never merged silently).
+ */
+export async function resolvePlaylistTargetKey(
+  sb: SupabaseClient,
+  canonicalId: string,
+): Promise<{ key: string | null; collision: boolean; keys: string[]; error?: string }> {
+  const aliases = playlistTargetKeyAliases(canonicalId);
+  const { data, error } = await sb.from("playlist_targets").select("playlist_id").in("playlist_id", aliases);
+  if (error) return { key: null, collision: false, keys: [], error: error.message };
+  const keys = [...new Set(((data ?? []) as { playlist_id: string }[]).map((r) => String(r.playlist_id)))];
+  if (keys.length > 1) return { key: null, collision: true, keys };
+  return { key: keys[0] ?? null, collision: false, keys };
 }
 
 export async function getPlaylistDiscoveryWork(
@@ -957,6 +981,22 @@ export async function submitPlaylistCandidates(
       continue;
     }
 
+    // Wrong Spotify entity types (track/album/artist) are never playlist identities.
+    const idParse = parseSpotifyPlaylistId(rawId);
+    const urlParse = parseSpotifyPlaylistId(rawPlaylistUrl);
+    if (
+      (!idParse.ok && idParse.code === "wrong_entity_type") ||
+      (!urlParse.ok && urlParse.code === "wrong_entity_type")
+    ) {
+      rejected.push({
+        reason: "wrong_spotify_entity_type",
+        code: "wrong_spotify_entity_type",
+        playlist_id: rawId || null,
+        playlist_url: rawPlaylistUrl || null,
+        entity: (!idParse.ok && idParse.entity) || (!urlParse.ok && urlParse.entity) || null,
+      });
+      continue;
+    }
     const normalized = normalizeSpotifyPlaylistIdentity(rawId, rawPlaylistUrl);
     let id: string;
     let playlistUrl: string | null;
@@ -964,7 +1004,24 @@ export async function submitPlaylistCandidates(
     let identityResolved = true;
 
     if (normalized) {
-      id = normalized.playlist_id;
+      // The same playlist may already be stored as `ID`, `spotify:ID` or
+      // `spotify:playlist:ID` (all legitimate key forms here). Reuse the stored key.
+      const alias = await resolvePlaylistTargetKey(sb, normalized.playlist_id);
+      if (alias.error) {
+        rejected.push({ playlist_id: normalized.playlist_id, reason: `dedupe_query_failed:${alias.error}` });
+        continue;
+      }
+      if (alias.collision) {
+        rejected.push({
+          playlist_id: normalized.playlist_id,
+          reason: "identity_alias_collision",
+          code: "identity_alias_collision",
+          stored_keys: alias.keys,
+          detail: "the same Spotify playlist is stored under more than one key — resolve with the existing dedupe process",
+        });
+        continue;
+      }
+      id = alias.key ?? normalized.playlist_id;
       playlistUrl = normalized.playlist_url;
     } else {
       // (a) Direct reference to an existing catalog row by its stored playlist_id
@@ -1466,7 +1523,23 @@ export async function createPlaylistDraftInventory(
   const items: Prepared[] = [];
   const reusedPreview: Record<string, unknown>[] = [];
 
-  for (const playlistId of candidateIds) {
+  for (const requestedId of candidateIds) {
+    // Accept any supported Spotify form for a stored target (ID / spotify:ID / URL).
+    let playlistId = requestedId;
+    const parsedReq = parseSpotifyPlaylistId(requestedId);
+    if (parsedReq.ok) {
+      const alias = await resolvePlaylistTargetKey(sb, parsedReq.id);
+      if (alias.error) {
+        return { status: 500, data: { error: `target_query_failed:${alias.error}`, code: "db_error", playlist_id: requestedId } };
+      }
+      if (alias.collision) {
+        return {
+          status: 409,
+          data: { error: "identity_alias_collision", code: "identity_alias_collision", playlist_id: requestedId, stored_keys: alias.keys },
+        };
+      }
+      if (alias.key) playlistId = alias.key;
+    }
     const { data: target, error: tErr } = await sb
       .from("playlist_targets")
       .select(

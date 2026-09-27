@@ -394,4 +394,44 @@ $$;
 revoke all on function public.agh_log_candidate_evaluation(date, uuid, text, text, text, text, boolean) from public, anon, authenticated;
 grant execute on function public.agh_log_candidate_evaluation(date, uuid, text, text, text, text, boolean) to service_role;
 
+-- ---------------------------------------------------------------------------
+-- 5. Spotify key-alias report (READ-ONLY). `spotify:<id>` is a legitimate stored key
+--    form (placements, pitch_log), so rows are NOT renamed: lookups now resolve all
+--    forms. This reports how many rows use a prefixed form and any collisions where the
+--    same playlist is stored under two keys (resolve those with the existing dedupe
+--    process — never merged automatically).
+-- ---------------------------------------------------------------------------
+create or replace function public.agh_spotify_key_alias_report()
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  with keyed as (
+    select playlist_id,
+           verification_status,
+           case
+             when playlist_id ~ '^[A-Za-z0-9]{22}$' then playlist_id
+             when playlist_id ~ '^spotify:[A-Za-z0-9]{22}$' then substring(playlist_id from 9)
+             when playlist_id ~ '^spotify:playlist:[A-Za-z0-9]{22}$' then substring(playlist_id from 18)
+             else null
+           end as canonical
+      from public.playlist_targets
+  ),
+  groups as (
+    select canonical, array_agg(playlist_id order by playlist_id) as keys, count(*) as n
+      from keyed where canonical is not null group by canonical
+  )
+  select jsonb_build_object(
+    'prefixed_rows', (select count(*) from keyed where canonical is not null and playlist_id <> canonical),
+    'prefixed_manually_verified', (select count(*) from keyed where canonical is not null and playlist_id <> canonical and verification_status = 'manually_verified'),
+    'collision_count', (select count(*) from groups where n > 1),
+    'collisions', coalesce((select jsonb_agg(jsonb_build_object('canonical', canonical, 'keys', keys)) from groups where n > 1), '[]'::jsonb)
+  );
+$$;
+
+revoke all on function public.agh_spotify_key_alias_report() from public, anon, authenticated;
+grant execute on function public.agh_spotify_key_alias_report() to service_role;
+
 commit;

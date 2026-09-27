@@ -900,4 +900,14 @@ SQL
 EVAL=$(run_sql -c "select outcome || ':' || attempts || ':' || created_target from public.agh_playlist_candidate_evaluations where identity_key='spotify:1ApnlS1I4dNX4ZKAQIyu62';")
 assert_eq "candidate_log_retry_keeps_best" "${EVAL}" "verified_eligible_new:2:true"
 
+run_sql_pretty <<'SQL' >/dev/null
+insert into public.playlist_targets (playlist_id, lane, verification_status) values
+  ('spotify:5wvhQwlEYjBYyzVHDQV5GL', 'deep_house_groove', 'manually_verified'),
+  ('spotify:4cYfYj9cEXilMAsRJxn6Wk', 'deep_house_groove', 'manually_verified'),
+  ('4cYfYj9cEXilMAsRJxn6Wk', 'deep_house_groove', 'auto_verified'),
+  ('spotify:sfa:abc123', 'rap_general', 'unverified');
+SQL
+ALIAS=$(run_sql -c "select (r->>'prefixed_rows') || ':' || (r->>'prefixed_manually_verified') || ':' || (r->>'collision_count') from (select public.agh_spotify_key_alias_report() r) x;")
+assert_eq "spotify_alias_report" "${ALIAS}" "2:2:1"
+
 echo "==> PASS: daily-ops migrations applied + authoritative RPC assertions verified"

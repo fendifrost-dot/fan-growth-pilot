@@ -66,6 +66,8 @@ export type FunnelStageMeasurement = {
   error: string | null;
   /** Optional per-channel breakdown (verified→draft only). */
   by_channel?: Record<string, { verified: number; drafted: number }>;
+  /** Optional per-outcome breakdown (raw→verified from the candidate log). */
+  by_outcome?: Record<string, number>;
 };
 
 export type RawEstimateBasis = "measured" | "fallback" | "measured_zero" | "query_failed";
@@ -281,6 +283,55 @@ export async function measureRawToVerified(
   });
 }
 
+/**
+ * raw → verified from the SERVER-SIDE candidate log (agh_playlist_candidate_evaluations):
+ * one row per distinct (CT day, song, candidate identity), so retries collapse and
+ * cross-song reuse counts once per song. Numerator = verified_eligible_new|existing.
+ * Returns null when the log is not deployed or has no rows in the window (callers then
+ * fall back to station-run self-reports and say so).
+ */
+export async function measureRawToVerifiedFromLog(
+  sb: SupabaseClient,
+  window: FunnelWindow,
+): Promise<FunnelStageMeasurement | null> {
+  const source = "agh_playlist_candidate_evaluations (distinct day × song × candidate; server-side)";
+  const sinceDay = chicagoBusinessDate(new Date(window.since));
+  const untilDay = chicagoBusinessDate(new Date(window.until));
+  const { data, error } = await sb
+    .from("agh_playlist_candidate_evaluations")
+    .select("outcome, business_date_ct")
+    .gte("business_date_ct", sinceDay)
+    .lte("business_date_ct", untilDay);
+  if (error) {
+    if (/does not exist|could not find the table|PGRST205|42P01/i.test(String(error.message))) return null;
+    return classifyFunnelStage({
+      stage: "raw_to_verified",
+      window,
+      source,
+      numerator: 0,
+      denominator: 0,
+      sampleSize: 0,
+      error: `candidate_log_query_failed:${error.message}`,
+    });
+  }
+  const rows = (data ?? []) as { outcome: string }[];
+  if (!rows.length) return null;
+  const byOutcome: Record<string, number> = {};
+  for (const r of rows) byOutcome[r.outcome] = (byOutcome[r.outcome] ?? 0) + 1;
+  const numerator = (byOutcome.verified_eligible_new ?? 0) + (byOutcome.verified_eligible_existing ?? 0);
+  return {
+    ...classifyFunnelStage({
+      stage: "raw_to_verified",
+      window,
+      source,
+      numerator,
+      denominator: rows.length,
+      sampleSize: rows.length,
+    }),
+    by_outcome: byOutcome,
+  };
+}
+
 /** Pure helper for tests — verified→draft over one cohort without I/O. */
 export function verifiedToDraftRate(verifiedIds: string[], draftedIds: string[]): number {
   const verified = new Set(verifiedIds.filter(Boolean));
@@ -491,10 +542,16 @@ export async function buildDiscoveryCapacityPlan(
     DISCOVERY_CAPACITY_DEFAULTS.trailing_conversion_lookback_days,
   );
   const window = funnelWindow(lookback, opts.now);
-  const [rawToVerified, verifiedToDraft] = await Promise.all([
+  const [fromLog, fromRuns, verifiedToDraft] = await Promise.all([
+    measureRawToVerifiedFromLog(sb, window),
     measureRawToVerified(sb, window),
     measureVerifiedToDraft(sb, window),
   ]);
+  // Prefer the server-side log; station-run counts are agent self-reports.
+  const rawToVerified = fromLog ?? {
+    ...fromRuns,
+    source: `${fromRuns.source} [fallback: candidate log not deployed or empty — agent self-reported counts]`,
+  };
   return assembleDiscoveryCapacityPlan({
     activePitchingSongs,
     settingsLoad,

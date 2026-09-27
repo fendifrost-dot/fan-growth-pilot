@@ -14,6 +14,7 @@ import {
   type OpsActor,
 } from "./ops-actors.ts";
 import { buildDiscoveryCapacityPlan, dailyTargetFromPlan } from "./discovery-capacity.ts";
+import { buildPerSongFunnel } from "./playlist-funnel.ts";
 import { enforceTrackDnaLaneEnvelope, resolveCurrentApprovedDna } from "./track-dna-envelope.ts";
 import { resolveTrackPitchCopy } from "./pitch-copy.ts";
 import { rejectCallerPlaylistCopy } from "./pitch-descriptor-guard.ts";
@@ -30,7 +31,7 @@ import {
   reviewHandoffBatch,
 } from "./handoff-queues.ts";
 import { startDailyStationRun, completeDailyStationRun } from "./daily-ops.ts";
-import { CLAUDE_STATION_IDS, isClaudeStationId } from "./chicago-time.ts";
+import { CLAUDE_STATION_IDS, chicagoBusinessDate, isClaudeStationId } from "./chicago-time.ts";
 import {
   normalizeSpotifyPlaylistIdentity,
   parseSpotifyPlaylistId,
@@ -822,9 +823,32 @@ export async function getPlaylistDiscoveryWork(
   // Measurement failures are surfaced inside daily_target (measurement_status /
   // warnings) rather than failing the whole projection — the objective stays usable.
   let capacity: Record<string, unknown>;
+  let perSong: Record<string, unknown>;
   try {
     const plan = await buildDiscoveryCapacityPlan(sb, tracks.length || trackIds.length);
     capacity = dailyTargetFromPlan(plan);
+    const r2v = plan.funnel.raw_to_verified;
+    const funnel = await buildPerSongFunnel(
+      sb,
+      tracks.map((t) => ({ track_id: String(t.track_id), title: (t.title as string | null) ?? null })),
+      {
+        objectivePerSong: plan.target_verified_per_song_per_day,
+        rawToEligibleRate: r2v.status === "measured" ? r2v.rate : null,
+      },
+    );
+    perSong = {
+      business_goal: "actual submissions per song per CT business day (drafts/reviews/approvals are not submissions)",
+      raw_unit: "distinct song–playlist candidate evaluated per day",
+      yield_basis: r2v.source,
+      evaluation_log_available: funnel.evaluation_log_available,
+      songs: funnel.songs,
+      errors: funnel.errors,
+      limits: {
+        max_candidates_per_submit_call: 50,
+        note:
+          "Work through raw_candidates_needed in calls of ≤50. If you must stop before a song's need is met (time, sources saturated, tool errors), close the station with status partial and a shortfall_reason — never report the target as met.",
+      },
+    };
   } catch (e) {
     return {
       status: 500,
@@ -849,6 +873,7 @@ export async function getPlaylistDiscoveryWork(
         approved_lanes: p.approved_lanes ?? [],
       })),
       daily_target: capacity,
+      per_song_funnel: perSong,
       manually_verified_supply: await loadManuallyVerifiedSupply(sb),
     },
   };
@@ -891,6 +916,66 @@ async function loadManuallyVerifiedSupply(sb: SupabaseClient): Promise<Record<st
     })),
     how_to_use:
       "Submit the playlist_id (plus lane, source_evidence and the route fields) via submit_playlist_candidates to re-verify and make it draftable.",
+  };
+}
+
+type EvalSnapshot = { v: number; u: number; d: number; r: number };
+
+/** Stable identity key for a candidate that never resolved to a stored target. */
+function candidateFallbackKey(raw: unknown): string {
+  const c = (typeof raw === "object" && raw ? raw : {}) as Record<string, unknown>;
+  const parts = [c.playlist_id, c.spotify_playlist_id, c.playlist_url, c.form_url, c.curator_email, c.ig_curator_account, c.playlist_name ?? c.name]
+    .map((v) => String(v ?? "").trim().toLowerCase())
+    .filter(Boolean);
+  return parts.length ? `unresolved:${parts.join("|").slice(0, 400)}` : "unresolved:empty";
+}
+
+/**
+ * Best-effort candidate evaluation log (agh_log_candidate_evaluation RPC). A missing RPC
+ * (migration not applied) disables logging for the rest of the call; discovery itself is
+ * never blocked by logging.
+ */
+function createEvaluationLogger(sb: SupabaseClient, trackId: string) {
+  const businessDate = chicagoBusinessDate();
+  let disabled = false;
+  const warnings: string[] = [];
+  return {
+    warnings,
+    async record(opts: {
+      key: string;
+      before: EvalSnapshot;
+      after: EvalSnapshot;
+      verified: Record<string, unknown>[];
+      rejected: Record<string, unknown>[];
+      createdTarget: boolean;
+    }) {
+      if (disabled) return;
+      let outcome: string;
+      let reason: string | null = null;
+      if (opts.after.v > opts.before.v) {
+        const entry = opts.verified[opts.verified.length - 1] ?? {};
+        outcome = entry.reused_existing_target ? "verified_eligible_existing" : "verified_eligible_new";
+      } else if (opts.after.u > opts.before.u) outcome = "accepted_unverified";
+      else if (opts.after.d > opts.before.d) outcome = "duplicate";
+      else if (opts.after.r > opts.before.r) {
+        outcome = "rejected";
+        const last = opts.rejected[opts.rejected.length - 1] ?? {};
+        reason = String(last.code ?? last.reason ?? "").slice(0, 120) || null;
+      } else return;
+      const { error } = await sb.rpc("agh_log_candidate_evaluation", {
+        p_business_date: businessDate,
+        p_track_id: trackId,
+        p_identity_key: opts.key,
+        p_playlist_target_id: opts.key.startsWith("unresolved:") ? null : opts.key,
+        p_outcome: outcome,
+        p_reason_code: reason,
+        p_created_target: opts.createdTarget,
+      });
+      if (error) {
+        disabled = true;
+        warnings.push(`candidate evaluation log unavailable: ${error.message}`);
+      }
+    },
   };
 }
 
@@ -951,326 +1036,216 @@ export async function submitPlaylistCandidates(
     .maybeSingle();
   const trackName = trackRow?.name != null ? String(trackRow.name) : null;
 
+  // Server-side raw denominator: one row per (day, song, candidate identity).
+  const evalLog = createEvaluationLogger(sb, trackId);
   for (const raw of candidates) {
-    const c = typeof raw === "object" && raw
-      ? stripSpoofedAttribution(raw as Record<string, unknown>)
-      : {};
-    delete c.verified;
-    delete c.compatible;
-    delete c.approved;
-    delete c.actor_kind;
-    delete c.discovered_by;
+    const before = {
+      v: acceptedVerified.length,
+      u: acceptedUnverified.length,
+      d: duplicates.length,
+      r: rejected.length,
+    };
+    let logKey: string | null = null;
+    let createdTarget = false;
+    try {
+      const c = typeof raw === "object" && raw
+        ? stripSpoofedAttribution(raw as Record<string, unknown>)
+        : {};
+      delete c.verified;
+      delete c.compatible;
+      delete c.approved;
+      delete c.actor_kind;
+      delete c.discovered_by;
 
-    const evidence = String(c.source_evidence ?? c.evidence ?? "").trim();
-    const lane = String(c.lane ?? "").trim();
-    const name = String(c.playlist_name ?? c.name ?? "").trim();
-    const rawId = String(c.playlist_id ?? c.spotify_playlist_id ?? "").trim();
-    // Identity comes from the playlist url only. source_url is evidence context (a
-    // listicle/blog page) and is shared by many candidates — keying identity off it
-    // collapsed distinct playlists into a single target.
-    const rawPlaylistUrl = String(c.playlist_url ?? "").trim();
-    const rawSourceUrl = String(c.source_url ?? "").trim();
-    const rawUrl = rawPlaylistUrl || rawSourceUrl;
+      const evidence = String(c.source_evidence ?? c.evidence ?? "").trim();
+      const lane = String(c.lane ?? "").trim();
+      const name = String(c.playlist_name ?? c.name ?? "").trim();
+      const rawId = String(c.playlist_id ?? c.spotify_playlist_id ?? "").trim();
+      // Identity comes from the playlist url only. source_url is evidence context (a
+      // listicle/blog page) and is shared by many candidates — keying identity off it
+      // collapsed distinct playlists into a single target.
+      const rawPlaylistUrl = String(c.playlist_url ?? "").trim();
+      const rawSourceUrl = String(c.source_url ?? "").trim();
+      const rawUrl = rawPlaylistUrl || rawSourceUrl;
 
-    if (!evidence) {
-      rejected.push({ reason: "missing_source_evidence", playlist_id: rawId || null });
-      continue;
-    }
-    if (!lane) {
-      rejected.push({ reason: "unknown_lane_fail_closed", playlist_id: rawId || null });
-      continue;
-    }
-
-    // Wrong Spotify entity types (track/album/artist) are never playlist identities.
-    const idParse = parseSpotifyPlaylistId(rawId);
-    const urlParse = parseSpotifyPlaylistId(rawPlaylistUrl);
-    if (
-      (!idParse.ok && idParse.code === "wrong_entity_type") ||
-      (!urlParse.ok && urlParse.code === "wrong_entity_type")
-    ) {
-      rejected.push({
-        reason: "wrong_spotify_entity_type",
-        code: "wrong_spotify_entity_type",
-        playlist_id: rawId || null,
-        playlist_url: rawPlaylistUrl || null,
-        entity: (!idParse.ok && idParse.entity) || (!urlParse.ok && urlParse.entity) || null,
-      });
-      continue;
-    }
-    const normalized = normalizeSpotifyPlaylistIdentity(rawId, rawPlaylistUrl);
-    let id: string;
-    let playlistUrl: string | null;
-    // false only for a NEW route-only target (no platform id, route + name verified).
-    let identityResolved = true;
-
-    if (normalized) {
-      // The same playlist may already be stored as `ID`, `spotify:ID` or
-      // `spotify:playlist:ID` (all legitimate key forms here). Reuse the stored key.
-      const alias = await resolvePlaylistTargetKey(sb, normalized.playlist_id);
-      if (alias.error) {
-        rejected.push({ playlist_id: normalized.playlist_id, reason: `dedupe_query_failed:${alias.error}` });
+      if (!evidence) {
+        rejected.push({ reason: "missing_source_evidence", playlist_id: rawId || null });
         continue;
       }
-      if (alias.collision) {
+      if (!lane) {
+        rejected.push({ reason: "unknown_lane_fail_closed", playlist_id: rawId || null });
+        continue;
+      }
+
+      // Wrong Spotify entity types (track/album/artist) are never playlist identities.
+      const idParse = parseSpotifyPlaylistId(rawId);
+      const urlParse = parseSpotifyPlaylistId(rawPlaylistUrl);
+      if (
+        (!idParse.ok && idParse.code === "wrong_entity_type") ||
+        (!urlParse.ok && urlParse.code === "wrong_entity_type")
+      ) {
         rejected.push({
-          playlist_id: normalized.playlist_id,
-          reason: "identity_alias_collision",
-          code: "identity_alias_collision",
-          stored_keys: alias.keys,
-          detail: "the same Spotify playlist is stored under more than one key — resolve with the existing dedupe process",
+          reason: "wrong_spotify_entity_type",
+          code: "wrong_spotify_entity_type",
+          playlist_id: rawId || null,
+          playlist_url: rawPlaylistUrl || null,
+          entity: (!idParse.ok && idParse.entity) || (!urlParse.ok && urlParse.entity) || null,
         });
         continue;
       }
-      id = alias.key ?? normalized.playlist_id;
-      playlistUrl = normalized.playlist_url;
-    } else {
-      // (a) Direct reference to an existing catalog row by its stored playlist_id
-      //     (catalog rows are not always Spotify-shaped, e.g. form-only curators).
-      let catalogId: string | null = null;
-      if (rawId) {
-        const { data: cat, error: catErr } = await sb
-          .from("playlist_targets")
-          .select("playlist_id")
-          .eq("playlist_id", rawId)
-          .maybeSingle();
-        if (catErr) {
-          rejected.push({ playlist_id: rawId, reason: `dedupe_query_failed:${catErr.message}` });
+      const normalized = normalizeSpotifyPlaylistIdentity(rawId, rawPlaylistUrl);
+      let id: string;
+      let playlistUrl: string | null;
+      // false only for a NEW route-only target (no platform id, route + name verified).
+      let identityResolved = true;
+
+      if (normalized) {
+        // The same playlist may already be stored as `ID`, `spotify:ID` or
+        // `spotify:playlist:ID` (all legitimate key forms here). Reuse the stored key.
+        const alias = await resolvePlaylistTargetKey(sb, normalized.playlist_id);
+        if (alias.error) {
+          rejected.push({ playlist_id: normalized.playlist_id, reason: `dedupe_query_failed:${alias.error}` });
           continue;
         }
-        if (cat) catalogId = rawId;
-      }
-
-      if (catalogId) {
-        id = catalogId;
-        playlistUrl = null;
+        if (alias.collision) {
+          rejected.push({
+            playlist_id: normalized.playlist_id,
+            reason: "identity_alias_collision",
+            code: "identity_alias_collision",
+            stored_keys: alias.keys,
+            detail: "the same Spotify playlist is stored under more than one key — resolve with the existing dedupe process",
+          });
+          continue;
+        }
+        id = alias.key ?? normalized.playlist_id;
+        playlistUrl = normalized.playlist_url;
       } else {
-        // (b) Route-only identity: first-party route + playlist name + evidence.
-        const route = await routeOnlyPlaylistIdentity({
-          playlistName: name,
-          submissionChannel: c.submission_channel != null ? String(c.submission_channel) : null,
-          curatorEmail: c.curator_email != null ? String(c.curator_email) : null,
-          formUrl: c.form_url != null ? String(c.form_url) : null,
-          igAccount: c.ig_curator_account != null ? String(c.ig_curator_account) : null,
-        });
-        if (!route) {
-          if (!rawId && !rawPlaylistUrl && !rawSourceUrl) {
-            rejected.push({ reason: "missing_playlist_identity", candidate: c });
+        // (a) Direct reference to an existing catalog row by its stored playlist_id
+        //     (catalog rows are not always Spotify-shaped, e.g. form-only curators).
+        let catalogId: string | null = null;
+        if (rawId) {
+          const { data: cat, error: catErr } = await sb
+            .from("playlist_targets")
+            .select("playlist_id")
+            .eq("playlist_id", rawId)
+            .maybeSingle();
+          if (catErr) {
+            rejected.push({ playlist_id: rawId, reason: `dedupe_query_failed:${catErr.message}` });
             continue;
           }
-          // Fail closed: never key a target off source_url (shared across candidates) or an
-          // unnormalizable raw id — that silently merges several playlists into one target.
-          rejected.push({
-            reason: "unresolvable_playlist_identity",
-            code: "unresolvable_playlist_identity",
-            detail:
-              "need a Spotify playlist id/url, an existing catalog playlist_id, or playlist_name + a first-party route (curator_email, form_url or ig_curator_account)",
-            playlist_id: rawId || null,
-            playlist_url: rawPlaylistUrl || null,
-          });
-          continue;
+          if (cat) catalogId = rawId;
         }
-        const match = await findExistingTargetByRoute(sb, route, name);
-        if (match.error) {
-          rejected.push({ playlist_id: route.playlist_id, reason: `dedupe_query_failed:${match.error}` });
-          continue;
-        }
-        if (match.playlist_id) {
-          id = match.playlist_id;
+
+        if (catalogId) {
+          id = catalogId;
+          playlistUrl = null;
         } else {
-          id = route.playlist_id;
-          identityResolved = false;
-        }
-        playlistUrl = null;
-      }
-    }
-
-    const { data: existing, error: existErr } = await sb
-      .from("playlist_targets")
-      .select("playlist_id")
-      .eq("playlist_id", id)
-      .maybeSingle();
-    if (existErr) {
-      rejected.push({ playlist_id: id, reason: `dedupe_query_failed:${existErr.message}` });
-      continue;
-    }
-    if (existing) {
-      let classified = await classifyExistingPlaylistTarget(sb, {
-        trackId,
-        playlistId: id,
-        songDnaVersionId: dna.songDnaVersionId!,
-        actor: ops,
-        trackName,
-      });
-      // manually_verified catalog rows are supply, not just dedupe fodder: re-verify the
-      // route (fresh evidence) and re-classify under the normal lane/DNA/pair checks.
-      let manualReverify: Record<string, unknown> | null = null;
-      // Also covers rows whose stored route fails the shared route rules.
-      if (
-        classified.classification === "existing_unverified" ||
-        (classified.classification === "existing_verified_eligible" && !classified.channel)
-      ) {
-        const re = await reverifyManuallyVerifiedTarget(sb, ops, {
-          playlistId: id,
-          evidence,
-          candidate: c,
-        });
-        if (!re.ok) {
-          rejected.push({
-            playlist_id: id,
-            reason: re.error,
-            code: "db_error",
-            classification: "manual_reverify_failed",
+          // (b) Route-only identity: first-party route + playlist name + evidence.
+          const route = await routeOnlyPlaylistIdentity({
+            playlistName: name,
+            submissionChannel: c.submission_channel != null ? String(c.submission_channel) : null,
+            curatorEmail: c.curator_email != null ? String(c.curator_email) : null,
+            formUrl: c.form_url != null ? String(c.form_url) : null,
+            igAccount: c.ig_curator_account != null ? String(c.ig_curator_account) : null,
           });
-          continue;
-        }
-        manualReverify = { reverified: re.reverified, reason: re.reason, channel: re.channel };
-        if (re.reverified) {
-          // Records held for this target's bad route can go back through review now.
-          const rel = await releaseRouteHoldsForTarget(sb, id, ops.label);
-          if (rel.released.length || rel.error) {
-            manualReverify.route_holds_released = rel.released;
-            if (rel.error) manualReverify.route_hold_release_error = rel.error;
+          if (!route) {
+            if (!rawId && !rawPlaylistUrl && !rawSourceUrl) {
+              rejected.push({ reason: "missing_playlist_identity", candidate: c });
+              continue;
+            }
+            // Fail closed: never key a target off source_url (shared across candidates) or an
+            // unnormalizable raw id — that silently merges several playlists into one target.
+            rejected.push({
+              reason: "unresolvable_playlist_identity",
+              code: "unresolvable_playlist_identity",
+              detail:
+                "need a Spotify playlist id/url, an existing catalog playlist_id, or playlist_name + a first-party route (curator_email, form_url or ig_curator_account)",
+              playlist_id: rawId || null,
+              playlist_url: rawPlaylistUrl || null,
+            });
+            continue;
           }
-          classified = await classifyExistingPlaylistTarget(sb, {
-            trackId,
-            playlistId: id,
-            songDnaVersionId: dna.songDnaVersionId!,
-            actor: ops,
-            trackName,
-          });
+          const match = await findExistingTargetByRoute(sb, route, name);
+          if (match.error) {
+            rejected.push({ playlist_id: route.playlist_id, reason: `dedupe_query_failed:${match.error}` });
+            continue;
+          }
+          if (match.playlist_id) {
+            id = match.playlist_id;
+          } else {
+            id = route.playlist_id;
+            identityResolved = false;
+          }
+          playlistUrl = null;
         }
       }
-      existingClassified.push(manualReverify ? { ...classified, manual_reverify: manualReverify } : classified);
-      if (classified.classification === "classification_failed") {
-        rejected.push({
-          playlist_id: id,
-          reason: classified.reason ?? "classification_failed",
-          code: "db_error",
-          classification: classified.classification,
-        });
-      } else if (classified.classification === "existing_verified_eligible") {
-        eligibleExistingIds.push(id);
-        acceptedVerified.push({
-          playlist_id: id,
-          lane,
-          channel: classified.channel,
-          path_verified: true,
-          verification_status: "existing_verified",
-          song_dna_version_id: dna.songDnaVersionId,
-          classification: classified.classification,
-          reused_existing_target: true,
-          ...(manualReverify?.reverified ? { reverified_manual_target: true } : {}),
-        });
-      } else if (classified.classification === "existing_unverified") {
-        acceptedUnverified.push({
-          playlist_id: id,
-          channel: classified.channel,
-          classification: classified.classification,
-          reason: classified.reason ?? null,
-          reused_existing_target: true,
-          ...(manualReverify ? { manual_reverify: manualReverify } : {}),
-        });
-      } else {
-        duplicates.push({
-          playlist_id: id,
-          reason: classified.classification,
-          classification: classified.classification,
-          outreach_draft_id: classified.outreach_draft_id ?? null,
-          handoff_record_id: classified.handoff_record_id ?? null,
-          cooldown_until: classified.cooldown_until ?? null,
-        });
+
+      logKey = id;
+      const { data: existing, error: existErr } = await sb
+        .from("playlist_targets")
+        .select("playlist_id")
+        .eq("playlist_id", id)
+        .maybeSingle();
+      if (existErr) {
+        rejected.push({ playlist_id: id, reason: `dedupe_query_failed:${existErr.message}` });
+        continue;
       }
-      continue;
-    }
-
-    // Live schema requires playlist_name — reject clearly before PostgREST insert.
-    if (!name) {
-      rejected.push({
-        reason: "missing_playlist_name",
-        playlist_id: id,
-        code: "playlist_name_required",
-      });
-      continue;
-    }
-
-    // Database-backed path/email verification — never format-only auto-verify.
-    const path = await evaluateSubmissionPath(
-      {
-        submission_channel: c.submission_channel != null ? String(c.submission_channel) : null,
-        curator_email: c.curator_email != null ? String(c.curator_email) : null,
-        form_url: c.form_url != null ? String(c.form_url) : null,
-        form_source_evidence: evidence,
-        ig_curator_account: c.ig_curator_account != null ? String(c.ig_curator_account) : null,
-        ig_source_evidence: evidence,
-        // Never fall back to the playlist's own URL: a playlist page is not a route.
-        submission_url: c.form_url != null ? String(c.form_url) : null,
-        playlist_url: playlistUrl,
-      },
-      { sb },
-    );
-
-    if (!identityResolved && !path.path_verified) {
-      // Route-only candidates are accepted only on a verified first-party route —
-      // without it there is neither a platform identity nor a usable route.
-      rejected.push({
-        reason: "unresolvable_playlist_identity",
-        code: "unresolvable_playlist_identity",
-        detail: "route-only candidate (no platform id) requires a verified first-party route",
-        path_reason: path.reason,
-        playlist_id: id,
-        identity_resolved: false,
-      });
-      continue;
-    }
-
-    const channel = path.channel;
-    const formUrl = c.form_url != null ? String(c.form_url) : null;
-    const igAccount = c.ig_curator_account != null ? String(c.ig_curator_account) : null;
-    const curatorEmail = c.curator_email != null ? String(c.curator_email) : null;
-
-    let row: Record<string, unknown>;
-    try {
-      row = buildDiscoveryPlaylistTargetInsert({
-        playlistId: id,
-        playlistName: name,
-        lane,
-        pathVerified: path.path_verified,
-        verificationStatus: path.path_verified ? path.status : "unverified",
-        pathReason: path.reason,
-        channel,
-        curatorEmail,
-        formUrl,
-        igAccount,
-        evidence,
-        discoveredBy: attr.actor_kind,
-        discoveredByLabel: attr.actor_label,
-        trackName,
-        songDnaVersionId: dna.songDnaVersionId,
-        playlistUrl,
-        rawSourceUrl: rawSourceUrl || rawPlaylistUrl || null,
-        identityResolved,
-      });
-    } catch (e) {
-      rejected.push({
-        playlist_id: id,
-        reason: `insert_schema:${String((e as Error).message || e)}`,
-        code: "playlist_targets_schema",
-      });
-      continue;
-    }
-
-    const { error: insErr } = await sb.from("playlist_targets").insert(row);
-    if (insErr) {
-      if (String(insErr.message).includes("duplicate") || insErr.code === "23505") {
-        const classified = await classifyExistingPlaylistTarget(sb, {
+      if (existing) {
+        let classified = await classifyExistingPlaylistTarget(sb, {
           trackId,
           playlistId: id,
           songDnaVersionId: dna.songDnaVersionId!,
           actor: ops,
           trackName,
         });
-        existingClassified.push(classified);
-        if (classified.classification === "existing_verified_eligible") {
+        // manually_verified catalog rows are supply, not just dedupe fodder: re-verify the
+        // route (fresh evidence) and re-classify under the normal lane/DNA/pair checks.
+        let manualReverify: Record<string, unknown> | null = null;
+        // Also covers rows whose stored route fails the shared route rules.
+        if (
+          classified.classification === "existing_unverified" ||
+          (classified.classification === "existing_verified_eligible" && !classified.channel)
+        ) {
+          const re = await reverifyManuallyVerifiedTarget(sb, ops, {
+            playlistId: id,
+            evidence,
+            candidate: c,
+          });
+          if (!re.ok) {
+            rejected.push({
+              playlist_id: id,
+              reason: re.error,
+              code: "db_error",
+              classification: "manual_reverify_failed",
+            });
+            continue;
+          }
+          manualReverify = { reverified: re.reverified, reason: re.reason, channel: re.channel };
+          if (re.reverified) {
+            // Records held for this target's bad route can go back through review now.
+            const rel = await releaseRouteHoldsForTarget(sb, id, ops.label);
+            if (rel.released.length || rel.error) {
+              manualReverify.route_holds_released = rel.released;
+              if (rel.error) manualReverify.route_hold_release_error = rel.error;
+            }
+            classified = await classifyExistingPlaylistTarget(sb, {
+              trackId,
+              playlistId: id,
+              songDnaVersionId: dna.songDnaVersionId!,
+              actor: ops,
+              trackName,
+            });
+          }
+        }
+        existingClassified.push(manualReverify ? { ...classified, manual_reverify: manualReverify } : classified);
+        if (classified.classification === "classification_failed") {
+          rejected.push({
+            playlist_id: id,
+            reason: classified.reason ?? "classification_failed",
+            code: "db_error",
+            classification: classified.classification,
+          });
+        } else if (classified.classification === "existing_verified_eligible") {
           eligibleExistingIds.push(id);
           acceptedVerified.push({
             playlist_id: id,
@@ -1281,64 +1256,202 @@ export async function submitPlaylistCandidates(
             song_dna_version_id: dna.songDnaVersionId,
             classification: classified.classification,
             reused_existing_target: true,
+            ...(manualReverify?.reverified ? { reverified_manual_target: true } : {}),
+          });
+        } else if (classified.classification === "existing_unverified") {
+          acceptedUnverified.push({
+            playlist_id: id,
+            channel: classified.channel,
+            classification: classified.classification,
+            reason: classified.reason ?? null,
+            reused_existing_target: true,
+            ...(manualReverify ? { manual_reverify: manualReverify } : {}),
           });
         } else {
           duplicates.push({
             playlist_id: id,
             reason: classified.classification,
             classification: classified.classification,
+            outreach_draft_id: classified.outreach_draft_id ?? null,
+            handoff_record_id: classified.handoff_record_id ?? null,
+            cooldown_until: classified.cooldown_until ?? null,
           });
         }
         continue;
       }
-      rejected.push({ playlist_id: id, reason: `insert_failed:${insErr.message}` });
-      continue;
-    }
 
-    const laneCheck = await enforceTrackDnaLaneEnvelope(sb, {
-      route: "submit_playlist_candidates",
-      trackId,
-      playlistId: id,
-      callerSongDnaVersionId: dna.songDnaVersionId,
-      actor: ops,
-    });
-    if (!laneCheck.ok) {
-      const { error: delErr, count: delCount } = await sb
-        .from("playlist_targets")
-        .delete({ count: "exact" })
-        .eq("playlist_id", id);
-      const delOk = assertWriteOk("rollback_incompatible_target", delErr, delCount, 1);
-      if (!delOk.ok) {
+      // Live schema requires playlist_name — reject clearly before PostgREST insert.
+      if (!name) {
+        rejected.push({
+          reason: "missing_playlist_name",
+          playlist_id: id,
+          code: "playlist_name_required",
+        });
+        continue;
+      }
+
+      // Database-backed path/email verification — never format-only auto-verify.
+      const path = await evaluateSubmissionPath(
+        {
+          submission_channel: c.submission_channel != null ? String(c.submission_channel) : null,
+          curator_email: c.curator_email != null ? String(c.curator_email) : null,
+          form_url: c.form_url != null ? String(c.form_url) : null,
+          form_source_evidence: evidence,
+          ig_curator_account: c.ig_curator_account != null ? String(c.ig_curator_account) : null,
+          ig_source_evidence: evidence,
+          // Never fall back to the playlist's own URL: a playlist page is not a route.
+          submission_url: c.form_url != null ? String(c.form_url) : null,
+          playlist_url: playlistUrl,
+        },
+        { sb },
+      );
+
+      if (!identityResolved && !path.path_verified) {
+        // Route-only candidates are accepted only on a verified first-party route —
+        // without it there is neither a platform identity nor a usable route.
+        rejected.push({
+          reason: "unresolvable_playlist_identity",
+          code: "unresolvable_playlist_identity",
+          detail: "route-only candidate (no platform id) requires a verified first-party route",
+          path_reason: path.reason,
+          playlist_id: id,
+          identity_resolved: false,
+        });
+        continue;
+      }
+
+      const channel = path.channel;
+      const formUrl = c.form_url != null ? String(c.form_url) : null;
+      const igAccount = c.ig_curator_account != null ? String(c.ig_curator_account) : null;
+      const curatorEmail = c.curator_email != null ? String(c.curator_email) : null;
+
+      let row: Record<string, unknown>;
+      try {
+        row = buildDiscoveryPlaylistTargetInsert({
+          playlistId: id,
+          playlistName: name,
+          lane,
+          pathVerified: path.path_verified,
+          verificationStatus: path.path_verified ? path.status : "unverified",
+          pathReason: path.reason,
+          channel,
+          curatorEmail,
+          formUrl,
+          igAccount,
+          evidence,
+          discoveredBy: attr.actor_kind,
+          discoveredByLabel: attr.actor_label,
+          trackName,
+          songDnaVersionId: dna.songDnaVersionId,
+          playlistUrl,
+          rawSourceUrl: rawSourceUrl || rawPlaylistUrl || null,
+          identityResolved,
+        });
+      } catch (e) {
+        rejected.push({
+          playlist_id: id,
+          reason: `insert_schema:${String((e as Error).message || e)}`,
+          code: "playlist_targets_schema",
+        });
+        continue;
+      }
+
+      const { error: insErr } = await sb.from("playlist_targets").insert(row);
+      if (insErr) {
+        if (String(insErr.message).includes("duplicate") || insErr.code === "23505") {
+          const classified = await classifyExistingPlaylistTarget(sb, {
+            trackId,
+            playlistId: id,
+            songDnaVersionId: dna.songDnaVersionId!,
+            actor: ops,
+            trackName,
+          });
+          existingClassified.push(classified);
+          if (classified.classification === "existing_verified_eligible") {
+            eligibleExistingIds.push(id);
+            acceptedVerified.push({
+              playlist_id: id,
+              lane,
+              channel: classified.channel,
+              path_verified: true,
+              verification_status: "existing_verified",
+              song_dna_version_id: dna.songDnaVersionId,
+              classification: classified.classification,
+              reused_existing_target: true,
+            });
+          } else {
+            duplicates.push({
+              playlist_id: id,
+              reason: classified.classification,
+              classification: classified.classification,
+            });
+          }
+          continue;
+        }
+        rejected.push({ playlist_id: id, reason: `insert_failed:${insErr.message}` });
+        continue;
+      }
+
+      const laneCheck = await enforceTrackDnaLaneEnvelope(sb, {
+        route: "submit_playlist_candidates",
+        trackId,
+        playlistId: id,
+        callerSongDnaVersionId: dna.songDnaVersionId,
+        actor: ops,
+      });
+      if (!laneCheck.ok) {
+        const { error: delErr, count: delCount } = await sb
+          .from("playlist_targets")
+          .delete({ count: "exact" })
+          .eq("playlist_id", id);
+        const delOk = assertWriteOk("rollback_incompatible_target", delErr, delCount, 1);
+        if (!delOk.ok) {
+          rejected.push({
+            playlist_id: id,
+            reason: laneCheck.errors[0] ?? "dna_lane_rejected",
+            cleanup_error: delOk.error,
+            errors: laneCheck.errors,
+          });
+          continue;
+        }
         rejected.push({
           playlist_id: id,
           reason: laneCheck.errors[0] ?? "dna_lane_rejected",
-          cleanup_error: delOk.error,
           errors: laneCheck.errors,
         });
         continue;
       }
-      rejected.push({
-        playlist_id: id,
-        reason: laneCheck.errors[0] ?? "dna_lane_rejected",
-        errors: laneCheck.errors,
-      });
-      continue;
-    }
 
-    const entry = {
-      playlist_id: id,
-      lane,
-      channel,
-      path_verified: path.path_verified,
-      verification_status: path.path_verified ? path.status : "unverified",
-      song_dna_version_id: dna.songDnaVersionId,
-      path_reason: path.reason,
-      identity_resolved: identityResolved,
-    };
-    if (path.path_verified && (VERIFIED_STATUSES as readonly string[]).includes(path.status)) {
-      acceptedVerified.push(entry);
-    } else {
-      acceptedUnverified.push(entry);
+      createdTarget = true;
+      const entry = {
+        playlist_id: id,
+        lane,
+        channel,
+        path_verified: path.path_verified,
+        verification_status: path.path_verified ? path.status : "unverified",
+        song_dna_version_id: dna.songDnaVersionId,
+        path_reason: path.reason,
+        identity_resolved: identityResolved,
+      };
+      if (path.path_verified && (VERIFIED_STATUSES as readonly string[]).includes(path.status)) {
+        acceptedVerified.push(entry);
+      } else {
+        acceptedUnverified.push(entry);
+      }
+    } finally {
+      await evalLog.record({
+        key: logKey ?? candidateFallbackKey(raw),
+        before,
+        after: {
+          v: acceptedVerified.length,
+          u: acceptedUnverified.length,
+          d: duplicates.length,
+          r: rejected.length,
+        },
+        verified: acceptedVerified,
+        rejected,
+        createdTarget,
+      });
     }
   }
 
@@ -1360,6 +1473,7 @@ export async function submitPlaylistCandidates(
       duplicates,
       rejected,
       discovered_by: attr.actor_kind,
+      ...(evalLog.warnings.length ? { warnings: evalLog.warnings } : {}),
     },
   };
 }
@@ -1913,7 +2027,55 @@ export async function completeClaudePlaylistStation(
     // Preserve operator notes without inventing station metrics.
     clean.metrics = { notes: String(clean.notes) };
   }
-  return completeDailyStationRun(sb, clean, playlistDiscoveryCredentialActor(), null);
+  const res = await completeDailyStationRun(sb, clean, playlistDiscoveryCredentialActor(), null);
+  if (res.status >= 400) return res;
+  // A station can finish successfully while the business target is unmet — report both.
+  res.data = { ...res.data, business_target: await businessTargetSnapshot(sb, clean) };
+  return res;
+}
+
+async function businessTargetSnapshot(
+  sb: SupabaseClient,
+  clean: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  try {
+    const { data: camps, error } = await sb.from("pitch_campaigns").select("track_id, status").eq("status", "active");
+    if (error) return { status: "query_failed", error: error.message };
+    const ids = [...new Set(((camps ?? []) as { track_id: string }[]).map((c) => String(c.track_id)).filter(Boolean))];
+    const { data: trackRows } = ids.length
+      ? await sb.from("tracks").select("id, name").in("id", ids)
+      : { data: [] as { id: string; name: string }[] };
+    const names = new Map(((trackRows ?? []) as { id: string; name: string }[]).map((t) => [String(t.id), t.name]));
+    const plan = await buildDiscoveryCapacityPlan(sb, ids.length);
+    const r2v = plan.funnel.raw_to_verified;
+    const funnel = await buildPerSongFunnel(
+      sb,
+      ids.map((id) => ({ track_id: id, title: names.get(id) ?? null })),
+      { objectivePerSong: plan.target_verified_per_song_per_day, rawToEligibleRate: r2v.status === "measured" ? r2v.rate : null },
+    );
+    const met = funnel.songs.length > 0 && funnel.songs.every((s) => s.business_target_met);
+    const stationStatus = String(clean.status ?? "completed");
+    const shortfallGiven = String(clean.shortfall_reason ?? "").trim().length > 0;
+    return {
+      status: funnel.ok ? "ok" : "partial",
+      business_target_met: met,
+      station_status: stationStatus,
+      songs: funnel.songs.map((s) => ({
+        track_id: s.track_id,
+        title: s.title,
+        submissions_today: s.submissions_today,
+        objective_submissions: s.objective_submissions,
+        submission_shortfall: s.submission_shortfall,
+        drafts_awaiting_review_today: s.drafts_awaiting_review_today,
+        remaining_eligible_packets_needed: s.remaining_eligible_packets_needed,
+        raw_candidates_needed: s.raw_candidates_needed,
+      })),
+      ...(met || shortfallGiven ? {} : { warning: "business target unmet and no shortfall_reason given" }),
+      errors: funnel.errors,
+    };
+  } catch (e) {
+    return { status: "query_failed", error: String((e as Error).message || e) };
+  }
 }
 
 export async function getOwnPlaylistBatches(

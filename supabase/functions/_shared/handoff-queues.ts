@@ -28,7 +28,9 @@ import {
   checkTargetSubmissionReady,
   holdFailingRecordsInBatch,
   recordRouteHold,
+  routeActionability,
 } from "./submission-route.ts";
+import { decideLaneFit, fitRejectionConflict, isFitRejectionReason, type ApprovedDnaLanes } from "./song-fit.ts";
 
 export type RunResult = { status: number; data: Record<string, unknown> };
 
@@ -57,6 +59,7 @@ export const HANDOFF_ACTIONS = [
   "mark_manual_ig_dm_submitted",
   "materialize_email_handoff_drafts",
   "playlist_pipeline_report",
+  "review_handoff_records",
 ] as const;
 
 export function isHandoffAction(action: string): boolean {
@@ -765,6 +768,40 @@ export async function reviewHandoffBatch(
       routeHeld = hold.held;
     }
   }
+  if (next === "REJECTED_BY_GROK") {
+    const batchId = String(clean.batch_id ?? "").trim();
+    const { data: recs, error: rErr } = await sb
+      .from("agh_handoff_records")
+      .select("id, track_id, playlist_target_id, queue_state")
+      .eq("batch_id", batchId);
+    if (rErr) return { status: 500, data: { error: rErr.message, code: "db_error" } };
+    // One fit authority: a batch reject citing DNA/lane mismatch cannot cover records
+    // whose lane the song's approved DNA allows. Reject those per record for other reasons.
+    if (isFitRejectionReason(clean.rejection_reason, clean.reason_code)) {
+      const fit = await fitForRecords(sb, (recs ?? []) as Record<string, unknown>[]);
+      const fitting = [...fit.entries()].filter(([, f]) => f.fit);
+      if (fitting.length) {
+        return {
+          status: 409,
+          data: {
+            error: "rejection cites a DNA/lane mismatch, but some records' lanes are approved by the song's current Song DNA",
+            code: "fit_decision_conflict",
+            fitting_records: fitting.map(([id, f]) => ({ record_id: id, lane: f.lane, song_dna_version_id: f.song_dna_version_id, reason: f.reason })),
+            policy_version: fitting[0][1].policy_version,
+            hint: "Use review_handoff_records to reject specific records with a non-fit reason_code, or ask Fendi to change the approved Song DNA.",
+          },
+        };
+      }
+    }
+    // A reject straight from AWAITING_GROK_REVIEW used to be an illegal transition (the
+    // chain requires GROK_REVIEWED first), so Grok's rejections never persisted. Do both
+    // steps: review, then reject.
+    const { data: cur } = await sb.from("agh_handoff_batches").select("queue_state").eq("id", batchId).maybeSingle();
+    if (cur?.queue_state === "AWAITING_GROK_REVIEW") {
+      const step = await advanceHandoffBatch(sb, { ...clean, queue_state: "GROK_REVIEWED" }, ops);
+      if (step.status >= 400) return step;
+    }
+  }
   const res = await advanceHandoffBatch(sb, { ...clean, queue_state: next }, ops);
   if (routeHeld.length) {
     res.data = { ...res.data, route_held: routeHeld, route_held_count: routeHeld.length };
@@ -1334,6 +1371,294 @@ export async function materializeEmailHandoffDrafts(
   };
 }
 
+
+// ---------------------------------------------------------------------------
+// Record-level truth: batch summaries built from record states, Grok record review.
+// ---------------------------------------------------------------------------
+
+export type RecordCounts = Record<string, number>;
+
+/** Per-batch counts of records by queue_state (record state is authoritative). */
+export async function loadBatchRecordCounts(
+  sb: SupabaseClient,
+  batchIds: string[],
+): Promise<{ counts: Map<string, RecordCounts>; error: string | null }> {
+  const counts = new Map<string, RecordCounts>();
+  for (const id of batchIds) counts.set(id, {});
+  for (let i = 0; i < batchIds.length; i += 200) {
+    const { data, error } = await sb
+      .from("agh_handoff_records")
+      .select("batch_id, queue_state")
+      .in("batch_id", batchIds.slice(i, i + 200));
+    if (error) return { counts, error: error.message };
+    for (const r of (data ?? []) as Record<string, unknown>[]) {
+      const c = counts.get(String(r.batch_id)) ?? {};
+      const st = String(r.queue_state);
+      c[st] = (c[st] ?? 0) + 1;
+      counts.set(String(r.batch_id), c);
+    }
+  }
+  return { counts, error: null };
+}
+
+const ACTIONABLE_RECORD_STATES = ["CLAUDE_BATCH_READY", "CLAUDE_PLAYLIST_COMPLETE", "AWAITING_GROK_REVIEW", "GROK_REVIEWED", "APPROVED_FOR_SEND"];
+
+/**
+ * Human/agent-readable batch summary from record counts. A batch whose records disagree
+ * is reported as mixed with every non-zero state listed, so neither "pending" nor
+ * "rejected" at batch level hides records that still need action.
+ */
+export function batchStatusSummary(batchState: string, counts: RecordCounts): Record<string, unknown> {
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  const states = Object.entries(counts).filter(([, n]) => n > 0);
+  const mixed = states.length > 1 || (states.length === 1 && states[0][0] !== batchState);
+  const actionable = ACTIONABLE_RECORD_STATES.reduce((a, st) => a + (counts[st] ?? 0), 0);
+  const parts = states.sort((a, b) => b[1] - a[1]).map(([st, n]) => `${n} ${st}`);
+  return {
+    record_counts: counts,
+    record_total: total,
+    actionable_records: actionable,
+    rejected_records: counts.REJECTED_BY_GROK ?? 0,
+    mixed,
+    summary: total === 0
+      ? `${batchState} (no records)`
+      : `${batchState} batch — records: ${parts.join(", ")}${mixed ? " (mixed — act per record)" : ""}`,
+  };
+}
+
+/** Current approved Song DNA lanes for a track (null when missing / unapproved). */
+async function loadApprovedDnaLanes(sb: SupabaseClient, trackId: string): Promise<ApprovedDnaLanes | null> {
+  if (!trackId) return null;
+  const { data: t } = await sb.from("tracks").select("approved_song_dna_version_id").eq("id", trackId).maybeSingle();
+  const id = t?.approved_song_dna_version_id ? String(t.approved_song_dna_version_id) : "";
+  if (!id) return null;
+  const { data: d } = await sb
+    .from("song_dna_versions")
+    .select("id, track_id, approval_state, primary_genre, approved_lanes, excluded_lanes")
+    .eq("id", id)
+    .maybeSingle();
+  if (!d || String(d.track_id) !== trackId || String(d.approval_state) !== "approved") return null;
+  return d as ApprovedDnaLanes;
+}
+
+/** Fit decisions for a batch's records against each record's song's current approved DNA. */
+async function fitForRecords(
+  sb: SupabaseClient,
+  records: Record<string, unknown>[],
+): Promise<Map<string, ReturnType<typeof decideLaneFit>>> {
+  const out = new Map<string, ReturnType<typeof decideLaneFit>>();
+  const pids = [...new Set(records.map((r) => String(r.playlist_target_id ?? "")).filter(Boolean))];
+  const lanes = new Map<string, unknown>();
+  for (let i = 0; i < pids.length; i += 200) {
+    const { data } = await sb.from("playlist_targets").select("playlist_id, lane").in("playlist_id", pids.slice(i, i + 200));
+    for (const t of (data ?? []) as Record<string, unknown>[]) lanes.set(String(t.playlist_id), t.lane);
+  }
+  const dnaByTrack = new Map<string, ApprovedDnaLanes | null>();
+  for (const r of records) {
+    const tid = String(r.track_id ?? "");
+    if (!dnaByTrack.has(tid)) dnaByTrack.set(tid, await loadApprovedDnaLanes(sb, tid));
+    out.set(String(r.id), decideLaneFit(dnaByTrack.get(tid) ?? null, lanes.get(String(r.playlist_target_id ?? ""))));
+  }
+  return out;
+}
+
+function denyNonFinalAuthority(ops: OpsActor): RunResult | null {
+  if (!can(ops, "review_handoff_batch") && !can(ops, "approve_playlist_drafts")) {
+    return { status: 403, data: { error: `${ops.label} cannot review handoff records` } };
+  }
+  if (
+    ops.kind === "claude" || ops.kind === "claude_playlist_discovery" || ops.kind === "claude_sync_discovery" ||
+    ops.kind === "service" || ops.kind === "human_admin"
+  ) {
+    return { status: 403, data: { error: `${ops.label} cannot act as final handoff authority` } };
+  }
+  return null;
+}
+
+const RECORD_DECISIONS = new Set(["reviewed", "reject", "defer"]);
+
+/**
+ * Grok record-level review. Each record gets its own decision — reviewed, reject (with
+ * one or more reason codes), or defer (retry later; stays in review). The batch state is
+ * derived afterwards from its records and never moves backwards. A reject that cites a
+ * DNA/lane mismatch contradicting the song's approved DNA is refused per record
+ * (fit_decision_conflict); rejections for other reasons are Grok's call.
+ */
+export async function reviewHandoffRecords(
+  sb: SupabaseClient,
+  body: Record<string, unknown>,
+  ops: OpsActor,
+): Promise<RunResult> {
+  const denied = denyNonFinalAuthority(ops);
+  if (denied) return denied;
+  const clean = stripSpoofedAttribution(body);
+  const batchId = String(clean.batch_id ?? "").trim();
+  const decisions = Array.isArray(clean.decisions) ? clean.decisions as Record<string, unknown>[] : [];
+  if (!batchId || !decisions.length || decisions.length > 200) {
+    return { status: 400, data: { error: "batch_id and 1–200 decisions required", code: "bad_request" } };
+  }
+  const bad = decisions.find((d) => !d || typeof d !== "object" || !String(d.record_id ?? "").trim() ||
+    !RECORD_DECISIONS.has(String(d.decision ?? "").toLowerCase()));
+  if (bad) {
+    return { status: 400, data: { error: "each decision needs record_id and decision reviewed|reject|defer", code: "bad_request", bad } };
+  }
+  if (decisions.some((d) => String(d.decision).toLowerCase() === "reject") && !can(ops, "reject_playlist_drafts")) {
+    return { status: 403, data: { error: `${ops.label} cannot reject handoff records` } };
+  }
+
+  const { data: recs, error: rErr } = await sb
+    .from("agh_handoff_records")
+    .select("id, batch_id, track_id, playlist_target_id, queue_state")
+    .eq("batch_id", batchId);
+  if (rErr) return { status: 500, data: { error: rErr.message, code: "db_error" } };
+  const recRows = (recs ?? []) as Record<string, unknown>[];
+  const fit = await fitForRecords(sb, recRows);
+
+  const conflicts: Record<string, unknown>[] = [];
+  const items: Record<string, unknown>[] = [];
+  for (const d of decisions) {
+    const recordId = String(d.record_id).trim();
+    const decision = String(d.decision).toLowerCase();
+    const codes = [
+      ...(Array.isArray(d.reason_codes) ? d.reason_codes.map(String) : []),
+      ...(d.reason_code != null ? [String(d.reason_code)] : []),
+    ].map((c) => c.trim()).filter(Boolean);
+    const reason = d.reason != null ? String(d.reason).slice(0, 2000) : null;
+    if (decision === "reject") {
+      if (!codes.length && !reason) {
+        conflicts.push({ record_id: recordId, code: "reason_required", message: "reject needs reason_code(s) or reason" });
+        continue;
+      }
+      const f = fit.get(recordId);
+      const conflict = f ? fitRejectionConflict(f, codes.join(" "), reason) : null;
+      if (conflict) {
+        conflicts.push({ record_id: recordId, ...conflict });
+        continue;
+      }
+    }
+    items.push({
+      record_id: recordId,
+      decision,
+      reason_codes: [...new Set(codes)],
+      reason,
+      retry_after: d.retry_after != null ? String(d.retry_after) : null,
+      song_fit: fit.get(recordId) ?? null,
+    });
+  }
+
+  // Route boundary for records moving forward — same rule as batch review.
+  let routeHeld: Record<string, unknown>[] = [];
+  if (items.some((i) => i.decision === "reviewed")) {
+    const hold = await holdFailingRecordsInBatch(sb, batchId, ops.label);
+    if (!hold.ok) {
+      return {
+        status: hold.code === "migration_required" ? 503 : 500,
+        data: { error: `route check blocked review: ${hold.error}`, code: hold.code ?? "route_check_failed" },
+      };
+    }
+    routeHeld = hold.held;
+  }
+
+  if (!items.length) {
+    return { status: 409, data: { ok: false, code: "no_applicable_decisions", conflicts, route_held: routeHeld } };
+  }
+  const attr = attributionFrom(ops);
+  const { data, error } = await sb.rpc("agh_review_handoff_records", {
+    p_batch_id: batchId,
+    p_decisions: items,
+    p_actor: attr.actor_kind,
+    p_actor_label: attr.actor_label,
+  });
+  if (error) {
+    const missing = /could not find|does not exist|PGRST202|42883/i.test(String(error.message));
+    return {
+      status: missing ? 503 : 500,
+      data: {
+        error: missing ? "agh_review_handoff_records RPC missing — apply migration 20260928120000" : error.message,
+        code: missing ? "migration_required" : "rpc_failed",
+      },
+    };
+  }
+  const result = (data ?? {}) as Record<string, unknown>;
+  return {
+    status: result.ok === false ? 422 : 200,
+    data: { ...result, conflicts, route_held: routeHeld, route_held_count: routeHeld.length },
+  };
+}
+
+/** Grok read path: batch + records with authoritative fit, route actionability and counts. */
+export async function getHandoffBatchDetail(
+  sb: SupabaseClient,
+  body: Record<string, unknown>,
+  ops: OpsActor,
+): Promise<RunResult> {
+  const id = String(body.batch_id ?? body.id ?? "").trim();
+  if (!id) return { status: 400, data: { error: "batch_id required" } };
+  const { data: batch, error } = await sb.from("agh_handoff_batches").select("*").eq("id", id).maybeSingle();
+  if (error) return { status: 500, data: { error: error.message } };
+  if (!batch) return { status: 404, data: { error: "batch not found" } };
+  if (!unscopedHandoffReader(ops) && batch.discovered_by && batch.discovered_by !== ops.kind) {
+    return { status: 403, data: { error: "Cannot read another actor's handoff batch" } };
+  }
+  const { data: records, error: rErr } = await sb
+    .from("agh_handoff_records")
+    .select("*")
+    .eq("batch_id", id)
+    .order("created_at", { ascending: true });
+  if (rErr) return { status: 500, data: { error: rErr.message } };
+  const recs = (records ?? []) as Record<string, unknown>[];
+
+  const pids = [...new Set(recs.map((r) => String(r.playlist_target_id ?? "")).filter(Boolean))];
+  const targets = new Map<string, Record<string, unknown>>();
+  for (let i = 0; i < pids.length; i += 200) {
+    const { data: t } = await sb
+      .from("playlist_targets")
+      .select("playlist_id, lane, contact_method, submission_method, curator_email, form_url, submission_url, ig_curator_account, curator_instagram, verification_status, path_verified, form_source_evidence, ig_source_evidence, submission_cost, form_login_required, is_active, research_context")
+      .in("playlist_id", pids.slice(i, i + 200));
+    for (const row of (t ?? []) as Record<string, unknown>[]) targets.set(String(row.playlist_id), row);
+  }
+  const draftIds = recs.map((r) => String(r.outreach_draft_id ?? "")).filter(Boolean);
+  const drafts = new Map<string, Record<string, unknown>>();
+  if (draftIds.length) {
+    const { data: d } = await sb.from("outreach_drafts").select("id, status, pitch_log_id").in("id", draftIds);
+    for (const row of (d ?? []) as Record<string, unknown>[]) drafts.set(String(row.id), row);
+    // Delivery evidence is the provider message id on pitch_log, not the draft status.
+    const logIds = [...drafts.values()].map((x) => String(x.pitch_log_id ?? "")).filter(Boolean);
+    if (logIds.length) {
+      const { data: pl } = await sb.from("pitch_log").select("id, resend_message_id").in("id", logIds);
+      const byLog = new Map(((pl ?? []) as Record<string, unknown>[]).map((x) => [String(x.id), x.resend_message_id]));
+      for (const row of drafts.values()) row.resend_message_id = byLog.get(String(row.pitch_log_id ?? "")) ?? null;
+    }
+  }
+  const fit = await fitForRecords(sb, recs);
+  const counts: RecordCounts = {};
+  for (const r of recs) counts[String(r.queue_state)] = (counts[String(r.queue_state)] ?? 0) + 1;
+
+  const enriched = recs.map((r) => {
+    const draft = drafts.get(String(r.outreach_draft_id ?? ""));
+    return {
+      ...r,
+      song_fit: fit.get(String(r.id)) ?? null,
+      route_actionability: routeActionability(targets.get(String(r.playlist_target_id ?? "")) ?? null, r, {
+        emailSent: draft ? ["sent", "sent_audit_broken"].includes(String(draft.status)) : false,
+        emailProviderId: draft?.resend_message_id != null ? String(draft.resend_message_id) : null,
+      }),
+    };
+  });
+  return {
+    status: 200,
+    data: {
+      ok: true,
+      batch,
+      batch_status: batchStatusSummary(String(batch.queue_state), counts),
+      records: enriched,
+      review_note:
+        "Fit is decided by song_fit (lane vs the song's current approved Song DNA). DNA primary_genre is a broad " +
+        "genre family, not a lane. Use review_handoff_records to decide per record.",
+    },
+  };
+}
+
 export async function runHandoffAction(
   action: string,
   body: Record<string, unknown>,
@@ -1371,7 +1696,14 @@ export async function runHandoffAction(
       }
       const { data, error, count } = await q;
       if (error) return { status: 500, data: { error: error.message } };
-      const rows = data ?? [];
+      const rawRows = (data ?? []) as Record<string, unknown>[];
+      // Record-level truth on every row: a batch state alone can hide mixed outcomes.
+      const rc = await loadBatchRecordCounts(sb, rawRows.map((b) => String(b.id)));
+      if (rc.error) return { status: 500, data: { error: `record_counts_failed:${rc.error}`, code: "db_error" } };
+      const rows = rawRows.map((b) => ({
+        ...b,
+        batch_status: batchStatusSummary(String(b.queue_state), rc.counts.get(String(b.id)) ?? {}),
+      }));
       const total = typeof count === "number" ? count : null;
       return {
         status: 200,
@@ -1388,30 +1720,10 @@ export async function runHandoffAction(
     }
     case "playlist_pipeline_report":
       return playlistPipelineReport(sb, body, ops);
-    case "get_handoff_batch": {
-      const id = String(body.batch_id ?? body.id ?? "").trim();
-      if (!id) return { status: 400, data: { error: "batch_id required" } };
-      const { data: batch, error } = await sb
-        .from("agh_handoff_batches")
-        .select("*")
-        .eq("id", id)
-        .maybeSingle();
-      if (error) return { status: 500, data: { error: error.message } };
-      if (!batch) return { status: 404, data: { error: "batch not found" } };
-      if (
-        !unscopedHandoffReader(ops) &&
-        batch.discovered_by &&
-        batch.discovered_by !== ops.kind
-      ) {
-        return { status: 403, data: { error: "Cannot read another actor's handoff batch" } };
-      }
-      const { data: records } = await sb
-        .from("agh_handoff_records")
-        .select("*")
-        .eq("batch_id", id)
-        .order("created_at", { ascending: true });
-      return { status: 200, data: { ok: true, batch, records: records ?? [] } };
-    }
+    case "get_handoff_batch":
+      return getHandoffBatchDetail(sb, body, ops);
+    case "review_handoff_records":
+      return reviewHandoffRecords(sb, body, ops);
     case "mark_manual_form_submitted":
       return markManualFormSubmitted(sb, body, ops);
     case "mark_manual_ig_dm_submitted":

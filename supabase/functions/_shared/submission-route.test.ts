@@ -9,13 +9,16 @@ import {
   checkTargetSubmissionReady,
   evidenceNegatesRoute,
   releaseRouteHoldsForTarget,
+  routeActionability,
   submissionTerms,
 } from "./submission-route.ts";
 import { evaluateSubmissionPath } from "./multichannel-path.ts";
 import {
   advanceClaudeReadyBatches,
+  batchStatusSummary,
   markManualFormSubmitted,
   reviewHandoffBatch,
+  reviewHandoffRecords,
 } from "./handoff-queues.ts";
 import { resolveOpsActor } from "./ops-actors.ts";
 import { playlistDiscoveryActor } from "./playlist-discovery-mcp.ts";
@@ -186,13 +189,20 @@ function stubSb(
       let patch: Row = {};
       const match = () =>
         tables[table].filter((r) =>
-          filters.every(([k, v]) => Array.isArray(v) ? v.map(String).includes(String(r[k])) : String(r[k]) === String(v))
+          filters.every(([k, v]) =>
+            Array.isArray(v)
+              ? v.map(String).includes(String(r[k]))
+              : v && typeof v === "object" && "ilike" in (v as Row)
+              ? String(r[k] ?? "").toLowerCase() === String((v as Row).ilike).toLowerCase()
+              : String(r[k]) === String(v)
+          )
         );
       // deno-lint-ignore no-explicit-any
       const chain: any = {
         select: () => chain,
         eq: (k: string, v: unknown) => (filters.push([k, v]), chain),
         in: (k: string, v: unknown[]) => (filters.push([k, v]), chain),
+        ilike: (k: string, v: unknown) => (filters.push([k, { ilike: v }]), chain),
         order: () => chain,
         limit: () => chain,
         update: (p: Row) => ((mode = "update"), (patch = p), chain),
@@ -428,4 +438,142 @@ Deno.test("route: inactive (hard-bounced) targets are never submission-ready", (
     is_active: false,
   }, "email");
   assertEquals(r.code, "target_inactive");
+});
+
+// ---------------------------------------------------------------------------
+// 2026-09-28: bounce suppression, route actionability, record-level review.
+// ---------------------------------------------------------------------------
+
+Deno.test("boundary: a hard-bounced curator email is suppressed through every playlist association", async () => {
+  const sb = stubSb({
+    playlist_targets: [
+      { playlist_id: "ts-new", verification_status: "auto_verified", contact_method: "email", curator_email: "jointheplaylist@teamspecific.test", bounce_count: 0, is_active: true },
+      { playlist_id: "ts-old", verification_status: "bounced", contact_method: "email", curator_email: "JoinThePlaylist@teamspecific.test", bounce_count: 1, is_active: true },
+      { playlist_id: "clean", verification_status: "auto_verified", contact_method: "email", curator_email: "curator@label.example", bounce_count: 0, is_active: true },
+    ],
+  });
+  const blocked = await checkTargetSubmissionReady(sb, "ts-new", "email");
+  assertEquals(blocked.ok, false);
+  assertEquals(blocked.code, "curator_email_suppressed");
+  assert(blocked.reason.includes("ts-old"));
+  assertEquals((await checkTargetSubmissionReady(sb, "clean", "email")).ok, true);
+});
+
+Deno.test("route actionability: present vs verified vs manual action vs terms vs completed", () => {
+  const soundplate = webFormTarget({
+    form_url: "https://play.soundplate.com/raphhrats",
+    form_source_evidence: "Soundplate per-playlist submission page fetched 2026-09-28. No page-level free/paid statement - flagged.",
+    submission_cost: "unknown",
+    form_login_required: null,
+  });
+  const pending = routeActionability(soundplate, { submission_channel: "web_form", submitted_at: null });
+  assertEquals(pending.stage, "route_verified_action_pending");
+  assertEquals(pending.route_verified, true);
+  assertEquals(pending.manual_action_required, true);
+  assertEquals(pending.terms, "unknown");
+  assertEquals(pending.terms_confirmed, false);
+  assertEquals(pending.login_required, null);
+  assertEquals(pending.submission_completed, false);
+
+  const done = routeActionability(soundplate, { submission_channel: "web_form", submitted_at: "2026-09-28T15:00:00Z", manual_submit_result: "submitted" });
+  assertEquals(done.stage, "submitted_with_evidence");
+  assert(String(done.submission_evidence).includes("2026-09-28T15:00:00Z"));
+
+  const noRoute = routeActionability(webFormTarget({ form_url: null, submission_url: null }), { submission_channel: "web_form" });
+  assertEquals(noRoute.stage, "no_route");
+
+  const email = { playlist_id: "e", verification_status: "auto_verified", contact_method: "email", curator_email: "c@label.example", is_active: true };
+  const drafted = routeActionability(email, { submission_channel: "email", outreach_draft_id: "d1" }, { emailSent: false });
+  assertEquals(drafted.submission_completed, false);
+  assert(drafted.notes.includes("drafted, not submitted"));
+  const sentNoId = routeActionability(email, { submission_channel: "email" }, { emailSent: true, emailProviderId: null });
+  assertEquals(sentNoId.submission_completed, false);
+  const sent = routeActionability(email, { submission_channel: "email" }, { emailSent: true, emailProviderId: "re_123" });
+  assertEquals(sent.stage, "submitted_with_evidence");
+});
+
+Deno.test("batch summary: record states are authoritative and a mixed batch says so", () => {
+  const s = batchStatusSummary("AWAITING_GROK_REVIEW", { AWAITING_GROK_REVIEW: 1, REJECTED_BY_GROK: 30 });
+  assertEquals(s.mixed, true);
+  assertEquals(s.actionable_records, 1);
+  assertEquals(s.rejected_records, 30);
+  assert(String(s.summary).includes("30 REJECTED_BY_GROK"));
+  assertEquals(batchStatusSummary("AWAITING_GROK_REVIEW", { AWAITING_GROK_REVIEW: 13 }).mixed, false);
+});
+
+function fitTables() {
+  return {
+    tracks: [{ id: "meditate", approved_song_dna_version_id: "dna-m" }],
+    song_dna_versions: [{
+      id: "dna-m", track_id: "meditate", approval_state: "approved", primary_genre: "hip_hop_rap",
+      approved_lanes: ["rap_general", "rap_trap_hype", "rap_conscious"], excluded_lanes: ["house_club"],
+    }],
+    playlist_targets: [
+      webFormTarget({ playlist_id: "p-trap", lane: "rap_trap_hype" }),
+      webFormTarget({ playlist_id: "p-house", lane: "house_club" }),
+    ],
+    agh_handoff_batches: [{ id: "b-m", batch_kind: "playlist", queue_state: "AWAITING_GROK_REVIEW", track_id: "meditate", discovered_by: "claude_playlist_discovery" }],
+    agh_handoff_records: [
+      { id: "r-trap", batch_id: "b-m", track_id: "meditate", playlist_target_id: "p-trap", queue_state: "AWAITING_GROK_REVIEW", submission_channel: "web_form", packet: {} },
+      { id: "r-house", batch_id: "b-m", track_id: "meditate", playlist_target_id: "p-house", queue_state: "AWAITING_GROK_REVIEW", submission_channel: "web_form", packet: {} },
+    ],
+  } as Record<string, Row[]>;
+}
+
+Deno.test("record review: a DNA/lane rejection the approved DNA contradicts is refused per record; others apply", async () => {
+  const calls: Row[] = [];
+  const sb = stubSb(fitTables(), {
+    agh_review_handoff_records: (args) => (calls.push(args), { data: { ok: true, applied_count: (args.p_decisions as Row[]).length }, error: null }),
+  });
+  const res = await reviewHandoffRecords(sb, {
+    batch_id: "b-m",
+    decisions: [
+      { record_id: "r-trap", decision: "reject", reason_code: "DNA_LANE_MISMATCH", reason: "Meditate hip_hop_rap only" },
+      { record_id: "r-house", decision: "reject", reason_code: "DNA_LANE_MISMATCH", reason: "house lane" },
+    ],
+  }, grokActor());
+  assertEquals(res.status, 200);
+  const conflicts = res.data.conflicts as Row[];
+  assertEquals(conflicts.map((c) => c.record_id), ["r-trap"]);
+  assertEquals(conflicts[0].code, "fit_decision_conflict");
+  const sent = calls[0].p_decisions as Row[];
+  assertEquals(sent.map((d) => d.record_id), ["r-house"]);
+  assertEquals((sent[0].song_fit as Row).code, "lane_excluded");
+  assertEquals(calls[0].p_actor, "grok_playlist_control");
+});
+
+Deno.test("record review: Claude can't make record decisions; non-fit rejections are Grok's call", async () => {
+  const sb = stubSb(fitTables(), { agh_review_handoff_records: () => ({ data: { ok: true }, error: null }) });
+  const claude = await reviewHandoffRecords(sb, { batch_id: "b-m", decisions: [{ record_id: "r-trap", decision: "reviewed" }] }, playlistDiscoveryActor());
+  assertEquals(claude.status, 403);
+  const lang = await reviewHandoffRecords(sb, {
+    batch_id: "b-m",
+    decisions: [{ record_id: "r-trap", decision: "reject", reason_codes: ["LANGUAGE_MISMATCH", "LOW_REACH"] }],
+  }, grokActor());
+  assertEquals(lang.status, 200);
+  assertEquals((lang.data.conflicts as Row[]).length, 0);
+});
+
+Deno.test("batch reject: fit reason blocked when a record's lane is approved; other reasons go review→reject", async () => {
+  const tables = fitTables();
+  const advances: Row[] = [];
+  const sb = stubSb(tables, {
+    advance_agh_handoff_batch: (args) => {
+      advances.push(args);
+      tables.agh_handoff_batches[0].queue_state = args.p_next_state;
+      return { data: { ok: true, batch: tables.agh_handoff_batches[0], records_updated: 2 }, error: null };
+    },
+  });
+  const fitReject = await reviewHandoffBatch(sb, { batch_id: "b-m", decision: "reject", rejection_reason: "DNA_LANE_MISMATCH Meditate hip_hop_rap only" }, grokActor());
+  assertEquals(fitReject.status, 409);
+  assertEquals(fitReject.data.code, "fit_decision_conflict");
+  assertEquals((fitReject.data.fitting_records as Row[]).map((r) => r.record_id), ["r-trap"]);
+  assertEquals(advances.length, 0);
+
+  const other = await reviewHandoffBatch(sb, { batch_id: "b-m", decision: "reject", rejection_reason: "LOW_REACH: all under 300 followers" }, grokActor());
+  assertEquals(other.status, 200);
+  assertEquals(advances.map((a) => `${a.p_expected_state}->${a.p_next_state}`), [
+    "AWAITING_GROK_REVIEW->GROK_REVIEWED",
+    "GROK_REVIEWED->REJECTED_BY_GROK",
+  ]);
 });

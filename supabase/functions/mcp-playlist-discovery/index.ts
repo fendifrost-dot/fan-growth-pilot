@@ -72,9 +72,9 @@ function pathOf(req: Request): string {
 function toolDescription(name: string): string {
   switch (name) {
     case "get_playlist_discovery_work":
-      return "Read active pitching tracks (ids/titles), current approved DNA, lanes, profiles, daily target (raw research uncapped; effective_raw_target is an estimate), per_song_funnel (actual submissions vs goal, packets in flight, remaining need and raw_candidates_needed per song, stop guidance), and manually_verified rows needing re-verification. No ISRCs.";
+      return "Read active pitching tracks (ids/titles), current approved DNA, lanes, profiles, daily target (raw research uncapped; effective_raw_target is an estimate), per_song_funnel (actual submissions vs goal, packets in flight, remaining need and raw_candidates_needed per song, discovery_allocation — spend research by each song's own remaining need; one song's surplus never covers another's shortfall), and manually_verified rows needing re-verification. No ISRCs.";
     case "submit_playlist_candidates":
-      return "Submit structured playlist candidate facts + evidence. Server dedupes, verifies (DB-backed), enforces DNA lanes. Returns verified_eligible vs accepted_unverified. Candidates without a Spotify id are accepted route-only (identity_resolved:false) when playlist_name + a verified first-party route are present. Existing catalog playlist_ids (incl. manually_verified rows) are re-verified.";
+      return "Submit structured playlist candidate facts + evidence. Server dedupes, verifies (DB-backed), enforces DNA lanes. Returns verified_eligible vs accepted_unverified vs deferred (pair cooldown / temporary host or DB failure — resubmit later; not a rejection). candidates_submitted_for_verification is intake, NOT playlist submissions. Optional curator_name, follower_count, submission_terms, login_required: pass only values read off the source, otherwise omit (stored as unknown). Candidates without a Spotify id are accepted route-only (identity_resolved:false) when playlist_name + a verified first-party route are present. Existing catalog playlist_ids (incl. manually_verified rows) are re-verified.";
     case "create_playlist_draft_inventory":
       return "Create Claude-side pending inventory from verified_eligible IDs only. Email → outreach_drafts; form/IG → manual packets. No approve/send. No caller pitch copy.";
     case "start_claude_playlist_station":
@@ -82,11 +82,11 @@ function toolDescription(name: string): string {
     case "complete_claude_playlist_station":
       return "Complete a Claude-owned playlist discovery station run.";
     case "get_own_playlist_batches":
-      return "List handoff batches attributed to claude_playlist_discovery only.";
+      return "List handoff batches attributed to claude_playlist_discovery only, each with batch_status (record-level counts; mixed batches flagged — record state is authoritative).";
     case "advance_playlist_batches":
       return "Move own playlist batches at CLAUDE_BATCH_READY to AWAITING_GROK_REVIEW (any business date, array of batch_ids). Cannot set any other state.";
     case "get_batch_candidates":
-      return "Read-only: full candidate records for one of your own batches — identity, route, evidence, verification, route_check (shared rules), route_hold, submission_terms and curator_contact (shared-curator relationships). No pitch copy.";
+      return "Read-only: full candidate records for one of your own batches — identity, route, evidence, verification, route_check (shared rules), route_hold, submission_terms, curator_contact (shared-curator relationships), song_fit (lane vs the song's current approved DNA; primary_genre is not a lane), route_actionability (route present / verified / manual action / terms / submitted with evidence) and batch_status. No pitch copy.";
     default:
       return name;
   }

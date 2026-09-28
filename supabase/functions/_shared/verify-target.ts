@@ -13,6 +13,8 @@ export type VerifyVerdict = {
   status: "auto_verified" | "unverified";
   reason: string;              // human-readable; stored in verification_notes
   domain: string | null;
+  /** true when the failure is a temporary lookup/host failure — retry later, don't reject. */
+  retryable?: boolean;
 };
 
 // TLDs that never belong to a real mailbox. The MX check catches most junk, but these
@@ -66,20 +68,32 @@ export function isInvalidTld(domain: string): boolean {
 
 // MX lookup over DNS-over-HTTPS (Google public resolver, dns-json). Returns true only when
 // the domain advertises at least one MX record (type 15).
-export async function hasMxRecord(domain: string): Promise<boolean> {
+export type MxLookup = "present" | "absent" | "lookup_failed";
+
+/**
+ * Tri-state MX lookup. NXDOMAIN / NOERROR-without-MX is a real "absent"; a resolver
+ * error (network, non-2xx, SERVFAIL, REFUSED) is "lookup_failed" — a temporary host
+ * failure that must not permanently reject the target.
+ */
+export async function lookupMx(domain: string): Promise<MxLookup> {
   try {
     const res = await fetch(
       `https://dns.google/resolve?name=${encodeURIComponent(domain)}&type=MX`,
       { headers: { accept: "application/dns-json" } },
     );
-    if (!res.ok) return false;
+    if (!res.ok) return "lookup_failed";
     const data = await res.json() as { Status?: number; Answer?: { type: number }[] };
-    if (data.Status !== 0) return false;
-    return (data.Answer ?? []).some((a) => a.type === 15);
+    if (data.Status === 3) return "absent"; // NXDOMAIN
+    if (data.Status !== 0) return "lookup_failed"; // SERVFAIL (2), REFUSED (5), …
+    return (data.Answer ?? []).some((a) => a.type === 15) ? "present" : "absent";
   } catch (e) {
-    console.warn(`hasMxRecord: DoH lookup failed for ${domain}: ${e instanceof Error ? e.message : e}`);
-    return false;
+    console.warn(`lookupMx: DoH lookup failed for ${domain}: ${e instanceof Error ? e.message : e}`);
+    return "lookup_failed";
   }
+}
+
+export async function hasMxRecord(domain: string): Promise<boolean> {
+  return (await lookupMx(domain)) === "present";
 }
 
 async function isBlockedDomain(sb: SupabaseClient, candidates: string[]): Promise<string | null> {
@@ -112,7 +126,11 @@ export async function verifyEmail(
   const blockReason = await isBlockedDomain(sb, candidates);
   if (blockReason) return { ok: false, status: "unverified", reason: blockReason, domain };
 
-  if (!(await hasMxRecord(domain))) return { ok: false, status: "unverified", reason: "no MX record (won't receive mail)", domain };
+  const mx = await lookupMx(domain);
+  if (mx === "lookup_failed") {
+    return { ok: false, status: "unverified", reason: "MX lookup failed (temporary) — retry later", domain, retryable: true };
+  }
+  if (mx === "absent") return { ok: false, status: "unverified", reason: "no MX record (won't receive mail)", domain };
 
   return { ok: true, status: "auto_verified", reason: "passed format/TLD/MX/blocklist checks", domain };
 }

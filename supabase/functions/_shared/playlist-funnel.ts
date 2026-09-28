@@ -86,6 +86,37 @@ export function computeRemainingNeed(opts: {
   };
 }
 
+export type DiscoveryAllocation = {
+  track_id: string;
+  title: string | null;
+  remaining_eligible_packets_needed: number;
+  raw_candidates_needed: number | null;
+  packets_today_over_objective: number;
+  share_of_remaining_need: number;
+  priority_rank: number;
+};
+
+/**
+ * Split further discovery by each song's OWN remaining need. One song's surplus never
+ * offsets another's shortfall (DFM 42/30 drafts does nothing for Meditate 13/30); a song
+ * with no remaining need gets share 0.
+ */
+export function allocateDiscovery(songs: Pick<SongFunnel,
+  "track_id" | "title" | "remaining_eligible_packets_needed" | "raw_candidates_needed" | "verified_eligible_packets_today" | "objective_submissions"
+>[]): DiscoveryAllocation[] {
+  const total = songs.reduce((a, s) => a + s.remaining_eligible_packets_needed, 0);
+  const ranked = [...songs].sort((a, b) => b.remaining_eligible_packets_needed - a.remaining_eligible_packets_needed);
+  return ranked.map((s, i) => ({
+    track_id: s.track_id,
+    title: s.title,
+    remaining_eligible_packets_needed: s.remaining_eligible_packets_needed,
+    raw_candidates_needed: s.raw_candidates_needed,
+    packets_today_over_objective: Math.max(0, s.verified_eligible_packets_today - s.objective_submissions),
+    share_of_remaining_need: total > 0 ? Math.round((s.remaining_eligible_packets_needed / total) * 1000) / 1000 : 0,
+    priority_rank: i + 1,
+  }));
+}
+
 export async function buildPerSongFunnel(
   sb: SupabaseClient,
   tracks: { track_id: string; title?: string | null }[],

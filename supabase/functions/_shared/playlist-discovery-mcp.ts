@@ -14,7 +14,7 @@ import {
   type OpsActor,
 } from "./ops-actors.ts";
 import { buildDiscoveryCapacityPlan, dailyTargetFromPlan } from "./discovery-capacity.ts";
-import { buildPerSongFunnel } from "./playlist-funnel.ts";
+import { allocateDiscovery, buildPerSongFunnel } from "./playlist-funnel.ts";
 import { enforceTrackDnaLaneEnvelope, resolveCurrentApprovedDna } from "./track-dna-envelope.ts";
 import { resolveTrackPitchCopy } from "./pitch-copy.ts";
 import { rejectCallerPlaylistCopy } from "./pitch-descriptor-guard.ts";
@@ -23,13 +23,17 @@ import {
   assertSubmissionReady,
   assessSubmissionRoute,
   releaseRouteHoldsForTarget,
+  routeActionability,
   submissionTerms,
 } from "./submission-route.ts";
 import { curatorContactContext } from "./curator-contact.ts";
+import { decideLaneFit, type ApprovedDnaLanes } from "./song-fit.ts";
 import {
   advanceClaudeReadyBatches,
+  batchStatusSummary,
   CLAUDE_SIDE_STATES,
   type HandoffQueueState,
+  loadBatchRecordCounts,
   reviewHandoffBatch,
 } from "./handoff-queues.ts";
 import { startDailyStationRun, completeDailyStationRun } from "./daily-ops.ts";
@@ -170,6 +174,11 @@ export function buildDiscoveryPlaylistTargetInsert(opts: {
    * Persisted in research_context.identity_resolved so review/dedupe can tell them apart.
    */
   identityResolved?: boolean;
+  /** As read off the source page; null/undefined = unknown (stored as null, not 0 / ""). */
+  curatorName?: string | null;
+  followerCount?: number | null;
+  submissionTerms?: string | null;
+  loginRequired?: boolean | null;
 }): Record<string, unknown> {
   const researchContext: Record<string, unknown> = {
     source: "claude_playlist_discovery",
@@ -177,6 +186,14 @@ export function buildDiscoveryPlaylistTargetInsert(opts: {
     identity_resolved: opts.identityResolved !== false,
   };
   if (opts.identityResolved === false) researchContext.identity_kind = "route_only";
+  // Who/what verified the route: the server's shared route rules on the submitted evidence.
+  if (opts.pathVerified) researchContext.route_verified_by = "server_route_rules";
+  const terms = ["free", "paid", "tip_appreciated"].includes(String(opts.submissionTerms ?? ""))
+    ? String(opts.submissionTerms)
+    : "unknown";
+  const followers = typeof opts.followerCount === "number" && Number.isFinite(opts.followerCount) && opts.followerCount >= 0
+    ? Math.floor(opts.followerCount)
+    : null;
   if (opts.playlistUrl) researchContext.playlist_url = opts.playlistUrl;
   if (opts.rawSourceUrl && opts.rawSourceUrl !== opts.playlistUrl) {
     researchContext.source_url = opts.rawSourceUrl;
@@ -200,7 +217,12 @@ export function buildDiscoveryPlaylistTargetInsert(opts: {
     ig_source_evidence: opts.evidence,
     contact_method: opts.channel ?? "email",
     submission_method: opts.channel ?? "email",
-    submission_cost: "unknown",
+    submission_cost: terms,
+    form_login_required: typeof opts.loginRequired === "boolean" ? opts.loginRequired : null,
+    curator_name: opts.curatorName && String(opts.curatorName).trim() ? String(opts.curatorName).trim() : null,
+    // Explicit null: the column defaults to 0, which reads as "zero followers" instead of unknown.
+    follower_count: followers,
+    last_verified_at: opts.pathVerified ? new Date().toISOString() : null,
     discovered_by: opts.discoveredBy,
     discovered_by_label: opts.discoveredByLabel,
     song_dna_version_id: opts.songDnaVersionId,
@@ -305,6 +327,11 @@ export const PLAYLIST_DISCOVERY_TOOL_SCHEMAS: Record<
             curator_email: { type: "string", maxLength: 320 },
             form_url: { type: "string", maxLength: 512 },
             ig_curator_account: { type: "string", maxLength: 64 },
+            // Only values read off the source — omit when unknown (stored as null, never invented).
+            curator_name: { type: "string", maxLength: 256 },
+            follower_count: { type: "integer", minimum: 0, maximum: 1000000000 },
+            submission_terms: { type: "string", enum: ["free", "paid", "tip_appreciated", "unknown"] },
+            login_required: { type: "boolean" },
           },
         },
       },
@@ -847,6 +874,10 @@ export async function getPlaylistDiscoveryWork(
       yield_basis: r2v.source,
       evaluation_log_available: funnel.evaluation_log_available,
       songs: funnel.songs,
+      discovery_allocation: {
+        rule: "Allocate further discovery by each song's own remaining need; one song's surplus never offsets another song's shortfall.",
+        songs: allocateDiscovery(funnel.songs),
+      },
       errors: funnel.errors,
       limits: {
         max_candidates_per_submit_call: 50,
@@ -924,7 +955,7 @@ async function loadManuallyVerifiedSupply(sb: SupabaseClient): Promise<Record<st
   };
 }
 
-type EvalSnapshot = { v: number; u: number; d: number; r: number };
+type EvalSnapshot = { v: number; u: number; d: number; r: number; f: number };
 
 /** Stable identity key for a candidate that never resolved to a stored target. */
 function candidateFallbackKey(raw: unknown): string {
@@ -952,6 +983,7 @@ function createEvaluationLogger(sb: SupabaseClient, trackId: string) {
       after: EvalSnapshot;
       verified: Record<string, unknown>[];
       rejected: Record<string, unknown>[];
+      deferred: Record<string, unknown>[];
       createdTarget: boolean;
     }) {
       if (disabled) return;
@@ -962,6 +994,12 @@ function createEvaluationLogger(sb: SupabaseClient, trackId: string) {
         outcome = entry.reused_existing_target ? "verified_eligible_existing" : "verified_eligible_new";
       } else if (opts.after.u > opts.before.u) outcome = "accepted_unverified";
       else if (opts.after.d > opts.before.d) outcome = "duplicate";
+      else if (opts.after.f > opts.before.f) {
+        // Cooldown / temporary host or DB failure: retry later, not a target rejection.
+        outcome = "deferred";
+        const last = opts.deferred[opts.deferred.length - 1] ?? {};
+        reason = String(last.code ?? last.reason ?? "").slice(0, 120) || null;
+      }
       else if (opts.after.r > opts.before.r) {
         outcome = "rejected";
         const last = opts.rejected[opts.rejected.length - 1] ?? {};
@@ -1033,6 +1071,9 @@ export async function submitPlaylistCandidates(
   const eligibleExistingIds: string[] = [];
   const duplicates: Record<string, unknown>[] = [];
   const rejected: Record<string, unknown>[] = [];
+  // Retry/defer, never a permanent rejection: pair cooldowns, temporary host (MX/DNS)
+  // failures, and transient DB errors while classifying an existing target.
+  const deferred: Record<string, unknown>[] = [];
 
   const { data: trackRow } = await sb
     .from("tracks")
@@ -1049,6 +1090,7 @@ export async function submitPlaylistCandidates(
       u: acceptedUnverified.length,
       d: duplicates.length,
       r: rejected.length,
+      f: deferred.length,
     };
     let logKey: string | null = null;
     let createdTarget = false;
@@ -1244,11 +1286,20 @@ export async function submitPlaylistCandidates(
         }
         existingClassified.push(manualReverify ? { ...classified, manual_reverify: manualReverify } : classified);
         if (classified.classification === "classification_failed") {
-          rejected.push({
+          deferred.push({
             playlist_id: id,
             reason: classified.reason ?? "classification_failed",
-            code: "db_error",
+            code: "temporary_db_error",
             classification: classified.classification,
+            retry: "resubmit this candidate later",
+          });
+        } else if (classified.classification === "existing_pair_cooldown") {
+          deferred.push({
+            playlist_id: id,
+            reason: "song–playlist pair is in its pitch cooldown",
+            code: "pair_cooldown",
+            classification: classified.classification,
+            retry_after: classified.cooldown_until ?? null,
           });
         } else if (classified.classification === "existing_verified_eligible") {
           eligibleExistingIds.push(id);
@@ -1312,6 +1363,18 @@ export async function submitPlaylistCandidates(
         { sb },
       );
 
+      if (path.retryable) {
+        // Temporary host failure (e.g. MX lookup error) — don't store an unverified row
+        // that would never be re-checked; defer and let the candidate be resubmitted.
+        deferred.push({
+          playlist_id: id,
+          reason: path.reason,
+          code: "temporary_host_failure",
+          retry: "resubmit this candidate later",
+        });
+        continue;
+      }
+
       if (!identityResolved && !path.path_verified) {
         // Route-only candidates are accepted only on a verified first-party route —
         // without it there is neither a platform identity nor a usable route.
@@ -1352,6 +1415,10 @@ export async function submitPlaylistCandidates(
           playlistUrl,
           rawSourceUrl: rawSourceUrl || rawPlaylistUrl || null,
           identityResolved,
+          curatorName: c.curator_name != null ? String(c.curator_name) : null,
+          followerCount: typeof c.follower_count === "number" ? c.follower_count : null,
+          submissionTerms: c.submission_terms != null ? String(c.submission_terms) : null,
+          loginRequired: typeof c.login_required === "boolean" ? c.login_required : null,
         });
       } catch (e) {
         rejected.push({
@@ -1384,6 +1451,14 @@ export async function submitPlaylistCandidates(
               song_dna_version_id: dna.songDnaVersionId,
               classification: classified.classification,
               reused_existing_target: true,
+            });
+          } else if (classified.classification === "existing_pair_cooldown") {
+            deferred.push({
+              playlist_id: id,
+              reason: "song–playlist pair is in its pitch cooldown",
+              code: "pair_cooldown",
+              classification: classified.classification,
+              retry_after: classified.cooldown_until ?? null,
             });
           } else {
             duplicates.push({
@@ -1453,9 +1528,11 @@ export async function submitPlaylistCandidates(
           u: acceptedUnverified.length,
           d: duplicates.length,
           r: rejected.length,
+          f: deferred.length,
         },
         verified: acceptedVerified,
         rejected,
+        deferred,
         createdTarget,
       });
     }
@@ -1467,17 +1544,22 @@ export async function submitPlaylistCandidates(
       ok: true,
       track_id: trackId,
       song_dna_version_id: dna.songDnaVersionId,
+      // Intake into verification — NOT playlist submissions. A submission is only an
+      // email with a provider id or a manual form/DM with submitted_at (per_song_funnel).
+      candidates_submitted_for_verification: candidates.length,
       accepted_count: acceptedVerified.length + acceptedUnverified.length,
       verified_eligible_count: acceptedVerified.length,
       accepted_unverified_count: acceptedUnverified.length,
       duplicate_count: duplicates.length,
       rejected_count: rejected.length,
+      deferred_count: deferred.length,
       verified_eligible: acceptedVerified,
       accepted_unverified: acceptedUnverified,
       existing_targets: existingClassified,
       eligible_existing_playlist_ids: [...new Set(eligibleExistingIds)],
       duplicates,
       rejected,
+      deferred,
       discovered_by: attr.actor_kind,
       ...(evalLog.warnings.length ? { warnings: evalLog.warnings } : {}),
     },
@@ -1663,7 +1745,7 @@ export async function createPlaylistDraftInventory(
     const { data: target, error: tErr } = await sb
       .from("playlist_targets")
       .select(
-        "playlist_id, contact_method, submission_method, path_verified, verification_status, form_url, submission_url, curator_email, ig_curator_account, curator_instagram, form_source_evidence, ig_source_evidence, research_context, is_active, lane",
+        "playlist_id, contact_method, submission_method, path_verified, verification_status, form_url, submission_url, curator_email, ig_curator_account, curator_instagram, form_source_evidence, ig_source_evidence, research_context, is_active, lane, last_verified_at, submission_cost, form_login_required",
       )
       .eq("playlist_id", playlistId)
       .maybeSingle();
@@ -1827,6 +1909,17 @@ export async function createPlaylistDraftInventory(
       automated_submit: false,
       automated_dm: false,
       ops_idempotency_key: key,
+      // Authoritative fit decision + DNA/policy version, so review disagreements are diagnosable.
+      song_fit: decideLaneFit(dnaRow as ApprovedDnaLanes | null, target.lane),
+      // What established the route: the server's shared route rules applied to Claude's evidence.
+      route_verification: {
+        method: "server_route_rules",
+        submitted_by: ops.label,
+        verification_status: target.verification_status ?? null,
+        verified_at: target.last_verified_at ?? null,
+        submission_terms: submissionTerms(target as Record<string, unknown>),
+        login_required: target.form_login_required ?? null,
+      },
     };
     if (channel === "email") {
       packet.curator_email = String(draftPayload?.recipient ?? target.curator_email ?? "")
@@ -2101,11 +2194,18 @@ export async function getOwnPlaylistBatches(
     .order("created_at", { ascending: false })
     .limit(limit);
   if (error) return { status: 500, data: { error: error.message, code: "db_error" } };
+  const rawRows = (data ?? []) as Record<string, unknown>[];
+  const rc = await loadBatchRecordCounts(sb, rawRows.map((b) => String(b.id)));
+  if (rc.error) return { status: 500, data: { error: `record_counts_failed:${rc.error}`, code: "db_error" } };
   return {
     status: 200,
     data: {
       ok: true,
-      rows: data ?? [],
+      // batch_status comes from record states — the batch queue_state alone can hide mixed outcomes.
+      rows: rawRows.map((b) => ({
+        ...b,
+        batch_status: batchStatusSummary(String(b.queue_state), rc.counts.get(String(b.id)) ?? {}),
+      })),
       scoped_to: "claude_playlist_discovery",
     },
   };
@@ -2240,7 +2340,7 @@ export async function getBatchCandidates(
   const { data: records, error: rErr } = await sb
     .from("agh_handoff_records")
     .select(
-      "id, record_kind, queue_state, track_id, playlist_target_id, outreach_draft_id, submission_channel, song_dna_version_id, discovered_by, verified_by, drafted_by, reviewed_by, rejection_reason, packet, submitted_at, created_at, updated_at",
+      "id, record_kind, queue_state, track_id, playlist_target_id, outreach_draft_id, submission_channel, song_dna_version_id, discovered_by, verified_by, drafted_by, reviewed_by, rejection_reason, packet, submitted_at, manual_submit_result, created_at, updated_at",
     )
     .eq("batch_id", batchId)
     .order("created_at", { ascending: true });
@@ -2256,7 +2356,7 @@ export async function getBatchCandidates(
     const { data: tRows, error: tErr } = await sb
       .from("playlist_targets")
       .select(
-        "playlist_id, playlist_name, platform, curator_name, curator_email, curator_url, form_url, submission_url, ig_curator_account, curator_instagram, lane, contact_method, submission_method, verification_status, path_verified, path_verification_notes, form_source_evidence, ig_source_evidence, notes, research_context, follower_count, last_verified_at, discovered_by, is_active, submission_cost",
+        "playlist_id, playlist_name, platform, curator_name, curator_email, curator_url, form_url, submission_url, ig_curator_account, curator_instagram, lane, contact_method, submission_method, verification_status, path_verified, path_verification_notes, form_source_evidence, ig_source_evidence, notes, research_context, follower_count, last_verified_at, discovered_by, is_active, submission_cost, form_login_required",
       )
       .in("playlist_id", targetIds);
     if (tErr) {
@@ -2294,6 +2394,20 @@ export async function getBatchCandidates(
     });
   }
 
+  // Authoritative fit against the song's CURRENT approved DNA (same decision Grok sees).
+  const { data: dnaTrack } = await sb.from("tracks").select("approved_song_dna_version_id").eq("id", String(batch.track_id ?? "")).maybeSingle();
+  let dnaLanes: ApprovedDnaLanes | null = null;
+  if (dnaTrack?.approved_song_dna_version_id) {
+    const { data: d } = await sb
+      .from("song_dna_versions")
+      .select("id, track_id, approval_state, primary_genre, approved_lanes, excluded_lanes")
+      .eq("id", String(dnaTrack.approved_song_dna_version_id))
+      .maybeSingle();
+    if (d && String(d.approval_state) === "approved" && String(d.track_id) === String(batch.track_id)) dnaLanes = d as ApprovedDnaLanes;
+  }
+  const counts: Record<string, number> = {};
+  for (const r of (records ?? []) as Record<string, unknown>[]) counts[String(r.queue_state)] = (counts[String(r.queue_state)] ?? 0) + 1;
+
   const candidates = (records ?? []).map((r) => {
     const t = targets.get(String(r.playlist_target_id ?? "")) ?? null;
     const rc = (t?.research_context ?? {}) as Record<string, unknown>;
@@ -2326,7 +2440,8 @@ export async function getBatchCandidates(
           curator_name: t.curator_name ?? null,
           curator_url: t.curator_url ?? null,
           lane: t.lane ?? null,
-          follower_count: t.follower_count ?? null,
+          // 0 is the column default, not a reading — report unknown as null.
+          follower_count: t.follower_count != null && Number(t.follower_count) > 0 ? t.follower_count : null,
           is_active: t.is_active ?? null,
         }
         : { playlist_id: r.playlist_target_id ?? null, missing_target_row: true },
@@ -2364,6 +2479,11 @@ export async function getBatchCandidates(
         })()
         : { ok: false, code: "target_missing", reason: "playlist target not found" },
       curator_contact: curatorByRecord.get(String(r.id)) ?? null,
+      song_fit: decideLaneFit(dnaLanes, t?.lane ?? null),
+      route_actionability: routeActionability(t, r as Record<string, unknown>, {
+        emailSent: ["sent", "sent_audit_broken"].includes(String(draftStatus.get(String(r.outreach_draft_id ?? "")) ?? "")),
+        emailProviderId: null,
+      }),
       created_at: r.created_at,
     };
   });
@@ -2373,6 +2493,7 @@ export async function getBatchCandidates(
     data: {
       ok: true,
       batch,
+      batch_status: batchStatusSummary(String(batch.queue_state), counts),
       candidate_count: candidates.length,
       candidates,
       scoped_to: OWN_ACTOR,

@@ -2,8 +2,12 @@
 
 **Who executes:** a Claude agent with browser access, working in the **Lovable** project for
 `fan-growth-pilot` (Supabase project ref `vsemrziqxrrfcquxfnwd`).
-**Why:** PR #40 (merge commit `c4951ea`) fixed false submission-route verification in code. This handoff applies
-its database migration, previews the audit, holds the bad unsent packets, and reports back.
+**Why:**
+- PR #40 (merge commit `c4951ea`) fixed false submission-route verification in code.
+- The Sept 28 PR adds record-level review, one song-fit authority and the fit requeue.
+
+This handoff applies both migrations, previews the audits, holds the bad unsent packets, requeues
+contradicted fit rejections (preview first), and reports back.
 **Time:** about 15 minutes.
 
 ---
@@ -210,6 +214,83 @@ Expected:
 
 ---
 
+## 6A. Apply the 2026-09-28 migration (record review + fit requeue)
+
+1. Open
+   `https://raw.githubusercontent.com/fendifrost-dot/fan-growth-pilot/main/supabase/migrations/20260928120000_record_review_and_fit_requeue.sql`.
+   If the PR is not merged yet, use the PR branch in place of `main`.
+2. Copy the whole file, paste it and run it as one script.
+   - It creates or replaces functions only, and widens one check constraint to allow outcome `deferred`.
+   - **No record changes.**
+
+Verify:
+
+```sql
+select p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+ where n.nspname = 'public'
+   and p.proname in ('agh_review_handoff_records','agh_handoff_state_audit','agh_fit_rejection_requeue','advance_agh_handoff_batch')
+ order by 1;
+```
+
+Expected: 4 names. **If not, stop and report.**
+
+### 6B. State audit (read-only)
+
+Run each statement separately and save each result:
+
+```sql
+select jsonb_pretty(a->'rejections') from (select public.agh_handoff_state_audit() a) x;
+select jsonb_pretty(a->'records_by_track_state') from (select public.agh_handoff_state_audit() a) x;
+select jsonb_array_length(a->'mixed_batches') as mixed_batches from (select public.agh_handoff_state_audit() a) x;
+select jsonb_pretty(public.agh_handoff_state_audit(array[
+  '61253677-2a8d-462d-93bd-0a75a704349d','ec562aeb-37b7-4553-9549-4d0b513a233e','7ec32f26-7bac-4cba-b6c4-e9ff1c7192fe'
+]::uuid[])->'requested_batches');
+select id, queue_state, record_count, notes from public.agh_handoff_batches where id::text like '4232637e%';
+select queue_state, count(*), count(rejection_reason) as with_reason
+  from public.agh_handoff_records where batch_id::text like '4232637e%' group by 1;
+```
+
+These answer:
+- **Distinct records vs reasons:** distinct rejected records vs reason occurrences (the 84 vs 89 question).
+- **Awaiting split:** whether the "108 awaiting" include today (see `created_today`).
+- **The three new batches:** their record states.
+- **Batch `4232637e`:** whether its record rejections exist in the database at all. If the result is 0
+  rows, or all records are still `AWAITING_GROK_REVIEW`, Grok's rejections were never persisted.
+
+### 6C. Fit-rejection requeue — PREVIEW (read-only)
+
+```sql
+select (r->>'fit_rejections_found') as found, (r->>'eligible_for_requeue') as eligible
+  from (select public.agh_fit_rejection_requeue(false) r) x;
+select i->>'record_id', i->>'track_id', i->>'lane', i->>'requeue', i->>'skip_reason', i->>'rejection'
+  from jsonb_array_elements(public.agh_fit_rejection_requeue(false)->'records') i;
+```
+
+Apply (next step) only if **all** of these are true:
+- **Count:** `eligible` is between 1 and 40.
+- **Lanes:** every eligible row's `lane` is one of Meditate's approved lanes (`rap_general`,
+  `rap_trap_hype`, `rap_conscious`, `west_coast_conscious`) or one of DFM's (`deep_house_groove`,
+  `house_general`, `house_club`, `rap_general`).
+- **Reasons:** every `rejection` text is a DNA/lane-fit reason.
+
+If `found` is 0, the reported fit rejections were never stored in the database. **Report that. Do not
+apply.**
+
+### 6D. Fit-rejection requeue — APPLY (only if 6C passed)
+
+```sql
+select (r->>'requeued') as requeued from (select public.agh_fit_rejection_requeue(true) r) x;
+select id, record_count, payload->>'fit_requeue_source_batch' as source
+  from public.agh_handoff_batches where payload->>'fit_requeue' = 'true' order by created_at desc;
+```
+
+- **Expected:** `requeued` equals the preview's `eligible`.
+- **What it does:** the records move into new `AWAITING_GROK_REVIEW` batches for Grok to re-review. Their
+  rejection history stays in `packet.review_history`.
+- **What it doesn't do:** nothing is approved or sent.
+
+---
+
 ## 7. Spotify key-alias report (read-only)
 
 ```sql
@@ -225,7 +306,7 @@ select jsonb_pretty(public.agh_spotify_key_alias_report());
 
 Paste into Lovable chat:
 
-> Sync GitHub main (c4951ea / PR #40). Redeploy edge functions `mcp-playlist-discovery`, `control-center-api`,
+> Sync GitHub main (PR #40 + the Sept 28 PR). Redeploy edge functions `mcp-playlist-discovery`, `control-center-api`,
 > `execute-pitch`, `send-pitch-email`, `approve-draft`, `draft-pitch`, `playlist-admin-api`, `playlist-research`,
 > `enrich-curator-contacts`, `schedule-follow-up`, `mcp-sync-discovery` only. Do not modify any code.
 > Confirm which functions were redeployed.
@@ -248,6 +329,12 @@ Decision: applied / stopped (reason: ___)
 Apply: held_count=___ skipped=___ targets_marked=___
 Verify: 2ec6577b state=___ record_count=___ remaining form_urls=___ still_failing_outside_repair=___
 Repair batches created: ___
+0928 migration: applied OK / error: ___   functions present: _/4
+State audit: distinct_rejected=___ reason_occurrences=___ multi_reason=___ fit_based=___ mixed_batches=___
+  by song/state (today / before today): ___
+  new batches record states: 61253677=___ ec562aeb=___ 7ec32f26=___
+  4232637e: batch state=___ records by state=___ with_reason=___
+Fit requeue: found=___ eligible=___ decision=applied/stopped (reason ___) requeued=___
 Alias report: prefixed_rows=___ prefixed_manually_verified=___ collision_count=___
 Redeploy: functions confirmed=___ missing=___
 Anything unexpected: ___

@@ -1,5 +1,14 @@
 # Playlist route correctness, throughput, ID repair, Grok handoff — 2026-09-27
 
+> **Continued by [HANDOFF_PLAYLIST_SEPT28_FINDINGS_2026-09-28.md](HANDOFF_PLAYLIST_SEPT28_FINDINGS_2026-09-28.md).**
+> That doc covers:
+> - one song-fit authority;
+> - record-level review, where record state is authoritative;
+> - route actionability and deferrals;
+> - per-song allocation.
+>
+> Its standing rules (§6) add to the ones below.
+
 Owner: Claude Code (Cursor unavailable). The role split is unchanged:
 - **Claude** discovers, verifies, drafts and did these engineering repairs.
 - **Grok** reviews, gives final approval, sends and handles responses.

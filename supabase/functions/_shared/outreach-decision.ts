@@ -22,6 +22,7 @@ import {
 } from "./pitch-copy.ts";
 import { loadLanesConfig } from "./playlist-lanes.ts";
 import type { OpsActor } from "./ops-actors.ts";
+import { decideLaneFit, type LaneFitDecision } from "./song-fit.ts";
 
 export type OutreachDecisionInput = {
   route: string;
@@ -279,26 +280,20 @@ export async function evaluateOutreachDecision(
     targetClassificationVerified = true;
   }
 
+  let songFit: LaneFitDecision | null = null;
   if (approvedDna && lane) {
-    const approved = new Set(
-      (approvedDna.approved_lanes ?? []).map((s: string) => s.toLowerCase()),
-    );
-    const excluded = new Set(
-      (approvedDna.excluded_lanes ?? []).map((s: string) => s.toLowerCase()),
-    );
-    const laneKey = lane.toLowerCase();
-    laneInExcludedSet = excluded.has(laneKey);
-    laneInApprovedSet = approved.size === 0 ? null : approved.has(laneKey);
+    // One authoritative lane decision (song-fit.ts) — also used by Grok's review path.
+    songFit = decideLaneFit(approvedDna, lane);
+    laneInExcludedSet = songFit.code === "lane_excluded";
+    laneInApprovedSet = songFit.approved_lanes.length === 0 ? null : songFit.approved_lanes.includes(lane.toLowerCase());
 
-    if (laneInExcludedSet) {
+    if (songFit.code === "lane_excluded") {
       compatible = false;
-      contradictionExplanation =
-        `Lane "${lane}" is on the approved Song DNA excluded_lanes list.`;
+      contradictionExplanation = songFit.reason;
       errors.push("dna_excluded_lane");
-    } else if (approved.size > 0 && !approved.has(laneKey)) {
+    } else if (songFit.code === "lane_not_in_approved_dna") {
       compatible = false;
-      contradictionExplanation =
-        `Lane "${lane}" is not in the approved Song DNA approved_lanes set.`;
+      contradictionExplanation = songFit.reason;
       errors.push("dna_lane_not_approved");
     }
   }
@@ -344,6 +339,7 @@ export async function evaluateOutreachDecision(
       legacy_track_short_pitch_ignored: Boolean(trim(trackRow?.short_pitch)),
       legacy_track_pitch_angle_ignored: Boolean(trim(trackRow?.pitch_angle)),
       fit_reason_internal_only: fitReason.fitReason || null,
+      song_fit: songFit,
     },
   };
 

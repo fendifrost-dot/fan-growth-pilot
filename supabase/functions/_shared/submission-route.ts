@@ -304,7 +304,7 @@ export function isBlank(v: unknown): boolean {
 type SbLike = SupabaseClient;
 
 export const TARGET_ROUTE_COLUMNS =
-  "playlist_id, verification_status, path_verified, path_verification_notes, contact_method, submission_method, curator_email, form_url, submission_url, ig_curator_account, curator_instagram, form_source_evidence, ig_source_evidence, submission_cost, form_cost, is_active, research_context";
+  "playlist_id, verification_status, path_verified, path_verification_notes, contact_method, submission_method, curator_email, form_url, submission_url, ig_curator_account, curator_instagram, form_source_evidence, ig_source_evidence, submission_cost, form_cost, form_login_required, is_active, research_context";
 
 export type SubmissionTerms = "free" | "paid" | "tip_appreciated" | "unknown";
 
@@ -341,7 +341,131 @@ export async function checkTargetSubmissionReady(
     ? { ...(data as Record<string, unknown>), ...Object.fromEntries(Object.entries(overrides ?? {}).filter(([, v]) => !blank(v))) }
     : null;
   const verdict = assertSubmissionReady(effective, channel);
-  return { ...verdict, playlist_id: pid, submission_terms: submissionTerms(data as Record<string, unknown> | null) };
+  const terms = submissionTerms(data as Record<string, unknown> | null);
+  if (verdict.ok && verdict.channel === "email" && verdict.route) {
+    // A hard bounce / complaint on this ADDRESS suppresses it everywhere — it can't be
+    // retried through a different playlist row that shares the curator email.
+    const sup = await emailBounceSuppression(sb, verdict.route);
+    if (sup.error) {
+      return { ok: false, channel: verdict.channel, code: "route_check_failed", reason: `bounce suppression query failed: ${sup.error}`, route: verdict.route, playlist_id: pid, submission_terms: terms, query_error: sup.error };
+    }
+    if (sup.suppressed) {
+      return { ok: false, channel: verdict.channel, code: "curator_email_suppressed", reason: sup.reason, route: verdict.route, playlist_id: pid, submission_terms: terms };
+    }
+  }
+  return { ...verdict, playlist_id: pid, submission_terms: terms };
+}
+
+/**
+ * Curator-email-level bounce suppression. resend-webhook stamps bounce_count /
+ * last_bounced_at on every playlist row holding the address AT BOUNCE TIME; a row created
+ * later for another playlist starts clean, so the check has to look across all rows.
+ */
+export async function emailBounceSuppression(
+  sb: SbLike,
+  email: string,
+): Promise<{ suppressed: boolean; reason: string; error?: string; playlist_ids: string[] }> {
+  const addr = str(email).toLowerCase();
+  if (!addr) return { suppressed: false, reason: "", playlist_ids: [] };
+  const { data, error } = await sb
+    .from("playlist_targets")
+    .select("playlist_id, bounce_count, last_bounced_at, verification_status")
+    .ilike("curator_email", addr)
+    .limit(50);
+  if (error) return { suppressed: false, reason: "", error: String(error.message), playlist_ids: [] };
+  const hits = ((data ?? []) as Record<string, unknown>[]).filter((r) =>
+    Number(r.bounce_count ?? 0) > 0 || !blank(r.last_bounced_at) ||
+    ["bounced", "spam_flagged"].includes(str(r.verification_status).toLowerCase())
+  );
+  if (!hits.length) return { suppressed: false, reason: "", playlist_ids: [] };
+  return {
+    suppressed: true,
+    reason: `curator email ${addr} hard-bounced or complained (playlist rows: ${hits.map((h) => str(h.playlist_id)).join(", ")}) — suppressed for every playlist association`,
+    playlist_ids: hits.map((h) => str(h.playlist_id)),
+  };
+}
+
+export type RouteStage =
+  | "no_route"
+  | "route_present_unverified"
+  | "route_verified_action_pending"
+  | "submitted_with_evidence";
+
+export type RouteActionability = {
+  stage: RouteStage;
+  route_present: boolean;
+  route_verified: boolean;
+  route_code: string;
+  /** Web-form / IG submissions are always manual (automated_submit=false). */
+  manual_action_required: boolean;
+  /** true / false when recorded; null = unknown (never assumed). */
+  login_required: boolean | null;
+  terms: SubmissionTerms;
+  terms_confirmed: boolean;
+  submission_completed: boolean;
+  submission_evidence: string | null;
+  notes: string[];
+};
+
+/**
+ * Separates "a route exists" from "the route is verified", "a person still has to act
+ * (login / manual form / DM)", "free/paid terms are confirmed" and "a submission was
+ * actually completed with evidence". A drafted email or an IG/form packet is NOT a
+ * completed submission.
+ */
+export function routeActionability(
+  target: Record<string, unknown> | null | undefined,
+  record: Record<string, unknown> | null | undefined,
+  opts: { emailSent?: boolean; emailProviderId?: string | null } = {},
+): RouteActionability {
+  const channel = normalizeChannel(record?.submission_channel) ??
+    normalizeChannel(target?.contact_method) ?? normalizeChannel(target?.submission_method);
+  const routeValue = channel === "email"
+    ? str(target?.curator_email)
+    : channel === "web_form"
+    ? str(target?.form_url) || str(target?.submission_url)
+    : channel === "instagram_dm"
+    ? str(target?.ig_curator_account) || str(target?.curator_instagram)
+    : "";
+  const verdict = assertSubmissionReady(target ?? null, channel);
+  const terms = submissionTerms(target);
+  const loginRaw = target?.form_login_required;
+  const login = loginRaw === true ? true : loginRaw === false ? false : null;
+  const manualAt = str(record?.submitted_at);
+  const manualResult = str(record?.manual_submit_result);
+  const emailDone = channel === "email" && opts.emailSent === true && !!str(opts.emailProviderId);
+  const completed = !!manualAt || emailDone;
+  const notes: string[] = [];
+  if (!routeValue) notes.push("no route value stored for the channel");
+  if (terms === "unknown") notes.push("free/paid terms not confirmed on the route page");
+  if (channel !== "email" && channel) notes.push("manual action: a person must submit the form / send the DM");
+  if (login === true) notes.push("login required on the submission site");
+  if (channel === "email" && opts.emailSent && !completed) notes.push("draft marked sent but no provider message id — not evidence of delivery");
+  if (!completed && record?.outreach_draft_id) notes.push("drafted, not submitted");
+  const stage: RouteStage = completed
+    ? "submitted_with_evidence"
+    : !routeValue
+    ? "no_route"
+    : verdict.ok
+    ? "route_verified_action_pending"
+    : "route_present_unverified";
+  return {
+    stage,
+    route_present: !!routeValue,
+    route_verified: verdict.ok,
+    route_code: verdict.code,
+    manual_action_required: channel === "web_form" || channel === "instagram_dm",
+    login_required: login,
+    terms,
+    terms_confirmed: terms !== "unknown",
+    submission_completed: completed,
+    submission_evidence: manualAt
+      ? `manual submission recorded at ${manualAt}${manualResult ? ` (${manualResult})` : ""}`
+      : emailDone
+      ? `email provider id ${str(opts.emailProviderId)}`
+      : null,
+    notes,
+  };
 }
 
 /** A record the route audit / approval boundary put on hold (packet.route_hold). */

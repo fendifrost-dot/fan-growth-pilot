@@ -922,4 +922,84 @@ SQL
 ALIAS=$(run_sql -c "select (r->>'prefixed_rows') || ':' || (r->>'prefixed_manually_verified') || ':' || (r->>'collision_count') from (select public.agh_spotify_key_alias_report() r) x;")
 assert_eq "spotify_alias_report" "${ALIAS}" "2:2:1"
 
+echo "==> Record-level review + fit requeue (2026-09-28)"
+apply_with_rollback "$ROOT/supabase/migrations/20260928120000_record_review_and_fit_requeue.sql"
+run_sql_pretty <<'SQL' >/dev/null
+alter table public.playlist_targets
+  add column if not exists bounce_count int default 0,
+  add column if not exists last_bounced_at timestamptz,
+  add column if not exists ig_curator_account text,
+  add column if not exists ig_source_evidence text;
+insert into public.tracks (id, name, approved_song_dna_version_id)
+values ('cccccccc-0000-0000-0000-00000000000a', 'Fixture Meditate', 'dddddddd-0000-0000-0000-00000000000a');
+insert into public.song_dna_versions (id, track_id, approval_state, approved_lanes, excluded_lanes, primary_genre, short_pitch)
+values ('dddddddd-0000-0000-0000-00000000000a', 'cccccccc-0000-0000-0000-00000000000a', 'approved',
+        '{rap_general,rap_trap_hype,rap_conscious}', '{house_club}', 'hip_hop_rap', 'Hip-hop/rap with hard-hitting 808s');
+insert into public.playlist_targets (playlist_id, lane, verification_status, path_verified, contact_method, submission_method, form_url, submission_url, form_source_evidence, curator_email, bounce_count, is_active)
+values
+  ('fit-trap', 'rap_trap_hype', 'auto_verified', true, 'web_form', 'web_form', 'https://play.soundplate.com/raphhrats', 'https://play.soundplate.com/raphhrats', 'Soundplate per-playlist submission page fetched 2026-09-28', null, 0, true),
+  ('fit-house', 'house_club', 'auto_verified', true, 'web_form', 'web_form', 'https://play.soundplate.com/houseclub', 'https://play.soundplate.com/houseclub', 'Soundplate per-playlist submission page', null, 0, true),
+  ('fit-conscious', 'rap_conscious', 'auto_verified', true, 'web_form', 'web_form', 'https://play.soundplate.com/realrap2', 'https://play.soundplate.com/realrap2', 'Soundplate per-playlist submission page', null, 0, true),
+  ('fit-email', 'rap_general', 'auto_verified', false, 'email', 'email', null, null, null, 'jointheplaylist@teamspecific.test', 0, true),
+  ('fit-email-old', 'rap_general', 'auto_verified', false, 'email', 'email', null, null, null, 'JoinThePlaylist@teamspecific.test', 1, true),
+  ('fit-general', 'rap_general', 'auto_verified', true, 'web_form', 'web_form', 'https://play.soundplate.com/rblfreq', 'https://play.soundplate.com/rblfreq', 'Soundplate per-playlist submission page', null, 0, true);
+insert into public.agh_handoff_batches (id, batch_kind, queue_state, track_id, song_dna_version_id, discovered_by, drafted_by, record_count)
+values ('cccccccc-0000-0000-0000-0000000000b1', 'playlist', 'AWAITING_GROK_REVIEW', 'cccccccc-0000-0000-0000-00000000000a',
+        'dddddddd-0000-0000-0000-00000000000a', 'claude_playlist_discovery', 'claude_playlist_discovery', 5);
+insert into public.agh_handoff_records (id, batch_id, record_kind, queue_state, track_id, playlist_target_id, submission_channel, song_dna_version_id, packet, drafted_by)
+values
+  ('cccccccc-0000-0000-0000-0000000000c1', 'cccccccc-0000-0000-0000-0000000000b1', 'playlist_target', 'AWAITING_GROK_REVIEW', 'cccccccc-0000-0000-0000-00000000000a', 'fit-trap', 'web_form', 'dddddddd-0000-0000-0000-00000000000a', '{}'::jsonb, 'claude_playlist_discovery'),
+  ('cccccccc-0000-0000-0000-0000000000c2', 'cccccccc-0000-0000-0000-0000000000b1', 'playlist_target', 'AWAITING_GROK_REVIEW', 'cccccccc-0000-0000-0000-00000000000a', 'fit-house', 'web_form', 'dddddddd-0000-0000-0000-00000000000a', '{}'::jsonb, 'claude_playlist_discovery'),
+  ('cccccccc-0000-0000-0000-0000000000c3', 'cccccccc-0000-0000-0000-0000000000b1', 'playlist_target', 'AWAITING_GROK_REVIEW', 'cccccccc-0000-0000-0000-00000000000a', 'fit-conscious', 'web_form', 'dddddddd-0000-0000-0000-00000000000a', '{}'::jsonb, 'claude_playlist_discovery'),
+  ('cccccccc-0000-0000-0000-0000000000c4', 'cccccccc-0000-0000-0000-0000000000b1', 'playlist_target', 'AWAITING_GROK_REVIEW', 'cccccccc-0000-0000-0000-00000000000a', 'fit-email', 'email', 'dddddddd-0000-0000-0000-00000000000a', '{}'::jsonb, 'claude_playlist_discovery'),
+  ('cccccccc-0000-0000-0000-0000000000c5', 'cccccccc-0000-0000-0000-0000000000b1', 'playlist_target', 'AWAITING_GROK_REVIEW', 'cccccccc-0000-0000-0000-00000000000a', 'fit-general', 'web_form', 'dddddddd-0000-0000-0000-00000000000a', '{}'::jsonb, 'claude_playlist_discovery');
+SQL
+
+REV=$(run_sql -c "select (r->>'applied_count') || ':' || (r->>'batch_queue_state') from (select public.agh_review_handoff_records('cccccccc-0000-0000-0000-0000000000b1', '[
+  {\"record_id\":\"cccccccc-0000-0000-0000-0000000000c1\",\"decision\":\"reject\",\"reason_codes\":[\"DNA_LANE_MISMATCH\"],\"reason\":\"Meditate hip_hop_rap only\"},
+  {\"record_id\":\"cccccccc-0000-0000-0000-0000000000c2\",\"decision\":\"reject\",\"reason_codes\":[\"DNA_LANE_MISMATCH\"],\"reason\":\"Meditate hip_hop_rap only\"},
+  {\"record_id\":\"cccccccc-0000-0000-0000-0000000000c3\",\"decision\":\"reject\",\"reason_codes\":[\"DNA_LANE_MISMATCH\",\"LOW_REACH\"],\"reason\":\"Meditate hip_hop_rap only\"},
+  {\"record_id\":\"cccccccc-0000-0000-0000-0000000000c4\",\"decision\":\"reject\",\"reason_codes\":[\"DNA_LANE_MISMATCH\"]},
+  {\"record_id\":\"cccccccc-0000-0000-0000-0000000000c5\",\"decision\":\"defer\",\"reason_codes\":[\"HOST_DOWN\"],\"retry_after\":\"2026-09-29\"}
+]'::jsonb, 'grok_playlist_control', 'grok_playlist_control') r) x;")
+assert_eq "record_review_applied_batch_still_pending" "${REV}" "5:AWAITING_GROK_REVIEW"
+MIXED=$(run_sql -c "select count(*) from jsonb_array_elements(public.agh_handoff_state_audit()->'mixed_batches') b where b->>'batch_id'='cccccccc-0000-0000-0000-0000000000b1';")
+assert_eq "audit_reports_mixed_batch" "${MIXED}" "1"
+REJ=$(run_sql -c "select (a->'rejections'->>'distinct_rejected_records') || ':' || (a->'rejections'->>'reason_occurrences') || ':' || (a->'rejections'->>'fit_based_rejections') from (select public.agh_handoff_state_audit(array['cccccccc-0000-0000-0000-0000000000b1']::uuid[]) a) x;")
+assert_eq "audit_distinct_vs_occurrences" "${REJ}" "4:5:4"
+DEFER=$(run_sql -c "select packet->'review_defer'->>'retry_after' || ':' || queue_state from public.agh_handoff_records where id='cccccccc-0000-0000-0000-0000000000c5';")
+assert_eq "defer_keeps_record_in_review" "${DEFER}" "2026-09-29:AWAITING_GROK_REVIEW"
+
+run_sql -c "select public.advance_agh_handoff_batch('cccccccc-0000-0000-0000-0000000000b1', 'AWAITING_GROK_REVIEW', 'GROK_REVIEWED', '{\"reviewed_by\":\"grok_playlist_control\"}'::jsonb);" >/dev/null
+AFTER=$(run_sql -c "select string_agg(queue_state, ',' order by id) from public.agh_handoff_records where batch_id='cccccccc-0000-0000-0000-0000000000b1';")
+assert_eq "batch_advance_preserves_record_rejections" "${AFTER}" "REJECTED_BY_GROK,REJECTED_BY_GROK,REJECTED_BY_GROK,REJECTED_BY_GROK,GROK_REVIEWED"
+
+PREV=$(run_sql -c "select (r->>'fit_rejections_found') || ':' || (r->>'eligible_for_requeue') || ':' || (r->>'requeued') from (select public.agh_fit_rejection_requeue(false) r) x;")
+assert_eq "fit_requeue_preview" "${PREV}" "4:2:0"
+SKIPS=$(run_sql -c "select string_agg(i->>'playlist_target_id' || '=' || coalesce(i->>'skip_reason','requeue'), ',' order by i->>'playlist_target_id') from jsonb_array_elements(public.agh_fit_rejection_requeue(false)->'records') i;")
+assert_eq "fit_requeue_skip_reasons" "${SKIPS}" "fit-conscious=requeue,fit-email=curator_email_suppressed,fit-house=lane_excluded_by_dna,fit-trap=requeue"
+APPLY=$(run_sql -c "select public.agh_fit_rejection_requeue(true)->>'requeued';")
+assert_eq "fit_requeue_applied" "${APPLY}" "2"
+RQ=$(run_sql -c "select b.queue_state || ':' || b.record_count || ':' || (b.payload->>'fit_requeue') from public.agh_handoff_batches b where b.payload->>'fit_requeue_source_batch'='cccccccc-0000-0000-0000-0000000000b1';")
+assert_eq "fit_requeue_batch" "${RQ}" "AWAITING_GROK_REVIEW:2:true"
+HIST=$(run_sql -c "select count(*) from public.agh_handoff_records where id in ('cccccccc-0000-0000-0000-0000000000c1','cccccccc-0000-0000-0000-0000000000c3') and queue_state='AWAITING_GROK_REVIEW' and rejection_reason is null and jsonb_array_length(packet->'review_history') = 2 and packet->'fit_requeue'->>'from_batch'='cccccccc-0000-0000-0000-0000000000b1';")
+assert_eq "fit_requeue_history_preserved" "${HIST}" "2"
+SRC=$(run_sql -c "select record_count from public.agh_handoff_batches where id='cccccccc-0000-0000-0000-0000000000b1';")
+assert_eq "fit_requeue_source_recount" "${SRC}" "3"
+AGAIN2=$(run_sql -c "select (r->>'fit_rejections_found') || ':' || (r->>'eligible_for_requeue') from (select public.agh_fit_rejection_requeue(false) r) x;")
+assert_eq "fit_requeue_idempotent" "${AGAIN2}" "2:0"
+
+RQID=$(run_sql -c "select id from public.agh_handoff_batches where payload->>'fit_requeue_source_batch'='cccccccc-0000-0000-0000-0000000000b1';")
+ALLREJ=$(run_sql -c "select public.agh_review_handoff_records('${RQID}', '[
+  {\"record_id\":\"cccccccc-0000-0000-0000-0000000000c1\",\"decision\":\"reject\",\"reason_codes\":[\"LOW_REACH\"]},
+  {\"record_id\":\"cccccccc-0000-0000-0000-0000000000c3\",\"decision\":\"reject\",\"reason_codes\":[\"LANGUAGE_MISMATCH\"]}
+]'::jsonb, 'grok_playlist_control', 'grok_playlist_control')->>'batch_queue_state';")
+assert_eq "all_records_rejected_batch_follows" "${ALLREJ}" "REJECTED_BY_GROK"
+DENY=$(run_sql -c "select has_function_privilege('authenticated', 'public.agh_review_handoff_records(uuid, jsonb, text, text)', 'execute');")
+assert_eq "record_review_not_for_authenticated" "${DENY}" "f"
+
+run_sql -c "select public.agh_log_candidate_evaluation(date '2026-09-28', 'cccccccc-0000-0000-0000-00000000000a', 'spotify:deferme', 'deferme', 'deferred', 'pair_cooldown', false);" >/dev/null
+DEF=$(run_sql -c "select outcome from public.agh_playlist_candidate_evaluations where identity_key='spotify:deferme';")
+assert_eq "candidate_outcome_deferred_allowed" "${DEF}" "deferred"
+
 echo "==> PASS: daily-ops migrations applied + authoritative RPC assertions verified"

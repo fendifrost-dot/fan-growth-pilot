@@ -3,7 +3,7 @@
  * counted only with evidence, and explicit shortfalls.
  */
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { buildPerSongFunnel, computeRemainingNeed } from "./playlist-funnel.ts";
+import { allocateDiscovery, buildPerSongFunnel, computeRemainingNeed } from "./playlist-funnel.ts";
 import { buildDiscoveryCapacityPlan, measureRawToVerifiedFromLog, funnelWindow } from "./discovery-capacity.ts";
 
 type Row = Record<string, unknown>;
@@ -160,4 +160,18 @@ Deno.test("yield: server-side candidate log is preferred and dedupes by identity
   assert(plan.funnel.raw_to_verified.source.includes("fallback"));
   assertEquals(plan.funnel.raw_to_verified.rate, 0.06);
   assertEquals(plan.raw_research_capped, false);
+});
+
+Deno.test("allocation: one song's surplus never offsets another's shortfall (DFM 42/30 vs Meditate 13/30)", () => {
+  const alloc = allocateDiscovery([
+    { track_id: "dfm", title: "DFM", remaining_eligible_packets_needed: 0, raw_candidates_needed: 0, verified_eligible_packets_today: 42, objective_submissions: 30 },
+    { track_id: "med", title: "Meditate", remaining_eligible_packets_needed: 17, raw_candidates_needed: 203, verified_eligible_packets_today: 13, objective_submissions: 30 },
+  ]);
+  assertEquals(alloc[0].track_id, "med");
+  assertEquals(alloc[0].priority_rank, 1);
+  assertEquals(alloc[0].share_of_remaining_need, 1);
+  assertEquals(alloc[0].raw_candidates_needed, 203);
+  const dfm = alloc.find((a) => a.track_id === "dfm")!;
+  assertEquals(dfm.share_of_remaining_need, 0);
+  assertEquals(dfm.packets_today_over_objective, 12);
 });

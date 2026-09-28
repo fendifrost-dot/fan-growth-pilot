@@ -70,6 +70,8 @@ export type PathVerifyResult = {
   status: "auto_verified" | "manually_verified" | "unverified";
   reason: string;
   code?: string;
+  /** Temporary host/lookup failure — defer and retry; never a permanent rejection. */
+  retryable?: boolean;
 };
 
 /**
@@ -148,6 +150,7 @@ export async function evaluateSubmissionPath(
       channel,
       status: verdict.status === "auto_verified" ? "auto_verified" : "unverified",
       reason: verdict.reason,
+      ...(verdict.retryable ? { retryable: true, code: "temporary_host_failure" } : {}),
     };
   }
 

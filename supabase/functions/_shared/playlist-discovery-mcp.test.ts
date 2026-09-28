@@ -1520,8 +1520,10 @@ Deno.test("classification query errors fail closed (not eligible)", async () => 
     });
     assertEquals(res.status, 200, failTable);
     assertEquals(res.data.verified_eligible_count, 0, failTable);
-    assert((res.data.rejected as Row[]).some((r) =>
-      String(r.classification) === "classification_failed" || String(r.code) === "db_error"
+    // A transient lookup failure is a retry/defer condition — never a target rejection.
+    assertEquals(res.data.rejected_count, 0, failTable);
+    assert((res.data.deferred as Row[]).some((r) =>
+      String(r.classification) === "classification_failed" && String(r.code) === "temporary_db_error"
     ), failTable + " " + JSON.stringify(res.data));
   }
 });
@@ -2557,4 +2559,45 @@ Deno.test("cross-song reuse: each receiving song passes its own DNA independentl
   const b = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), { track_id: OTHER_TRACK, candidates: [cand] });
   assertEquals(b.data.verified_eligible_count, 0, JSON.stringify(b.data));
   assertEquals((b.data.eligible_existing_playlist_ids as string[]).length, 0);
+});
+
+Deno.test("insert: unknown curator/follower/terms stay null/unknown; values read off the source are stored", () => {
+  const base = {
+    playlistId: "7wwEsgbbm0l9aNHz3IUxWw",
+    playlistName: "Fixture Rap",
+    lane: "rap_general",
+    pathVerified: true,
+    verificationStatus: "auto_verified",
+    pathReason: "web form URL + source evidence verified",
+    channel: "web_form",
+    curatorEmail: null,
+    formUrl: "https://play.soundplate.com/analyzer/playlist/wsscss",
+    igAccount: null,
+    evidence: "Soundplate per-playlist submission page",
+    discoveredBy: "claude_playlist_discovery",
+    discoveredByLabel: "claude_playlist_discovery",
+    trackName: "Fixture Track",
+    songDnaVersionId: "22222222-2222-2222-2222-222222222222",
+    playlistUrl: null,
+  };
+  const unknown = buildDiscoveryPlaylistTargetInsert(base);
+  assertEquals(assertPlaylistTargetInsertSchema(unknown), null);
+  assertEquals(unknown.follower_count, null); // not the column default 0
+  assertEquals(unknown.curator_name, null);
+  assertEquals(unknown.submission_cost, "unknown");
+  assertEquals(unknown.form_login_required, null);
+  assert(typeof unknown.last_verified_at === "string");
+  assertEquals((unknown.research_context as Row).route_verified_by, "server_route_rules");
+
+  const read = buildDiscoveryPlaylistTargetInsert({
+    ...base, curatorName: "Kaptivate World", followerCount: 1371, submissionTerms: "free", loginRequired: false,
+  });
+  assertEquals(read.curator_name, "Kaptivate World");
+  assertEquals(read.follower_count, 1371);
+  assertEquals(read.submission_cost, "free");
+  assertEquals(read.form_login_required, false);
+
+  const unverified = buildDiscoveryPlaylistTargetInsert({ ...base, pathVerified: false, verificationStatus: "unverified" });
+  assertEquals(unverified.last_verified_at, null);
+  assertEquals((unverified.research_context as Row).route_verified_by, undefined);
 });

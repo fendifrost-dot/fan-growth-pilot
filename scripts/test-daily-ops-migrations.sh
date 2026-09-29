@@ -1002,4 +1002,55 @@ run_sql -c "select public.agh_log_candidate_evaluation(date '2026-09-28', 'ccccc
 DEF=$(run_sql -c "select outcome from public.agh_playlist_candidate_evaluations where identity_key='spotify:deferme';")
 assert_eq "candidate_outcome_deferred_allowed" "${DEF}" "deferred"
 
+echo "==> Inventory/requeue follow-up (2026-09-29)"
+run_sql_pretty <<'SQL' >/dev/null
+create table public.artist_config (key text primary key, value jsonb not null);
+create table public.pitch_log (
+  playlist_id text, track_id uuid, track_name text, curator_email text, status text,
+  sent_at timestamptz, pitched_at timestamptz, cooldown_until timestamptz
+);
+SQL
+apply_with_rollback "$ROOT/supabase/migrations/20260929150000_playlist_inventory_requeue_safety.sql"
+# Reapplying the installation must be harmless; it never runs the repair itself.
+apply_with_rollback "$ROOT/supabase/migrations/20260929150000_playlist_inventory_requeue_safety.sql"
+run_sql_pretty <<'SQL' >/dev/null
+update public.agh_handoff_records
+set rejection_reason = 'DNA_LANE_MISMATCH: Meditate hip_hop_rap only',
+    packet = packet || '{"rejection":{"reason_codes":["DNA_LANE_MISMATCH"]}}'::jsonb
+where id = 'cccccccc-0000-0000-0000-0000000000c1';
+update public.agh_handoff_records
+set rejection_reason = 'DNA_LANE_MISMATCH, LOW_REACH: Meditate hip_hop_rap only',
+    packet = packet || '{"rejection":{"reason_codes":["DNA_LANE_MISMATCH","LOW_REACH"]}}'::jsonb
+where id = 'cccccccc-0000-0000-0000-0000000000c3';
+-- A sibling form submitted for the same song, even with different scheme/case/query.
+update public.playlist_targets set form_url='http://www.play.soundplate.com/RAPHHRATS/?src=test' where playlist_id='fit-general';
+update public.agh_handoff_records set submitted_at=now() - interval '2 days'
+where id='cccccccc-0000-0000-0000-0000000000c5';
+SQL
+SAFE=$(run_sql -c "select string_agg(i->>'playlist_target_id' || '=' || coalesce(i->>'skip_reason','requeue'), ',' order by i->>'playlist_target_id') from jsonb_array_elements(public.agh_fit_rejection_requeue(false)->'records') i where i->>'playlist_target_id' in ('fit-trap','fit-conscious');")
+assert_eq "safe_requeue_mixed_reason_and_curator_cooldown" "${SAFE}" "fit-conscious=other_or_ambiguous_rejection_reasons,fit-trap=curator_cooldown_active"
+assert_eq "safe_requeue_apply_skips_blocked" "$(run_sql -c "select public.agh_fit_rejection_requeue(true)->>'requeued';")" "0"
+# Different songs do not acquire a new cross-song cooldown.
+assert_eq "cooldown_song_specific" "$(run_sql -c "select public.agh_requeue_contact_cooldown('fit-trap','aaaaaaaa-0000-0000-0000-000000000001');")" "f"
+run_sql -c "insert into public.artist_config values ('cooldown_days','1');" >/dev/null
+assert_eq "cooldown_honors_configured_duration" "$(run_sql -c "select public.agh_requeue_contact_cooldown('fit-trap','cccccccc-0000-0000-0000-00000000000a');")" "f"
+# Email history, case-insensitive curator identity, explicit future expiry wins.
+run_sql -c "insert into public.pitch_log values ('fit-email-old','cccccccc-0000-0000-0000-00000000000a','Fixture Meditate','JoinThePlaylist@teamspecific.test','sent',now()-interval '5 days',now()-interval '5 days',now()+interval '2 days');" >/dev/null
+assert_eq "cooldown_email_explicit_expiry" "$(run_sql -c "select public.agh_requeue_contact_cooldown('fit-email','cccccccc-0000-0000-0000-00000000000a');")" "t"
+# IG sibling identity also carries the existing per-song cooldown.
+run_sql -c "update public.playlist_targets set form_url=null, ig_curator_account=case when playlist_id='fit-trap' then '@Curator' else 'curator' end where playlist_id in ('fit-trap','fit-general'); update public.agh_handoff_records set submitted_at=now() where id='cccccccc-0000-0000-0000-0000000000c5';" >/dev/null
+assert_eq "cooldown_ig_sibling" "$(run_sql -c "select public.agh_requeue_contact_cooldown('fit-trap','cccccccc-0000-0000-0000-00000000000a');")" "t"
+# End the cooldown: only the pure fit rejection can move; mixed rejection stays put.
+run_sql -c "update public.agh_handoff_records set submitted_at=now()-interval '2 days' where id='cccccccc-0000-0000-0000-0000000000c5';" >/dev/null
+assert_eq "safe_requeue_releases_only_pure_fit" "$(run_sql -c "select public.agh_fit_rejection_requeue(true)->>'requeued';")" "1"
+assert_eq "safe_requeue_idempotent" "$(run_sql -c "select public.agh_fit_rejection_requeue(true)->>'requeued';")" "0"
+assert_eq "mixed_rejection_preserved" "$(run_sql -c "select queue_state from public.agh_handoff_records where id='cccccccc-0000-0000-0000-0000000000c3';")" "REJECTED_BY_GROK"
+assert_eq "legacy_single_fit_reason" "$(run_sql -c "select public.agh_fit_requeue_reason_safe('{}', 'FAILED — DNA_LANE_MISMATCH Meditate hip_hop_rap only; lane=rap_trap_hype');")" "t"
+assert_eq "legacy_mixed_reason_held" "$(run_sql -c "select public.agh_fit_requeue_reason_safe('{}', 'FAILED — DNA_LANE_MISMATCH Meditate hip_hop_rap only; lane=rap_trap_hype; LOW_REACH');")" "f"
+assert_eq "cooldown_helper_not_public" "$(run_sql -c "select has_function_privilege('authenticated', 'public.agh_requeue_contact_cooldown(text,uuid)', 'execute');")" "f"
+# Explicit re-review clears an indefinite defer while retaining history.
+run_sql -c "update public.agh_handoff_records set packet=packet || '{\"review_defer\":{}}'::jsonb where id='cccccccc-0000-0000-0000-0000000000c1'; select public.agh_review_handoff_records((select batch_id from public.agh_handoff_records where id='cccccccc-0000-0000-0000-0000000000c1'), '[{\"record_id\":\"cccccccc-0000-0000-0000-0000000000c1\",\"decision\":\"reviewed\"}]', 'grok_playlist_control', 'grok_playlist_control');" >/dev/null
+assert_eq "explicit_review_resolves_defer" "$(run_sql -c "select (packet ? 'review_defer')::text || ':' || queue_state from public.agh_handoff_records where id='cccccccc-0000-0000-0000-0000000000c1';")" "false:GROK_REVIEWED"
+
+
 echo "==> PASS: daily-ops migrations applied + authoritative RPC assertions verified"

@@ -115,8 +115,9 @@ Deno.test("funnel: separates discovery, packets, approvals and evidenced submiss
   assertEquals(dfm.hold_reasons, { missing_form_url: 1 });
   assertEquals(dfm.business_target_met, false);
   assertEquals(dfm.submission_shortfall, 28);
-  assertEquals(dfm.remaining_eligible_packets_needed, 26);
-  assertEquals(dfm.raw_candidates_needed, 520);
+  assertEquals(dfm.usable_inflight_packets, 4);
+  assertEquals(dfm.remaining_eligible_packets_needed, 24);
+  assertEquals(dfm.raw_candidates_needed, 480);
   const med = res.songs.find((s) => s.track_id === MED)!;
   assertEquals(med.submissions_today, 0);
   assertEquals(med.drafts_awaiting_review_today, 1);
@@ -174,4 +175,28 @@ Deno.test("allocation: one song's surplus never offsets another's shortfall (DFM
   const dfm = alloc.find((a) => a.track_id === "dfm")!;
   assertEquals(dfm.share_of_remaining_need, 0);
   assertEquals(dfm.packets_today_over_objective, 12);
+});
+
+Deno.test("inventory: deferrals and holds cannot satisfy supply; review and age do not erase supply", async () => {
+  for (const [label, state, created, packet, expected] of [
+    ["future deferral", "AWAITING_GROK_REVIEW", TODAY_TS, { review_defer: { retry_after: "2026-09-28T20:00:00Z" } }, 30],
+    ["indefinite deferral", "AWAITING_GROK_REVIEW", TODAY_TS, { review_defer: {} }, 30],
+    ["invalid deferral", "AWAITING_GROK_REVIEW", TODAY_TS, { review_defer: { retry_after: "bad" } }, 30],
+    ["expired deferral", "AWAITING_GROK_REVIEW", YESTERDAY_TS, { review_defer: { retry_after: YESTERDAY_TS } }, 0],
+    ["reviewed", "GROK_REVIEWED", TODAY_TS, {}, 0],
+    ["older pending", "AWAITING_GROK_REVIEW", YESTERDAY_TS, {}, 0],
+    ["approved hold", "APPROVED_FOR_SEND", TODAY_TS, { route_hold: { code: "missing_form_url" } }, 30],
+    ["approved deferral", "APPROVED_FOR_SEND", TODAY_TS, { review_defer: { retry_after: "2026-09-28T20:00:00Z" } }, 30],
+  ] as const) {
+    const rows = Array.from({ length: 30 }, (_, i) => ({ id: String(i), track_id: MED, queue_state: state, created_at: created, packet }));
+    const result = await buildPerSongFunnel(stubSb({ agh_handoff_records: rows }), [{ track_id: MED }], {
+      objectivePerSong: 30, rawToEligibleRate: 0.1, now: NOW,
+    });
+    const song = result.songs[0];
+    assertEquals(song.submissions_today, 0, label);
+    assertEquals(song.submission_shortfall, 30, label);
+    assertEquals(song.remaining_eligible_packets_needed, expected, label);
+    assertEquals(song.raw_candidates_needed, expected * 10, label);
+    assertEquals(song.usable_inflight_packets, 30 - expected, label);
+  }
 });

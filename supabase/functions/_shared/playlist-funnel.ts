@@ -46,6 +46,7 @@ export type SongFunnel = {
   business_target_met: boolean;
   submission_shortfall: number;
   remaining_eligible_packets_needed: number;
+  usable_inflight_packets: number;
   raw_candidates_needed: number | null;
   raw_candidates_needed_basis: string;
 };
@@ -59,6 +60,21 @@ export type FunnelResult = {
 
 const OPEN_REVIEW_STATES = new Set(["CLAUDE_BATCH_READY", "CLAUDE_PLAYLIST_COMPLETE", "AWAITING_GROK_REVIEW"]);
 
+const INFLIGHT_STATES = new Set([...OPEN_REVIEW_STATES, "GROK_REVIEWED", "APPROVED_FOR_SEND", "AWAITING_AGH_IMPORT"]);
+
+/** A defer without a valid retry time needs review; it is not available supply. */
+export function usableInflightPacket(record: Record<string, unknown>, now: Date): boolean {
+  if (record.submitted_at || !INFLIGHT_STATES.has(String(record.queue_state))) return false;
+  const packet = record.packet as Record<string, unknown> | null;
+  if (packet?.route_hold) return false;
+  if (packet?.review_defer) {
+    const defer = packet.review_defer as Record<string, unknown>;
+    const retry = Date.parse(String(defer.retry_after ?? ""));
+    if (!Number.isFinite(retry) || retry > now.getTime()) return false;
+  }
+  return true;
+}
+
 function isMissingRelation(msg: string): boolean {
   return /does not exist|could not find the table|PGRST205|42P01/i.test(msg);
 }
@@ -69,12 +85,15 @@ export function computeRemainingNeed(opts: {
   submissionsToday: number;
   approvedNotSubmitted: number;
   awaitingReviewToday: number;
+  /** All usable unsent packets, including older and reviewed records. */
+  usableInflightPackets?: number;
   rawToEligibleRate: number | null;
 }): { shortfall: number; remainingPackets: number; rawNeeded: number | null; basis: string } {
   const shortfall = Math.max(0, opts.objective - opts.submissionsToday);
-  // Packets already produced today and still in flight count toward today's need; they
-  // are not guaranteed to convert, so this is a floor on remaining work, not a promise.
-  const remainingPackets = Math.max(0, shortfall - opts.approvedNotSubmitted - opts.awaitingReviewToday);
+  // Usable inventory can come from any day and any pre-submission review stage.
+  // This is a supply floor, not a guarantee that every packet will be submitted.
+  const inflight = opts.usableInflightPackets ?? (opts.approvedNotSubmitted + opts.awaitingReviewToday);
+  const remainingPackets = Math.max(0, shortfall - inflight);
   if (remainingPackets === 0) return { shortfall, remainingPackets, rawNeeded: 0, basis: "no_remaining_need" };
   if (opts.rawToEligibleRate == null) return { shortfall, remainingPackets, rawNeeded: null, basis: "no_yield_measurement" };
   if (opts.rawToEligibleRate <= 0) return { shortfall, remainingPackets, rawNeeded: null, basis: "measured_zero_yield" };
@@ -197,11 +216,13 @@ export async function buildPerSongFunnel(
     );
     const awaitingToday = pending.filter((r) => isToday(r.created_at)).length;
 
+    const usableInflight = rs.filter((r) => usableInflightPacket(r, now)).length;
     const need = computeRemainingNeed({
       objective: opts.objectivePerSong,
       submissionsToday: submissions,
       approvedNotSubmitted,
       awaitingReviewToday: awaitingToday,
+      usableInflightPackets: usableInflight,
       rawToEligibleRate: opts.rawToEligibleRate,
     });
 
@@ -232,6 +253,7 @@ export async function buildPerSongFunnel(
       business_target_met: submissions >= opts.objectivePerSong,
       submission_shortfall: need.shortfall,
       remaining_eligible_packets_needed: need.remainingPackets,
+      usable_inflight_packets: usableInflight,
       raw_candidates_needed: need.rawNeeded,
       raw_candidates_needed_basis: need.basis,
     };

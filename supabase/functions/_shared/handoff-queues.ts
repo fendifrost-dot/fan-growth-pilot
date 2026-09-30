@@ -60,6 +60,8 @@ export const HANDOFF_ACTIONS = [
   "materialize_email_handoff_drafts",
   "playlist_pipeline_report",
   "review_handoff_records",
+  "approve_handoff_records",
+  "reject_handoff_records",
 ] as const;
 
 export function isHandoffAction(action: string): boolean {
@@ -989,12 +991,20 @@ async function markManualHandoffSubmission(
     };
   }
 
+  const evidence = clean.evidence as Record<string, unknown> | undefined;
+  const submittedTime = Date.parse(String(evidence?.submitted_at ?? ""));
+  if (!evidence || evidence.result !== "submitted" || !String(evidence.reference ?? "").trim() ||
+      !String(evidence.notes ?? "").trim() || !Number.isFinite(submittedTime) || submittedTime > Date.now() + 60000) {
+    return { status: 422, data: { code: "submission_evidence_required",
+      error: "evidence requires result=submitted, reference, notes, and a valid non-future submitted_at" } };
+  }
   const attr = attributionFrom(ops);
   const result = String(clean.result ?? clean.response_status ?? "submitted").trim();
   const { data: updated, error: updErr } = await sb
     .from("agh_handoff_records")
     .update({
-      submitted_at: new Date().toISOString(),
+      submitted_at: new Date(submittedTime).toISOString(),
+      packet: { ...(record.packet as Record<string, unknown> ?? {}), submission_evidence: evidence },
       submitted_by: attr.actor_kind,
       submitted_by_label: attr.actor_label,
       manual_submit_channel: channel,
@@ -1475,7 +1485,7 @@ function denyNonFinalAuthority(ops: OpsActor): RunResult | null {
   return null;
 }
 
-const RECORD_DECISIONS = new Set(["reviewed", "reject", "defer"]);
+const RECORD_DECISIONS = new Set(["reviewed", "reject", "defer", "approve"]);
 
 /**
  * Grok record-level review. Each record gets its own decision — reviewed, reject (with
@@ -1500,7 +1510,7 @@ export async function reviewHandoffRecords(
   const bad = decisions.find((d) => !d || typeof d !== "object" || !String(d.record_id ?? "").trim() ||
     !RECORD_DECISIONS.has(String(d.decision ?? "").toLowerCase()));
   if (bad) {
-    return { status: 400, data: { error: "each decision needs record_id and decision reviewed|reject|defer", code: "bad_request", bad } };
+    return { status: 400, data: { error: "each decision needs record_id and decision reviewed|reject|defer|approve", code: "bad_request", bad } };
   }
   if (decisions.some((d) => String(d.decision).toLowerCase() === "reject") && !can(ops, "reject_playlist_drafts")) {
     return { status: 403, data: { error: `${ops.label} cannot reject handoff records` } };
@@ -1524,6 +1534,14 @@ export async function reviewHandoffRecords(
       ...(d.reason_code != null ? [String(d.reason_code)] : []),
     ].map((c) => c.trim()).filter(Boolean);
     const reason = d.reason != null ? String(d.reason).slice(0, 2000) : null;
+    if (decision === "approve") {
+      if (!can(ops, "approve_playlist_drafts") || d.verdict !== "PASS" || !reason || !fit.get(recordId)?.fit) {
+        conflicts.push({ record_id: recordId, code: "pass_review_required" }); continue;
+      }
+      const record = recRows.find(r => String(r.id) === recordId);
+      const ready = await checkTargetSubmissionReady(sb, String(record?.playlist_target_id ?? ""));
+      if (!ready.ok) { conflicts.push({ record_id: recordId, code: ready.code, reason: ready.reason }); continue; }
+    }
     if (decision === "reject") {
       if (!codes.length && !reason) {
         conflicts.push({ record_id: recordId, code: "reason_required", message: "reject needs reason_code(s) or reason" });
@@ -1543,6 +1561,7 @@ export async function reviewHandoffRecords(
       reason,
       retry_after: d.retry_after != null ? String(d.retry_after) : null,
       song_fit: fit.get(recordId) ?? null,
+      verdict: d.verdict === "PASS" ? "PASS" : null,
     });
   }
 
@@ -1722,6 +1741,10 @@ export async function runHandoffAction(
       return playlistPipelineReport(sb, body, ops);
     case "get_handoff_batch":
       return getHandoffBatchDetail(sb, body, ops);
+    case "approve_handoff_records":
+    case "reject_handoff_records":
+      return reviewHandoffRecords(sb, { ...body, decisions: (Array.isArray(body.decisions) ? body.decisions : [])
+        .map((d: Record<string, unknown>) => ({ ...d, decision: action === "approve_handoff_records" ? "approve" : "reject" })) }, ops);
     case "review_handoff_records":
       return reviewHandoffRecords(sb, body, ops);
     case "mark_manual_form_submitted":

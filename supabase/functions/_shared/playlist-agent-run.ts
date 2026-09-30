@@ -694,6 +694,7 @@ export async function runApproveDraft(
   }
 
   if (!actionable) return { status: 400, data: { error: `Draft is already ${draftStatus} — nothing to approve or send.` } };
+  if (draft.generated_by === "fendi") return { status: 422, data: { error: "ATTRIBUTION_GAP: draft remains on hold" } };
 
   // Legacy drafts without exact identity cannot send until repaired.
   const draftTrackId = String((draft as { track_id?: string | null }).track_id ?? "").trim();
@@ -778,12 +779,13 @@ export async function runApproveDraft(
   // Only flip pending → approved. An already-approved draft skips re-approval and proceeds
   // straight to send (this is what lets the UI "Send" an approved draft).
   if (draftStatus === "pending") {
-    await sb.from("outreach_drafts").update({
+    const { error: approvalError } = await sb.from("outreach_drafts").update({
       status: "approved",
       approved_at: new Date().toISOString(),
       approved_by: opsActor.label,
       approved_content_hash: contentHash,
     }).eq("id", draftId);
+    if (approvalError) return { status: 422, data: { error: approvalError.message, sent: false } };
   } else if (draftStatus === "approved") {
     // Re-seal hash if missing so send can verify; do not trust caller approved_by.
     const existingHash = String((draft as { approved_content_hash?: string | null }).approved_content_hash ?? "").trim();

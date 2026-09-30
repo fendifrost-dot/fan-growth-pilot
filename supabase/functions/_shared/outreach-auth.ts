@@ -95,8 +95,8 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
   pitch_stats_summary: { cls: 'capability', capability: 'read_ops_metrics', surface: 'outreach-write' },
   list_discovery_profiles: { cls: 'capability', capability: 'read_playlist_discovery_work', surface: 'outreach-write' },
   get_discovery_capacity_plan: { cls: 'capability', capability: 'read_playlist_discovery_work', surface: 'outreach-write' },
-  list_song_dna: { cls: 'capability', capability: 'draft_song_dna', surface: 'outreach-write' },
-  get_song_dna: { cls: 'capability', capability: 'draft_song_dna', surface: 'outreach-write' },
+  list_song_dna: { cls: 'capability', capability: 'read_playlist_ops', surface: 'outreach-write' },
+  get_song_dna: { cls: 'capability', capability: 'read_playlist_ops', surface: 'outreach-write' },
   list_song_dna_audit: { cls: 'capability', capability: 'approve_song_dna', surface: 'admin-write' },
 
   // Remaining authenticated operator reads — JWT humans only for free reads;
@@ -104,7 +104,7 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
   list_unverified_targets: { cls: 'authenticated-read' },
   list_warm_curators: { cls: 'authenticated-read' },
   recommend_targets_for_track: { cls: 'authenticated-read' },
-  list_tracks: { cls: 'authenticated-read' },
+  list_tracks: { cls: 'capability', capability: 'read_playlist_ops', surface: 'outreach-write' },
   list_pitch_templates: { cls: 'authenticated-read' },
   preview_pitch_template: { cls: 'authenticated-read' },
   outreach_cutover_readiness: { cls: 'authenticated-read' },
@@ -506,6 +506,12 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
     capability: 'create_handoff_batch',
     surface: 'outreach-write',
   },
+  review_handoff_records: { cls: 'capability', capability: 'review_handoff_batch', surface: 'outreach-write' },
+  approve_handoff_records: { cls: 'capability', capability: 'approve_playlist_drafts', surface: 'outreach-write' },
+  reject_handoff_records: { cls: 'capability', capability: 'reject_playlist_drafts', surface: 'outreach-write' },
+  get_quota: { cls: 'capability', capability: 'read_ops_metrics', surface: 'outreach-write' },
+  list_pitch_logs: { cls: 'capability', capability: 'read_playlist_ops', surface: 'outreach-write' },
+  pipeline_health: { cls: 'capability', capability: 'read_playlist_ops', surface: 'outreach-write' },
   review_handoff_batch: {
     cls: 'capability',
     capability: 'review_handoff_batch',

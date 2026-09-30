@@ -776,7 +776,12 @@ export async function resolvePlaylistTargetKey(
   const { data, error } = await sb.from("playlist_targets").select("playlist_id").in("playlist_id", aliases);
   if (error) return { key: null, collision: false, keys: [], error: error.message };
   const keys = [...new Set(((data ?? []) as { playlist_id: string }[]).map((r) => String(r.playlist_id)))];
-  if (keys.length > 1) return { key: null, collision: true, keys };
+  if (keys.length > 1) {
+    const { data: canonical, error: aliasError } = await sb.rpc("agh_resolve_playlist_alias", { p_id: canonicalId });
+    if (!aliasError && typeof canonical === "string" && keys.includes(canonical))
+      return { key: canonical, collision: false, keys };
+    return { key: null, collision: true, keys };
+  }
   return { key: keys[0] ?? null, collision: false, keys };
 }
 

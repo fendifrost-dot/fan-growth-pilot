@@ -291,6 +291,7 @@ function stubSb(
       let mode: "select" | "insert" | "update" | "delete" = "select";
       let payload: Row | Row[] | null = null;
       let wantCount = false;
+      let pageStart=0,pageEnd=Infinity;
       const apply = () =>
         tables[table].filter((r) => {
           const eqOk = Object.entries(filters).every(([k, v]) => {
@@ -367,6 +368,7 @@ function stubSb(
       };
       chain.order = () => chain;
       chain.limit = () => chain;
+      chain.range = (a: number,b: number) => {pageStart=a;pageEnd=b;return chain;};
       chain.maybeSingle = () => {
         if (failTables[table]) {
           return Promise.resolve({ data: null, error: { message: failTables[table] } });
@@ -429,7 +431,7 @@ function stubSb(
         if (mode === "insert") {
           return Promise.resolve(resolve({ data: null, error: null }));
         }
-        return Promise.resolve(resolve({ data: apply(), error: null }));
+        return Promise.resolve(resolve({ data: apply().slice(pageStart,pageEnd+1), error: null }));
       };
       return chain;
     },

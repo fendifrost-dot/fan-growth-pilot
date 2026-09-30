@@ -330,7 +330,7 @@ Deno.test("machine credentials fail closed on remaining authenticated-read actio
       { "x-api-key": HUB },
     ];
     for (const headers of machines) {
-      const d = await authorizeAction("list_tracks", req(headers), stubSb(null, false));
+      const d = await authorizeAction("list_pitch_templates", req(headers), stubSb(null, false));
       assertEquals(d.ok, false, `machine must not inherit authenticated-read via ${JSON.stringify(headers)}`);
       assert(!d.ok && d.status === 403);
     }

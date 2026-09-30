@@ -119,7 +119,8 @@ Deno.serve(async (req) => {
     );
 
     const body = await req.json().catch(() => ({}));
-    const action = String(body.action ?? '');
+    const requestedAction = String(body.action ?? '');
+    const action = requestedAction === 'list_pitch_logs' ? 'list_pitches' : requestedAction;
 
     // Central authorization — missing credentials cannot authorize protected
     // reads or any write. Unknown / legacy writes fail closed.
@@ -142,6 +143,14 @@ Deno.serve(async (req) => {
     }
     const actor: Actor = authDecision.actor;
 
+    if (action === 'get_quota' || action === 'pipeline_health') {
+      const { data, error } = action === 'get_quota'
+        ? await supabase.rpc('agh_pipeline_quota', { p_track: body.track_id ?? null })
+        : await supabase.rpc('agh_pipeline_health');
+      return new Response(JSON.stringify({ ok: !error, version: '2026-09-30.2',
+        ...(action === 'get_quota' ? { songs: data } : { database: data }), error: error?.message }),
+        { status: error ? 503 : 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
     if (isSongDnaAction(action)) {
       const result = await runSongDnaAction(action, body, supabase, actor, req);
       return new Response(JSON.stringify(result.data), {

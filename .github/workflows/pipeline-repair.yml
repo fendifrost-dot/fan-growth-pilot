@@ -27,3 +27,9 @@ jobs:
           psql -v ON_ERROR_STOP=1 -f supabase/migrations/20260929150000_playlist_inventory_requeue_safety.sql
           psql -v ON_ERROR_STOP=1 -f supabase/migrations/20260930190000_pipeline_repair.sql
           psql -v ON_ERROR_STOP=1 -f scripts/test-pipeline-repair.sql
+      - name: Response attribution + route recertification (20260930210000)
+        run: |
+          psql -v ON_ERROR_STOP=1 -f scripts/fixtures/pipeline-auth-shim.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20260927120000_route_hold_and_candidate_log.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20260930210000_response_attribution_route_recert.sql
+          psql -v ON_ERROR_STOP=1 -f scripts/test-response-attribution-route-recert.sql

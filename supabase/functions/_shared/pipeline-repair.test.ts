@@ -8,5 +8,5 @@ Deno.test("pipeline: record-level actions are registered, reads do not grant DNA
  for (const action of ["approve_handoff_records","reject_handoff_records"])
   assertEquals((HANDOFF_ACTIONS as readonly string[]).includes(action),true);
  assertEquals(ACTION_SPEC.get_song_dna,{cls:"capability",capability:"read_playlist_ops",surface:"outreach-write"});
- assertEquals(ACTION_SPEC.create_song_dna_draft,{cls:"capability",capability:"draft_song_dna",surface:"outreach-write"});
+ assertEquals(ACTION_SPEC.create_song_dna_draft,{cls:"capability",capability:"draft_song_dna",surface:"admin-write"});
 });

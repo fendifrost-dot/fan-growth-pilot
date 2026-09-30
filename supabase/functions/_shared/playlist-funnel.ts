@@ -136,6 +136,16 @@ export function allocateDiscovery(songs: Pick<SongFunnel,
   }));
 }
 
+// Fetch every page; PostgREST otherwise silently caps the queue at 1,000 rows.
+async function allPages(query: () => any): Promise<{data: Record<string, unknown>[]; error: any}> {
+ const rows: Record<string, unknown>[] = [];
+ for (let start=0;;start+=1000) {
+  const result = await query().range(start,start+999);
+  if (result.error) return {data:[],error:result.error};
+  rows.push(...(result.data ?? []));
+  if ((result.data ?? []).length < 1000) return {data:rows,error:null};
+ }
+}
 export async function buildPerSongFunnel(
   sb: SupabaseClient,
   tracks: { track_id: string; title?: string | null }[],
@@ -153,11 +163,11 @@ export async function buildPerSongFunnel(
   let evalRows: Record<string, unknown>[] = [];
   let evalAvailable = true;
   {
-    const { data, error } = await sb
+    const { data, error } = await allPages(() => sb
       .from("agh_playlist_candidate_evaluations")
       .select("track_id, outcome, created_target, business_date_ct")
       .eq("business_date_ct", today)
-      .in("track_id", ids);
+      .in("track_id", ids).order("id"));
     if (error) {
       if (isMissingRelation(String(error.message))) evalAvailable = false;
       else errors.push(`candidate_evaluations_query_failed:${error.message}`);
@@ -167,10 +177,10 @@ export async function buildPerSongFunnel(
   // Handoff records (all open + today's).
   let recs: Record<string, unknown>[] = [];
   {
-    const { data, error } = await sb
+    const { data, error } = await allPages(() => sb
       .from("agh_handoff_records")
       .select("id, track_id, queue_state, submitted_at, manual_submit_result, created_at, packet, record_kind")
-      .in("track_id", ids);
+      .in("track_id", ids).order("id"));
     if (error) errors.push(`handoff_records_query_failed:${error.message}`);
     else recs = ((data ?? []) as Record<string, unknown>[]).filter((r) => (r.record_kind ?? "playlist_target") === "playlist_target");
   }
@@ -178,11 +188,11 @@ export async function buildPerSongFunnel(
   // Email sends with provider evidence (and failures) since yesterday.
   let sends: Record<string, unknown>[] = [];
   {
-    const { data, error } = await sb
+    const { data, error } = await allPages(() => sb
       .from("pitch_log")
       .select("track_id, status, sent_at, pitched_at, resend_message_id")
       .in("track_id", ids)
-      .gte("pitched_at", sinceIso);
+      .gte("pitched_at", sinceIso).order("id"));
     if (error) errors.push(`pitch_log_query_failed:${error.message}`);
     else sends = (data ?? []) as Record<string, unknown>[];
   }
@@ -209,7 +219,7 @@ export async function buildPerSongFunnel(
     }
 
     const emailSubmissions = count((r) => String(r.status) === "sent" && !!r.resend_message_id && isToday(r.sent_at ?? r.pitched_at), sl);
-    const manualSubmissions = count((r) => isToday(r.submitted_at));
+    const manualSubmissions = count((r) => isToday(r.submitted_at) && !!(r.packet as Record<string, unknown> | null)?.submission_receipt);
     const submissions = emailSubmissions + manualSubmissions;
     const approvedNotSubmitted = count((r) =>
       (r.queue_state === "APPROVED_FOR_SEND" || r.queue_state === "AWAITING_AGH_IMPORT") && !r.submitted_at

@@ -354,9 +354,9 @@ select regexp_replace(playlist_id,'^spotify:(playlist:)?',''),
 (nullif(curator_email,'') is not null) desc,created_at,playlist_id))[1]
 from playlist_targets group by 1;
 create or replace function public.agh_resolve_playlist_alias(p_id text) returns text
-language sql stable security definer set search_path=public as $
+language sql stable security definer set search_path=public as $$
 select canonical_key from agh_playlist_identity_map where normalized_id=regexp_replace(p_id,'^spotify:(playlist:)?','');
-$;
+$$;
 revoke all on function public.agh_resolve_playlist_alias(text) from public,anon,authenticated;
 grant execute on function public.agh_resolve_playlist_alias(text) to service_role;
 

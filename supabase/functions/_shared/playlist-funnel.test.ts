@@ -13,16 +13,18 @@ function stubSb(tables: Record<string, Row[]>, failTables: Record<string, string
   const sb: any = {
     from(table: string) {
       const filters: [string, unknown][] = [];
+      let start = 0, end = Infinity;
       const result = () => {
         if (failTables[table]) return { data: null, error: { message: failTables[table] } };
         const rows = (tables[table] ?? []).filter((r) =>
           filters.every(([k, v]) => Array.isArray(v) ? v.map(String).includes(String(r[k])) : String(r[k]) === String(v))
         );
-        return { data: rows, error: null };
+        return { data: rows.slice(start,end+1), error: null };
       };
       // deno-lint-ignore no-explicit-any
       const chain: any = {
         select: () => chain,
+        range: (a: number,b: number) => { start=a;end=b;return chain; },
         eq: (k: string, v: unknown) => (filters.push([k, v]), chain),
         in: (k: string, v: unknown[]) => (filters.push([k, v]), chain),
         gte: () => chain,
@@ -79,7 +81,7 @@ Deno.test("funnel: separates discovery, packets, approvals and evidenced submiss
       { id: "c", track_id: DFM, queue_state: "CLAUDE_BATCH_READY", created_at: YESTERDAY_TS, packet: { route_hold: { code: "missing_form_url" } } },
       { id: "d", track_id: DFM, queue_state: "GROK_REVIEWED", created_at: YESTERDAY_TS, packet: {} },
       { id: "e", track_id: DFM, queue_state: "APPROVED_FOR_SEND", created_at: YESTERDAY_TS, packet: {} },
-      { id: "f", track_id: DFM, queue_state: "APPROVED_FOR_SEND", created_at: YESTERDAY_TS, submitted_at: TODAY_TS, packet: {} },
+      { id: "f", track_id: DFM, queue_state: "APPROVED_FOR_SEND", created_at: YESTERDAY_TS, submitted_at: TODAY_TS, packet: { submission_receipt: {pitch_log_id: "manual"} } },
       { id: "g", track_id: DFM, queue_state: "REJECTED_BY_GROK", created_at: YESTERDAY_TS, packet: {} },
       { id: "h", track_id: MED, queue_state: "AWAITING_GROK_REVIEW", created_at: TODAY_TS, packet: {} },
     ],
@@ -199,4 +201,12 @@ Deno.test("inventory: deferrals and holds cannot satisfy supply; review and age 
     assertEquals(song.raw_candidates_needed, expected * 10, label);
     assertEquals(song.usable_inflight_packets, 30 - expected, label);
   }
+});
+
+Deno.test("funnel: paginates queues and never counts timestamps without receipts",async()=>{
+ const rows=Array.from({length:1100},(_,i)=>({id:String(i),track_id:MED,queue_state:"AWAITING_GROK_REVIEW",created_at:TODAY_TS,packet:{}}));
+ rows.push({id:"manual",track_id:MED,queue_state:"APPROVED_FOR_SEND",created_at:TODAY_TS,packet:{},submitted_at:TODAY_TS} as any);
+ const result=await buildPerSongFunnel(stubSb({agh_handoff_records:rows}),[{track_id:MED}],{objectivePerSong:30,rawToEligibleRate:null,now:NOW});
+ assertEquals(result.songs[0].drafts_awaiting_review,1100);
+ assertEquals(result.songs[0].submissions_today,0);
 });

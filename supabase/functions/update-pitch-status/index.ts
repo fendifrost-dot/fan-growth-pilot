@@ -26,8 +26,21 @@ Deno.serve(async (req) => {
     if (!playlistId) return json({ ok: false, message_to_user: "Could not resolve playlist. Include playlist name from your last report." });
     const { data: row } = await sb.from("pitch_log").select("id").eq("playlist_id", playlistId).eq("track_name", trackName).eq("status", "sent").order("pitched_at", { ascending: false }).limit(1).maybeSingle();
     if (!row?.id) return json({ ok: false, message_to_user: "No sent pitch found for this track x playlist." });
-    const { error: upErr } = await sb.from("pitch_log").update({ status, response_notes: notes || null }).eq("id", row.id);
+    // status stays a direct write; response_notes goes through the attributed RPC so the
+    // response audit names this endpoint (blank notes no longer wipe existing notes).
+    const { error: upErr } = await sb.from("pitch_log").update({ status }).eq("id", row.id);
     if (upErr) return json({ ok: false, message_to_user: upErr.message }, 500);
+    if (notes) {
+      const { data: rpc, error: rpcErr } = await sb.rpc("agh_update_pitch_response", {
+        p_id: row.id, p_patch: { response_notes: notes }, p_actor: "hub_key:update-pitch-status",
+      });
+      if (rpcErr && /could not find the function|PGRST202|42883/i.test(String(rpcErr.message))) {
+        const { error: nErr } = await sb.from("pitch_log").update({ response_notes: notes }).eq("id", row.id);
+        if (nErr) return json({ ok: false, message_to_user: nErr.message }, 500);
+      } else if (rpcErr || (rpc && (rpc as { ok?: boolean }).ok === false)) {
+        return json({ ok: false, message_to_user: rpcErr?.message ?? "response notes not saved" }, 500);
+      }
+    }
     return json({ ok: true, message_to_user: status === "responded" ? "✅ Marked *responded* for playlist *" + playlistId + "* (" + trackName + ")." : "✅ Marked *rejected* for playlist *" + playlistId + "* (" + trackName + ")." });
   } catch (e) { return json({ error: e instanceof Error ? e.message : String(e) }, 500); }
 });

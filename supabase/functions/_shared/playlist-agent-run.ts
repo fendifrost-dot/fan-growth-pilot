@@ -3107,6 +3107,13 @@ const PLAYLIST_AGENT_ACTIONS = new Set([
   "mark_pitch_response", "pitch_stats_summary", "list_pitches",
 ]);
 
+/** Stable caller label for pitch-response attribution (no secrets, no emails). */
+export function pitchResponseActorLabel(actor: Actor | null): string {
+  if (!actor) return "unknown";
+  if (actor.kind === "user") return `user:${actor.userId}${actor.isAdmin ? ":admin" : ""}`;
+  return actor.kind;
+}
+
 export async function runCatalogueAdmin(
   body: Record<string, unknown>,
   sb: SupabaseClient,
@@ -3632,16 +3639,27 @@ export async function runCatalogueAdmin(
       if (!playlistId) {
         return { status: 400, data: { error: "pitch_log_id (or playlist_id) required" } };
       }
-      let lookup = sb.from("pitch_log").select("id").eq("playlist_id", playlistId);
+      let lookup = sb.from("pitch_log").select("id, track_name").eq("playlist_id", playlistId);
       const trackName = String(body.track_name ?? "").trim();
       if (trackName) lookup = lookup.eq("track_name", trackName);
       const { data: found, error: findErr } = await lookup
-        .order("pitched_at", { ascending: false }).limit(1).maybeSingle();
+        .order("pitched_at", { ascending: false }).limit(20);
       if (findErr) return { status: 500, data: { error: findErr.message } };
-      if (!found?.id) {
+      const rows = (found ?? []) as { id: string; track_name: string | null }[];
+      if (!rows.length) {
         return { status: 404, data: { error: "no_pitch_log_row", playlist_id: playlistId, track_name: trackName || null } };
       }
-      id = found.id as string;
+      // Without a track, "latest row for this playlist" can silently land on another
+      // song's pitch — refuse instead of guessing.
+      const tracks = [...new Set(rows.map((r) => String(r.track_name ?? "")))];
+      if (!trackName && tracks.length > 1) {
+        return {
+          status: 409,
+          data: { error: "ambiguous_pitch_log_row", code: "ambiguous_pitch_log_row", playlist_id: playlistId, track_names: tracks,
+            hint: "pass pitch_log_id or track_name" },
+        };
+      }
+      id = rows[0].id;
     }
     const patch: Record<string, unknown> = {};
     if (typeof body.reply_received === "boolean") patch.reply_received = body.reply_received;
@@ -3650,9 +3668,29 @@ export async function runCatalogueAdmin(
     if (typeof body.response_notes === "string") patch.response_notes = body.response_notes.trim() || null;
     if (typeof body.follow_up_at === "string") patch.follow_up_at = body.follow_up_at;
     if (!Object.keys(patch).length) return { status: 400, data: { error: "Nothing to update (reply_received | placed | placement_status | response_notes | follow_up_at)" } };
-    const { data, error } = await sb.from("pitch_log").update(patch).eq("id", id).select().single();
-    if (error) return { status: 500, data: { error: error.message } };
-    return { status: 200, data: { ok: true, row: data } };
+    // Attributed write: agh_update_pitch_response tags the transaction with the caller so
+    // agh_pitch_response_events names who changed a response (every edge function shares
+    // one DB role, so the trigger alone can't tell callers apart).
+    const responseActor = `${pitchResponseActorLabel(actor)}:mark_pitch_response`;
+    const { data: rpcData, error: rpcErr } = await sb.rpc("agh_update_pitch_response", {
+      p_id: id,
+      p_patch: patch,
+      p_actor: responseActor,
+    });
+    if (rpcErr) {
+      if (/could not find the function|PGRST202|42883/i.test(String(rpcErr.message))) {
+        // Migration not applied yet — keep working (the preserve trigger still applies).
+        const { data, error } = await sb.from("pitch_log").update(patch).eq("id", id).select().single();
+        if (error) return { status: 500, data: { error: error.message } };
+        return { status: 200, data: { ok: true, row: data, attribution: "unavailable_migration_missing" } };
+      }
+      return { status: 500, data: { error: rpcErr.message } };
+    }
+    const res = (rpcData ?? {}) as Record<string, unknown>;
+    if (res.ok !== true) {
+      return { status: res.code === "not_found" ? 404 : 422, data: { error: String(res.error ?? res.code), code: res.code } };
+    }
+    return { status: 200, data: { ok: true, row: res.row, actor: responseActor } };
   }
 
   if (action === "pitch_stats_summary") {

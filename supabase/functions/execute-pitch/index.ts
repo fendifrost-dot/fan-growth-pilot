@@ -251,6 +251,18 @@ Deno.serve(async (req) => {
       }, 422);
     }
 
+    // Recheck cross-song, alias-aware curator policy at the dispatch boundary.
+    const { data: contactPolicy, error: policyError } = await sb.rpc("agh_contact_policy", {
+      p_target: draft.playlist_id, p_track: draft.track_id,
+    });
+    if (policyError || contactPolicy?.ok !== true || draft.generated_by === "fendi") {
+      return jsonPitch({
+        ok: false, method_used: "none", action_taken: "skipped",
+        cooldown_until: contactPolicy?.cooldown_until ?? null,
+        message_to_user: draft.generated_by === "fendi" ? "ATTRIBUTION_GAP: draft remains on hold"
+          : policyError ? "Curator policy could not be verified" : contactPolicy?.code ?? "curator_policy_blocked",
+      }, 422);
+    }
     const integrity = await verifyDraftPitchIntegrity(sb, draft);
     if (!integrity.ok) {
       return jsonPitch({

@@ -340,5 +340,25 @@ for r in select oid::regprocedure signature from pg_proc where pronamespace='pub
 and proname in ('agh_contact_policy','agh_guard_draft_policy','agh_record_can_approve','agh_log_manual_submission','agh_preserve_pitch_response','agh_pipeline_quota','agh_pipeline_health') loop
 execute format('revoke all on function %s from public,anon,authenticated',r.signature);
 execute format('grant execute on function %s to service_role',r.signature);end loop;end $$;
+
+-- Canonical identity mapping adds a lookup; it never rewrites historical foreign keys.
+create table public.agh_playlist_identity_map(
+ normalized_id text primary key,canonical_key text not null references playlist_targets(playlist_id)
+);
+alter table agh_playlist_identity_map enable row level security;
+revoke all on agh_playlist_identity_map from anon,authenticated;
+grant select on agh_playlist_identity_map to service_role;
+insert into agh_playlist_identity_map(normalized_id,canonical_key)
+select regexp_replace(playlist_id,'^spotify:(playlist:)?',''),
+(array_agg(playlist_id order by (is_active is true) desc,(path_verified is true) desc,
+(nullif(curator_email,'') is not null) desc,created_at,playlist_id))[1]
+from playlist_targets group by 1;
+create or replace function public.agh_resolve_playlist_alias(p_id text) returns text
+language sql stable security definer set search_path=public as $
+select canonical_key from agh_playlist_identity_map where normalized_id=regexp_replace(p_id,'^spotify:(playlist:)?','');
+$;
+revoke all on function public.agh_resolve_playlist_alias(text) from public,anon,authenticated;
+grant execute on function public.agh_resolve_playlist_alias(text) to service_role;
+
 notify pgrst,'reload schema';
 commit;

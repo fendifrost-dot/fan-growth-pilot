@@ -21,7 +21,7 @@ Deno.serve(async (req) => {
     );
 
     const token = authHeader.replace('Bearer ', '');
-    const { data, error: claimsError } = await supabase.auth.getClaims(token);
+    const { data, error: claimsError } = await (supabase.auth as unknown as { getClaims: (t: string) => Promise<{ data: { claims: Record<string, unknown> } | null; error: Error | null }> }).getClaims(token);
     if (claimsError || !data?.claims) throw new Error('Unauthorized');
 
     const userId = data.claims.sub as string;

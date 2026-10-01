@@ -89,7 +89,7 @@ Deno.serve(async (req) => {
     );
 
     // Set encryption key
-    await supabase.rpc('decrypt_token', { encrypted_token: '' }).catch(() => {});
+    await Promise.resolve(supabase.rpc('decrypt_token', { encrypted_token: '' })).catch(() => {});
     try {
       await supabase.rpc('encrypt_token', { token: 'test' });
     } catch {}

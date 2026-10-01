@@ -81,7 +81,7 @@ async function fetchAllTracks(accessToken: string): Promise<SoundCloudTrack[]> {
     pageCount++;
     console.log(`[soundcloud-stats] Fetching tracks page ${pageCount}...`);
     
-    const res = await fetch(url, {
+    const res: Response = await fetch(url, {
       headers: { Authorization: `OAuth ${accessToken}` },
     });
     
@@ -90,7 +90,7 @@ async function fetchAllTracks(accessToken: string): Promise<SoundCloudTrack[]> {
       break;
     }
     
-    const data = await res.json();
+    const data = await res.json() as { collection?: SoundCloudTrack[]; next_href?: string | null };
     const tracks = data.collection || data;
     
     if (Array.isArray(tracks)) {

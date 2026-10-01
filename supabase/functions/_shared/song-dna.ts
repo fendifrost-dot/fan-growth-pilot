@@ -210,7 +210,7 @@ async function getSongDna(sb: SupabaseClient, body: Record<string, unknown>): Pr
     };
   }
   if (!data) return { status: 404, data: { error: "Song DNA version not found" } };
-  const row = data as Record<string, unknown> & {
+  const row = data as unknown as Record<string, unknown> & {
     tracks?: { name?: string } | null;
   };
   return {

@@ -1860,24 +1860,25 @@ export async function createPlaylistDraftInventory(
         playlistDiscoveryCredentialActor(),
         null,
       );
+      const composedData = (composed.data ?? {}) as Record<string, unknown>;
       if (composed.status >= 400) {
         return {
           status: composed.status,
           data: {
-            ...composed.data,
-            error: composed.data.error ?? "email_compose_failed",
+            ...composedData,
+            error: composedData.error ?? "email_compose_failed",
             playlist_id: playlistId,
           },
         };
       }
-      if (!composed.data.body) {
+      if (!composedData.body) {
         return {
           status: 500,
           data: { error: "compose returned no body", playlist_id: playlistId },
         };
       }
       const recipient = String(
-        composed.data.recipient ?? target.curator_email ?? "",
+        composedData.recipient ?? target.curator_email ?? "",
       ).trim();
       if (!recipient) {
         return {
@@ -1890,14 +1891,14 @@ export async function createPlaylistDraftInventory(
         };
       }
       draftPayload = {
-        track_name: composed.data.track_name ?? trackName,
-        subject: composed.data.subject ?? null,
-        body: composed.data.body,
+        track_name: composedData.track_name ?? trackName,
+        subject: composedData.subject ?? null,
+        body: composedData.body,
         recipient,
-        pitch_copy_source: composed.data.pitch_copy_source ?? pitchProbe.source,
-        pitch_copy_hash: composed.data.pitch_copy_hash ?? null,
-        generated_by: composed.data.generated_by ?? ops.label,
-        metadata: composed.data.metadata ?? {},
+        pitch_copy_source: composedData.pitch_copy_source ?? pitchProbe.source,
+        pitch_copy_hash: composedData.pitch_copy_hash ?? null,
+        generated_by: composedData.generated_by ?? ops.label,
+        metadata: composedData.metadata ?? {},
       };
       packetKind = "email_outreach_draft";
     } else if (channel === "web_form") {

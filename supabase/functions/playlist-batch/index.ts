@@ -15,7 +15,7 @@ Deno.serve(async (req) => {
     const { data, error } = await sb.from("playlist_targets").select("*").in("playlist_id", ids);
     if (error) return json({ error: error.message }, 500);
     const map = new Map((data ?? []).map((r: any) => [r.playlist_id, r]));
-    return json({ ok: true, playlists: ids.map(id => map.get(id)).filter(Boolean) });
+    return json({ ok: true, playlists: ids.map((id: string) => map.get(id)).filter(Boolean) });
   } catch (e) { return json({ error: e instanceof Error ? e.message : String(e) }, 500); }
 });
 function json(data: unknown, status = 200) {

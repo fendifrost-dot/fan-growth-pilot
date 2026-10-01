@@ -20,7 +20,7 @@ async function loadTracksFromTable(sb: SupabaseClient): Promise<CatalogTrack[]> 
   if (!tracks?.length) return [];
 
   return tracks.map((t) => {
-    const cats = (t.track_categories ?? []) as { categories: { slug: string } | null }[];
+    const cats = (t.track_categories ?? []) as unknown as { categories: { slug: string } | null }[];
     const lane = cats.find((c) => c.categories?.slug)?.categories?.slug;
     return {
       name: t.name as string,

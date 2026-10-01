@@ -168,7 +168,7 @@ export function buildPlacementEmail(id: OutreachIdentity): { subject: string; bo
   return { subject, body: lines.join("\n") };
 }
 
-export async function nextDmRef(sb: import("@supabase/supabase-js@2.49.1").SupabaseClient): Promise<string> {
+export async function nextDmRef(sb: import("https://esm.sh/@supabase/supabase-js@2.49.1").SupabaseClient): Promise<string> {
   const day = new Date().toISOString().slice(0, 10).replace(/-/g, "");
   const start = new Date();
   start.setUTCHours(0, 0, 0, 0);

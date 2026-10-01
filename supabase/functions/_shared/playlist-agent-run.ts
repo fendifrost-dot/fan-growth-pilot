@@ -1033,7 +1033,7 @@ export async function runAuditInvalidDrafts(
     .limit(limit);
   if (error) return { status: 500, data: { error: error.message } };
 
-  const rows = (data ?? []) as Array<Record<string, unknown>>;
+  const rows = (data ?? []) as unknown as Array<Record<string, unknown>>;
   const byReason: Record<string, string[]> = {};
   const invalid: { id: string; status: string; reasons: InvalidDraftReason[] }[] = [];
   let validCount = 0;
@@ -3830,7 +3830,7 @@ export async function runPlaylistAgentAction(
         return { status: 400, data: { error: errMsg(e) } };
       }
     case "queue_ig_outreach_batch":
-      return runQueueIgOutreachBatch(sb, body, resolveStreamLink, rowDiscoveryReferences);
+      return runQueueIgOutreachBatch(sb, body, (trackName: string) => resolveStreamLink(sb, trackName), rowDiscoveryReferences);
     case "connect_spotify_init":
       return runConnectSpotifyInit(body);
     case "connect_spotify_status":

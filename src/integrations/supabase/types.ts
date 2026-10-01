@@ -341,6 +341,48 @@ export type Database = {
           },
         ]
       }
+      agh_manual_submission_receipts: {
+        Row: {
+          actor: string
+          created_at: string
+          evidence: Json
+          handoff_record_id: string
+          id: string
+          pitch_log_id: string
+        }
+        Insert: {
+          actor: string
+          created_at?: string
+          evidence: Json
+          handoff_record_id: string
+          id?: string
+          pitch_log_id: string
+        }
+        Update: {
+          actor?: string
+          created_at?: string
+          evidence?: Json
+          handoff_record_id?: string
+          id?: string
+          pitch_log_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agh_manual_submission_receipts_handoff_record_id_fkey"
+            columns: ["handoff_record_id"]
+            isOneToOne: true
+            referencedRelation: "agh_handoff_records"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agh_manual_submission_receipts_pitch_log_id_fkey"
+            columns: ["pitch_log_id"]
+            isOneToOne: true
+            referencedRelation: "pitch_log"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       agh_mcp_oauth_clients: {
         Row: {
           client_id: string
@@ -462,6 +504,44 @@ export type Database = {
           },
         ]
       }
+      agh_pitch_response_events: {
+        Row: {
+          actor: string
+          applied_change: Json
+          created_at: string
+          id: string
+          pitch_log_id: string
+          previous_value: Json
+          requested_change: Json
+        }
+        Insert: {
+          actor: string
+          applied_change: Json
+          created_at?: string
+          id?: string
+          pitch_log_id: string
+          previous_value: Json
+          requested_change: Json
+        }
+        Update: {
+          actor?: string
+          applied_change?: Json
+          created_at?: string
+          id?: string
+          pitch_log_id?: string
+          previous_value?: Json
+          requested_change?: Json
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agh_pitch_response_events_pitch_log_id_fkey"
+            columns: ["pitch_log_id"]
+            isOneToOne: false
+            referencedRelation: "pitch_log"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       agh_playlist_candidate_evaluations: {
         Row: {
           attempts: number
@@ -506,6 +586,29 @@ export type Database = {
           track_id?: string
         }
         Relationships: []
+      }
+      agh_playlist_identity_map: {
+        Row: {
+          canonical_key: string
+          normalized_id: string
+        }
+        Insert: {
+          canonical_key: string
+          normalized_id: string
+        }
+        Update: {
+          canonical_key?: string
+          normalized_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agh_playlist_identity_map_canonical_key_fkey"
+            columns: ["canonical_key"]
+            isOneToOne: false
+            referencedRelation: "playlist_targets"
+            referencedColumns: ["playlist_id"]
+          },
+        ]
       }
       analytics_snapshots: {
         Row: {
@@ -4400,6 +4503,60 @@ export type Database = {
         }
         Relationships: []
       }
+      rights_document_audit_events: {
+        Row: {
+          actor_kind: string
+          actor_label: string
+          actor_user_id: string | null
+          created_at: string
+          detail: Json
+          document_hash: string | null
+          event_kind: string
+          id: string
+          split_sheet_id: string | null
+          track_id: string | null
+        }
+        Insert: {
+          actor_kind: string
+          actor_label: string
+          actor_user_id?: string | null
+          created_at?: string
+          detail?: Json
+          document_hash?: string | null
+          event_kind: string
+          id?: string
+          split_sheet_id?: string | null
+          track_id?: string | null
+        }
+        Update: {
+          actor_kind?: string
+          actor_label?: string
+          actor_user_id?: string | null
+          created_at?: string
+          detail?: Json
+          document_hash?: string | null
+          event_kind?: string
+          id?: string
+          split_sheet_id?: string | null
+          track_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "rights_document_audit_events_split_sheet_id_fkey"
+            columns: ["split_sheet_id"]
+            isOneToOne: false
+            referencedRelation: "split_sheets"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "rights_document_audit_events_track_id_fkey"
+            columns: ["track_id"]
+            isOneToOne: false
+            referencedRelation: "tracks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       smart_link_leads: {
         Row: {
           album_purchased: boolean | null
@@ -5018,25 +5175,26 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "split_sheet_contributors_split_sheet_id_fkey"
-            columns: ["split_sheet_id"]
-            isOneToOne: false
-            referencedRelation: "split_sheets"
-            referencedColumns: ["id"]
-          },
-          {
             foreignKeyName: "split_sheet_contributors_confirmation_evidence_id_fkey"
             columns: ["confirmation_evidence_id"]
             isOneToOne: false
             referencedRelation: "split_sheet_evidence"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "split_sheet_contributors_split_sheet_id_fkey"
+            columns: ["split_sheet_id"]
+            isOneToOne: false
+            referencedRelation: "split_sheets"
+            referencedColumns: ["id"]
+          },
         ]
-      },
+      }
       split_sheet_deliveries: {
         Row: {
           approval_identity: string | null
           approval_required: boolean
+          authorized_by: string | null
           created_at: string
           delivered_by: string
           delivered_by_label: string
@@ -5051,13 +5209,12 @@ export type Database = {
           follow_up_required: boolean
           id: string
           idempotency_key: string | null
-          authorized_by: string | null
           provider_message_id: string | null
           provider_response: Json | null
-          requested_by: string | null
           recipient_email: string | null
           recipient_name: string | null
           recipient_organization: string | null
+          requested_by: string | null
           response_notes: string | null
           secure_link_expires_at: string | null
           split_sheet_id: string
@@ -5068,6 +5225,7 @@ export type Database = {
         Insert: {
           approval_identity?: string | null
           approval_required?: boolean
+          authorized_by?: string | null
           created_at?: string
           delivered_by: string
           delivered_by_label: string
@@ -5082,13 +5240,12 @@ export type Database = {
           follow_up_required?: boolean
           id?: string
           idempotency_key?: string | null
-          authorized_by?: string | null
           provider_message_id?: string | null
           provider_response?: Json | null
-          requested_by?: string | null
           recipient_email?: string | null
           recipient_name?: string | null
           recipient_organization?: string | null
+          requested_by?: string | null
           response_notes?: string | null
           secure_link_expires_at?: string | null
           split_sheet_id: string
@@ -5099,6 +5256,7 @@ export type Database = {
         Update: {
           approval_identity?: string | null
           approval_required?: boolean
+          authorized_by?: string | null
           created_at?: string
           delivered_by?: string
           delivered_by_label?: string
@@ -5113,13 +5271,12 @@ export type Database = {
           follow_up_required?: boolean
           id?: string
           idempotency_key?: string | null
-          authorized_by?: string | null
           provider_message_id?: string | null
           provider_response?: Json | null
-          requested_by?: string | null
           recipient_email?: string | null
           recipient_name?: string | null
           recipient_organization?: string | null
+          requested_by?: string | null
           response_notes?: string | null
           secure_link_expires_at?: string | null
           split_sheet_id?: string
@@ -5143,7 +5300,7 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
-      },
+      }
       split_sheet_evidence: {
         Row: {
           created_at: string
@@ -5201,6 +5358,13 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "split_sheet_evidence_signer_contributor_id_fkey"
+            columns: ["signer_contributor_id"]
+            isOneToOne: false
+            referencedRelation: "split_sheet_contributors"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "split_sheet_evidence_split_sheet_id_fkey"
             columns: ["split_sheet_id"]
             isOneToOne: false
@@ -5215,7 +5379,7 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
-      },
+      }
       split_sheet_master_owners: {
         Row: {
           created_at: string
@@ -5268,7 +5432,7 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
-      },
+      }
       split_sheets: {
         Row: {
           action_items: Json
@@ -5377,75 +5541,21 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "split_sheets_track_id_fkey"
-            columns: ["track_id"]
-            isOneToOne: false
-            referencedRelation: "tracks"
-            referencedColumns: ["id"]
-          },
-          {
             foreignKeyName: "split_sheets_superseded_by_fkey"
             columns: ["superseded_by"]
             isOneToOne: false
             referencedRelation: "split_sheets"
             referencedColumns: ["id"]
           },
-        ]
-      },
-      rights_document_audit_events: {
-        Row: {
-          actor_kind: string
-          actor_label: string
-          actor_user_id: string | null
-          created_at: string
-          detail: Json
-          document_hash: string | null
-          event_kind: string
-          id: string
-          split_sheet_id: string | null
-          track_id: string | null
-        }
-        Insert: {
-          actor_kind: string
-          actor_label: string
-          actor_user_id?: string | null
-          created_at?: string
-          detail?: Json
-          document_hash?: string | null
-          event_kind: string
-          id?: string
-          split_sheet_id?: string | null
-          track_id?: string | null
-        }
-        Update: {
-          actor_kind?: string
-          actor_label?: string
-          actor_user_id?: string | null
-          created_at?: string
-          detail?: Json
-          document_hash?: string | null
-          event_kind?: string
-          id?: string
-          split_sheet_id?: string | null
-          track_id?: string | null
-        }
-        Relationships: [
           {
-            foreignKeyName: "rights_document_audit_events_split_sheet_id_fkey"
-            columns: ["split_sheet_id"]
-            isOneToOne: false
-            referencedRelation: "split_sheets"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "rights_document_audit_events_track_id_fkey"
+            foreignKeyName: "split_sheets_track_id_fkey"
             columns: ["track_id"]
             isOneToOne: false
             referencedRelation: "tracks"
             referencedColumns: ["id"]
           },
         ]
-      },
+      }
       sync_research_opportunities: {
         Row: {
           batch_id: string | null
@@ -6024,6 +6134,7 @@ export type Database = {
           approved_song_dna_version_id: string | null
           assets_ready: boolean
           created_at: string
+          current_split_sheet_id: string | null
           default_tone: string
           duration_seconds: number | null
           eligibility_reason: string | null
@@ -6048,11 +6159,10 @@ export type Database = {
           sample_exception_resolved: boolean
           short_pitch: string | null
           soundcloud_url: string | null
+          split_sheet_delivery_policy: string
           splits_ready: boolean
           splits_ready_legacy: boolean | null
           splits_ready_source: string
-          current_split_sheet_id: string | null
-          split_sheet_delivery_policy: string
           spotify_url: string | null
           status: string
           sync_approved_at: string | null
@@ -6069,6 +6179,7 @@ export type Database = {
           approved_song_dna_version_id?: string | null
           assets_ready?: boolean
           created_at?: string
+          current_split_sheet_id?: string | null
           default_tone?: string
           duration_seconds?: number | null
           eligibility_reason?: string | null
@@ -6093,11 +6204,10 @@ export type Database = {
           sample_exception_resolved?: boolean
           short_pitch?: string | null
           soundcloud_url?: string | null
+          split_sheet_delivery_policy?: string
           splits_ready?: boolean
           splits_ready_legacy?: boolean | null
           splits_ready_source?: string
-          current_split_sheet_id?: string | null
-          split_sheet_delivery_policy?: string
           spotify_url?: string | null
           status?: string
           sync_approved_at?: string | null
@@ -6114,6 +6224,7 @@ export type Database = {
           approved_song_dna_version_id?: string | null
           assets_ready?: boolean
           created_at?: string
+          current_split_sheet_id?: string | null
           default_tone?: string
           duration_seconds?: number | null
           eligibility_reason?: string | null
@@ -6138,11 +6249,10 @@ export type Database = {
           sample_exception_resolved?: boolean
           short_pitch?: string | null
           soundcloud_url?: string | null
+          split_sheet_delivery_policy?: string
           splits_ready?: boolean
           splits_ready_legacy?: boolean | null
           splits_ready_source?: string
-          current_split_sheet_id?: string | null
-          split_sheet_delivery_policy?: string
           spotify_url?: string | null
           status?: string
           sync_approved_at?: string | null
@@ -6159,6 +6269,13 @@ export type Database = {
             columns: ["approved_song_dna_version_id"]
             isOneToOne: false
             referencedRelation: "song_dna_versions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "tracks_current_split_sheet_id_fkey"
+            columns: ["current_split_sheet_id"]
+            isOneToOne: false
+            referencedRelation: "split_sheets"
             referencedColumns: ["id"]
           },
         ]
@@ -6730,6 +6847,10 @@ export type Database = {
       }
     }
     Functions: {
+      _split_sheet_validate_contributor_set: {
+        Args: { p_composition: Json; p_master: Json }
+        Returns: Json
+      }
       advance_agh_handoff_batch: {
         Args: {
           p_batch_id: string
@@ -6739,6 +6860,11 @@ export type Database = {
         }
         Returns: Json
       }
+      agh_contact_policy: {
+        Args: { p_target: string; p_track: string }
+        Returns: Json
+      }
+      agh_curator_form_key: { Args: { p_url: string }; Returns: string }
       agh_daily_ops_fk_preflight: {
         Args: never
         Returns: {
@@ -6755,6 +6881,15 @@ export type Database = {
           p_packet: Json
           p_strip_copy?: boolean
         }
+        Returns: Json
+      }
+      agh_fit_rejection_requeue: { Args: { p_apply?: boolean }; Returns: Json }
+      agh_fit_requeue_reason_safe: {
+        Args: { p_packet: Json; p_reason: string }
+        Returns: boolean
+      }
+      agh_handoff_state_audit: {
+        Args: { p_batch_ids?: string[] }
         Returns: Json
       }
       agh_log_candidate_evaluation: {
@@ -6854,6 +6989,23 @@ export type Database = {
         }
         Returns: Json
       }
+      agh_pipeline_health: { Args: never; Returns: Json }
+      agh_pipeline_quota: { Args: { p_track?: string }; Returns: Json }
+      agh_record_can_approve: { Args: { p_id: string }; Returns: Json }
+      agh_requeue_contact_cooldown: {
+        Args: { p_target: string; p_track: string }
+        Returns: boolean
+      }
+      agh_resolve_playlist_alias: { Args: { p_id: string }; Returns: string }
+      agh_review_handoff_records: {
+        Args: {
+          p_actor: string
+          p_actor_label: string
+          p_batch_id: string
+          p_decisions: Json
+        }
+        Returns: Json
+      }
       agh_route_failure_code: {
         Args: {
           p_channel: string
@@ -6875,7 +7027,15 @@ export type Database = {
         Args: { p_held_by?: string; p_items: Json }
         Returns: Json
       }
+      agh_route_recertify_targets: {
+        Args: { p_apply?: boolean }
+        Returns: Json
+      }
       agh_spotify_key_alias_report: { Args: never; Returns: Json }
+      agh_update_pitch_response: {
+        Args: { p_actor: string; p_id: string; p_patch: Json }
+        Returns: Json
+      }
       bridge_upsert_email_contact: {
         Args: {
           p_email: string
@@ -6885,8 +7045,40 @@ export type Database = {
         }
         Returns: string
       }
+      create_split_sheet_version: {
+        Args: {
+          p_actor_kind?: string
+          p_actor_label?: string
+          p_actor_user_id?: string
+          p_composition: Json
+          p_document_hash?: string
+          p_generated_html?: string
+          p_master?: Json
+          p_master_controlled?: boolean
+          p_notes?: string
+          p_one_stop_master?: boolean
+          p_publishing_controlled?: boolean
+          p_title?: string
+          p_track_id: string
+        }
+        Returns: Json
+      }
       decrypt_token: { Args: { encrypted_token: string }; Returns: string }
       encrypt_token: { Args: { token: string }; Returns: string }
+      finalize_split_sheet_version: {
+        Args: {
+          p_actor_kind: string
+          p_actor_label: string
+          p_actor_user_id: string
+          p_document_hash: string
+          p_document_kind?: string
+          p_document_mime?: string
+          p_document_storage_path?: string
+          p_require_confirmations?: boolean
+          p_split_sheet_id: string
+        }
+        Returns: Json
+      }
       generate_short_code: { Args: never; Returns: string }
       growth_opportunity_transition_allowed: {
         Args: { new_status: string; old_status: string }

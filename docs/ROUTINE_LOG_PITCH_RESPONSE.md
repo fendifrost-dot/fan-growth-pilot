@@ -6,8 +6,8 @@ dedicated secret sent in a request header.
 
 ## One-time setup (Fendi, in Lovable only)
 
-1. **Create the secret.** In Lovable Cloud → **Secrets**, add `PITCH_RESPONSE_LOG_KEY` with a random value
-   of at least 24 characters, e.g. from a password generator. Never paste it into chat or a doc.
+1. **Create the secret.** In Lovable Cloud → **Secrets**, add `PITCH_RESPONSE_LOG_KEY`. Any non-empty value
+   works; there is no length requirement. Never paste it into chat or a doc.
 2. **Redeploy the function.** Use Lovable chat: "Redeploy edge function `log-pitch-response` only."
 3. **Apply the migration.** `20260930210000_response_attribution_route_recert.sql` must be applied,
    because the function writes through `agh_update_pitch_response`.

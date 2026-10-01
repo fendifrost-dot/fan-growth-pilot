@@ -20,10 +20,10 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return json({ ok: false, error: "POST only" }, 405);
   if (new URL(req.url).search) return json({ ok: false, error: "query strings are not accepted; send JSON in the body" }, 400);
 
-  const expected = Deno.env.get("PITCH_RESPONSE_LOG_KEY") ?? "";
-  if (expected.length < 24) return json({ ok: false, code: "not_configured", error: "PITCH_RESPONSE_LOG_KEY is not set" }, 503);
+  const expected = (Deno.env.get("PITCH_RESPONSE_LOG_KEY") ?? "").trim();
+  if (!expected) return json({ ok: false, code: "not_configured", error: "PITCH_RESPONSE_LOG_KEY is not set" }, 503);
   const given = (req.headers.get("x-pitch-log-key") ?? "").trim();
-  if (!given || !safeEqual(given, expected.trim())) return json({ ok: false, error: "Unauthorized" }, 401);
+  if (!given || !safeEqual(given, expected)) return json({ ok: false, error: "Unauthorized" }, 401);
 
   const raw = await req.text();
   if (raw.length > 8000) return json({ ok: false, error: "body too large" }, 413);

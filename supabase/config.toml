@@ -101,6 +101,10 @@ verify_jwt = false
 [functions.update-pitch-status]
 verify_jwt = false
 
+# Token-free response logging for routines; gated by PITCH_RESPONSE_LOG_KEY (x-pitch-log-key header).
+[functions.log-pitch-response]
+verify_jwt = false
+
 [functions.unsubscribe]
 verify_jwt = false
 

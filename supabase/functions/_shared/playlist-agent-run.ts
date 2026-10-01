@@ -3830,7 +3830,7 @@ export async function runPlaylistAgentAction(
         return { status: 400, data: { error: errMsg(e) } };
       }
     case "queue_ig_outreach_batch":
-      return runQueueIgOutreachBatch(sb, body, (trackName: string) => resolveStreamLink(sb, trackName), rowDiscoveryReferences);
+      return runQueueIgOutreachBatch(sb, body, (trackName: string) => resolveStreamLink(sb, trackName), (row: Record<string, unknown>, lanes: Record<string, unknown>, refs: string[]) => rowDiscoveryReferences(row, lanes as Record<string, LaneConfig>, refs));
     case "connect_spotify_init":
       return runConnectSpotifyInit(body);
     case "connect_spotify_status":

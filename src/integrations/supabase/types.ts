@@ -6860,8 +6860,12 @@ export type Database = {
         }
         Returns: Json
       }
+      agh_compose_rejection_reason: {
+        Args: { p_codes: Json; p_reason: string }
+        Returns: string
+      }
       agh_contact_policy: {
-        Args: { p_target: string; p_track: string }
+        Args: { p_channel?: string; p_target: string; p_track: string }
         Returns: Json
       }
       agh_curator_form_key: { Args: { p_url: string }; Returns: string }

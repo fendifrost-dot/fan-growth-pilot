@@ -136,3 +136,32 @@ begin
   assert (q->>'submissions_email_today')::int = 0, 'a web form is not an email send';
   assert (q->>'submissions_today')::int = 1, 'quota counts the form once';
 end $$;
+
+-- A reason that already names its code is not prefixed again.
+do $$
+declare
+  b uuid := gen_random_uuid();
+  doubled uuid := gen_random_uuid();
+  plain uuid := gen_random_uuid();
+  v jsonb;
+begin
+  assert agh_compose_rejection_reason('["LOW_REACH"]'::jsonb, 'LOW_REACH: under 300 followers')
+    = 'LOW_REACH: under 300 followers', 'existing prefix is kept once';
+  assert agh_compose_rejection_reason('["LOW_REACH"]'::jsonb, 'under 300 followers')
+    = 'LOW_REACH: under 300 followers', 'a bare reason is prefixed once';
+  assert agh_compose_rejection_reason('[]'::jsonb, 'under 300 followers')
+    = 'under 300 followers', 'no code leaves the reason alone';
+
+  insert into agh_handoff_batches(id, queue_state) values (b, 'AWAITING_GROK_REVIEW');
+  insert into agh_handoff_records(id, batch_id, queue_state, record_kind, packet)
+  values
+    (doubled, b, 'AWAITING_GROK_REVIEW', 'playlist_target', '{}'),
+    (plain, b, 'AWAITING_GROK_REVIEW', 'playlist_target', '{}');
+  v := agh_review_handoff_records(b, jsonb_build_array(
+    jsonb_build_object('record_id', doubled, 'decision', 'reject', 'reason_codes', jsonb_build_array('LOW_REACH'), 'reason', 'LOW_REACH: under 300 followers'),
+    jsonb_build_object('record_id', plain, 'decision', 'reject', 'reason_codes', jsonb_build_array('LOW_REACH'), 'reason', 'under 300 followers')
+  ), 'grok_playlist_control', 'test');
+  assert (v->>'applied_count')::int = 2, 'both rejects apply';
+  assert (select rejection_reason from agh_handoff_records where id = doubled) = 'LOW_REACH: under 300 followers', 'stored reason is not doubled';
+  assert (select rejection_reason from agh_handoff_records where id = plain) = 'LOW_REACH: under 300 followers', 'stored reason gains the code once';
+end $$;

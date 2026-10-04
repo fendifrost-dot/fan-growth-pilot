@@ -31,6 +31,7 @@ jobs:
           psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261004141000_bounced_send_not_delivered.sql
           psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261004142000_playlistdock_form_slug.sql
           psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261004143000_web_form_approved_submit.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261004144000_rejection_reason_prefix.sql
           psql -v ON_ERROR_STOP=1 -f scripts/test-playlist-pipeline-bugfix.sql
       - name: Response attribution + route recertification (20260930210000)
         run: |

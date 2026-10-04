@@ -58,3 +58,81 @@ begin
   assert agh_contact_policy('pd-beta', tr, 'web_form')->>'code' = 'eligible', 'another PlaylistDock slug is not in cooldown';
   assert agh_contact_policy('pd-alpha-2', tr, 'web_form')->>'code' = 'curator_cooldown', 'the same PlaylistDock slug is in cooldown';
 end $$;
+
+-- Batch-approved web forms can be marked submitted, and one record can be
+-- approved or rejected inside a batch that is already APPROVED_FOR_SEND.
+do $$
+declare
+  tr uuid := gen_random_uuid();
+  dna uuid := gen_random_uuid();
+  b uuid := gen_random_uuid();
+  approved uuid := gen_random_uuid();
+  reviewed uuid := gen_random_uuid();
+  rejectable uuid := gen_random_uuid();
+  warned uuid := gen_random_uuid();
+  bare uuid := gen_random_uuid();
+  e jsonb;
+  pl uuid;
+  v jsonb;
+  q jsonb;
+begin
+  insert into tracks(id, name, status) values (tr, 'Web form fixture', 'active');
+  insert into song_dna_versions(id, track_id, version_number, approval_state, primary_genre, approved_lanes, excluded_lanes, short_pitch)
+  values (dna, tr, 1, 'approved', 'hip_hop_rap', array['rap'], array['house'], 'Test only');
+  update tracks set approved_song_dna_version_id = dna where id = tr;
+  insert into playlist_targets(playlist_id, playlist_name, curator_email, lane, is_active, path_verified, verification_status, submission_cost, form_url)
+  values ('web-form-approved', 'Web form', 'web-form@playlist-bugfix.test', 'rap', true, true, 'manually_verified', 'free', 'https://forms.playlist-bugfix.test/submit');
+  insert into agh_handoff_batches(id, track_id, queue_state) values (b, tr, 'APPROVED_FOR_SEND');
+  insert into agh_handoff_records(id, batch_id, track_id, playlist_target_id, queue_state, submission_channel, song_dna_version_id, approved_by, record_kind, packet)
+  values
+    (approved, b, tr, 'web-form-approved', 'APPROVED_FOR_SEND', 'web_form', dna, 'fendi', 'playlist_target', '{}'),
+    (reviewed, b, tr, 'web-form-approved', 'GROK_REVIEWED', 'web_form', dna, null, 'playlist_target', '{}'),
+    (rejectable, b, tr, 'web-form-approved', 'APPROVED_FOR_SEND', 'web_form', dna, 'fendi', 'playlist_target', '{}'),
+    (warned, b, tr, 'web-form-approved', 'APPROVED_FOR_SEND', 'web_form', dna, 'fendi', 'playlist_target', '{"grok_review":{"verdict":"WARNING"}}'),
+    (bare, b, tr, 'web-form-approved', 'APPROVED_FOR_SEND', 'web_form', dna, null, 'playlist_target', '{}');
+
+  v := agh_review_handoff_records(b, jsonb_build_array(jsonb_build_object(
+    'record_id', rejectable, 'decision', 'reject', 'reason', 'under 300 followers')), 'grok_playlist_control', 'test');
+  assert (v->>'ok')::boolean and (v->>'applied_count')::int = 1, 'one approved record can be rejected';
+  assert (select queue_state from agh_handoff_records where id = rejectable) = 'REJECTED_BY_GROK', 'reject sticks';
+  assert (select rejection_reason from agh_handoff_records where id = rejectable) = 'under 300 followers', 'reason stored once';
+  assert (select queue_state from agh_handoff_batches where id = b) = 'APPROVED_FOR_SEND', 'approved batch does not move backwards';
+
+  v := agh_review_handoff_records(b, jsonb_build_array(jsonb_build_object(
+    'record_id', reviewed, 'decision', 'approve', 'verdict', 'PASS', 'reason', 'lane fits')), 'grok_playlist_control', 'test');
+  assert (v->>'applied_count')::int = 1, 'one reviewed record can be approved inside an approved batch';
+  assert (select packet->'grok_review'->>'verdict' from agh_handoff_records where id = reviewed) = 'PASS', 'PASS is recorded';
+
+  e := jsonb_build_object('result', 'submitted', 'reference', 'form-receipt', 'notes', 'submitted by hand', 'submitted_at', now());
+  begin
+    update agh_handoff_records
+       set submitted_at = now(), manual_submit_channel = 'web_form', submitted_by = 'fendi',
+           packet = packet || jsonb_build_object('submission_evidence', e)
+     where id = warned;
+    raise exception 'expected warning rejection';
+  exception when raise_exception then
+    assert SQLERRM = 'pass_approval_required', 'WARNING still cannot be submitted';
+  end;
+  begin
+    update agh_handoff_records
+       set submitted_at = now(), manual_submit_channel = 'web_form', submitted_by = 'fendi',
+           packet = packet || jsonb_build_object('submission_evidence', e)
+     where id = bare;
+    raise exception 'expected missing approval rejection';
+  exception when raise_exception then
+    assert SQLERRM = 'pass_approval_required', 'missing approval still cannot be submitted';
+  end;
+
+  update agh_handoff_records
+     set submitted_at = now(), manual_submit_channel = 'web_form', submitted_by = 'fendi',
+         packet = packet || jsonb_build_object('submission_evidence', e)
+   where id = approved;
+  select pitch_log_id into pl from agh_manual_submission_receipts where handoff_record_id = approved;
+  assert pl is not null, 'receipt stores the handoff record';
+  update agh_handoff_records set submitted_at = submitted_at where id = approved;
+  assert (select count(*) from agh_manual_submission_receipts where handoff_record_id = approved) = 1, 'retry does not duplicate the receipt';
+  q := agh_pipeline_quota(tr)->0;
+  assert (q->>'submissions_manual_today')::int = 1, 'manual receipt counts once';
+  assert (q->>'submissions_email_today')::int = 0, 'a web form is not an email send';
+  assert (q->>'submissions_today')::int = 1, 'quota counts the form once';
+end $$;

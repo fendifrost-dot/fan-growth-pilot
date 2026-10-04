@@ -32,6 +32,7 @@ import {
 import {
   HANDOFF_QUEUE_STATES,
   assertKnownChannel,
+  canTransitionHandoff,
   isHandoffQueueState,
 } from "./handoff-queues.ts";
 import {
@@ -265,10 +266,12 @@ Deno.test("handoff queue states cover Claude→Grok→import lifecycle", () => {
     "REJECTED_BY_GROK",
     "AWAITING_AGH_IMPORT",
     "IMPORTED_TO_AGH",
+    "SENT",
   ]) {
     assertEquals(isHandoffQueueState(s), true);
   }
-  assertEquals(HANDOFF_QUEUE_STATES.length, 8);
+  assertEquals(HANDOFF_QUEUE_STATES.length, 9);
+  assertEquals(canTransitionHandoff("APPROVED_FOR_SEND", "SENT"), false);
   assertEquals(isHandoffQueueState("SHADOW_MODE"), false);
 });
 

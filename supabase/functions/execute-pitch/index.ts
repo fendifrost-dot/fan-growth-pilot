@@ -16,6 +16,7 @@ import {
   verifyDraftPitchIntegrity,
 } from "../_shared/pitch-copy-integrity.ts";
 import { pitchBodyHtml } from "../_shared/pitch-templates.ts";
+import { markLinkedHandoffEmailSent } from "../_shared/handoff-sent.ts";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-api-key",
@@ -616,6 +617,22 @@ async function handleEmailPitch(
       message_to_user: "❌ Email sent but logging failed: " + insOk.message,
     });
   }
+  const sentAt = new Date().toISOString();
+  const { error: draftErr } = await sb.from("outreach_drafts").update({
+    status: "sent",
+    sent_at: sentAt,
+    pitch_log_id: logRow?.id ?? null,
+  }).eq("id", draftId).eq("status", "approved");
+  if (draftErr) console.error("outreach draft sent stamp failed:", draftErr.message, { draftId });
+  const handoff = await markLinkedHandoffEmailSent(sb, {
+    draftId,
+    playlistId,
+    trackId: identity.trackId ?? null,
+    pitchLogId: logRow?.id ?? null,
+    resendMessageId,
+    sentAt,
+  });
+  if (handoff.error) console.error("handoff sent stamp failed:", handoff.error, { draftId, playlistId });
   return jsonPitch({
     ok: true, method_used: method, action_taken: "email_sent", cooldown_until: cooldownIso,
     pitch_log_id: logRow?.id ?? null,

@@ -44,6 +44,7 @@ export const HANDOFF_QUEUE_STATES = [
   "REJECTED_BY_GROK",
   "AWAITING_AGH_IMPORT",
   "IMPORTED_TO_AGH",
+  "SENT",
 ] as const;
 
 export type HandoffQueueState = (typeof HANDOFF_QUEUE_STATES)[number];
@@ -88,6 +89,7 @@ export const FINAL_AUTHORITY_STATES = new Set<HandoffQueueState>([
   "REJECTED_BY_GROK",
   "AWAITING_AGH_IMPORT",
   "IMPORTED_TO_AGH",
+  "SENT",
 ]);
 
 /** Allowed single-step transitions — strict ordered playlist chain (no shortcuts). */
@@ -100,6 +102,9 @@ export const HANDOFF_TRANSITIONS: Record<HandoffQueueState, readonly HandoffQueu
   REJECTED_BY_GROK: [],
   AWAITING_AGH_IMPORT: ["IMPORTED_TO_AGH"],
   IMPORTED_TO_AGH: [],
+  // Written by a successful email send. Not an advance target: approval still
+  // has to happen before the send, and this state is not a way to skip it.
+  SENT: [],
 };
 
 const KNOWN_CHANNELS = new Set(["email", "web_form", "instagram_dm"]);

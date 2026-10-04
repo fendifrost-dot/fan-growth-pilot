@@ -165,3 +165,60 @@ begin
   assert (select rejection_reason from agh_handoff_records where id = doubled) = 'LOW_REACH: under 300 followers', 'stored reason is not doubled';
   assert (select rejection_reason from agh_handoff_records where id = plain) = 'LOW_REACH: under 300 followers', 'stored reason gains the code once';
 end $$;
+
+-- A real email send moves the approved handoff to SENT. A bounce does not,
+-- and the move does not add a quota row.
+do $$
+declare
+  tr uuid := gen_random_uuid();
+  dna uuid := gen_random_uuid();
+  b uuid := gen_random_uuid();
+  d_sent uuid := gen_random_uuid();
+  d_bounce uuid := gen_random_uuid();
+  sent_rec uuid := gen_random_uuid();
+  form_rec uuid := gen_random_uuid();
+  bounce_rec uuid := gen_random_uuid();
+  q_before int;
+  q_after int;
+  logs_before int;
+  again jsonb;
+begin
+  insert into tracks(id, name, status) values (tr, 'Sent handoff fixture', 'active');
+  insert into song_dna_versions(id, track_id, version_number, approval_state, primary_genre, approved_lanes, excluded_lanes, short_pitch)
+  values (dna, tr, 1, 'approved', 'hip_hop_rap', array['rap'], array['house'], 'Test only');
+  update tracks set approved_song_dna_version_id = dna where id = tr;
+  insert into playlist_targets(playlist_id, playlist_name, curator_email, lane, is_active, path_verified, verification_status, submission_cost)
+  values
+    ('sent-handoff', 'Sent handoff', 'sent-handoff@playlist-bugfix.test', 'rap', true, true, 'manually_verified', 'free'),
+    ('bounce-handoff', 'Bounce handoff', 'bounce-handoff@playlist-bugfix.test', 'rap', true, true, 'manually_verified', 'free');
+  insert into outreach_drafts(id, playlist_id, track_id, track_name, channel, recipient, body, status)
+  values
+    (d_sent, 'sent-handoff', tr, 'Sent handoff fixture', 'email', 'sent-handoff@playlist-bugfix.test', 'already approved', 'approved'),
+    (d_bounce, 'bounce-handoff', tr, 'Sent handoff fixture', 'email', 'bounce-handoff@playlist-bugfix.test', 'already approved', 'approved');
+  insert into agh_handoff_batches(id, track_id, queue_state) values (b, tr, 'APPROVED_FOR_SEND');
+  insert into agh_handoff_records(id, batch_id, track_id, playlist_target_id, queue_state, submission_channel, song_dna_version_id, outreach_draft_id, approved_by, record_kind, packet)
+  values
+    (sent_rec, b, tr, 'sent-handoff', 'APPROVED_FOR_SEND', 'email', dna, d_sent, 'fendi', 'playlist_target', '{}'),
+    (form_rec, b, tr, 'sent-handoff', 'APPROVED_FOR_SEND', 'web_form', dna, null, 'fendi', 'playlist_target', '{}'),
+    (bounce_rec, b, tr, 'bounce-handoff', 'APPROVED_FOR_SEND', 'email', dna, d_bounce, 'fendi', 'playlist_target', '{}');
+  insert into pitch_log(playlist_id, track_id, track_name, curator_email, method, status, sent_at, pitched_at, draft_id, resend_message_id)
+  values
+    ('sent-handoff', tr, 'Sent handoff fixture', 'sent-handoff@playlist-bugfix.test', 'email', 'sent', now(), now(), d_sent, 're_sent_handoff'),
+    ('bounce-handoff', tr, 'Sent handoff fixture', 'bounce-handoff@playlist-bugfix.test', 'email', 'bounced', now(), now(), d_bounce, 're_bounced_handoff');
+
+  q_before := (agh_pipeline_quota(tr)->0->>'submissions_today')::int;
+  logs_before := (select count(*) from pitch_log where track_id = tr);
+  again := agh_backfill_email_handoff_sent();
+  assert (again->>'updated')::int = 1, 'one approved email handoff matches the sent pitch';
+  assert (select queue_state from agh_handoff_records where id = sent_rec) = 'SENT', 'matching send moves the record to SENT';
+  assert (select submitted_at from agh_handoff_records where id = sent_rec) is null, 'SENT does not stamp submitted_at';
+  assert (select queue_state from agh_handoff_records where id = form_rec) = 'APPROVED_FOR_SEND', 'web form on the same playlist stays approved';
+  assert (select queue_state from agh_handoff_records where id = bounce_rec) = 'APPROVED_FOR_SEND', 'a bounce does not count as sent';
+  assert (select count(*) from pitch_log where track_id = tr) = logs_before, 'backfill does not insert pitch_log';
+  assert (select count(*) from agh_manual_submission_receipts mr join pitch_log l on l.id = mr.pitch_log_id where l.track_id = tr) = 0, 'backfill does not write a manual receipt';
+  q_after := (agh_pipeline_quota(tr)->0->>'submissions_today')::int;
+  assert q_after = q_before, 'quota does not change when the handoff moves to SENT';
+  again := agh_backfill_email_handoff_sent();
+  assert (again->>'updated')::int = 0, 'running the backfill again changes nothing';
+  assert (select queue_state from agh_handoff_records where id = sent_rec) = 'SENT', 'the sent record stays SENT';
+end $$;

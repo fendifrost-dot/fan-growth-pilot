@@ -253,9 +253,18 @@ Deno.serve(async (req) => {
     }
 
     // Recheck cross-song, alias-aware curator policy at the dispatch boundary.
-    const { data: contactPolicy, error: policyError } = await sb.rpc("agh_contact_policy", {
-      p_target: draft.playlist_id, p_track: draft.track_id,
+    // Email channel so a prior bounce can suppress email without the 2-arg
+    // function (pre-migration) being required. Fall back if SQL is older.
+    let contactCall = await sb.rpc("agh_contact_policy", {
+      p_target: draft.playlist_id, p_track: draft.track_id, p_channel: "email",
     });
+    if (contactCall.error && /could not find|PGRST202|42883/i.test(String(contactCall.error.message))) {
+      contactCall = await sb.rpc("agh_contact_policy", {
+        p_target: draft.playlist_id, p_track: draft.track_id,
+      });
+    }
+    const contactPolicy = contactCall.data as { ok?: boolean; code?: string; cooldown_until?: string } | null;
+    const policyError = contactCall.error;
     if (policyError || contactPolicy?.ok !== true || draft.generated_by === "fendi") {
       return jsonPitch({
         ok: false, method_used: "none", action_taken: "skipped",

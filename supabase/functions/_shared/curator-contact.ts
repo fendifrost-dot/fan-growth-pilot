@@ -120,6 +120,8 @@ export async function curatorContactContext(
       .eq("status", "sent");
     if (error) return { ...empty, cooldown_days: days, error: error.message };
     for (const r of (data ?? []) as Record<string, unknown>[]) {
+      // A bounce is not a delivery. Do not start a cooldown from it.
+      if (String(r.status).toLowerCase() === "bounced") continue;
       contacts.push({
         playlist_id: s(r.playlist_id) || null,
         track_id: s(r.track_id) || null,

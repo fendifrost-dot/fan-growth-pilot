@@ -31,6 +31,7 @@ import {
   routeActionability,
 } from "./submission-route.ts";
 import { decideLaneFit, fitRejectionConflict, isFitRejectionReason, type ApprovedDnaLanes } from "./song-fit.ts";
+import { listWebFormHandoffs, plainManualSubmitError } from "./web-form-handoff.ts";
 
 export type RunResult = { status: number; data: Record<string, unknown> };
 
@@ -62,6 +63,7 @@ export const HANDOFF_ACTIONS = [
   "review_handoff_records",
   "approve_handoff_records",
   "reject_handoff_records",
+  "list_web_form_handoffs",
 ] as const;
 
 export function isHandoffAction(action: string): boolean {
@@ -1016,7 +1018,11 @@ async function markManualHandoffSubmission(
     .eq("queue_state", "APPROVED_FOR_SEND")
     .select()
     .maybeSingle();
-  if (updErr) return { status: 500, data: { error: updErr.message } };
+  if (updErr) {
+    const plain = plainManualSubmitError(updErr.message);
+    if (plain) return { status: 422, data: plain };
+    return { status: 500, data: { error: updErr.message } };
+  }
   if (!updated) {
     return { status: 409, data: { error: "record state changed before submit stamp", code: "conflict" } };
   }
@@ -1747,6 +1753,8 @@ export async function runHandoffAction(
         .map((d: Record<string, unknown>) => ({ ...d, decision: action === "approve_handoff_records" ? "approve" : "reject" })) }, ops);
     case "review_handoff_records":
       return reviewHandoffRecords(sb, body, ops);
+    case "list_web_form_handoffs":
+      return listWebFormHandoffs(sb, body, ops);
     case "mark_manual_form_submitted":
       return markManualFormSubmitted(sb, body, ops);
     case "mark_manual_ig_dm_submitted":

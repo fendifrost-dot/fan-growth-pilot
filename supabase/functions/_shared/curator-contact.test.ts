@@ -45,6 +45,17 @@ Deno.test("curator: form keys ignore scheme, www, trailing slash and query", () 
   );
 });
 
+Deno.test("curator: PlaylistDock cooldown identity keeps the slug", () => {
+  assertEquals(
+    normalizeFormKey("https://www.playlistdock.com/playlist.php?slug=Alpha&utm_source=x"),
+    "playlistdock.com/playlist.php?slug=alpha",
+  );
+  assert(
+    normalizeFormKey("https://playlistdock.com/playlist.php?slug=alpha") !==
+      normalizeFormKey("https://curator.playlistdock.com/playlist.php?slug=beta"),
+  );
+});
+
 Deno.test("curator: same song via a sibling playlist (shared email) is blocked; other song is reported only", async () => {
   const sb = stubSb({
     playlist_targets: [
@@ -98,6 +109,37 @@ Deno.test("curator: manual submission via a sibling sharing the same form blocks
   const res = await markManualFormSubmitted(sb, { handoff_record_id: "next" }, grok);
   assertEquals(res.status, 422, JSON.stringify(res.data));
   assertEquals(res.data.code, "curator_cooldown_same_song");
+});
+
+Deno.test("curator: a different PlaylistDock slug is not the same form", async () => {
+  const sb = stubSb({
+    playlist_targets: [
+      { playlist_id: "pd-a", form_url: "https://playlistdock.com/playlist.php?slug=alpha" },
+      { playlist_id: "pd-b", form_url: "https://www.playlistdock.com/playlist.php?slug=beta&utm=1" },
+    ],
+    pitch_log: [],
+    agh_handoff_records: [
+      { playlist_target_id: "pd-a", track_id: MED, submitted_at: "2026-09-25T15:00:00Z", submission_channel: "web_form" },
+    ],
+    artist_config: [],
+  });
+  const other = await curatorContactContext(sb, {
+    target: { playlist_id: "pd-b", form_url: "https://playlistdock.com/playlist.php?slug=beta" },
+    trackId: MED,
+    trackName: "Other song",
+    now: NOW,
+  });
+  assertEquals(other.same_song_block, null);
+  assertEquals(other.sibling_playlist_ids, ["pd-b"]);
+
+  const same = await curatorContactContext(sb, {
+    target: { playlist_id: "pd-b", form_url: "https://playlistdock.com/playlist.php?slug=alpha" },
+    trackId: MED,
+    trackName: "Other song",
+    now: NOW,
+  });
+  assert(same.same_song_block);
+  assertEquals(same.same_song_block!.playlist_id, "pd-a");
 });
 
 Deno.test("curator: query errors fail closed", async () => {

@@ -218,7 +218,8 @@ export async function buildPerSongFunnel(
       }
     }
 
-    const emailSubmissions = count((r) => String(r.status) === "sent" && !!r.resend_message_id && isToday(r.sent_at ?? r.pitched_at), sl);
+    // Bounced sends keep resend_message_id. Only status sent is a delivery.
+    const emailSubmissions = count((r) => String(r.status).toLowerCase() === "sent" && !!r.resend_message_id && isToday(r.sent_at ?? r.pitched_at), sl);
     const manualSubmissions = count((r) => isToday(r.submitted_at) && !!(r.packet as Record<string, unknown> | null)?.submission_receipt);
     const submissions = emailSubmissions + manualSubmissions;
     const approvedNotSubmitted = count((r) =>

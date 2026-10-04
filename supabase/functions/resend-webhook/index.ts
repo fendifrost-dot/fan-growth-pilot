@@ -22,7 +22,7 @@ const BOUNCE_BLOCK_THRESHOLD = 2;
 
 type ResendEvent = {
   type?: string;
-  data?: { to?: string[] | string; email?: string; subject?: string };
+  data?: { email_id?: string; to?: string[] | string; email?: string; subject?: string };
 };
 
 function recipients(ev: ResendEvent): string[] {
@@ -95,6 +95,32 @@ Deno.serve(async (req) => {
         { domain, reason, added_by: "resend-webhook" },
         { onConflict: "domain" },
       );
+    }
+
+    // The send row kept resend_message_id and cooldown_until, so quota and
+    // curator cooldown still treated the bounce as delivered. Clear both.
+    // Match the provider id when Resend sent one; otherwise only the latest
+    // sent row for this address, so a bounce does not rewrite older songs.
+    const emailId = String(ev.data?.email_id ?? "").trim();
+    if (emailId) {
+      await supabase.from("pitch_log").update({
+        status: "bounced",
+        cooldown_until: null,
+      }).eq("status", "sent").eq("resend_message_id", emailId);
+    } else {
+      const { data: latest } = await supabase.from("pitch_log")
+        .select("id")
+        .ilike("curator_email", email)
+        .eq("status", "sent")
+        .order("sent_at", { ascending: false })
+        .limit(1);
+      const pitchId = latest?.[0]?.id;
+      if (pitchId) {
+        await supabase.from("pitch_log").update({
+          status: "bounced",
+          cooldown_until: null,
+        }).eq("id", pitchId).eq("status", "sent");
+      }
     }
   }
 

@@ -88,6 +88,7 @@ Deno.test("funnel: separates discovery, packets, approvals and evidenced submiss
     pitch_log: [
       { track_id: DFM, status: "sent", sent_at: TODAY_TS, pitched_at: TODAY_TS, resend_message_id: "re_1" },
       { track_id: DFM, status: "sent", sent_at: TODAY_TS, pitched_at: TODAY_TS, resend_message_id: null }, // no evidence
+      { track_id: DFM, status: "bounced", sent_at: TODAY_TS, pitched_at: TODAY_TS, resend_message_id: "re_bounced" },
       { track_id: DFM, status: "error", pitched_at: TODAY_TS },
     ],
   });

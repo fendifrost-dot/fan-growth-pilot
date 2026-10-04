@@ -1,5 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import { sendResendEmail } from "../_shared/resend-pitch.ts";
+import { pitchBodyHtml, stripPitchMarkdown } from "../_shared/pitch-templates.ts";
 import { evaluateOutreachDecision } from "../_shared/outreach-decision.ts";
 import { checkTargetSubmissionReady } from "../_shared/submission-route.ts";
 import {
@@ -152,10 +153,12 @@ Deno.serve(async (req) => {
 
     const resolvedTrackName = decision.trackName || trackName;
 
+    const plainBody = stripPitchMarkdown(body);
     const sent = await sendResendEmail({
       to: [curatorEmail],
       subject,
-      text: body,
+      text: plainBody,
+      html: pitchBodyHtml(plainBody),
     });
     if (!sent.ok) {
       return json({ error: `Email send failed: ${sent.status} - ${sent.error}` }, sent.status >= 500 ? 500 : 422);

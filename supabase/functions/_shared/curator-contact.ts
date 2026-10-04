@@ -36,12 +36,21 @@ function s(v: unknown): string {
   return v == null ? "" : String(v).trim();
 }
 
+/** Hostname + path. PlaylistDock playlists are distinguished by ?slug=; other queries are ignored. */
 export function normalizeFormKey(url: string | null | undefined): string | null {
   const u = s(url);
   if (!u) return null;
   try {
     const p = new URL(u);
-    return `${p.hostname.toLowerCase().replace(/^www\./, "")}${p.pathname.replace(/\/+$/, "").toLowerCase()}`;
+    const host = p.hostname.toLowerCase().replace(/^www\./, "");
+    const path = p.pathname.replace(/\/+$/, "").toLowerCase();
+    const base = `${host}${path}`;
+    const playlistDock = host === "playlistdock.com" || host.endsWith(".playlistdock.com");
+    if (playlistDock) {
+      const slug = p.searchParams.get("slug")?.trim().toLowerCase();
+      if (slug) return `${base}?slug=${slug}`;
+    }
+    return base || null;
   } catch {
     return u.toLowerCase();
   }
@@ -120,6 +129,8 @@ export async function curatorContactContext(
       .eq("status", "sent");
     if (error) return { ...empty, cooldown_days: days, error: error.message };
     for (const r of (data ?? []) as Record<string, unknown>[]) {
+      // A bounce is not a delivery. Do not start a cooldown from it.
+      if (String(r.status).toLowerCase() === "bounced") continue;
       contacts.push({
         playlist_id: s(r.playlist_id) || null,
         track_id: s(r.track_id) || null,

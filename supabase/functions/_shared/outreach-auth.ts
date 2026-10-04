@@ -532,6 +532,11 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
     capability: 'create_handoff_batch',
     surface: 'admin-write',
   },
+  list_web_form_handoffs: {
+    cls: 'capability',
+    capability: 'read_playlist_ops',
+    surface: 'outreach-write',
+  },
   mark_manual_form_submitted: {
     cls: 'capability',
     capability: 'send_playlist_pitches',

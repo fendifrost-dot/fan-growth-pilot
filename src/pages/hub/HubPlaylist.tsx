@@ -1,12 +1,13 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { Link } from "react-router-dom";
-import { Send, Target, ShieldCheck, ArrowRight } from "lucide-react";
+import { Send, Target, ShieldCheck, ClipboardList, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { callHubFn } from "@/lib/hubApi";
 import { PageHeader, HubLoading, HubEmpty, StatTile } from "@/components/hub/HubPrimitives";
+import { WebFormQueue, type WebFormRow } from "@/components/hub/WebFormQueue";
 import { toast } from "sonner";
 
 type DraftRow = {
@@ -63,11 +64,13 @@ const HubPlaylist: React.FC = () => {
   const [pitches, setPitches] = useState<PitchRow[]>([]);
   const [stats, setStats] = useState<PitchStats | null>(null);
   const [reviews, setReviews] = useState<ReviewRow[]>([]);
+  const [forms, setForms] = useState<WebFormRow[]>([]);
+  const [formsError, setFormsError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [d, p, s, r] = await Promise.all([
+      const [d, p, s, r, formsResult] = await Promise.all([
         callHubFn<{ rows: DraftRow[] }>("list_drafts", { statuses: ["pending"] }).catch(
           () => ({ rows: [] as DraftRow[] }),
         ),
@@ -80,11 +83,19 @@ const HubPlaylist: React.FC = () => {
         callHubFn<{ rows: ReviewRow[] }>("list_unverified_targets", {}).catch(() => ({
           rows: [] as ReviewRow[],
         })),
+        callHubFn<{ rows: WebFormRow[] }>("list_web_form_handoffs", { limit: 250 })
+          .then((res) => ({ rows: res.rows ?? [], error: null as string | null }))
+          .catch((e) => ({
+            rows: [] as WebFormRow[],
+            error: e instanceof Error ? e.message : "Could not load web forms.",
+          })),
       ]);
       setDrafts(d.rows ?? []);
       setPitches(p.rows ?? []);
       setStats(s.totals ?? null);
       setReviews(r.rows ?? []);
+      setForms(formsResult.rows);
+      setFormsError(formsResult.error);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to load playlist ops");
     } finally {
@@ -123,6 +134,10 @@ const HubPlaylist: React.FC = () => {
             <TabsTrigger value="approvals" className="gap-1.5">
               <ShieldCheck className="w-4 h-4" /> Approvals
               {reviews.length > 0 && <Badge variant="secondary">{reviews.length}</Badge>}
+            </TabsTrigger>
+            <TabsTrigger value="forms" className="gap-1.5">
+              <ClipboardList className="w-4 h-4" /> Web forms
+              {forms.length > 0 && <Badge variant="secondary">{forms.length}</Badge>}
             </TabsTrigger>
           </TabsList>
 
@@ -250,6 +265,10 @@ const HubPlaylist: React.FC = () => {
                 ))}
               </div>
             )}
+          </TabsContent>
+
+          <TabsContent value="forms" className="space-y-4 mt-4">
+            <WebFormQueue rows={forms} error={formsError} onChanged={load} />
           </TabsContent>
         </Tabs>
       )}

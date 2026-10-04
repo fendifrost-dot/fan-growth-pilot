@@ -36,7 +36,7 @@ values
     'Submission for {{playlist_name}}: {{artist_name}} — {{track_name}}',
     $body$Hi {{curator_name}},
 
-I'd love to submit **{{track_name}}** for *{{playlist_name}}*.
+I'd love to submit {{track_name}} for {{playlist_name}}.
 
 {{pitch}}
 
@@ -51,9 +51,9 @@ Thank you for your time.
     'Thanks for the {{prior_track}} add — new release for {{playlist_name}}',
     $body$Hi {{curator_name}},
 
-Thank you for adding **{{prior_track}}** to *{{playlist_name}}* — meant a lot.
+Thank you for adding {{prior_track}} to {{playlist_name}} — meant a lot.
 
-I just released **{{track_name}}** — {{pitch}} Feels like it lives in the same lane as what landed last time.
+I just released {{track_name}} — {{pitch}} Feels like it lives in the same lane as what landed last time.
 
 {{stream_link}}
 
@@ -66,7 +66,7 @@ No pressure if it's not the right fit. Wanted to share it with you first either 
     '{{track_name}} for {{playlist_name}} — would love your ear',
     $body$Hey {{curator_name}},
 
-Hope your week's been good. Wanted to share my new song — **{{track_name}}** — for *{{playlist_name}}*.
+Hope your week's been good. Wanted to share my new song — {{track_name}} — for {{playlist_name}}.
 
 {{pitch}}
 
@@ -81,9 +81,9 @@ Appreciate you taking a listen.
     'Round 2 — new song for {{playlist_name}}',
     $body$Hey {{curator_name}},
 
-Quick note — thanks again for the **{{prior_track}}** add on *{{playlist_name}}*. Really appreciated.
+Quick note — thanks again for the {{prior_track}} add on {{playlist_name}}. Really appreciated.
 
-Just dropped **{{track_name}}** — {{pitch}} Wanted to put it in front of you before anyone else.
+Just dropped {{track_name}} — {{pitch}} Wanted to put it in front of you before anyone else.
 
 {{stream_link}}
 
@@ -96,7 +96,7 @@ Hope you dig it.
     'Pitch: {{artist_name}} — {{track_name}} for {{playlist_name}}',
     $body$Hello {{curator_name}},
 
-I'd like to submit **{{track_name}}** by {{artist_name}} for consideration in *{{playlist_name}}*.
+I'd like to submit {{track_name}} by {{artist_name}} for consideration in {{playlist_name}}.
 
 {{pitch}}
 
@@ -112,9 +112,9 @@ Regards,
     'Follow-up: new release from {{artist_name}} for {{playlist_name}}',
     $body$Hello {{curator_name}},
 
-Following up on **{{prior_track}}**, which you added to *{{playlist_name}}* — thank you again for that placement.
+Following up on {{prior_track}}, which you added to {{playlist_name}} — thank you again for that placement.
 
-I'd like to share my latest release, **{{track_name}}**, for your consideration. {{pitch}}
+I'd like to share my latest release, {{track_name}}, for your consideration. {{pitch}}
 
 {{stream_link}}
 
@@ -128,7 +128,7 @@ Regards,
     'New heat: {{artist_name}} — {{track_name}}',
     $body$Yo {{curator_name}},
 
-Got something I think is perfect for *{{playlist_name}}*: **{{track_name}}**.
+Got something I think is perfect for {{playlist_name}}: {{track_name}}.
 
 {{pitch}}
 
@@ -143,9 +143,9 @@ Run it back, let me know what you think.
     'Back with another one for {{playlist_name}}',
     $body$Yo {{curator_name}},
 
-Massive thanks for the **{{prior_track}}** add — that played a real part in the wave.
+Massive thanks for the {{prior_track}} add — that played a real part in the wave.
 
-Got the next one: **{{track_name}}**. {{pitch}} Honestly think it might hit even harder for *{{playlist_name}}*.
+Got the next one: {{track_name}}. {{pitch}} Honestly think it might hit even harder for {{playlist_name}}.
 
 {{stream_link}}
 

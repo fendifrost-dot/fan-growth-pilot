@@ -1,7 +1,7 @@
 // Deno tests: template substitution + runDraftPitch identity / copy-source.
 // Run: deno test supabase/functions/_shared/pitch-templates.test.ts
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { applyPitchTemplate, varsFromPitchContext, UnknownPitchPlaceholderError, type PitchContext } from "./pitch-templates.ts";
+import { applyPitchTemplate, pitchBodyHtml, stripPitchMarkdown, varsFromPitchContext, UnknownPitchPlaceholderError, type PitchContext } from "./pitch-templates.ts";
 import { runDraftPitch } from "./playlist-agent-run.ts";
 
 const COLD_SUBJECT = "Submission for {{playlist_name}}: {{artist_name}} — {{track_name}}";
@@ -32,7 +32,23 @@ Deno.test("applyPitchTemplate substitutes every documented placeholder", () => {
   assertEquals(rendered.subject, "Submission for Night Drive: Test Artist — Example Track");
   assert(rendered.body.includes("KNOWN SHORT PITCH"));
   assert(rendered.body.includes("Hi Alex,"));
+  assert(rendered.body.includes("I'd love to submit Example Track for Night Drive."));
   assert(!rendered.body.includes("{{"));
+  assert(!rendered.body.includes("**"));
+  assert(!rendered.body.includes("*Night"));
+});
+
+Deno.test("stripPitchMarkdown removes emphasis and pitchBodyHtml does not emit raw asterisks", () => {
+  const plain = stripPitchMarkdown("Submit **Meditate** for *Night Drive*.\n10 * 2 stays");
+  assertEquals(plain.includes("**"), false);
+  assertEquals(plain.includes("*Night"), false);
+  assert(plain.includes("10 * 2 stays"));
+  const html = pitchBodyHtml("Submit **Meditate** for *Night Drive*.");
+  assert(html.startsWith("<p>"));
+  assert(html.includes("Meditate"));
+  assert(html.includes("Night Drive"));
+  assert(!html.includes("**"));
+  assert(!html.includes("*Night"));
 });
 
 Deno.test("{{fit_reason}} is a forbidden / unknown placeholder", () => {

@@ -82,6 +82,26 @@ export class UnknownPitchPlaceholderError extends Error {
   }
 }
 
+/**
+ * Curator email is plain text. Templates historically wrapped names in
+ * markdown emphasis (`**bold**`, `*italic*`); those markers must not survive
+ * into a draft or a send. Paired emphasis is removed. A lone asterisk
+ * (a bullet, a multiplication) is left alone.
+ */
+export function stripPitchMarkdown(text: string): string {
+  const bold = text.replace(/\*\*([^*\n]+)\*\*/g, "$1");
+  return bold.replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,!?:;]|$)/g, "$1$2");
+}
+
+/** Escape a plain-text pitch and keep its line breaks as HTML. */
+export function pitchBodyHtml(plain: string): string {
+  const escaped = stripPitchMarkdown(plain)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  return `<p>${escaped.replace(/\n/g, "<br>")}</p>`;
+}
+
 export function applyPitchTemplate(
   subjectTemplate: string,
   bodyTemplate: string,
@@ -96,7 +116,10 @@ export function applyPitchTemplate(
       }
       return vars[k as keyof PitchTemplateVars] ?? "";
     });
-  return { subject: sub(subjectTemplate), body: sub(bodyTemplate) };
+  return {
+    subject: stripPitchMarkdown(sub(subjectTemplate)),
+    body: stripPitchMarkdown(sub(bodyTemplate)),
+  };
 }
 
 export function varsFromPitchContext(ctx: PitchContext): PitchTemplateVars {

@@ -15,6 +15,7 @@ import {
   verifyApprovedContentHash,
   verifyDraftPitchIntegrity,
 } from "../_shared/pitch-copy-integrity.ts";
+import { pitchBodyHtml } from "../_shared/pitch-templates.ts";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-api-key",
@@ -275,11 +276,12 @@ Deno.serve(async (req) => {
     }
 
     const draftChannel = String(draft.channel ?? "").toLowerCase();
-    const plain = String(draft.body ?? "").replace(/\n/g, "<br>");
     const draftOverrides = {
       email: (draft.recipient as string | null)?.trim() || undefined,
       subject: (draft.subject as string | null)?.trim() || undefined,
-      bodyHtml: "<p>" + plain + "</p>",
+      // Stored drafts may still contain markdown emphasis. Send plain text
+      // inside HTML so curators never see literal asterisks.
+      bodyHtml: pitchBodyHtml(String(draft.body ?? "")),
     };
 
     const { data: row, error: rowErr } = await sb.from("playlist_targets").select("*").eq("playlist_id", playlistId).maybeSingle();

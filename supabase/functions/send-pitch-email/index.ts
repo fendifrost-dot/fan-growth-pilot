@@ -1,6 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import { sendResendEmail } from "../_shared/resend-pitch.ts";
 import { pitchBodyHtml, stripPitchMarkdown } from "../_shared/pitch-templates.ts";
+import { markLinkedHandoffEmailSent } from "../_shared/handoff-sent.ts";
 import { evaluateOutreachDecision } from "../_shared/outreach-decision.ts";
 import { checkTargetSubmissionReady } from "../_shared/submission-route.ts";
 import {
@@ -164,7 +165,8 @@ Deno.serve(async (req) => {
       return json({ error: `Email send failed: ${sent.status} - ${sent.error}` }, sent.status >= 500 ? 500 : 422);
     }
 
-    await supabase.from("pitch_log").insert({
+    const sentAt = new Date().toISOString();
+    const { data: logRow, error: logErr } = await supabase.from("pitch_log").insert({
       playlist_id: playlistId,
       track_name: resolvedTrackName,
       track_id: decision.trackId,
@@ -173,23 +175,40 @@ Deno.serve(async (req) => {
       curator_email: curatorEmail,
       subject,
       email_body: body,
-      sent_at: new Date().toISOString(),
+      method: "email",
+      status: "sent",
+      pitched_at: sentAt,
+      sent_at: sentAt,
       resend_message_id: sent.id,
       draft_id: draftId,
       pitch_copy_source: integrity.source,
       pitch_copy_hash: integrity.hash,
       dispatched_via: "send-pitch-email",
-    });
+    }).select("id").maybeSingle();
+    if (logErr) console.error("pitch_log insert after send:", logErr.message, { draftId, playlistId });
 
     await supabase
       .from("playlist_targets")
-      .update({ pitch_status: "pitched", pitched_at: new Date().toISOString() })
+      .update({ pitch_status: "pitched", pitched_at: sentAt })
       .eq("playlist_id", playlistId);
 
     await supabase.from("outreach_drafts").update({
       status: "sent",
-      sent_at: new Date().toISOString(),
+      sent_at: sentAt,
+      pitch_log_id: logRow?.id ?? null,
     }).eq("id", draftId);
+
+    if (logRow?.id && sent.id) {
+      const handoff = await markLinkedHandoffEmailSent(supabase, {
+        draftId,
+        playlistId,
+        trackId: decision.trackId,
+        pitchLogId: logRow.id,
+        resendMessageId: sent.id,
+        sentAt,
+      });
+      if (handoff.error) console.error("handoff sent stamp failed:", handoff.error, { draftId, playlistId });
+    }
 
     return json({
       success: true,

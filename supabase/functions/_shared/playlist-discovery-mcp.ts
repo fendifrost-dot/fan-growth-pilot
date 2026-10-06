@@ -883,6 +883,8 @@ export async function getPlaylistDiscoveryWork(
         rule: "Allocate further discovery by each song's own remaining need; one song's surplus never offsets another song's shortfall.",
         songs: allocateDiscovery(funnel.songs),
       },
+      capacity_exclusion_rule:
+        "Discovery headroom ignores Soundplate (frozen route), route-repair batches, REJECTED_* and SENT records, unsent IG DMs, and any packet that fails the contact-policy check. Those counts are capacity_exclusions on each song. Soundplate stays frozen, and cooldown rules are unchanged.",
       errors: funnel.errors,
       limits: {
         max_candidates_per_submit_call: 50,
@@ -2173,6 +2175,8 @@ async function businessTargetSnapshot(
         submission_shortfall: s.submission_shortfall,
         drafts_awaiting_review_today: s.drafts_awaiting_review_today,
         remaining_eligible_packets_needed: s.remaining_eligible_packets_needed,
+        discovery_headroom: s.discovery_headroom,
+        capacity_exclusions: s.capacity_exclusions,
         raw_candidates_needed: s.raw_candidates_needed,
       })),
       ...(met || shortfallGiven ? {} : { warning: "business target unmet and no shortfall_reason given" }),

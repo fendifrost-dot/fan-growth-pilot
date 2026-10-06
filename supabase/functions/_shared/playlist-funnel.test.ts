@@ -3,7 +3,7 @@
  * counted only with evidence, and explicit shortfalls.
  */
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { allocateDiscovery, buildPerSongFunnel, computeRemainingNeed } from "./playlist-funnel.ts";
+import { allocateDiscovery, buildPerSongFunnel, computeRemainingNeed, isSoundplateRecord } from "./playlist-funnel.ts";
 import { buildDiscoveryCapacityPlan, measureRawToVerifiedFromLog, funnelWindow } from "./discovery-capacity.ts";
 
 type Row = Record<string, unknown>;
@@ -202,6 +202,66 @@ Deno.test("inventory: deferrals and holds cannot satisfy supply; review and age 
     assertEquals(song.raw_candidates_needed, expected * 10, label);
     assertEquals(song.usable_inflight_packets, 30 - expected, label);
   }
+});
+
+Deno.test("discovery headroom ignores frozen Soundplate, repair, terminal, unsent IG, and cooldown", async () => {
+  assertEquals(isSoundplateRecord({ packet: {} }, { form_url: "https://play.soundplate.com/nauhh" }), true);
+  assertEquals(isSoundplateRecord({ packet: { form_url: "https://forms.example.test/submit" } }, null), false);
+
+  const sb = stubSb({
+    agh_handoff_records: [
+      { id: "sp", track_id: MED, queue_state: "AWAITING_GROK_REVIEW", created_at: TODAY_TS, playlist_target_id: "sp-pl", submission_channel: "web_form", packet: {} },
+      { id: "repair", track_id: MED, queue_state: "CLAUDE_BATCH_READY", created_at: TODAY_TS, playlist_target_id: "repair-pl", batch_id: "repair-batch", submission_channel: "web_form", packet: {} },
+      { id: "rej", track_id: MED, queue_state: "REJECTED_BY_GROK", created_at: TODAY_TS, playlist_target_id: "rej-pl", submission_channel: "email", packet: {} },
+      { id: "sent", track_id: MED, queue_state: "SENT", created_at: TODAY_TS, playlist_target_id: "sent-pl", submission_channel: "email", packet: {} },
+      { id: "ig", track_id: MED, queue_state: "APPROVED_FOR_SEND", created_at: TODAY_TS, playlist_target_id: "ig-pl", submission_channel: "instagram_dm", packet: {} },
+      { id: "cool", track_id: MED, queue_state: "AWAITING_GROK_REVIEW", created_at: TODAY_TS, playlist_target_id: "cooled", submission_channel: "web_form", packet: {} },
+      { id: "ok", track_id: MED, queue_state: "APPROVED_FOR_SEND", created_at: TODAY_TS, playlist_target_id: "ok-pl", submission_channel: "email", packet: {} },
+      { id: "dfm-sp", track_id: DFM, queue_state: "AWAITING_GROK_REVIEW", created_at: TODAY_TS, playlist_target_id: "dfm-sp", submission_channel: "web_form", packet: {} },
+      { id: "dfm-ok", track_id: DFM, queue_state: "GROK_REVIEWED", created_at: YESTERDAY_TS, playlist_target_id: "dfm-ok", submission_channel: "email", packet: {} },
+    ],
+    playlist_targets: [
+      { playlist_id: "sp-pl", form_url: "https://play.soundplate.com/meditate" },
+      { playlist_id: "dfm-sp", submission_method: "soundplate", form_url: "https://soundplate.com/submit-music/" },
+      { playlist_id: "repair-pl", form_url: "https://forms.example.test/repair" },
+      { playlist_id: "cooled", form_url: "https://forms.example.test/cool" },
+      { playlist_id: "ok-pl", form_url: "https://forms.example.test/ok" },
+      { playlist_id: "dfm-ok", form_url: "https://forms.example.test/dfm" },
+    ],
+    agh_handoff_batches: [
+      { id: "repair-batch", payload: { route_hold_repair: true } },
+    ],
+  });
+  sb.rpc = (_name: string, args: { p_target: string }) => Promise.resolve({
+    data: args.p_target === "cooled"
+      ? { ok: false, code: "cooldown_conflict", pitch_log_id: "365a53dc-ee9c-4652-9fb4-02aeced602a2" }
+      : { ok: true, code: "eligible" },
+    error: null,
+  });
+
+  const res = await buildPerSongFunnel(sb, [{ track_id: MED, title: "Meditate" }, { track_id: DFM, title: "Designed For Me" }], {
+    objectivePerSong: 30,
+    rawToEligibleRate: 0.1,
+    now: NOW,
+  });
+  const med = res.songs.find((s) => s.track_id === MED)!;
+  assertEquals(med.usable_inflight_packets, 1);
+  assertEquals(med.discovery_headroom, 29);
+  assertEquals(med.remaining_eligible_packets_needed, 29);
+  assertEquals(med.capacity_exclusions, {
+    soundplate: 1,
+    route_repair: 1,
+    rejected: 1,
+    sent: 1,
+    contact_policy: 1,
+    instagram_dm_unsent: 1,
+  });
+  assert(med.discovery_headroom > 0);
+  const dfm = res.songs.find((s) => s.track_id === DFM)!;
+  assertEquals(dfm.capacity_exclusions.soundplate, 1);
+  assertEquals(dfm.usable_inflight_packets, 1);
+  assertEquals(dfm.discovery_headroom, 29);
+  assert(dfm.discovery_headroom > 0);
 });
 
 Deno.test("funnel: paginates queues and never counts timestamps without receipts",async()=>{

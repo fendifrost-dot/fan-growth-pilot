@@ -41,6 +41,25 @@ type PitchStats = {
   placement_rate_pct: number;
 };
 
+type CapacityExclusions = {
+  soundplate: number;
+  route_repair: number;
+  rejected: number;
+  sent: number;
+  contact_policy: number;
+  instagram_dm_unsent: number;
+};
+
+type HeadroomSong = {
+  track_id: string;
+  title: string | null;
+  discovery_headroom: number;
+  objective_submissions: number;
+  submissions_today: number;
+  usable_inflight_packets: number;
+  capacity_exclusions: CapacityExclusions;
+};
+
 type ReviewRow = {
   playlist_id: string;
   playlist_name: string | null;
@@ -50,6 +69,18 @@ type ReviewRow = {
   verification_status: string;
   bounce_count: number | null;
 };
+
+function exclusionSummary(ex: CapacityExclusions): string {
+  const parts = [
+    ex.soundplate ? `${ex.soundplate} Soundplate (frozen)` : "",
+    ex.route_repair ? `${ex.route_repair} route repair` : "",
+    ex.rejected ? `${ex.rejected} rejected` : "",
+    ex.sent ? `${ex.sent} sent` : "",
+    ex.contact_policy ? `${ex.contact_policy} cooldown or contact policy` : "",
+    ex.instagram_dm_unsent ? `${ex.instagram_dm_unsent} IG DMs until hand-sent` : "",
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : "none";
+}
 
 const statusVariant = (status: string | null | undefined) => {
   const s = (status || "").toLowerCase();
@@ -66,11 +97,12 @@ const HubPlaylist: React.FC = () => {
   const [reviews, setReviews] = useState<ReviewRow[]>([]);
   const [forms, setForms] = useState<WebFormRow[]>([]);
   const [formsError, setFormsError] = useState<string | null>(null);
+  const [headroom, setHeadroom] = useState<HeadroomSong[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [d, p, s, r, formsResult] = await Promise.all([
+      const [d, p, s, r, headroomResult, formsResult] = await Promise.all([
         callHubFn<{ rows: DraftRow[] }>("list_drafts", { statuses: ["pending"] }).catch(
           () => ({ rows: [] as DraftRow[] }),
         ),
@@ -82,6 +114,9 @@ const HubPlaylist: React.FC = () => {
         })),
         callHubFn<{ rows: ReviewRow[] }>("list_unverified_targets", {}).catch(() => ({
           rows: [] as ReviewRow[],
+        })),
+        callHubFn<{ songs?: HeadroomSong[] }>("get_playlist_discovery_headroom", {}).catch(() => ({
+          songs: [] as HeadroomSong[],
         })),
         callHubFn<{ rows: WebFormRow[] }>("list_web_form_handoffs", { limit: 250 })
           .then((res) => ({ rows: res.rows ?? [], error: null as string | null }))
@@ -96,6 +131,7 @@ const HubPlaylist: React.FC = () => {
       setReviews(r.rows ?? []);
       setForms(formsResult.rows);
       setFormsError(formsResult.error);
+      setHeadroom(headroomResult.songs ?? []);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to load playlist ops");
     } finally {
@@ -118,6 +154,25 @@ const HubPlaylist: React.FC = () => {
           </Button>
         }
       />
+
+      {headroom.length > 0 && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          {headroom.map((song) => (
+            <Card key={song.track_id} className="p-4 bg-card/50 border-border">
+              <p className="font-medium">{song.title || "Song"}</p>
+              <p className="text-sm mt-1">
+                Discovery headroom {song.discovery_headroom} of {song.objective_submissions}
+                <span className="text-muted-foreground">
+                  {" "}· {song.submissions_today} sent today · {song.usable_inflight_packets} still usable
+                </span>
+              </p>
+              <p className="text-xs text-muted-foreground mt-2">
+                Not counted toward today’s goal: {exclusionSummary(song.capacity_exclusions)}
+              </p>
+            </Card>
+          ))}
+        </div>
+      )}
 
       {loading ? (
         <HubLoading label="Loading playlist ops…" />

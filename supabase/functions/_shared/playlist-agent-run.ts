@@ -1541,8 +1541,8 @@ export function enrichSpotifyId(playlistId: string | null | undefined): { id: st
  */
 export function hasPreservedIgRoute(row: Record<string, unknown>): boolean {
   const acct = String(row.ig_curator_account ?? row.curator_instagram ?? "").trim();
-  // Same handle shape the route rule accepts (dots are legal in IG handles;
-  // isValidCuratorIgHandle rejects them to filter scraped domains, so it is not used here).
+  // Preservation uses the route handle shape, including dotted handles such as
+  // trippy.ja.prod. Domain and chrome filtering stays in isValidCuratorIgHandle.
   if (!acct || !/^@?[A-Za-z0-9._]{2,30}$/.test(acct)) return false;
   const method = String(row.contact_method ?? row.submission_method ?? "").toLowerCase();
   return row.path_verified === true || method === "instagram_dm";

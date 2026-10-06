@@ -211,6 +211,24 @@ export const IG_HANDLE_DENYLIST = new Set([
 
 const IG_URL_RE = /(?:^|\/\/|\.)instagram\.com\/([A-Za-z0-9._]{2,30})(?:\/|\?|$)/i;
 
+/** Web suffixes that make a dotted string a domain. .wav, .chi, and .music are handles. */
+const IG_WEB_TLDS = new Set(["com", "net", "org", "io", "co"]);
+
+/**
+ * True when the value is a URL or a web domain, not an Instagram handle that
+ * happens to contain a period (inharmony.wav, dlo.chi).
+ */
+export function isUrlOrWebDomain(value: string): boolean {
+  const raw = value.trim();
+  if (!raw) return false;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) return true;
+  if (raw.includes("/") || raw.includes("\\")) return true;
+  const bare = raw.replace(/^@/, "");
+  if (/^www\./i.test(bare)) return true;
+  const tld = bare.toLowerCase().split(".").pop() ?? "";
+  return bare.includes(".") && IG_WEB_TLDS.has(tld);
+}
+
 export type EmailHit = { value: string; source: "mailto" | "text" | "emoji" };
 
 export function extractEmails(text: string, html?: string): EmailHit[] {
@@ -235,14 +253,11 @@ export function extractLinktreeUrls(text: string): string[] {
   return [...new Set(matches.map((u) => (u.startsWith("http") ? u : `https://${u}`)))];
 }
 
-/** Extract curator IG handle from a URL; rejects Spotify/page-chrome handles. */
+/** Extract curator IG handle from a URL; rejects Spotify/page-chrome and real domains. */
 export function extractIgHandle(url: string): string | null {
   const m = url.match(IG_URL_RE);
   if (!m) return null;
-  const handle = m[1].toLowerCase();
-  if (handle.includes(".")) return null;
-  if (IG_HANDLE_DENYLIST.has(handle)) return null;
-  if (/^spotify/i.test(handle)) return null;
+  if (!isValidCuratorIgHandle(m[1])) return null;
   return m[1];
 }
 
@@ -251,23 +266,31 @@ export function parseInstagramHandle(link: string): string | null {
   return extractIgHandle(link);
 }
 
-/** Validate a stored or candidate IG handle (not a full URL). */
+/**
+ * Validate a stored or candidate IG handle.
+ * Letters, digits, periods, and underscores, 2–30 chars. Periods may appear
+ * inside a handle (inharmony.wav) but not at either end or twice in a row.
+ * Corporate/chrome names stay rejected. A scheme, a slash, a www. prefix, or a
+ * web TLD (.com/.net/.org/.io/.co) is a URL or domain, not a handle.
+ */
 export function isValidCuratorIgHandle(handle: string | null | undefined): boolean {
   if (!handle?.trim()) return false;
+  if (isUrlOrWebDomain(handle)) return false;
   const clean = handle.replace(/^@/, "").trim();
+  if (!clean || isUrlOrWebDomain(clean)) return false;
   const lower = clean.toLowerCase();
   if (IG_HANDLE_DENYLIST.has(lower)) return false;
   if (/^spotify/i.test(lower)) return false;
-  if (lower.includes(".")) return false;
-  if (!/^[A-Za-z0-9._]{2,30}$/.test(clean)) return false;
-  return extractIgHandle(`https://www.instagram.com/${clean}/`) !== null;
+  if (clean.length < 2 || clean.length > 30) return false;
+  return /^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$/.test(clean);
 }
 
-/** Normalize handle for DB storage; returns null if invalid. */
+/** Normalize handle for DB storage; returns null if invalid. Does not scrape a path out of a URL. */
 export function sanitizeCuratorIgHandle(handle: string | null | undefined): string | null {
   if (!handle?.trim()) return null;
-  const fromUrl = extractIgHandle(handle.trim());
-  const raw = (fromUrl ?? handle.replace(/^@/, "").trim());
+  const trimmed = handle.trim();
+  if (isUrlOrWebDomain(trimmed)) return null;
+  const raw = trimmed.replace(/^@/, "").trim();
   return isValidCuratorIgHandle(raw) ? raw : null;
 }
 

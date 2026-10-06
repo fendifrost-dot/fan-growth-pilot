@@ -2015,7 +2015,10 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
           }
         } else if (verification) {
           patch.curator_email = newEmail;
-          patch.verification_status = verification.status;
+          // An unconfirmed new email must not demote a row whose IG route is already verified.
+          if (!(keepIgRoute && verification.status !== "auto_verified")) {
+            patch.verification_status = verification.status;
+          }
           patch.verification_notes = verification.notes;
           if (verification.status === "auto_verified") {
             patch.last_verified_at = new Date().toISOString();

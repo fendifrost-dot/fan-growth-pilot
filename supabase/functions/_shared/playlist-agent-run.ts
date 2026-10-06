@@ -3,6 +3,7 @@
  * Workaround: Lovable Publish redeploys existing functions only; new function names 404 until registered.
  */
 import { checkTargetSubmissionReady } from "./submission-route.ts";
+import { parseSpotifyPlaylistId } from "./discovery-utils.ts";
 import { runLogPitchSent } from "./log-pitch-sent.ts";
 import { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import { trackSyncFields } from "./sync-registers.ts";
@@ -1520,6 +1521,31 @@ export async function runQueueInstagramPitch(
  *     offset = r.next_offset;
  *   }
  */
+/**
+ * Spotify id to scrape for a catalog row. Accepts the current bare-id form (discovery has
+ * stored bare ids since 2026-09-27), spotify:<id>, spotify:playlist:<id> and URLs; keeps
+ * the legacy spotify:sfa:<name> rows (resolved later by name). Route-only / url: / other
+ * platform rows have no Spotify page to read.
+ */
+export function enrichSpotifyId(playlistId: string | null | undefined): { id: string; sfa: boolean } | null {
+  const raw = String(playlistId ?? "").trim();
+  if (/^spotify:sfa:/i.test(raw)) return { id: raw.replace(/^spotify:/i, ""), sfa: true };
+  const parsed = parseSpotifyPlaylistId(raw);
+  return parsed.ok ? { id: parsed.id, sfa: false } : null;
+}
+
+/**
+ * A row with a working Instagram route (a valid IG account on the row, path-verified or
+ * routed as instagram_dm). Enrichment may ADD email / form routes to such a row but must
+ * never remove its Instagram data or demote it: IG-only curators stay in the catalog.
+ */
+export function hasPreservedIgRoute(row: Record<string, unknown>): boolean {
+  const acct = String(row.ig_curator_account ?? row.curator_instagram ?? "").trim();
+  if (!acct || !isValidCuratorIgHandle(acct)) return false;
+  const method = String(row.contact_method ?? row.submission_method ?? "").toLowerCase();
+  return row.path_verified === true || method === "instagram_dm";
+}
+
 export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb: SupabaseClient): Promise<RunResult> {
   if (!Deno.env.get("FIRECRAWL_API_KEY")) {
     return { status: 500, data: { error: "FIRECRAWL_API_KEY not configured" } };
@@ -1575,7 +1601,7 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
   let query = sb
     .from("playlist_targets")
     .select(
-      "playlist_id, playlist_name, curator_name, curator_email, curator_instagram, curator_linktree, curator_website, curator_submission_url, curator_submission_dm, research_context, lane, submission_method, contact_confidence, pitch_status, is_active",
+      "playlist_id, playlist_name, curator_name, curator_email, curator_instagram, ig_curator_account, curator_linktree, curator_website, curator_submission_url, curator_submission_dm, research_context, lane, submission_method, contact_method, path_verified, verification_status, contact_confidence, pitch_status, is_active",
     )
     .neq("pitch_status", "disclaim_brand")
     .or("curator_email.is.null,submission_method.is.null")
@@ -1619,17 +1645,19 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
   const perRowResults: Array<Record<string, unknown>> = [];
 
   for (const row of rows) {
-    if (!row.playlist_id?.startsWith("spotify:")) {
+    const sid = enrichSpotifyId(row.playlist_id);
+    if (!sid) {
       perRowResults.push({
         playlist_id: row.playlist_id,
         playlist_name: row.playlist_name,
-        skipped: "non_spotify_prefix",
+        skipped: "no_spotify_identity",
       });
       continue;
     }
+    const keepIgRoute = hasPreservedIgRoute(row as Record<string, unknown>);
 
-    let spotifyId = row.playlist_id.replace(/^spotify:/, "");
-    if (spotifyId.startsWith("sfa:") && row.playlist_name) {
+    let spotifyId = sid.id;
+    if (sid.sfa && row.playlist_name) {
       const rc0 = row.research_context as Record<string, unknown> | null;
       const cached = typeof rc0?.spotify_playlist_id === "string" ? rc0.spotify_playlist_id : "";
       if (cached && !cached.startsWith("37i9dQZF")) {
@@ -1653,7 +1681,7 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
       }
     }
     const patch: Record<string, unknown> = {};
-    if (row.playlist_id.replace(/^spotify:/, "").startsWith("sfa:") && !spotifyId.startsWith("sfa:")) {
+    if (sid.sfa && !spotifyId.startsWith("sfa:")) {
       patch.submission_url = `https://open.spotify.com/playlist/${spotifyId}`;
       patch.research_context = {
         ...(row.research_context as Record<string, unknown> ?? {}),
@@ -1688,7 +1716,7 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
 
       const rowRefs = rowDiscoveryReferences(row, lanesConfig, bodyReferences);
 
-      if (row.curator_instagram) {
+      if (row.curator_instagram && !keepIgRoute) {
         const stored = String(row.curator_instagram).replace(/^@/, "");
         if (!isValidCuratorIgHandle(stored) || isArtistIgHandle(stored, rowRefs)) {
           patch.curator_instagram = null;
@@ -1972,8 +2000,17 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
         if (rejectReason) {
           patch.curator_email = null;
           if (fieldsAdded.curator_email > 0) fieldsAdded.curator_email--;
-          patch.verification_status = "rejected";
-          patch.verification_notes = `auto-rejected: ${rejectReason} (${newEmail})`;
+          if (keepIgRoute) {
+            // The rejected email says nothing about the IG route — record it, keep the row.
+            patch.research_context = {
+              ...((typeof patch.research_context === "object" && patch.research_context) ||
+                (row.research_context as Record<string, unknown> | null) || {}),
+              enrich_rejected_email: { email: newEmail, reason: rejectReason, at: new Date().toISOString() },
+            };
+          } else {
+            patch.verification_status = "rejected";
+            patch.verification_notes = `auto-rejected: ${rejectReason} (${newEmail})`;
+          }
         } else if (verification) {
           patch.curator_email = newEmail;
           patch.verification_status = verification.status;
@@ -1992,17 +2029,21 @@ export async function runEnrichCuratorContacts(body: Record<string, unknown>, sb
       const finalEmail = (patch.curator_email as string) ?? row.curator_email ?? null;
       const finalIgRaw = (patch.curator_instagram as string) ?? row.curator_instagram ?? null;
       let finalIg = finalIgRaw && isValidCuratorIgHandle(finalIgRaw) ? finalIgRaw.replace(/^@/, "") : null;
-      if (finalIg && isArtistIgHandle(finalIg, rowRefs)) finalIg = null;
-      if (finalIgRaw && !finalIg) patch.curator_instagram = null;
+      if (finalIg && isArtistIgHandle(finalIg, rowRefs) && !keepIgRoute) finalIg = null;
+      if (finalIgRaw && !finalIg && !keepIgRoute) patch.curator_instagram = null;
       const finalSubUrl = (patch.curator_submission_url as string) ?? row.curator_submission_url ?? null;
       const finalSubDm = (patch.curator_submission_dm as string) ?? row.curator_submission_dm ?? null;
 
       if (finalEmail) {
         patch.submission_method = "email";
+        // A verified email becomes the primary route; the IG account stays on the row.
+        if (keepIgRoute && patch.verification_status === "auto_verified") patch.contact_method = "email";
       } else if (finalSubUrl) {
         patch.submission_method = "web_form";
         patch.curator_submission_url = finalSubUrl;
         patch.submission_url = finalSubUrl;
+      } else if (keepIgRoute) {
+        // IG-only curator already in the pipeline: keep its route as is (no re-queue, never "none").
       } else if (finalSubDm || finalIg) {
         patch.submission_method = "instagram_dm";
         const handle = finalSubDm || `@${String(finalIg).replace(/^@/, "")}`;

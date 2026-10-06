@@ -75,11 +75,19 @@ export function plainManualSubmitError(message: string): { code: string; error: 
       error: "Song DNA does not allow this playlist's lane, so the form cannot be marked submitted.",
     };
   }
+  const conflict = raw.match(/playlist_policy:cooldown_conflict:([0-9a-f-]{36})/i);
+  if (conflict) {
+    return {
+      code: "cooldown_conflict",
+      error: `This curator is in a 90-day cooldown across every channel. Prior pitch ${conflict[1]}.`,
+    };
+  }
   const policy = raw.match(/playlist_policy:([a-z0-9_]+)/i);
   if (policy) {
     const code = policy[1].toLowerCase();
     const text: Record<string, string> = {
       curator_cooldown: "This curator is still in cooldown for this song.",
+      cooldown_conflict: "This curator is in a 90-day cooldown across every channel.",
       suppressed_curator: "This curator is blocked on this channel.",
       paid_curator: "This curator asks for payment. Paid playlists stay blocked.",
       blocked_domain: "This curator's email domain is blocked.",

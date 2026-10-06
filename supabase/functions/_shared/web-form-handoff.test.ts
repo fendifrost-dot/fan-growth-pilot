@@ -41,5 +41,12 @@ Deno.test("manual submit exceptions are plain language", () => {
     plainManualSubmitError("playlist_policy:curator_cooldown")?.error,
     "This curator is still in cooldown for this song.",
   );
+  assertEquals(
+    plainManualSubmitError("playlist_policy:cooldown_conflict:365a53dc-ee9c-4652-9fb4-02aeced602a2"),
+    {
+      code: "cooldown_conflict",
+      error: "This curator is in a 90-day cooldown across every channel. Prior pitch 365a53dc-ee9c-4652-9fb4-02aeced602a2.",
+    },
+  );
   assertEquals(plainManualSubmitError("connection reset"), null);
 });

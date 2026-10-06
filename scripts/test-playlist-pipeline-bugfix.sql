@@ -37,7 +37,8 @@ begin
   returning id into sent_id;
   q := (agh_pipeline_quota(tr)->0->>'submissions_today')::int;
   assert q = 1, 'a real send still counts once';
-  assert agh_contact_policy('bounce-email', tr, 'instagram_dm')->>'code' = 'curator_cooldown', 'a real send still cools every channel';
+  assert agh_contact_policy('bounce-email', tr, 'instagram_dm')->>'code' = 'cooldown_conflict', 'a real send still cools every channel';
+  assert (agh_contact_policy('bounce-email', tr, 'instagram_dm')->>'pitch_log_id')::uuid = sent_id, 'cooldown names the sent pitch, not the bounce';
 
   assert bounced_id is not null and sent_id is not null, 'fixture rows exist';
 
@@ -56,7 +57,9 @@ begin
   insert into pitch_log(playlist_id, track_id, track_name, curator_email, method, status, sent_at, pitched_at, cooldown_until)
   values ('pd-alpha', tr, 'Bounce fixture', 'pd-alpha@playlist-bugfix.test', 'web_form', 'sent', now(), now(), now() + interval '90 days');
   assert agh_contact_policy('pd-beta', tr, 'web_form')->>'code' = 'eligible', 'another PlaylistDock slug is not in cooldown';
-  assert agh_contact_policy('pd-alpha-2', tr, 'web_form')->>'code' = 'curator_cooldown', 'the same PlaylistDock slug is in cooldown';
+  assert agh_contact_policy('pd-alpha-2', tr, 'web_form')->>'code' = 'cooldown_conflict', 'the same PlaylistDock slug is in cooldown';
+  assert agh_contact_policy('pd-alpha-2', tr, 'web_form')->>'pitch_log_id'
+    = (select id::text from pitch_log where playlist_id = 'pd-alpha' and track_id = tr), 'slug cooldown names the prior pitch';
 end $$;
 
 -- Batch-approved web forms can be marked submitted, and one record can be
@@ -221,4 +224,130 @@ begin
   again := agh_backfill_email_handoff_sent();
   assert (again->>'updated')::int = 0, 'running the backfill again changes nothing';
   assert (select queue_state from agh_handoff_records where id = sent_rec) = 'SENT', 'the sent record stays SENT';
+end $$;
+
+-- Cross-channel cooldown and operator groups.
+-- Sphere shape: email pitch on a website target cools an IG playlist that
+-- shares the curator email, including a different song.
+-- Underground shape: email pitch stored as spotify:<id> cools the bare Spotify
+-- id used by the IG handoff, even when that row has no email.
+-- Operator shape: shared operator_group_id or Spotify owner id cools every
+-- account in the group. A bounce does not.
+do $$
+declare
+  med uuid := gen_random_uuid();
+  other uuid := gen_random_uuid();
+  dna uuid := gen_random_uuid();
+  sphere_pitch uuid;
+  underground_pitch uuid;
+  group_pitch uuid;
+  owner_pitch uuid;
+  sphere_ig uuid := gen_random_uuid();
+  underground_ig uuid := gen_random_uuid();
+  group_ig uuid := gen_random_uuid();
+  sphere_batch uuid := gen_random_uuid();
+  underground_batch uuid := gen_random_uuid();
+  group_batch uuid := gen_random_uuid();
+  sphere_draft uuid := gen_random_uuid();
+  v jsonb;
+  q_before int;
+  logs_before int;
+begin
+  insert into tracks(id, name, status) values
+    (med, 'Meditate', 'active'),
+    (other, 'Designed For Me', 'active');
+  insert into song_dna_versions(id, track_id, version_number, approval_state, primary_genre, approved_lanes, excluded_lanes, short_pitch)
+  values (dna, med, 1, 'approved', 'hip_hop_rap', array['rap'], array['house'], 'Test only');
+  update tracks set approved_song_dna_version_id = dna where id = med;
+
+  insert into playlist_targets(playlist_id, playlist_name, curator_email, lane, is_active, path_verified, verification_status, submission_cost, ig_curator_account)
+  values
+    ('url:https://www.sphereofhiphop.com/music-news-video-submissions/', 'Sphere of Hip-Hop playlists', 'sphereofhiphop1997@gmail.com', 'rap', true, true, 'manually_verified', 'free', null),
+    ('320vLhCnq4Ayd9DcPygQUr', 'Mellow Bars', 'sphereofhiphop1997@gmail.com', 'rap', true, true, 'manually_verified', 'free', 'sphereofhiphop'),
+    ('3qKNkgJrFpCRleTD0qZGSC', 'Best Underground Rap 2026', null, 'rap', true, true, 'manually_verified', 'free', 'unknownrap_spotify'),
+    ('spotify:5VrYT3G0raqImUExBSSf8O', 'Hip Hop', 'playlistpumppragency@gmail.com', 'rap', true, true, 'manually_verified', 'free', null),
+    ('7pU1Xs4DesndgmT5qP6BG2', 'HIP HOP', null, 'rap', true, true, 'manually_verified', 'free', 'playlistcuratorssubmission'),
+    ('owner-a-aaaaaaaaaaaaaaaaaa', 'Owner A', 'owner-a@playlist-bugfix.test', 'rap', true, true, 'manually_verified', 'free', null),
+    ('owner-b-bbbbbbbbbbbbbbbbbb', 'Owner B', null, 'rap', true, true, 'manually_verified', 'free', 'ownerbhandle'),
+    ('stranger-cccccccccccccccccc', 'Stranger', 'stranger@playlist-bugfix.test', 'rap', true, true, 'manually_verified', 'free', 'strangerhandle');
+  update playlist_targets set operator_group_id = 'playlistpumppragency'
+   where playlist_id in ('spotify:5VrYT3G0raqImUExBSSf8O', '7pU1Xs4DesndgmT5qP6BG2');
+  update playlist_targets set spotify_owner_id = 'spotify-owner-shared'
+   where playlist_id in ('owner-a-aaaaaaaaaaaaaaaaaa', 'owner-b-bbbbbbbbbbbbbbbbbb');
+
+  insert into outreach_drafts(id, playlist_id, track_id, track_name, channel, recipient, body, status, generated_by)
+  values (sphere_draft, '320vLhCnq4Ayd9DcPygQUr', med, 'Meditate', 'instagram_dm', '@sphereofhiphop', 'already pending', 'pending', 'claude');
+
+  insert into pitch_log(playlist_id, track_id, track_name, curator_email, method, status, sent_at, pitched_at, cooldown_until, resend_message_id)
+  values
+    ('url:https://www.sphereofhiphop.com/music-news-video-submissions/', med, 'Meditate', 'sphereofhiphop1997@gmail.com', 'email', 'sent', now() - interval '20 days', now() - interval '20 days', now() + interval '70 days', 're_sphere'),
+    ('spotify:3qKNkgJrFpCRleTD0qZGSC', med, 'Meditate', 'mgr@partsunknownmusic.com', 'email', 'sent', now() - interval '40 days', now() - interval '40 days', now() + interval '50 days', 're_underground'),
+    ('spotify:5VrYT3G0raqImUExBSSf8O', med, 'Meditate', 'playlistpumppragency@gmail.com', 'email', 'sent', now() - interval '10 days', now() - interval '10 days', now() + interval '80 days', 're_group'),
+    ('owner-a-aaaaaaaaaaaaaaaaaa', med, 'Meditate', 'owner-a@playlist-bugfix.test', 'email', 'sent', now() - interval '5 days', now() - interval '5 days', now() + interval '85 days', 're_owner'),
+    ('stranger-cccccccccccccccccc', med, 'Meditate', 'stranger@playlist-bugfix.test', 'email', 'bounced', now(), now(), now() + interval '90 days', 're_stranger_bounce')
+  ;
+  select id into sphere_pitch from pitch_log where resend_message_id = 're_sphere';
+  select id into underground_pitch from pitch_log where resend_message_id = 're_underground';
+  select id into group_pitch from pitch_log where resend_message_id = 're_group';
+  select id into owner_pitch from pitch_log where resend_message_id = 're_owner';
+
+  v := agh_contact_policy('320vLhCnq4Ayd9DcPygQUr', med, 'instagram_dm');
+  assert v->>'code' = 'cooldown_conflict', 'Sphere IG approve is a cooldown conflict';
+  assert (v->>'pitch_log_id')::uuid = sphere_pitch, 'Sphere conflict names the email pitch';
+  v := agh_contact_policy('320vLhCnq4Ayd9DcPygQUr', other, 'web_form');
+  assert v->>'code' = 'cooldown_conflict' and (v->>'pitch_log_id')::uuid = sphere_pitch, 'Sphere cooldown covers the other song and every channel';
+
+  v := agh_contact_policy('3qKNkgJrFpCRleTD0qZGSC', med, 'instagram_dm');
+  assert v->>'code' = 'cooldown_conflict', 'Underground IG approve is a cooldown conflict';
+  assert (v->>'pitch_log_id')::uuid = underground_pitch, 'Underground conflict names the spotify: pitch';
+  v := agh_contact_policy('3qKNkgJrFpCRleTD0qZGSC', other, 'email');
+  assert v->>'code' = 'cooldown_conflict' and (v->>'pitch_log_id')::uuid = underground_pitch, 'Underground cooldown covers the other song';
+
+  v := agh_contact_policy('7pU1Xs4DesndgmT5qP6BG2', med, 'instagram_dm');
+  assert v->>'code' = 'cooldown_conflict' and (v->>'pitch_log_id')::uuid = group_pitch, 'operator group cools every account';
+  v := agh_contact_policy('owner-b-bbbbbbbbbbbbbbbbbb', other, 'instagram_dm');
+  assert v->>'code' = 'cooldown_conflict' and (v->>'pitch_log_id')::uuid = owner_pitch, 'shared Spotify owner id cools the other account and song';
+  v := agh_contact_policy('stranger-cccccccccccccccccc', med, 'instagram_dm');
+  assert v->>'code' = 'eligible', 'a bounce does not cool the curator';
+
+  insert into agh_handoff_batches(id, track_id, queue_state) values
+    (sphere_batch, med, 'GROK_REVIEWED'),
+    (underground_batch, med, 'GROK_REVIEWED'),
+    (group_batch, med, 'GROK_REVIEWED');
+  insert into agh_handoff_records(id, batch_id, track_id, playlist_target_id, queue_state, submission_channel, song_dna_version_id, record_kind, packet)
+  values
+    (sphere_ig, sphere_batch, med, '320vLhCnq4Ayd9DcPygQUr', 'GROK_REVIEWED', 'instagram_dm', dna, 'playlist_target', '{"ig_curator_account":"sphereofhiphop"}'),
+    (underground_ig, underground_batch, med, '3qKNkgJrFpCRleTD0qZGSC', 'GROK_REVIEWED', 'instagram_dm', dna, 'playlist_target', '{"ig_curator_account":"unknownrap_spotify"}'),
+    (group_ig, group_batch, med, '7pU1Xs4DesndgmT5qP6BG2', 'GROK_REVIEWED', 'instagram_dm', dna, 'playlist_target', '{"ig_curator_account":"playlistcuratorssubmission"}');
+
+  v := agh_record_can_approve(sphere_ig);
+  assert v->>'code' = 'cooldown_conflict' and (v->>'pitch_log_id')::uuid = sphere_pitch, 'record approve sees the Sphere pitch';
+  v := agh_review_handoff_records(sphere_batch, jsonb_build_array(jsonb_build_object(
+    'record_id', sphere_ig, 'decision', 'approve', 'verdict', 'PASS', 'reason', 'lane fits')), 'grok_playlist_control', 'test');
+  assert (v->>'applied_count')::int = 0, 'Sphere IG approval is not applied';
+  assert v->'skipped'->0->>'reason' = 'cooldown_conflict', 'Sphere approve skip is cooldown_conflict';
+  assert (v->'skipped'->0->>'pitch_log_id')::uuid = sphere_pitch, 'Sphere approve skip names the pitch';
+  assert (select queue_state from agh_handoff_records where id = sphere_ig) = 'GROK_REVIEWED', 'Sphere handoff stays unapproved';
+
+  v := agh_review_handoff_records(underground_batch, jsonb_build_array(jsonb_build_object(
+    'record_id', underground_ig, 'decision', 'approve', 'verdict', 'PASS', 'reason', 'lane fits')), 'grok_playlist_control', 'test');
+  assert v->'skipped'->0->>'reason' = 'cooldown_conflict', 'Underground approve skip is cooldown_conflict';
+  assert (v->'skipped'->0->>'pitch_log_id')::uuid = underground_pitch, 'Underground approve skip names the pitch';
+
+  v := agh_review_handoff_records(group_batch, jsonb_build_array(jsonb_build_object(
+    'record_id', group_ig, 'decision', 'approve', 'verdict', 'PASS', 'reason', 'lane fits')), 'fendi', 'test');
+  assert v->'skipped'->0->>'code' = 'cooldown_conflict', 'operator-group approve skip is cooldown_conflict';
+  assert (v->'skipped'->0->>'pitch_log_id')::uuid = group_pitch, 'operator-group approve skip names the pitch';
+
+  q_before := (agh_pipeline_quota(med)->0->>'submissions_today')::int;
+  logs_before := (select count(*) from pitch_log where track_id = med);
+  begin
+    update outreach_drafts set status = 'approved', approved_by = 'grok_playlist_control' where id = sphere_draft;
+    raise exception 'expected cooldown conflict';
+  exception when raise_exception then
+    assert SQLERRM = 'playlist_policy:cooldown_conflict:' || sphere_pitch::text, 'draft approve names the prior pitch';
+  end;
+  assert (select status from outreach_drafts where id = sphere_draft) = 'pending', 'cooled draft stays pending';
+  assert (select count(*) from pitch_log where track_id = med) = logs_before, 'a blocked approve does not write pitch_log';
+  assert (agh_pipeline_quota(med)->0->>'submissions_today')::int = q_before, 'a blocked approve does not change quota';
 end $$;

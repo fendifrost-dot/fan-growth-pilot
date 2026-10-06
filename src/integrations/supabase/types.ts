@@ -3659,7 +3659,9 @@ export type Database = {
           last_verified_at: string | null
           legitimacy_score: number | null
           notes: string | null
+          operator_group_id: string | null
           overlap_score: number | null
+          spotify_owner_id: string | null
           path_verification_notes: string | null
           path_verified: boolean
           pitch_count: number
@@ -3740,7 +3742,9 @@ export type Database = {
           last_verified_at?: string | null
           legitimacy_score?: number | null
           notes?: string | null
+          operator_group_id?: string | null
           overlap_score?: number | null
+          spotify_owner_id?: string | null
           path_verification_notes?: string | null
           path_verified?: boolean
           pitch_count?: number
@@ -3821,7 +3825,9 @@ export type Database = {
           last_verified_at?: string | null
           legitimacy_score?: number | null
           notes?: string | null
+          operator_group_id?: string | null
           overlap_score?: number | null
+          spotify_owner_id?: string | null
           path_verification_notes?: string | null
           path_verified?: boolean
           pitch_count?: number

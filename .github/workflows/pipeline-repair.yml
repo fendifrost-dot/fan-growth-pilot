@@ -33,6 +33,7 @@ jobs:
           psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261004143000_web_form_approved_submit.sql
           psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261004144000_rejection_reason_prefix.sql
           psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261004230000_handoff_sent_on_email.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261006000000_cross_channel_operator_cooldown.sql
           psql -v ON_ERROR_STOP=1 -f scripts/test-playlist-pipeline-bugfix.sql
       - name: Response attribution + route recertification (20260930210000)
         run: |

@@ -14,6 +14,8 @@
  */
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import { chicagoBusinessDate } from "./chicago-time.ts";
+import { hostOf } from "./submission-route.ts";
+import { buildDiscoveryCapacityPlan } from "./discovery-capacity.ts";
 
 export type SongFunnel = {
   track_id: string;
@@ -46,10 +48,69 @@ export type SongFunnel = {
   business_target_met: boolean;
   submission_shortfall: number;
   remaining_eligible_packets_needed: number;
+  /** Packets still needed today after stuck backlog is set aside. Same number as remaining_eligible_packets_needed. */
+  discovery_headroom: number;
   usable_inflight_packets: number;
+  capacity_exclusions: CapacityExclusions;
   raw_candidates_needed: number | null;
   raw_candidates_needed_basis: string;
 };
+
+/**
+ * Records that must not fill a song's daily discovery goal. Soundplate stays
+ * frozen; this only stops those packets, repair-parked packets, terminal
+ * rows, unsent IG DMs, and contact-policy failures from looking like supply.
+ */
+export type CapacityExclusions = {
+  soundplate: number;
+  route_repair: number;
+  rejected: number;
+  sent: number;
+  contact_policy: number;
+  instagram_dm_unsent: number;
+};
+
+export const FROZEN_DISCOVERY_ROUTE_HOSTS = ["soundplate.com"] as const;
+
+export function emptyCapacityExclusions(): CapacityExclusions {
+  return {
+    soundplate: 0,
+    route_repair: 0,
+    rejected: 0,
+    sent: 0,
+    contact_policy: 0,
+    instagram_dm_unsent: 0,
+  };
+}
+
+/** Soundplate (and any later frozen-route host) is not discovery supply. */
+export function isFrozenDiscoveryRouteUrl(url: unknown): boolean {
+  const host = hostOf(String(url ?? ""));
+  if (!host) return false;
+  return FROZEN_DISCOVERY_ROUTE_HOSTS.some((frozen) => host === frozen || host.endsWith(`.${frozen}`));
+}
+
+export function isSoundplateRecord(
+  record: Record<string, unknown>,
+  target?: Record<string, unknown> | null,
+): boolean {
+  const packet = (record.packet ?? null) as Record<string, unknown> | null;
+  const urls = [
+    target?.form_url,
+    target?.submission_url,
+    target?.curator_website,
+    packet?.form_url,
+    packet?.submission_url,
+  ];
+  if (urls.some((url) => isFrozenDiscoveryRouteUrl(url))) return true;
+  const method = String(target?.submission_method ?? packet?.submission_method ?? "").toLowerCase();
+  return method === "soundplate";
+}
+
+export function isRouteRepairBatch(batch: Record<string, unknown> | null | undefined): boolean {
+  const payload = (batch?.payload ?? null) as Record<string, unknown> | null;
+  return String(payload?.route_hold_repair ?? "") === "true";
+}
 
 export type FunnelResult = {
   ok: boolean;
@@ -179,7 +240,7 @@ export async function buildPerSongFunnel(
   {
     const { data, error } = await allPages(() => sb
       .from("agh_handoff_records")
-      .select("id, track_id, queue_state, submitted_at, manual_submit_result, created_at, packet, record_kind")
+      .select("id, track_id, queue_state, submitted_at, manual_submit_result, created_at, packet, record_kind, playlist_target_id, submission_channel, batch_id")
       .in("track_id", ids).order("id"));
     if (error) errors.push(`handoff_records_query_failed:${error.message}`);
     else recs = ((data ?? []) as Record<string, unknown>[]).filter((r) => (r.record_kind ?? "playlist_target") === "playlist_target");
@@ -197,7 +258,72 @@ export async function buildPerSongFunnel(
     else sends = (data ?? []) as Record<string, unknown>[];
   }
 
-  const songs: SongFunnel[] = tracks.map((t) => {
+  const targetById = new Map<string, Record<string, unknown>>();
+  const batchById = new Map<string, Record<string, unknown>>();
+  const targetIds = [...new Set(recs.map((r) => String(r.playlist_target_id ?? "")).filter(Boolean))];
+  const batchIds = [...new Set(recs.map((r) => String(r.batch_id ?? "")).filter(Boolean))];
+  for (let i = 0; i < targetIds.length; i += 200) {
+    const slice = targetIds.slice(i, i + 200);
+    const { data, error } = await allPages(() => sb
+      .from("playlist_targets")
+      .select("playlist_id, form_url, submission_url, submission_method, curator_website")
+      .in("playlist_id", slice)
+      .order("playlist_id"));
+    if (error) {
+      errors.push(`playlist_targets_query_failed:${error.message}`);
+      break;
+    }
+    for (const row of (data ?? []) as Record<string, unknown>[]) targetById.set(String(row.playlist_id), row);
+  }
+  for (let i = 0; i < batchIds.length; i += 200) {
+    const slice = batchIds.slice(i, i + 200);
+    const { data, error } = await allPages(() => sb
+      .from("agh_handoff_batches")
+      .select("id, payload")
+      .in("id", slice)
+      .order("id"));
+    if (error) {
+      errors.push(`handoff_batches_query_failed:${error.message}`);
+      break;
+    }
+    for (const row of (data ?? []) as Record<string, unknown>[]) batchById.set(String(row.id), row);
+  }
+
+  const policyCache = new Map<string, boolean>();
+  let policyErrorNoted = false;
+  const contactPolicyBlocks = async (record: Record<string, unknown>): Promise<boolean> => {
+    const playlistId = String(record.playlist_target_id ?? "").trim();
+    const trackId = String(record.track_id ?? "").trim();
+    const channel = String(record.submission_channel ?? "email").trim() || "email";
+    if (!playlistId || !trackId) return false;
+    const key = `${playlistId}|${trackId}|${channel}`;
+    const cached = policyCache.get(key);
+    if (cached != null) return cached;
+    if (typeof (sb as { rpc?: unknown }).rpc !== "function") {
+      policyCache.set(key, false);
+      return false;
+    }
+    const { data, error } = await sb.rpc("agh_contact_policy", {
+      p_target: playlistId,
+      p_track: trackId,
+      p_channel: channel,
+    });
+    if (error) {
+      if (!policyErrorNoted) {
+        errors.push(`contact_policy_query_failed:${error.message}`);
+        policyErrorNoted = true;
+      }
+      policyCache.set(key, true);
+      return true;
+    }
+    const policy = data as { ok?: boolean } | null;
+    const blocked = !policy || policy.ok !== true;
+    policyCache.set(key, blocked);
+    return blocked;
+  };
+
+  const songs: SongFunnel[] = [];
+  for (const t of tracks) {
     const ev = evalRows.filter((r) => String(r.track_id) === t.track_id);
     const rs = recs.filter((r) => String(r.track_id) === t.track_id);
     const sl = sends.filter((r) => String(r.track_id) === t.track_id);
@@ -227,7 +353,36 @@ export async function buildPerSongFunnel(
     );
     const awaitingToday = pending.filter((r) => isToday(r.created_at)).length;
 
-    const usableInflight = rs.filter((r) => usableInflightPacket(r, now)).length;
+    const exclusions = emptyCapacityExclusions();
+    const supply: Record<string, unknown>[] = [];
+    for (const r of rs) {
+      const state = String(r.queue_state ?? "");
+      const target = targetById.get(String(r.playlist_target_id ?? "")) ?? null;
+      const batch = batchById.get(String(r.batch_id ?? "")) ?? null;
+      const repair = isRouteRepairBatch(batch);
+      const soundplate = isSoundplateRecord(r, target);
+      const rejected = state.startsWith("REJECTED_");
+      const sent = state === "SENT";
+      const igUnsent = String(r.submission_channel ?? "") === "instagram_dm" && !r.submitted_at;
+      if (rejected) exclusions.rejected++;
+      if (sent) exclusions.sent++;
+      if (repair) exclusions.route_repair++;
+      if (soundplate && !rejected && !sent) exclusions.soundplate++;
+      if (!usableInflightPacket(r, now) || repair || soundplate || rejected || sent) continue;
+      if (igUnsent) {
+        exclusions.instagram_dm_unsent++;
+        continue;
+      }
+      supply.push(r);
+    }
+    let usableInflight = 0;
+    for (const r of supply) {
+      if (await contactPolicyBlocks(r)) {
+        exclusions.contact_policy++;
+        continue;
+      }
+      usableInflight++;
+    }
     const need = computeRemainingNeed({
       objective: opts.objectivePerSong,
       submissionsToday: submissions,
@@ -237,7 +392,7 @@ export async function buildPerSongFunnel(
       rawToEligibleRate: opts.rawToEligibleRate,
     });
 
-    return {
+    songs.push({
       track_id: t.track_id,
       title: t.title ?? null,
       business_date_ct: today,
@@ -264,11 +419,55 @@ export async function buildPerSongFunnel(
       business_target_met: submissions >= opts.objectivePerSong,
       submission_shortfall: need.shortfall,
       remaining_eligible_packets_needed: need.remainingPackets,
+      discovery_headroom: need.remainingPackets,
       usable_inflight_packets: usableInflight,
+      capacity_exclusions: exclusions,
       raw_candidates_needed: need.rawNeeded,
       raw_candidates_needed_basis: need.basis,
-    };
-  });
+    });
+  }
 
   return { ok: errors.length === 0, songs, errors, evaluation_log_available: evalAvailable };
+}
+
+/** Per-song discovery headroom for the Hub and for get_playlist_discovery_work. */
+export async function buildPlaylistDiscoveryHeadroom(sb: SupabaseClient): Promise<{
+  ok: boolean;
+  error?: string;
+  songs: Pick<SongFunnel,
+    "track_id" | "title" | "discovery_headroom" | "objective_submissions" | "submissions_today" |
+    "usable_inflight_packets" | "capacity_exclusions" | "raw_candidates_needed" | "remaining_eligible_packets_needed"
+  >[];
+  errors: string[];
+}> {
+  const { data: camps, error } = await sb.from("pitch_campaigns").select("track_id, status").eq("status", "active");
+  if (error) return { ok: false, error: error.message, songs: [], errors: [`campaign_query_failed:${error.message}`] };
+  const ids = [...new Set(((camps ?? []) as { track_id: string }[]).map((c) => String(c.track_id)).filter(Boolean))];
+  const { data: trackRows, error: trackErr } = ids.length
+    ? await sb.from("tracks").select("id, name").in("id", ids)
+    : { data: [] as { id: string; name: string }[], error: null };
+  if (trackErr) return { ok: false, error: trackErr.message, songs: [], errors: [`track_query_failed:${trackErr.message}`] };
+  const names = new Map(((trackRows ?? []) as { id: string; name: string }[]).map((t) => [String(t.id), t.name]));
+  const plan = await buildDiscoveryCapacityPlan(sb, ids.length);
+  const r2v = plan.funnel.raw_to_verified;
+  const funnel = await buildPerSongFunnel(
+    sb,
+    ids.map((id) => ({ track_id: id, title: names.get(id) ?? null })),
+    { objectivePerSong: plan.target_verified_per_song_per_day, rawToEligibleRate: r2v.status === "measured" ? r2v.rate : null },
+  );
+  return {
+    ok: funnel.ok,
+    songs: funnel.songs.map((s) => ({
+      track_id: s.track_id,
+      title: s.title,
+      discovery_headroom: s.discovery_headroom,
+      remaining_eligible_packets_needed: s.remaining_eligible_packets_needed,
+      objective_submissions: s.objective_submissions,
+      submissions_today: s.submissions_today,
+      usable_inflight_packets: s.usable_inflight_packets,
+      capacity_exclusions: s.capacity_exclusions,
+      raw_candidates_needed: s.raw_candidates_needed,
+    })),
+    errors: funnel.errors,
+  };
 }

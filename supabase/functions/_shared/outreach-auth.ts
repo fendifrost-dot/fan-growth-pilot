@@ -95,6 +95,7 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
   pitch_stats_summary: { cls: 'capability', capability: 'read_ops_metrics', surface: 'outreach-write' },
   list_discovery_profiles: { cls: 'capability', capability: 'read_playlist_discovery_work', surface: 'outreach-write' },
   get_discovery_capacity_plan: { cls: 'capability', capability: 'read_playlist_discovery_work', surface: 'outreach-write' },
+  get_playlist_discovery_headroom: { cls: 'capability', capability: 'read_playlist_ops', surface: 'outreach-write' },
   list_song_dna: { cls: 'capability', capability: 'read_playlist_ops', surface: 'outreach-write' },
   get_song_dna: { cls: 'capability', capability: 'read_playlist_ops', surface: 'outreach-write' },
   list_song_dna_audit: { cls: 'capability', capability: 'approve_song_dna', surface: 'admin-write' },

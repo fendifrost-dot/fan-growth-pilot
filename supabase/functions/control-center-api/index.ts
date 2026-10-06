@@ -31,6 +31,7 @@ import {
   runSplitSheetDeliveryAction,
 } from '../_shared/split-sheet-delivery.ts';
 import { buildDiscoveryCapacityPlan } from '../_shared/discovery-capacity.ts';
+import { buildPlaylistDiscoveryHeadroom } from '../_shared/playlist-funnel.ts';
 import { isClaudeSyncDiscoveryCredential } from '../_shared/ops-actors.ts';
 import { isYouTubeShareAction, runYouTubeShareAction } from '../_shared/youtube-shares.ts';
 
@@ -252,6 +253,14 @@ Deno.serve(async (req) => {
       const plan = await buildDiscoveryCapacityPlan(supabase, songs);
       return new Response(JSON.stringify({ ok: true, plan }), {
         status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (action === 'get_playlist_discovery_headroom') {
+      const headroom = await buildPlaylistDiscoveryHeadroom(supabase);
+      return new Response(JSON.stringify(headroom), {
+        status: headroom.ok ? 200 : 500,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }

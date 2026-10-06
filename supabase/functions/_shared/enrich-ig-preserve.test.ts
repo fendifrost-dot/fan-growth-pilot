@@ -14,6 +14,9 @@ Deno.test("enrich: current bare Spotify ids are enriched (no longer skipped as n
 Deno.test("enrich: IG-only curators with a working IG route are preserved", () => {
   assert(hasPreservedIgRoute({ ig_curator_account: "@rapcurator", path_verified: true, contact_method: "instagram_dm" }));
   assert(hasPreservedIgRoute({ curator_instagram: "rapcurator", path_verified: false, submission_method: "instagram_dm" }));
+  // Dotted handles are real IG handles (live: trippy.ja.prod, ravecat.playlists).
+  assert(hasPreservedIgRoute({ ig_curator_account: "trippy.ja.prod", curator_instagram: null, path_verified: true, contact_method: "instagram_dm" }));
+  assert(hasPreservedIgRoute({ ig_curator_account: "ravecat.playlists", path_verified: true }));
   assert(!hasPreservedIgRoute({ ig_curator_account: null, curator_instagram: null, path_verified: true }));
   assert(!hasPreservedIgRoute({ ig_curator_account: "not a handle!", path_verified: true }));
   assert(!hasPreservedIgRoute({ curator_instagram: "rapcurator", path_verified: false, contact_method: "email" }));

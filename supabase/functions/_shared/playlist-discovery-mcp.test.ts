@@ -2,6 +2,7 @@
  * Playlist-discovery MCP connector — inventory, verification, channels,
  * Grok handoff path, OAuth consent, and denial matrix.
  */
+import { assertSubmissionReady } from "./submission-route.ts";
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
   can,
@@ -2322,6 +2323,41 @@ Deno.test("manually_verified catalog row is re-verified and becomes verified_eli
   // Human verification is preserved, never rewritten by the connector.
   assertEquals(row.verification_status, "manually_verified");
   assertEquals(row.verified_by, "fendi");
+});
+
+Deno.test("re-verify stores the evidence that verified the route (stored row passes the same rule)", async () => {
+  const old = "Free SUBMIT MUSIC link, no fee. Remit: abstract rap, boom bap.";
+  const sb = stubSb(routeFixture([{
+    playlist_id: "abstract218",
+    playlist_name: "Abstract Rap",
+    verification_status: "manually_verified",
+    path_verified: false,
+    contact_method: "web_form",
+    submission_method: "web_form",
+    form_url: "https://play.soundplate.com/abstract218",
+    form_source_evidence: old,
+    research_context: { source: "claude_playlist_discovery" },
+    lane: "rap_general",
+  }]));
+  const fresh = "Soundplate per-playlist submission page play.soundplate.com/abstract218 fetched 2026-10-06; free submit link.";
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: RT_TRACK,
+    candidates: [{
+      playlist_id: "abstract218",
+      playlist_name: "Abstract Rap",
+      lane: "rap_general",
+      source_evidence: fresh,
+      submission_channel: "web_form",
+      form_url: "https://play.soundplate.com/abstract218",
+    }],
+  });
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  const row = (sb._tables.playlist_targets as Row[])[0];
+  assertEquals(row.path_verified, true);
+  assertEquals(row.form_source_evidence, fresh);
+  assertEquals((row.research_context as Row).prior_form_source_evidence, old);
+  assertEquals((row.research_context as Row).source, "claude_playlist_discovery");
+  assertEquals(assertSubmissionReady(row, "web_form").ok, true);
 });
 
 Deno.test("manually_verified row without a verifiable route stays unverified (no silent promote)", async () => {

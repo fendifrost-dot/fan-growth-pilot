@@ -746,11 +746,16 @@ export async function reverifyManuallyVerifiedTarget(
   }
   if (priorStatus !== "manually_verified") patch.verification_status = path.status;
   if (!str(row.ig_curator_account) && ig) patch.ig_curator_account = ig;
-  if (!str(row.form_source_evidence) && path.channel === "web_form") {
-    patch.form_source_evidence = opts.evidence;
-  }
-  if (!str(row.ig_source_evidence) && path.channel === "instagram_dm") {
-    patch.ig_source_evidence = opts.evidence;
+  // Store the evidence that actually verified the route. Keeping older evidence that the
+  // shared rule rejects left rows path_verified=true that fail agh_route_failure_code, so
+  // agh_route_recertify_targets kept demoting them again. Prior evidence is kept for audit.
+  const evidenceKey = path.channel === "web_form" ? "form_source_evidence" : path.channel === "instagram_dm" ? "ig_source_evidence" : null;
+  if (evidenceKey && str(opts.evidence) && str(opts.evidence) !== str(row[evidenceKey])) {
+    patch[evidenceKey] = opts.evidence;
+    if (str(row[evidenceKey])) {
+      const rc = (row.research_context && typeof row.research_context === "object" ? row.research_context : {}) as Record<string, unknown>;
+      patch.research_context = { ...rc, [`prior_${evidenceKey}`]: row[evidenceKey] };
+    }
   }
   const schemaErr = Object.keys(patch).find((k) => !PLAYLIST_TARGETS_SCHEMA_INSERT_KEYS.has(k));
   if (schemaErr) return { ok: false, error: `manual_reverify_schema:unknown_key:${schemaErr}` };

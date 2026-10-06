@@ -18,6 +18,7 @@ type PlaylistRow = {
   playlist_name: string;
   curator_name: string | null;
   curator_email: string | null;
+  operator_group_id?: string | null;
   curator_instagram: string | null;
   curator_submission_url: string | null;
   curator_submission_dm: string | null;
@@ -501,6 +502,21 @@ const AdminPlaylistTargets: React.FC = () => {
     }
   };
 
+  const setOperatorGroup = async (playlistId: string, current: string | null | undefined) => {
+    const entered = window.prompt(
+      "Operator group id. Playlists in the same group share the 90-day cooldown. Leave blank to clear.",
+      current ?? "",
+    );
+    if (entered == null) return;
+    try {
+      await callHubFn("patch_target", { playlist_id: playlistId, operator_group_id: entered.trim() });
+      toast.success(entered.trim() ? "Operator group saved" : "Operator group cleared");
+      await fetchRows();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const queueDm = async (playlistId: string) => {
     if (!track) {
       toast.error("Select a track first.");
@@ -846,10 +862,16 @@ const AdminPlaylistTargets: React.FC = () => {
                   </td>
                   <td className="p-2 text-xs max-w-[180px]">
                     <ContactCell row={r} />
+                    {r.operator_group_id ? (
+                      <div className="text-[10px] text-muted-foreground">Group {r.operator_group_id}</div>
+                    ) : null}
                   </td>
                   <td className="p-2 space-x-1 flex flex-wrap gap-1">
                     <Button size="sm" variant="secondary" onClick={() => setCuratorEmail(r.playlist_id)}>
                       Set email
+                    </Button>
+                    <Button size="sm" variant="secondary" onClick={() => setOperatorGroup(r.playlist_id, r.operator_group_id)}>
+                      Operator group
                     </Button>
                     <Button
                       size="sm"

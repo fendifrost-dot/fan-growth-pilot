@@ -624,6 +624,44 @@ export async function runDraftPitch(
   };
 }
 
+type ContactPolicy = {
+  ok?: boolean;
+  code?: string;
+  pitch_log_id?: string | null;
+  cooldown_until?: string | null;
+};
+
+/** Approve-path payload when contact policy names the prior pitch. */
+export function cooldownConflictData(policy: ContactPolicy | null): Record<string, unknown> | null {
+  if (!policy || policy.ok !== false || policy.code !== "cooldown_conflict") return null;
+  const pitchLogId = policy.pitch_log_id ?? null;
+  return {
+    ok: false,
+    sent: false,
+    code: "cooldown_conflict",
+    pitch_log_id: pitchLogId,
+    cooldown_until: policy.cooldown_until ?? null,
+    error: pitchLogId
+      ? `playlist_policy:cooldown_conflict:${pitchLogId}`
+      : "playlist_policy:cooldown_conflict",
+  };
+}
+
+/** Trigger exception from agh_raise_contact_policy, used when the update is rejected. */
+export function cooldownConflictFromPolicyError(message: string): Record<string, unknown> | null {
+  const match = message.match(
+    /playlist_policy:cooldown_conflict:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i,
+  );
+  if (!match) return null;
+  return {
+    ok: false,
+    sent: false,
+    code: "cooldown_conflict",
+    pitch_log_id: match[1],
+    error: message,
+  };
+}
+
 export async function runApproveDraft(
   body: Record<string, unknown>,
   sb: SupabaseClient,
@@ -780,13 +818,28 @@ export async function runApproveDraft(
   // Only flip pending → approved. An already-approved draft skips re-approval and proceeds
   // straight to send (this is what lets the UI "Send" an approved draft).
   if (draftStatus === "pending") {
+    if (draftTrackId && typeof sb.rpc === "function") {
+      const policyCall = await sb.rpc("agh_contact_policy", {
+        p_target: String(draft.playlist_id),
+        p_track: draftTrackId,
+        p_channel: draftChannelForRoute,
+      });
+      if (!policyCall.error) {
+        const conflict = cooldownConflictData(policyCall.data as ContactPolicy | null);
+        if (conflict) return { status: 422, data: conflict };
+      }
+    }
     const { error: approvalError } = await sb.from("outreach_drafts").update({
       status: "approved",
       approved_at: new Date().toISOString(),
       approved_by: opsActor.label,
       approved_content_hash: contentHash,
     }).eq("id", draftId);
-    if (approvalError) return { status: 422, data: { error: approvalError.message, sent: false } };
+    if (approvalError) {
+      const conflict = cooldownConflictFromPolicyError(approvalError.message);
+      if (conflict) return { status: 422, data: conflict };
+      return { status: 422, data: { error: approvalError.message, sent: false } };
+    }
   } else if (draftStatus === "approved") {
     // Re-seal hash if missing so send can verify; do not trust caller approved_by.
     const existingHash = String((draft as { approved_content_hash?: string | null }).approved_content_hash ?? "").trim();
@@ -2255,7 +2308,7 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(1000, Math.floor(rawLimit)) : 200;
     const offset = Math.max(0, Number(body.offset) || 0);
     let q = sb.from("playlist_targets").select(
-      "playlist_id, playlist_name, curator_name, curator_email, curator_instagram, curator_linktree, curator_submission_url, curator_submission_dm, curator_submission_note, lane, tier, authenticity_score, fraud_verdict, contact_confidence, pitch_status, follower_count, is_active, why_it_fits, recommended_pitch_angle, submission_url, submission_method, submission_cost, is_paid, verification_status, last_enriched_at, created_at, research_context",
+      "playlist_id, playlist_name, curator_name, curator_email, curator_instagram, curator_linktree, curator_submission_url, curator_submission_dm, curator_submission_note, lane, tier, authenticity_score, fraud_verdict, contact_confidence, pitch_status, follower_count, is_active, why_it_fits, recommended_pitch_angle, submission_url, submission_method, submission_cost, is_paid, verification_status, last_enriched_at, created_at, research_context, operator_group_id",
     ).order("follower_count", { ascending: false, nullsFirst: false }).order("playlist_id", { ascending: true }).range(offset, offset + limit - 1);
     // is_active: default true (preserve historical behavior); allow explicit override.
     if (body.is_active !== undefined) {
@@ -2504,6 +2557,18 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
       }
       patch.submission_method = v;
     }
+    if (body.operator_group_id !== undefined) {
+      const raw = body.operator_group_id == null ? "" : String(body.operator_group_id).trim();
+      if (!raw) {
+        patch.operator_group_id = null;
+      } else if (!/^[A-Za-z0-9][A-Za-z0-9._@+-]{0,79}$/.test(raw)) {
+        return invalidFieldValue("operator_group_id", body.operator_group_id, [
+          "1-80 letters, numbers, . _ @ + - or empty to clear",
+        ]);
+      } else {
+        patch.operator_group_id = raw;
+      }
+    }
     if (body.last_pitched_at !== undefined) {
       if (body.last_pitched_at === null || body.last_pitched_at === "") {
         patch.last_pitched_at = null;
@@ -2520,7 +2585,7 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
       return {
         status: 400,
         data: {
-          error: "Nothing to patch (curator_email, curator_instagram, lane, submission_url, pitch_status, fraud_verdict, contact_confidence, is_active, submission_method, last_pitched_at)",
+          error: "Nothing to patch (curator_email, curator_instagram, lane, submission_url, pitch_status, fraud_verdict, contact_confidence, is_active, submission_method, operator_group_id, last_pitched_at)",
         },
       };
     }

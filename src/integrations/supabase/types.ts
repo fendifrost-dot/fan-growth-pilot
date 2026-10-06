@@ -3661,7 +3661,6 @@ export type Database = {
           notes: string | null
           operator_group_id: string | null
           overlap_score: number | null
-          spotify_owner_id: string | null
           path_verification_notes: string | null
           path_verified: boolean
           pitch_count: number
@@ -3674,6 +3673,7 @@ export type Database = {
           research_context: Json | null
           similar_artists: Json | null
           song_dna_version_id: string | null
+          spotify_owner_id: string | null
           submission_cost: string
           submission_method: string | null
           submission_url: string | null
@@ -3744,7 +3744,6 @@ export type Database = {
           notes?: string | null
           operator_group_id?: string | null
           overlap_score?: number | null
-          spotify_owner_id?: string | null
           path_verification_notes?: string | null
           path_verified?: boolean
           pitch_count?: number
@@ -3757,6 +3756,7 @@ export type Database = {
           research_context?: Json | null
           similar_artists?: Json | null
           song_dna_version_id?: string | null
+          spotify_owner_id?: string | null
           submission_cost?: string
           submission_method?: string | null
           submission_url?: string | null
@@ -3827,7 +3827,6 @@ export type Database = {
           notes?: string | null
           operator_group_id?: string | null
           overlap_score?: number | null
-          spotify_owner_id?: string | null
           path_verification_notes?: string | null
           path_verified?: boolean
           pitch_count?: number
@@ -3840,6 +3839,7 @@ export type Database = {
           research_context?: Json | null
           similar_artists?: Json | null
           song_dna_version_id?: string | null
+          spotify_owner_id?: string | null
           submission_cost?: string
           submission_method?: string | null
           submission_url?: string | null
@@ -6876,6 +6876,10 @@ export type Database = {
         Returns: Json
       }
       agh_curator_form_key: { Args: { p_url: string }; Returns: string }
+      agh_curator_ig_key: {
+        Args: { p_account: string; p_instagram: string }
+        Returns: string
+      }
       agh_daily_ops_fk_preflight: {
         Args: never
         Returns: {
@@ -7002,6 +7006,7 @@ export type Database = {
       }
       agh_pipeline_health: { Args: never; Returns: Json }
       agh_pipeline_quota: { Args: { p_track?: string }; Returns: Json }
+      agh_raise_contact_policy: { Args: { p_policy: Json }; Returns: undefined }
       agh_record_can_approve: { Args: { p_id: string }; Returns: Json }
       agh_requeue_contact_cooldown: {
         Args: { p_target: string; p_track: string }
@@ -7043,6 +7048,11 @@ export type Database = {
         Returns: Json
       }
       agh_spotify_key_alias_report: { Args: never; Returns: Json }
+      agh_spotify_owner_key: {
+        Args: { p_context: Json; p_owner: string }
+        Returns: string
+      }
+      agh_spotify_playlist_key: { Args: { p_id: string }; Returns: string }
       agh_update_pitch_response: {
         Args: { p_actor: string; p_id: string; p_patch: Json }
         Returns: Json

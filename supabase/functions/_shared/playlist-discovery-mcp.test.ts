@@ -27,6 +27,7 @@ import {
   getPlaylistDiscoveryWork,
   submitPlaylistCandidates,
   createPlaylistDraftInventory,
+  inventoryPolicyDeferral,
   startClaudePlaylistStation,
   completeClaudePlaylistStation,
   assertPlaylistTargetInsertSchema,
@@ -2638,4 +2639,25 @@ Deno.test("insert: unknown curator/follower/terms stay null/unknown; values read
   const unverified = buildDiscoveryPlaylistTargetInsert({ ...base, pathVerified: false, verificationStatus: "unverified" });
   assertEquals(unverified.last_verified_at, null);
   assertEquals((unverified.research_context as Row).route_verified_by, undefined);
+});
+
+Deno.test("inventoryPolicyDeferral defers a cooldown conflict and passes eligible or unreadable policy", async () => {
+  const sb = {} as unknown as Parameters<typeof inventoryPolicyDeferral>[0];
+  const args = { playlist_id: "p1", track_id: "t1", channel: "email" };
+  const conflict = await inventoryPolicyDeferral(sb, args, () =>
+    Promise.resolve({
+      data: { ok: false, code: "cooldown_conflict", pitch_log_id: "93bcaf59-217b-41de-bd5c-2bf49cbdd80f" },
+      error: null,
+    }));
+  assertEquals(conflict?.code, "cooldown_conflict");
+  assertEquals(conflict?.pitch_log_id, "93bcaf59-217b-41de-bd5c-2bf49cbdd80f");
+  assertEquals(conflict?.playlist_id, "p1");
+  assertEquals(
+    await inventoryPolicyDeferral(sb, args, () => Promise.resolve({ data: { ok: true, code: "eligible" }, error: null })),
+    null,
+  );
+  assertEquals(
+    await inventoryPolicyDeferral(sb, args, () => Promise.resolve({ data: null, error: { message: "unknown rpc" } })),
+    null,
+  );
 });

@@ -1591,7 +1591,43 @@ export type InventoryDeps = {
       items: Record<string, unknown>[];
     },
   ) => Promise<{ data: Record<string, unknown> | null; error: { message: string; code?: string } | null }>;
+  /** agh_contact_policy pre-check wrapper — test inject only. */
+  contactPolicy?: (
+    sb: SupabaseClient,
+    args: { playlist_id: string; track_id: string; channel: string },
+  ) => Promise<{ data: Record<string, unknown> | null; error: { message: string } | null }>;
 };
+
+/**
+ * Pre-check the contact policy (#43/#49: cooldown, paid, blocklist, suppression) that
+ * agh_guard_draft_policy enforces at insert. A refused row is deferred and reported instead
+ * of raising inside the atomic persist RPC, where one row would fail the whole batch.
+ * Returns null when the policy passes or cannot be read — the trigger still guards the insert.
+ */
+export async function inventoryPolicyDeferral(
+  sb: SupabaseClient,
+  args: { playlist_id: string; track_id: string; channel: string },
+  check?: InventoryDeps["contactPolicy"],
+): Promise<Record<string, unknown> | null> {
+  const run = check ??
+    ((client, a) =>
+      client.rpc("agh_contact_policy", { p_target: a.playlist_id, p_track: a.track_id, p_channel: a.channel }));
+  let res: { data: Record<string, unknown> | null; error: { message: string } | null };
+  try {
+    res = await run(sb, args);
+  } catch {
+    return null;
+  }
+  const policy = res?.error ? null : res?.data;
+  if (!policy || typeof policy !== "object" || policy.ok !== false) return null;
+  return {
+    playlist_id: args.playlist_id,
+    channel: args.channel,
+    code: String(policy.code ?? "blocked"),
+    pitch_log_id: policy.pitch_log_id ?? null,
+    cooldown_until: policy.cooldown_until ?? null,
+  };
+}
 
 function inventoryPersistAttr(ops: OpsActor): Record<string, string> {
   const attr = attributionFrom(ops);
@@ -1736,6 +1772,7 @@ export async function createPlaylistDraftInventory(
 
   const items: Prepared[] = [];
   const reusedPreview: Record<string, unknown>[] = [];
+  const policyDeferred: Record<string, unknown>[] = [];
 
   for (const requestedId of candidateIds) {
     // Accept any supported Spotify form for a stored target (ID / spotify:ID / URL).
@@ -1847,6 +1884,16 @@ export async function createPlaylistDraftInventory(
         batch_id: existing.batch_id ?? null,
         reused: true,
       });
+      continue;
+    }
+
+    const deferral = await inventoryPolicyDeferral(
+      sb,
+      { playlist_id: playlistId, track_id: trackId, channel },
+      deps.contactPolicy,
+    );
+    if (deferral) {
+      policyDeferred.push(deferral);
       continue;
     }
 
@@ -1970,6 +2017,17 @@ export async function createPlaylistDraftInventory(
 
   const persistAttr = inventoryPersistAttr(ops);
 
+  if (!items.length && !reusedPreview.length && policyDeferred.length) {
+    return {
+      status: 409,
+      data: {
+        error: "every candidate is refused by contact policy — nothing to persist",
+        code: "policy_deferred_all",
+        policy_deferred: policyDeferred,
+      },
+    };
+  }
+
   if (!items.length) {
     const reusedBatchId = reusedPreview[0]?.batch_id != null
       ? String(reusedPreview[0].batch_id)
@@ -2003,6 +2061,7 @@ export async function createPlaylistDraftInventory(
         reused_pairs: reusedPreview,
         server_pitch_source: pitchProbe.source,
         records: { ok: true, inserted: 0, duplicates: reusedPreview.length, rows: [] },
+        policy_deferred: policyDeferred,
         stored_pitch_sources: reusedPreview.map((r) => ({
           outreach_draft_id: r.outreach_draft_id ?? null,
           playlist_target_id: r.playlist_id ?? null,
@@ -2097,6 +2156,7 @@ export async function createPlaylistDraftInventory(
         reused: Boolean(r.reused),
       })),
       race_resolved: result.race_resolved ?? false,
+      policy_deferred: policyDeferred,
     },
   };
 }

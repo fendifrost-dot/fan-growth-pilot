@@ -18,7 +18,7 @@ import {
   exchangeToken,
   issueAuthCode,
   registerClient,
-  renderConsentPage,
+  aghConsentUrl,
   resolveBearerActorKind,
   revokeToken,
   SYNC_DISCOVERY_SCOPE,
@@ -44,13 +44,6 @@ function json(status: number, body: unknown, extra: Record<string, string> = {})
   return new Response(JSON.stringify(body), {
     status,
     headers: { ...corsHeaders, "Content-Type": "application/json", ...extra },
-  });
-}
-
-function html(status: number, body: string): Response {
-  return new Response(body, {
-    status,
-    headers: { ...corsHeaders, "Content-Type": "text/html; charset=utf-8" },
   });
 }
 
@@ -254,27 +247,22 @@ Deno.serve(async (req) => {
         const challenge = url.searchParams.get("code_challenge") || "";
         const method = url.searchParams.get("code_challenge_method") || "S256";
         const scope = url.searchParams.get("scope") || SYNC_DISCOVERY_SCOPE;
-        const supabaseUrl = (Deno.env.get("SUPABASE_URL") || "").trim();
-        const anonKey = (
-          Deno.env.get("SUPABASE_ANON_KEY") ||
-          Deno.env.get("SUPABASE_PUBLISHABLE_KEY") ||
-          ""
-        ).trim();
-        return html(
-          200,
-          renderConsentPage({
-            clientId,
-            redirectUri,
-            state,
-            codeChallenge: challenge,
-            codeChallengeMethod: method,
-            scope,
-            supabaseUrl,
-            supabaseAnonKey: anonKey,
-            aghAppUrl: aghPublicAppUrl(),
-            connector: "sync",
-          }),
-        );
+        // Supabase rewrites text/html from edge functions to text/plain, so the
+        // consent UI lives in AGH Admin (same session, same POST back here).
+        const consent = aghConsentUrl({
+          clientId,
+          redirectUri,
+          state,
+          codeChallenge: challenge,
+          codeChallengeMethod: method,
+          scope,
+          aghAppUrl: aghPublicAppUrl(),
+          connector: "sync",
+        });
+        return new Response(null, {
+          status: 302,
+          headers: { ...corsHeaders, Location: consent, "Cache-Control": "no-store" },
+        });
       }
       if (req.method === "POST") {
         const ct = req.headers.get("content-type") || "";

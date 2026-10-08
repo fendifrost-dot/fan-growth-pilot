@@ -57,6 +57,7 @@ import {
   exchangeToken,
   revokeToken,
   renderConsentPage,
+  aghConsentUrl,
   REFRESH_TOKEN_MAX_LIFETIME_MS,
 } from "./mcp-oauth.ts";
 
@@ -1151,6 +1152,26 @@ Deno.test("OAuth consent is Fendi-session-only; secret paste rejected", async ()
     assert(html.includes("Authorize"));
     assert(html.includes("Cancel"));
   });
+});
+
+Deno.test("GET /oauth/authorize consent lives in AGH Admin (edge HTML is served as text/plain)", () => {
+  const base = {
+    clientId: "agh-pd-1",
+    redirectUri: "https://claude.ai/api/mcp/auth_callback",
+    state: "s t",
+    codeChallenge: "ch",
+    codeChallengeMethod: "S256",
+    aghAppUrl: "https://fan-growth-pilot.lovable.app",
+  };
+  const pd = new URL(aghConsentUrl({ ...base, scope: PLAYLIST_DISCOVERY_SCOPE }));
+  assertEquals(pd.origin + pd.pathname, "https://fan-growth-pilot.lovable.app/admin/mcp-playlist-authorize");
+  assertEquals(pd.searchParams.get("client_id"), "agh-pd-1");
+  assertEquals(pd.searchParams.get("redirect_uri"), base.redirectUri);
+  assertEquals(pd.searchParams.get("state"), "s t");
+  assertEquals(pd.searchParams.get("code_challenge"), "ch");
+  assertEquals(pd.searchParams.get("scope"), PLAYLIST_DISCOVERY_SCOPE);
+  const sync = new URL(aghConsentUrl({ ...base, scope: "sync_discovery", connector: "sync" }));
+  assertEquals(sync.pathname, "/admin/mcp-sync-authorize");
 });
 
 Deno.test("full OAuth authorization-code + PKCE + refresh rotation + revocation", async () => {

@@ -1349,6 +1349,19 @@ async function markManualHandoffSubmission(
 }
 
 /**
+ * Opt-in preview. Only boolean true and the string "true" are dry runs.
+ * Absent, false, and every other value keep the live advance.
+ */
+function isDryRun(value: unknown): boolean {
+  return value === true || value === "true";
+}
+
+/** Records advance_agh_handoff_batch would rewrite. Individually rejected rows stay put. */
+function movableRecordCount(records: Record<string, unknown>[]): number {
+  return records.filter((r) => String(r.queue_state ?? "") !== "REJECTED_BY_GROK").length;
+}
+
+/**
  * Advance every Claude-owned batch that is still waiting behind the tranche station
  * into AWAITING_GROK_REVIEW, independently of any station run.
  *
@@ -1357,6 +1370,10 @@ async function markManualHandoffSubmission(
  * manual CoS clearance before Grok could review them. Packet contents are never
  * recreated or modified here — only the queue state moves forward, one atomic
  * compare-and-set per batch, with authority enforced exactly as elsewhere.
+ *
+ * dry_run true (boolean or the string "true") returns the batches that would move
+ * — ids, record counts, from/to status, and why any batch would be skipped —
+ * and does not write status, audit rows, or anything else.
  */
 export async function advanceClaudeReadyBatches(
   sb: SupabaseClient,
@@ -1364,8 +1381,9 @@ export async function advanceClaudeReadyBatches(
   ops: OpsActor,
 ): Promise<RunResult> {
   const clean = stripSpoofedAttribution(body);
+  const dryRun = isDryRun(clean.dry_run);
   const authErr = authorizeHandoffState(ops, "AWAITING_GROK_REVIEW");
-  if (authErr) return { status: 403, data: { error: authErr, code: "authority_denied" } };
+  if (authErr) return { status: 403, data: { error: authErr, code: "authority_denied", dry_run: dryRun } };
 
   const explicitIds = Array.isArray(clean.batch_ids)
     ? clean.batch_ids.map((v) => String(v ?? "").trim()).filter(Boolean)
@@ -1388,7 +1406,7 @@ export async function advanceClaudeReadyBatches(
     if (batchKind) q = q.eq("batch_kind", batchKind);
     if (businessDate) q = q.eq("business_date_ct", businessDate);
     const { data, error } = await q;
-    if (error) return { status: 500, data: { error: error.message } };
+    if (error) return { status: 500, data: { error: error.message, dry_run: dryRun } };
     candidateIds = (data ?? []).map((b) => String(b.id));
   }
 
@@ -1399,12 +1417,13 @@ export async function advanceClaudeReadyBatches(
       .select("batch_id")
       .eq("track_id", trackId)
       .in("batch_id", candidateIds);
-    if (rErr) return { status: 500, data: { error: rErr.message } };
+    if (rErr) return { status: 500, data: { error: rErr.message, dry_run: dryRun } };
     const allowed = new Set((recs ?? []).map((r) => String(r.batch_id)));
     candidateIds = candidateIds.filter((id) => allowed.has(id));
   }
 
   const advanced: Record<string, unknown>[] = [];
+  const wouldMove: Record<string, unknown>[] = [];
   const skipped: Record<string, unknown>[] = [];
   const failed: Record<string, unknown>[] = [];
 
@@ -1414,31 +1433,49 @@ export async function advanceClaudeReadyBatches(
       .select("id, queue_state")
       .eq("id", batchId)
       .maybeSingle();
-    if (bErr) return { status: 500, data: { error: bErr.message } };
+    if (bErr) return { status: 500, data: { error: bErr.message, dry_run: dryRun } };
     if (!batch) {
       failed.push({ batch_id: batchId, code: "batch_not_found" });
       continue;
     }
     let state = String(batch.queue_state);
     if (!pending.includes(state as HandoffQueueState)) {
-      skipped.push({ batch_id: batchId, queue_state: state, reason: "not_claude_pending" });
+      skipped.push({
+        batch_id: batchId,
+        queue_state: state,
+        from_status: state,
+        reason: "not_claude_pending",
+      });
       continue;
     }
     // Repair batches go back to Grok only once every route hold is resolved.
     const { data: heldRecs, error: hErr } = await sb
       .from("agh_handoff_records")
-      .select("id, packet")
+      .select("id, queue_state, packet")
       .eq("batch_id", batchId);
-    if (hErr) return { status: 500, data: { error: hErr.message } };
-    const unresolved = ((heldRecs ?? []) as Record<string, unknown>[])
+    if (hErr) return { status: 500, data: { error: hErr.message, dry_run: dryRun } };
+    const records = (heldRecs ?? []) as Record<string, unknown>[];
+    const unresolved = records
       .filter((r) => recordRouteHold(r))
       .map((r) => ({ record_id: r.id, route_hold: recordRouteHold(r) }));
     if (unresolved.length) {
       skipped.push({
         batch_id: batchId,
         queue_state: state,
+        from_status: state,
         reason: "route_hold_unresolved",
         held_records: unresolved,
+      });
+      continue;
+    }
+    // Preview stops here. The live path below is the only writer (status CAS +
+    // the advance RPC, which is also what stamps audit-bearing row updates).
+    if (dryRun) {
+      wouldMove.push({
+        batch_id: batchId,
+        record_count: movableRecordCount(records),
+        from_status: state,
+        to_status: "AWAITING_GROK_REVIEW",
       });
       continue;
     }
@@ -1460,12 +1497,15 @@ export async function advanceClaudeReadyBatches(
     advanced.push({ batch_id: batchId, queue_state: state });
   }
 
+  const plannedCount = dryRun ? wouldMove.length : advanced.length;
   return {
-    status: failed.length > 0 && advanced.length === 0 ? 422 : 200,
+    status: failed.length > 0 && plannedCount === 0 ? 422 : 200,
     data: {
       ok: failed.length === 0,
-      advanced,
-      advanced_count: advanced.length,
+      dry_run: dryRun,
+      ...(dryRun
+        ? { would_move: wouldMove, would_move_count: wouldMove.length, advanced: [], advanced_count: 0 }
+        : { advanced, advanced_count: advanced.length }),
       skipped,
       failed,
       scope: {

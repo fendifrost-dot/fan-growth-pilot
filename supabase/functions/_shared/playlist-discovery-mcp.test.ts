@@ -28,6 +28,7 @@ import {
   submitPlaylistCandidates,
   createPlaylistDraftInventory,
   inventoryPolicyDeferral,
+  reverifyManuallyVerifiedTarget,
   startClaudePlaylistStation,
   completeClaudePlaylistStation,
   assertPlaylistTargetInsertSchema,
@@ -2660,4 +2661,61 @@ Deno.test("inventoryPolicyDeferral defers a cooldown conflict and passes eligibl
     await inventoryPolicyDeferral(sb, args, () => Promise.resolve({ data: null, error: { message: "unknown rpc" } })),
     null,
   );
+});
+
+function reverifySb(row: Record<string, unknown>) {
+  const writes: Record<string, unknown>[] = [];
+  const sb = {
+    from: () => ({
+      select: () => ({ eq: () => ({ maybeSingle: () => Promise.resolve({ data: row, error: null }) }) }),
+      update: (patch: Record<string, unknown>) => {
+        writes.push(patch);
+        return { eq: () => Promise.resolve({ error: null, count: 1 }) };
+      },
+    }),
+  } as unknown as Parameters<typeof reverifyManuallyVerifiedTarget>[0];
+  return { sb, writes };
+}
+
+const heldSoundplateRow = {
+  playlist_id: "boom102",
+  verification_status: "auto_verified",
+  path_verified: false,
+  contact_method: "web_form",
+  submission_method: "web_form",
+  form_url: "https://play.soundplate.com/boom102",
+  form_source_evidence: "Free submit link. Bar-heavy hip hop playlist.",
+  research_context: { lane: "boom_bap" },
+};
+
+Deno.test("re-verify accepts same-host proof from the candidate source_url and stores it", async () => {
+  const { sb, writes } = reverifySb({ ...heldSoundplateRow });
+  const evidence = "Free SUBMIT MUSIC link, no fee; remit is lyrical boom bap.";
+  const res = await reverifyManuallyVerifiedTarget(sb, playlistDiscoveryActor(), {
+    playlistId: "boom102",
+    evidence,
+    candidate: {
+      submission_channel: "web_form",
+      form_url: "https://play.soundplate.com/boom102",
+      source_url: "https://play.soundplate.com/boom102",
+    },
+  });
+  assert(res.ok && res.reverified, JSON.stringify(res));
+  const rc = writes[0].research_context as Record<string, unknown>;
+  assertEquals(rc.source_url, "https://play.soundplate.com/boom102");
+  assertEquals(rc.lane, "boom_bap");
+  // The stored row now passes the shared boundary rule on its own.
+  const stored = { ...heldSoundplateRow, ...writes[0] };
+  assertEquals(assertSubmissionReady(stored, "web_form").ok, true);
+});
+
+Deno.test("re-verify still rejects web-form evidence with no same-host link", async () => {
+  const { sb, writes } = reverifySb({ ...heldSoundplateRow });
+  const res = await reverifyManuallyVerifiedTarget(sb, playlistDiscoveryActor(), {
+    playlistId: "boom102",
+    evidence: "Free SUBMIT MUSIC link, no fee.",
+    candidate: { submission_channel: "web_form", source_url: "https://example-blog.com/list" },
+  });
+  assert(res.ok && !res.reverified);
+  assertEquals(writes.length, 0);
 });

@@ -527,6 +527,36 @@ export async function resolveBearerActorKind(
   };
 }
 
+/**
+ * AGH Admin consent URL for GET /oauth/authorize.
+ * Supabase Edge Functions rewrite text/html responses to text/plain, so the
+ * consent UI must live in the AGH app; the edge function 302s there.
+ */
+export function aghConsentUrl(opts: {
+  clientId: string;
+  redirectUri: string;
+  state: string;
+  codeChallenge: string;
+  codeChallengeMethod: string;
+  scope: string;
+  aghAppUrl: string;
+  connector?: "playlist" | "sync";
+}): string {
+  const isSync = opts.connector === "sync" || opts.scope === SYNC_DISCOVERY_SCOPE;
+  const authorizePath = isSync
+    ? "/admin/mcp-sync-authorize"
+    : "/admin/mcp-playlist-authorize";
+  return `${opts.aghAppUrl}${authorizePath}?` +
+    new URLSearchParams({
+      client_id: opts.clientId,
+      redirect_uri: opts.redirectUri,
+      state: opts.state,
+      code_challenge: opts.codeChallenge,
+      code_challenge_method: opts.codeChallengeMethod || "S256",
+      scope: opts.scope,
+    }).toString();
+}
+
 /** One-click Authorize/Cancel consent HTML — no credential inputs. */
 export function renderConsentPage(opts: {
   clientId: string;

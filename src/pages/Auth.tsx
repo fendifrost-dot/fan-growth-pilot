@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { lovable } from "@/integrations/lovable/index";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,13 @@ import { toast } from "sonner";
 
 const Auth: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
+  // Return to the guarded page (incl. query, e.g. MCP OAuth consent params); same-origin paths only.
+  const fromState = (location.state as { from?: unknown } | null)?.from;
+  const returnTo =
+    typeof fromState === "string" && fromState.startsWith("/") && !fromState.startsWith("//")
+      ? fromState
+      : "/";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(true);
@@ -20,10 +27,10 @@ const Auth: React.FC = () => {
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session && !session.user.is_anonymous) {
-        navigate("/", { replace: true });
+        navigate(returnTo, { replace: true });
       }
     });
-  }, [navigate]);
+  }, [navigate, returnTo]);
 
   const applyRememberPreference = () => {
     // When "remember this device" is off, downgrade persistence to sessionStorage
@@ -54,7 +61,7 @@ const Auth: React.FC = () => {
     }
     applyRememberPreference();
     toast.success("Signed in");
-    navigate("/", { replace: true });
+    navigate(returnTo, { replace: true });
   };
 
   const handleSignUp = async (e: React.FormEvent) => {
@@ -74,7 +81,7 @@ const Auth: React.FC = () => {
     if (data.session) {
       applyRememberPreference();
       toast.success("Account created");
-      navigate("/", { replace: true });
+      navigate(returnTo, { replace: true });
     } else {
       toast.success("Check your email to confirm your account.");
     }
@@ -93,7 +100,7 @@ const Auth: React.FC = () => {
     }
     if (result.redirected) return;
     applyRememberPreference();
-    navigate("/", { replace: true });
+    navigate(returnTo, { replace: true });
   };
 
   return (

@@ -22,7 +22,8 @@ type PlaylistRow = {
   curator_instagram: string | null;
   curator_submission_url: string | null;
   curator_submission_dm: string | null;
-  submission_cost: string | null;
+  /** patch_target writes this; is_paid is generated and is not a patch field. */
+  submission_cost: "free" | "paid" | "tip_appreciated" | "unknown" | null;
   is_paid: boolean | null;
   verification_status: string | null;
   lane: string | null;

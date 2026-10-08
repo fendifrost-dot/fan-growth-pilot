@@ -106,6 +106,11 @@ curl -sS -X POST "$CCA" -H "content-type: application/json" \
 # Clear last_pitched_at after accidental QA (no SQL needed)
 curl -sS -X POST "$CCA" -H "content-type: application/json" \
   -d '{"action":"patch_target","playlist_id":"spotify:ID","last_pitched_at":null}'
+
+# Mark a pay-to-play curator. Allowed: free, paid, tip_appreciated, unknown.
+# Do not send is_paid — it is generated from submission_cost.
+curl -sS -X POST "$CCA" -H "content-type: application/json" \
+  -d '{"action":"patch_target","playlist_id":"spotify:ID","submission_cost":"paid"}'
 ```
 
 **Spotify vendor emails:** if enrich stored `ap@spotify.com`, run `supabase/migrations/20260601_scrub_spotify_vendor_emails.sql` in SQL Editor.

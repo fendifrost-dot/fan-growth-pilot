@@ -708,6 +708,12 @@ export async function reverifyManuallyVerifiedTarget(
     (rowChannel === "web_form" && rowFormOk) ||
     (rowChannel === "instagram_dm" && !!(str(row.ig_curator_account) || str(row.curator_instagram)));
   const channel = (rowHasRoute ? rowChannel : null) ?? (str(c.submission_channel) || rowChannel || null);
+  // Same-host proof can come from the page the evidence was read on, as for new targets.
+  // The candidate's source_url wins over the stored one; it is saved below so the stored
+  // row keeps passing the shared route rule (agh_route_failure_code reads it).
+  const rc0 = (row.research_context && typeof row.research_context === "object" ? row.research_context : {}) as Record<string, unknown>;
+  const candSource = /^https?:\/\//i.test(str(c.source_url)) ? str(c.source_url) : "";
+  const sourceUrl = candSource || str(rc0.source_url) || null;
 
   const path = await evaluateSubmissionPath(
     {
@@ -719,6 +725,7 @@ export async function reverifyManuallyVerifiedTarget(
       ig_source_evidence: opts.evidence,
       // Only a real form URL counts; legacy submission_url often holds the playlist URL.
       submission_url: form || null,
+      source_url: sourceUrl,
     },
     { sb },
   );
@@ -750,13 +757,16 @@ export async function reverifyManuallyVerifiedTarget(
   // shared rule rejects left rows path_verified=true that fail agh_route_failure_code, so
   // agh_route_recertify_targets kept demoting them again. Prior evidence is kept for audit.
   const evidenceKey = path.channel === "web_form" ? "form_source_evidence" : path.channel === "instagram_dm" ? "ig_source_evidence" : null;
+  let rcPatch: Record<string, unknown> | null = null;
   if (evidenceKey && str(opts.evidence) && str(opts.evidence) !== str(row[evidenceKey])) {
     patch[evidenceKey] = opts.evidence;
-    if (str(row[evidenceKey])) {
-      const rc = (row.research_context && typeof row.research_context === "object" ? row.research_context : {}) as Record<string, unknown>;
-      patch.research_context = { ...rc, [`prior_${evidenceKey}`]: row[evidenceKey] };
-    }
+    if (str(row[evidenceKey])) rcPatch = { ...rc0, [`prior_${evidenceKey}`]: row[evidenceKey] };
   }
+  if (path.channel === "web_form" && candSource && candSource !== str(rc0.source_url)) {
+    rcPatch = { ...(rcPatch ?? rc0), source_url: candSource };
+    if (str(rc0.source_url)) rcPatch.prior_source_url = rc0.source_url;
+  }
+  if (rcPatch) patch.research_context = rcPatch;
   const schemaErr = Object.keys(patch).find((k) => !PLAYLIST_TARGETS_SCHEMA_INSERT_KEYS.has(k));
   if (schemaErr) return { ok: false, error: `manual_reverify_schema:unknown_key:${schemaErr}` };
 

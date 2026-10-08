@@ -2266,6 +2266,13 @@ const PATCH_SUBMISSION_METHOD = [
   // allow-list omitted (patch_target would otherwise reject setting them):
   "web_form", "form", "instagram_dm", "spotify_dm", "algorithmic",
 ] as const;
+// Stored values for playlist_targets.submission_cost. Matches the CHECK
+// constraint (free | paid | tip_appreciated | unknown). tip_appreciated is
+// accepted on purpose: enrichment already writes it, the admin UI renders it,
+// and is_paid maps it to false (a tip is not a placement fee). Rejecting it
+// here would force another direct SQL write for a legal column value.
+// is_paid is a generated column — never include it in a patch.
+const PATCH_SUBMISSION_COST = ["free", "paid", "tip_appreciated", "unknown"] as const;
 // fraud_verdict is a trust/category verdict (column default 'safe'). "pay_to_play"
 // is a DISTINCT category — not fraud (Fendi may choose to pay) but a paid-placement
 // vendor that must never be reached by automated outreach. Kept on fraud_verdict
@@ -2603,6 +2610,16 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
       }
       patch.submission_method = v;
     }
+    if (body.submission_cost !== undefined) {
+      const v = String(body.submission_cost ?? "").trim().toLowerCase();
+      if (!(PATCH_SUBMISSION_COST as readonly string[]).includes(v)) {
+        return invalidFieldValue("submission_cost", body.submission_cost, PATCH_SUBMISSION_COST);
+      }
+      // is_paid is generated from submission_cost. Writing it raises
+      // "can only be updated to DEFAULT" and the two columns would drift
+      // if it were a normal column. Only the stored value is patched.
+      patch.submission_cost = v;
+    }
     if (body.operator_group_id !== undefined) {
       const raw = body.operator_group_id == null ? "" : String(body.operator_group_id).trim();
       if (!raw) {
@@ -2631,7 +2648,7 @@ export async function runPlaylistAdmin(body: Record<string, unknown>, sb: Supaba
       return {
         status: 400,
         data: {
-          error: "Nothing to patch (curator_email, curator_instagram, lane, submission_url, pitch_status, fraud_verdict, contact_confidence, is_active, submission_method, operator_group_id, last_pitched_at)",
+          error: "Nothing to patch (curator_email, curator_instagram, lane, submission_url, pitch_status, fraud_verdict, contact_confidence, is_active, submission_method, submission_cost, operator_group_id, last_pitched_at)",
         },
       };
     }

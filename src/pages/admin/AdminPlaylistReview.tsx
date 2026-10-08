@@ -12,7 +12,8 @@ type ReviewRow = {
   curator_email: string | null;
   platform: string | null;
   contact_method: string | null;
-  submission_cost: string | null;
+  /** free | paid | tip_appreciated | unknown. is_paid is generated from this. */
+  submission_cost: "free" | "paid" | "tip_appreciated" | "unknown" | null;
   verification_status: string;
   verification_notes: string | null;
   bounce_count: number | null;

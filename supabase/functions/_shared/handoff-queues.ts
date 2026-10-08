@@ -818,6 +818,236 @@ export async function reviewHandoffBatch(
   return res;
 }
 
+/** Statuses a manual IG receipt must not overwrite. Anything else may become pitched. */
+const LATER_OR_TERMINAL_PITCH_STATUS = new Set([
+  "replied",
+  "placed",
+  "declined",
+  "pay_to_play",
+  "paid",
+  "inactive",
+]);
+
+function blankValue(v: unknown): boolean {
+  return v == null || String(v).trim() === "";
+}
+
+function packetObject(v: unknown): Record<string, unknown> {
+  return v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
+}
+
+function receiptInstant(value: unknown): string | null {
+  const t = Date.parse(String(value ?? ""));
+  return Number.isFinite(t) ? new Date(t).toISOString() : null;
+}
+
+export function isLaterOrTerminalPitchStatus(status: unknown): boolean {
+  return LATER_OR_TERMINAL_PITCH_STATUS.has(String(status ?? "").trim().toLowerCase());
+}
+
+/** Fendi-authored drafts stay on attribution hold. drafted_by lives on the row when present, else in metadata. */
+export function isAttributionHeldDraft(row: Record<string, unknown>): boolean {
+  const meta = packetObject(row.metadata);
+  return [row.generated_by, row.drafted_by, meta.generated_by, meta.drafted_by]
+    .some((v) => String(v ?? "").trim().toLowerCase() === "fendi");
+}
+
+function draftHandoffId(row: Record<string, unknown>): string {
+  return String(packetObject(row.metadata).handoff_record_id ?? "").trim();
+}
+
+/**
+ * One approved instagram_dm draft for this track + playlist.
+ * A handoff match that is attribution-held is not replaced by a different draft.
+ * Otherwise prefer metadata.handoff_record_id, then the oldest remaining draft.
+ */
+export function chooseManualIgDraft(
+  rows: Record<string, unknown>[],
+  handoffId: string,
+): { draft: Record<string, unknown> | null; skipped: "attribution_held" | null } {
+  const heldMatch = rows.some((row) => isAttributionHeldDraft(row) && draftHandoffId(row) === handoffId);
+  if (heldMatch) return { draft: null, skipped: "attribution_held" };
+  const open = rows.filter((row) => !isAttributionHeldDraft(row));
+  if (!open.length) return { draft: null, skipped: rows.length ? "attribution_held" : null };
+  const preferred = open.find((row) => draftHandoffId(row) === handoffId);
+  if (preferred) return { draft: preferred, skipped: null };
+  const sorted = [...open].sort((a, b) => {
+    const created = String(a.created_at ?? "").localeCompare(String(b.created_at ?? ""));
+    if (created !== 0) return created;
+    return String(a.id ?? "").localeCompare(String(b.id ?? ""));
+  });
+  return { draft: sorted[0] ?? null, skipped: null };
+}
+
+/**
+ * Columns to write on playlist_targets for one IG receipt.
+ * First stamp uses the receipt time. A replay fills gaps only and does not move a time already stored.
+ * Returns null when the row is already consistent.
+ */
+export function igReceiptTargetPatch(opts: {
+  pitchStatus: unknown;
+  lastPitchedAt: unknown;
+  igManualSubmittedAt: unknown;
+  submittedAt: string;
+  result: string;
+  actorLabel: string;
+  replay: boolean;
+}): Record<string, unknown> | null {
+  const patch: Record<string, unknown> = {};
+  const status = String(opts.pitchStatus ?? "").trim().toLowerCase();
+  if (!isLaterOrTerminalPitchStatus(status)) {
+    if (!opts.replay || status !== "pitched") patch.pitch_status = "pitched";
+    if (!opts.replay || blankValue(opts.lastPitchedAt)) patch.last_pitched_at = opts.submittedAt;
+  }
+  if (!opts.replay || blankValue(opts.igManualSubmittedAt)) {
+    patch.ig_manual_submitted_at = opts.submittedAt;
+    patch.ig_manual_response_status = opts.result;
+    patch.ig_manual_submitted_by = opts.actorLabel;
+  }
+  return Object.keys(patch).length ? patch : null;
+}
+
+function receiptPitchLogId(record: Record<string, unknown>): string {
+  const receipt = packetObject(packetObject(record.packet).submission_receipt);
+  return String(receipt.pitch_log_id ?? "").trim();
+}
+
+async function resolveManualPitchLogId(
+  sb: SupabaseClient,
+  record: Record<string, unknown>,
+): Promise<{ id: string | null; error?: string }> {
+  const fromPacket = receiptPitchLogId(record);
+  if (fromPacket) return { id: fromPacket };
+  const { data, error } = await sb
+    .from("agh_manual_submission_receipts")
+    .select("pitch_log_id")
+    .eq("handoff_record_id", record.id)
+    .maybeSingle();
+  if (error) return { id: null, error: error.message };
+  const id = String((data as { pitch_log_id?: unknown } | null)?.pitch_log_id ?? "").trim();
+  return { id: id || null };
+}
+
+/**
+ * After the handoff stamp (the DB trigger writes pitch_log), bring the playlist
+ * target and the matching approved Instagram draft in line with that same receipt.
+ * Replay is safe: it does not insert another pitch_log and does not move timestamps
+ * that are already stored.
+ */
+async function finishManualIgDmReceipt(
+  sb: SupabaseClient,
+  opts: {
+    record: Record<string, unknown>;
+    submittedAt: string;
+    result: string;
+    actorLabel: string;
+    replay: boolean;
+  },
+): Promise<{ status: number; data: Record<string, unknown>; extra: Record<string, unknown> }> {
+  const playlistId = String(opts.record.playlist_target_id ?? "").trim();
+  const trackId = String(opts.record.track_id ?? "").trim();
+  const handoffId = String(opts.record.id ?? "").trim();
+  const fail = (error: string, code = "receipt_followthrough_failed"): {
+    status: number;
+    data: Record<string, unknown>;
+    extra: Record<string, unknown>;
+  } => ({
+    status: 500,
+    data: { error, code, record: opts.record },
+    extra: {},
+  });
+
+  const { data: target, error: targetErr } = await sb
+    .from("playlist_targets")
+    .select("playlist_id, pitch_status, last_pitched_at, ig_manual_submitted_at")
+    .eq("playlist_id", playlistId)
+    .maybeSingle();
+  if (targetErr) return fail(`handoff stamped but playlist_targets read failed: ${targetErr.message}`);
+  if (!target) return fail("handoff stamped but playlist target is missing");
+
+  const targetRow = target as Record<string, unknown>;
+  const targetPatch = igReceiptTargetPatch({
+    pitchStatus: targetRow.pitch_status,
+    lastPitchedAt: targetRow.last_pitched_at,
+    igManualSubmittedAt: targetRow.ig_manual_submitted_at,
+    submittedAt: opts.submittedAt,
+    result: opts.result,
+    actorLabel: opts.actorLabel,
+    replay: opts.replay,
+  });
+  let targetWrote = false;
+  if (targetPatch) {
+    const { error: ptErr } = await sb
+      .from("playlist_targets")
+      .update({ ...targetPatch, updated_at: new Date().toISOString() })
+      .eq("playlist_id", playlistId);
+    if (ptErr) return fail(`handoff stamped but playlist_targets mirror failed: ${ptErr.message}`);
+    targetWrote = true;
+  }
+
+  // select * so a drafted_by column is visible where the table has one, without failing where it does not.
+  const { data: draftRows, error: draftErr } = await sb
+    .from("outreach_drafts")
+    .select("*")
+    .eq("track_id", trackId)
+    .eq("playlist_id", playlistId)
+    .eq("channel", "instagram_dm")
+    .eq("status", "approved");
+  if (draftErr) return fail(`handoff stamped but outreach_drafts read failed: ${draftErr.message}`);
+  const drafts = (draftRows ?? []) as Record<string, unknown>[];
+
+  const choice = chooseManualIgDraft(drafts, handoffId);
+  let pitchLogId = receiptPitchLogId(opts.record) || null;
+  let draftId: string | null = null;
+  if (choice.draft) {
+    const needsSentAt = blankValue(choice.draft.sent_at);
+    const needsLog = blankValue(choice.draft.pitch_log_id);
+    if (needsLog && !pitchLogId) {
+      const resolved = await resolveManualPitchLogId(sb, opts.record);
+      if (resolved.error) return fail(`handoff stamped but pitch_log lookup failed: ${resolved.error}`);
+      pitchLogId = resolved.id;
+    }
+    if (needsLog && !pitchLogId) {
+      return fail(
+        "handoff stamped but the manual submission receipt has no pitch_log id",
+        "missing_pitch_log",
+      );
+    }
+    const patch: Record<string, unknown> = {
+      status: "sent",
+      updated_at: new Date().toISOString(),
+    };
+    if (needsSentAt) patch.sent_at = opts.submittedAt;
+    if (needsLog && pitchLogId) patch.pitch_log_id = pitchLogId;
+    const { data: sent, error: sentErr } = await sb
+      .from("outreach_drafts")
+      .update(patch)
+      .eq("id", choice.draft.id)
+      .eq("status", "approved")
+      .select("id")
+      .maybeSingle();
+    if (sentErr) return fail(`handoff stamped but outreach_drafts update failed: ${sentErr.message}`);
+    if (sent) draftId = String((sent as { id?: unknown }).id ?? choice.draft.id);
+  }
+
+  const preserved = isLaterOrTerminalPitchStatus(targetRow.pitch_status);
+  return {
+    status: 200,
+    data: { ok: true },
+    extra: {
+      pitch_log_id: pitchLogId,
+      target_pitch_status: preserved ? String(targetRow.pitch_status ?? "") : "pitched",
+      target_status_preserved: preserved,
+      last_pitched_at: preserved
+        ? (targetRow.last_pitched_at ?? null)
+        : (targetPatch?.last_pitched_at ?? targetRow.last_pitched_at ?? opts.submittedAt),
+      outreach_draft_id: draftId,
+      outreach_draft_skipped: choice.skipped,
+      repaired: targetWrote || draftId != null,
+    },
+  };
+}
+
 export async function markManualFormSubmitted(
   sb: SupabaseClient,
   body: Record<string, unknown>,
@@ -883,7 +1113,37 @@ async function markManualHandoffSubmission(
   if (!record) return { status: 404, data: { error: "handoff record not found" } };
 
   // Idempotency: never overwrite original submission timestamp or submitting actor.
+  // The pitch_log row was written by the manual-submission trigger on the first stamp.
+  // An IG replay only fills a target or draft that the first stamp left behind, using
+  // that original receipt time.
   if (record.submitted_at != null && String(record.submitted_at).trim() !== "") {
+    if (channel === "instagram_dm") {
+      const submittedAt = receiptInstant(record.submitted_at);
+      if (!submittedAt) {
+        return { status: 500, data: { error: "stored submitted_at is not a timestamp", record } };
+      }
+      const follow = await finishManualIgDmReceipt(sb, {
+        record,
+        submittedAt,
+        result: String(record.manual_submit_result ?? "submitted"),
+        actorLabel: String(record.submitted_by_label ?? ""),
+        replay: true,
+      });
+      if (follow.status >= 400) return { status: follow.status, data: follow.data };
+      return {
+        status: 200,
+        data: {
+          ok: true,
+          noop: follow.extra.repaired !== true,
+          idempotent: true,
+          record,
+          automated_submit: false,
+          bulk_dm: false,
+          unattended_send: false,
+          ...follow.extra,
+        },
+      };
+    }
     return {
       status: 200,
       data: {
@@ -1032,7 +1292,8 @@ async function markManualHandoffSubmission(
     return { status: 409, data: { error: "record state changed before submit stamp", code: "conflict" } };
   }
 
-  // Mirror optional playlist_targets manual markers (non-authoritative path metadata).
+  // Web forms mirror manual markers only. An Instagram receipt also moves the
+  // target to pitched and closes the matching approved draft, using this same time.
   if (channel === "web_form") {
     const { error: ptErr } = await sb
       .from("playlist_targets")
@@ -1050,21 +1311,29 @@ async function markManualHandoffSubmission(
       };
     }
   } else {
-    const { error: ptErr } = await sb
-      .from("playlist_targets")
-      .update({
-        ig_manual_submitted_at: updated.submitted_at,
-        ig_manual_response_status: result,
-        ig_manual_submitted_by: attr.actor_label,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("playlist_id", playlistId);
-    if (ptErr) {
-      return {
-        status: 500,
-        data: { error: `handoff stamped but playlist_targets mirror failed: ${ptErr.message}`, record: updated },
-      };
+    const submittedAt = receiptInstant(updated.submitted_at);
+    if (!submittedAt) {
+      return { status: 500, data: { error: "stored submitted_at is not a timestamp", record: updated } };
     }
+    const follow = await finishManualIgDmReceipt(sb, {
+      record: updated as Record<string, unknown>,
+      submittedAt,
+      result,
+      actorLabel: attr.actor_label,
+      replay: false,
+    });
+    if (follow.status >= 400) return { status: follow.status, data: follow.data };
+    return {
+      status: 200,
+      data: {
+        ok: true,
+        record: updated,
+        automated_submit: false,
+        bulk_dm: false,
+        unattended_send: false,
+        ...follow.extra,
+      },
+    };
   }
 
   return {

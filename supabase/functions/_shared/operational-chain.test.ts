@@ -405,11 +405,11 @@ Deno.test("e) manual submission without APPROVED_FOR_SEND fails", async () => {
   });
 });
 
-Deno.test("e2) manual submission is idempotent when submitted_at already set", async () => {
+Deno.test("e2) manual submission does not overwrite a receipt whose handoff is already SENT", async () => {
   await withEnv({ GROK_PLAYLIST_CONTROL_SECRET: "grok-secret" }, async () => {
     const original = {
       id: "rec-2",
-      queue_state: "APPROVED_FOR_SEND",
+      queue_state: "SENT",
       track_id: "track-a",
       playlist_target_id: "pl-rap",
       song_dna_version_id: "dna-a",
@@ -424,9 +424,77 @@ Deno.test("e2) manual submission is idempotent when submitted_at already set", a
     assertEquals(res.status, 200);
     assertEquals(res.data.idempotent, true);
     assertEquals(res.data.noop, true);
+    assertEquals(res.data.queue_state, "SENT");
     assertEquals(writes.filter((w) => w.op === "update").length, 0);
     assertEquals(original.submitted_at, "2026-09-01T12:00:00.000Z");
     assertEquals(original.submitted_by, "grok_playlist_control");
+    assertEquals(original.queue_state, "SENT");
+  });
+});
+
+Deno.test("e3) manual form replay moves a leftover APPROVED_FOR_SEND handoff to SENT", async () => {
+  await withEnv({ GROK_PLAYLIST_CONTROL_SECRET: "grok-secret" }, async () => {
+    const original = {
+      id: "rec-3",
+      queue_state: "APPROVED_FOR_SEND",
+      track_id: "track-a",
+      playlist_target_id: "pl-rap",
+      song_dna_version_id: "dna-a",
+      submitted_at: "2026-09-01T12:00:00.000Z",
+      submitted_by: "grok_playlist_control",
+      submitted_by_label: "grok_playlist_control",
+    };
+    const writes: { table: string; op: string; row: Row }[] = [];
+    const sb = stubSb({ agh_handoff_records: [original] }, writes);
+    const grok = resolveOpsActor(null, req({ "x-grok-playlist-control-secret": "grok-secret" }));
+    const res = await markManualFormSubmitted(
+      sb as never,
+      { handoff_record_id: "rec-3", evidence: { submitted_at: "2026-10-01T00:00:00.000Z" } },
+      grok,
+    );
+    assertEquals(res.status, 200, JSON.stringify(res.data));
+    assertEquals(res.data.idempotent, true);
+    assertEquals(res.data.noop, false);
+    assertEquals(res.data.queue_state, "SENT");
+    assertEquals(res.data.queue_state_updated, true);
+    assertEquals(original.queue_state, "SENT");
+    assertEquals(original.submitted_at, "2026-09-01T12:00:00.000Z");
+    assertEquals(original.submitted_by, "grok_playlist_control");
+    const updates = writes.filter((w) => w.op === "update");
+    assertEquals(updates.length, 1);
+    assertEquals(updates[0].table, "agh_handoff_records");
+    assertEquals(updates[0].row.queue_state, "SENT");
+    assertEquals(updates[0].row.submitted_at, undefined);
+    assertEquals(updates[0].row.submitted_by, undefined);
+  });
+});
+
+Deno.test("e4) manual form replay does not downgrade a later terminal queue state", async () => {
+  await withEnv({ GROK_PLAYLIST_CONTROL_SECRET: "grok-secret" }, async () => {
+    const grok = resolveOpsActor(null, req({ "x-grok-playlist-control-secret": "grok-secret" }));
+    for (const state of ["AWAITING_AGH_IMPORT", "IMPORTED_TO_AGH", "REJECTED_BY_GROK"]) {
+      const original = {
+        id: "rec-later",
+        queue_state: state,
+        track_id: "track-a",
+        playlist_target_id: "pl-rap",
+        song_dna_version_id: "dna-a",
+        submitted_at: "2026-09-01T12:00:00.000Z",
+        submitted_by: "fendi",
+        submitted_by_label: "fendi",
+      };
+      const writes: { table: string; op: string; row: Row }[] = [];
+      const sb = stubSb({ agh_handoff_records: [original] }, writes);
+      const res = await markManualFormSubmitted(sb as never, { handoff_record_id: "rec-later" }, grok);
+      assertEquals(res.status, 200, state);
+      assertEquals(res.data.idempotent, true, state);
+      assertEquals(res.data.noop, true, state);
+      assertEquals(res.data.queue_state_updated, false, state);
+      assertEquals(original.queue_state, state);
+      assertEquals(original.submitted_at, "2026-09-01T12:00:00.000Z");
+      assertEquals(original.submitted_by, "fendi");
+      assertEquals(writes.filter((w) => w.op === "update").length, 0, state);
+    }
   });
 });
 

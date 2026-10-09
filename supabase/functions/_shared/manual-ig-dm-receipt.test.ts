@@ -1,14 +1,18 @@
 /**
- * mark_manual_ig_dm_submitted follows the receipt onto the playlist target and
- * the matching approved Instagram draft. The pitch_log row itself is written by
- * the manual-submission trigger when submitted_at is first stamped; this suite
- * simulates that trigger in the stub.
+ * mark_manual_ig_dm_submitted and mark_manual_form_submitted follow the receipt
+ * onto the handoff (queue_state SENT, submitted_at / submitted_by) and, for IG,
+ * the playlist target plus the matching approved Instagram draft. The pitch_log
+ * row itself is written by the manual-submission trigger when submitted_at is
+ * first stamped; this suite simulates that trigger in the stub. SENT is a
+ * second write so the trigger still sees APPROVED_FOR_SEND.
  */
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
   chooseManualIgDraft,
   igReceiptTargetPatch,
   isAttributionHeldDraft,
+  manualReceiptSentTransition,
+  markManualFormSubmitted,
   markManualIgDmSubmitted,
 } from "./handoff-queues.ts";
 import { resolveOpsActor } from "./ops-actors.ts";
@@ -104,6 +108,11 @@ function stubSb(tables: Record<string, Row[]>) {
         not: () => chain,
         ilike: (k: string, v: unknown) => {
           filters.push((r) => String(r[k] ?? "").toLowerCase() === String(v ?? "").toLowerCase());
+          return chain;
+        },
+        is: (k: string, v: unknown) => {
+          if (v === null) filters.push((r) => r[k] == null || String(r[k]).trim() === "");
+          else filters.push((r) => String(r[k] ?? "") === String(v));
           return chain;
         },
         order: () => chain,
@@ -332,6 +341,8 @@ Deno.test("manual IG receipt stamps the target and the handoff draft at the rece
   assertEquals(res.data.target_pitch_status, "pitched");
   assertEquals(res.data.target_status_preserved, false);
   assertEquals(res.data.outreach_draft_id, "draft-match");
+  assertEquals(res.data.queue_state, "SENT");
+  assertEquals(res.data.queue_state_updated, true);
 
   const target = tables.playlist_targets[0];
   assertEquals(target.pitch_status, "pitched");
@@ -351,6 +362,16 @@ Deno.test("manual IG receipt stamps the target and the handoff draft at the rece
   assertEquals(byId.get("draft-pending")?.status, "pending");
   assertEquals(byId.get("draft-held")?.status, "approved");
   assertEquals(tables.agh_handoff_records[0].submitted_at, RECEIPT_AT);
+  assertEquals(tables.agh_handoff_records[0].submitted_by, "grok_playlist_control");
+  assertEquals(tables.agh_handoff_records[0].queue_state, "SENT");
+
+  const handoffWrites = sb._writes.filter((w: { table: string }) => w.table === "agh_handoff_records");
+  assertEquals(handoffWrites.length, 2);
+  assertEquals(handoffWrites[0].row.submitted_at, RECEIPT_AT);
+  assertEquals(handoffWrites[0].row.queue_state, undefined);
+  assertEquals(handoffWrites[1].row.queue_state, "SENT");
+  assertEquals(handoffWrites[1].row.submitted_at, undefined);
+  assertEquals(handoffWrites[1].row.submitted_by, undefined);
 });
 
 Deno.test("manual IG receipt does not downgrade a later target status", async () => {
@@ -372,6 +393,7 @@ Deno.test("manual IG receipt does not downgrade a later target status", async ()
   assertEquals(tables.playlist_targets[0].ig_manual_submitted_at, RECEIPT_AT);
   assertEquals(tables.outreach_drafts[0].status, "sent");
   assertEquals(tables.outreach_drafts[0].sent_at, RECEIPT_AT);
+  assertEquals(tables.agh_handoff_records[0].queue_state, "SENT");
 });
 
 Deno.test("manual IG receipt leaves an attribution-held handoff draft approved", async () => {
@@ -397,6 +419,8 @@ Deno.test("manual IG receipt leaves an attribution-held handoff draft approved",
   assertEquals(tables.outreach_drafts.every((d) => d.status === "approved"), true);
   assertEquals(tables.playlist_targets[0].pitch_status, "pitched");
   assertEquals(tables.playlist_targets[0].last_pitched_at, RECEIPT_AT);
+  assertEquals(tables.agh_handoff_records[0].queue_state, "SENT");
+  assertEquals(sb._writes.filter((w: { table: string }) => w.table === "outreach_drafts"), []);
 });
 
 Deno.test("re-running the same IG receipt does not duplicate the pitch or move timestamps", async () => {
@@ -423,6 +447,8 @@ Deno.test("re-running the same IG receipt does not duplicate the pitch or move t
   assertEquals(second.data.noop, true);
   assertEquals(tables.pitch_log.length, 1);
   assertEquals(tables.agh_handoff_records[0].submitted_at, RECEIPT_AT);
+  assertEquals(tables.agh_handoff_records[0].submitted_by, "grok_playlist_control");
+  assertEquals(tables.agh_handoff_records[0].queue_state, "SENT");
   assertEquals(tables.playlist_targets[0].last_pitched_at, RECEIPT_AT);
   assertEquals(tables.outreach_drafts[0].sent_at, RECEIPT_AT);
   assertEquals(tables.outreach_drafts[0].pitch_log_id, "pitch-log-1");
@@ -467,8 +493,247 @@ Deno.test("re-running a receipt fills a target and draft the first stamp left be
   assertEquals(tables.outreach_drafts[0].status, "sent");
   assertEquals(tables.outreach_drafts[0].sent_at, RECEIPT_AT);
   assertEquals(tables.outreach_drafts[0].pitch_log_id, "pitch-log-existing");
-  assertEquals(
-    sb._writes.some((w: { table: string }) => w.table === "agh_handoff_records"),
-    false,
+  assertEquals(tables.agh_handoff_records[0].queue_state, "SENT");
+  assertEquals(tables.agh_handoff_records[0].submitted_by, "grok_playlist_control");
+  const handoffWrites = sb._writes.filter((w: { table: string }) => w.table === "agh_handoff_records");
+  assertEquals(handoffWrites.length, 1);
+  assertEquals(handoffWrites[0].row.queue_state, "SENT");
+  assertEquals(handoffWrites[0].row.submitted_at, undefined);
+  assertEquals(handoffWrites[0].row.submitted_by, undefined);
+});
+
+Deno.test("manual receipt queue move is SENT only from APPROVED_FOR_SEND", () => {
+  assertEquals(manualReceiptSentTransition("APPROVED_FOR_SEND"), "SENT");
+  for (const state of ["SENT", "AWAITING_AGH_IMPORT", "IMPORTED_TO_AGH", "REJECTED_BY_GROK", "GROK_REVIEWED"]) {
+    assertEquals(manualReceiptSentTransition(state), null, state);
+  }
+});
+
+Deno.test("IG replay fills a leftover APPROVED_FOR_SEND without moving stored timestamps", async () => {
+  const tables = baseTables({
+    agh_handoff_records: [{
+      id: "rec-ig",
+      queue_state: "APPROVED_FOR_SEND",
+      track_id: TRACK_ID,
+      playlist_target_id: PLAYLIST_ID,
+      submission_channel: "instagram_dm",
+      song_dna_version_id: DNA_ID,
+      submitted_at: RECEIPT_AT,
+      submitted_by: "grok_playlist_control",
+      submitted_by_label: "grok_playlist_control",
+      manual_submit_result: "submitted",
+      packet: { submission_receipt: { pitch_log_id: "pitch-log-existing" } },
+    }],
+    outreach_drafts: [draft({
+      id: "draft-match",
+      status: "sent",
+      sent_at: RECEIPT_AT,
+      pitch_log_id: "pitch-log-existing",
+      metadata: { handoff_record_id: "rec-ig" },
+    })],
+    pitch_log: [{ id: "pitch-log-existing", sent_at: RECEIPT_AT, pitched_at: RECEIPT_AT }],
+  });
+  tables.playlist_targets[0].pitch_status = "pitched";
+  tables.playlist_targets[0].last_pitched_at = RECEIPT_AT;
+  tables.playlist_targets[0].ig_manual_submitted_at = RECEIPT_AT;
+  const sb = stubSb(tables);
+  const res = await markManualIgDmSubmitted(
+    sb,
+    { handoff_record_id: "rec-ig", evidence: evidence("2026-08-20T12:00:00.000Z") },
+    grokActor(),
   );
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals(res.data.idempotent, true);
+  assertEquals(res.data.noop, false);
+  assertEquals(res.data.queue_state_updated, true);
+  assertEquals(tables.agh_handoff_records[0].queue_state, "SENT");
+  assertEquals(tables.agh_handoff_records[0].submitted_at, RECEIPT_AT);
+  assertEquals(tables.agh_handoff_records[0].submitted_by, "grok_playlist_control");
+  assertEquals(tables.pitch_log.length, 1);
+  assertEquals(tables.playlist_targets[0].last_pitched_at, RECEIPT_AT);
+  assertEquals(tables.outreach_drafts[0].sent_at, RECEIPT_AT);
+  assertEquals(sb._writes.filter((w: { table: string }) => w.table === "outreach_drafts"), []);
+  assertEquals(sb._writes.filter((w: { table: string }) => w.table === "playlist_targets"), []);
+});
+
+Deno.test("IG replay does not downgrade a handoff already past SENT", async () => {
+  for (const state of ["AWAITING_AGH_IMPORT", "IMPORTED_TO_AGH"]) {
+    const tables = baseTables({
+      agh_handoff_records: [{
+        id: "rec-ig",
+        queue_state: state,
+        track_id: TRACK_ID,
+        playlist_target_id: PLAYLIST_ID,
+        submission_channel: "instagram_dm",
+        song_dna_version_id: DNA_ID,
+        submitted_at: RECEIPT_AT,
+        submitted_by: "fendi",
+        submitted_by_label: "fendi",
+        manual_submit_result: "submitted",
+        packet: { submission_receipt: { pitch_log_id: "pitch-log-existing" } },
+      }],
+      outreach_drafts: [draft({
+        id: "draft-held",
+        generated_by: "fendi",
+        metadata: { handoff_record_id: "rec-ig" },
+      })],
+      pitch_log: [{ id: "pitch-log-existing", sent_at: RECEIPT_AT, pitched_at: RECEIPT_AT }],
+    });
+    tables.playlist_targets[0].pitch_status = "replied";
+    tables.playlist_targets[0].last_pitched_at = "2026-07-01T00:00:00.000Z";
+    const sb = stubSb(tables);
+    const res = await markManualIgDmSubmitted(
+      sb,
+      { handoff_record_id: "rec-ig", evidence: evidence("2026-08-20T12:00:00.000Z") },
+      grokActor(),
+    );
+    assertEquals(res.status, 200, `${state} ${JSON.stringify(res.data)}`);
+    assertEquals(res.data.idempotent, true, state);
+    assertEquals(res.data.queue_state_updated, false, state);
+    assertEquals(tables.agh_handoff_records[0].queue_state, state);
+    assertEquals(tables.agh_handoff_records[0].submitted_at, RECEIPT_AT);
+    assertEquals(tables.agh_handoff_records[0].submitted_by, "fendi");
+    assertEquals(tables.pitch_log.length, 1, state);
+    assertEquals(tables.playlist_targets[0].pitch_status, "replied", state);
+    assertEquals(tables.playlist_targets[0].last_pitched_at, "2026-07-01T00:00:00.000Z", state);
+    assertEquals(tables.outreach_drafts[0].status, "approved", state);
+    assertEquals(tables.outreach_drafts[0].generated_by, "fendi", state);
+    assertEquals(sb._writes.filter((w: { table: string }) => w.table === "agh_handoff_records"), [], state);
+    assertEquals(sb._writes.filter((w: { table: string }) => w.table === "outreach_drafts"), [], state);
+  }
+});
+
+function webFormTables(extra: Record<string, Row[]> = {}): Record<string, Row[]> {
+  const tables = baseTables(extra);
+  tables.playlist_targets[0] = {
+    ...tables.playlist_targets[0],
+    contact_method: "web_form",
+    form_url: "https://forms.gle/AbC123",
+    form_source_evidence: "curator bio links a submission form",
+    ig_curator_account: null,
+    ig_source_evidence: null,
+  };
+  if (!extra.agh_handoff_records) {
+    tables.agh_handoff_records[0] = {
+      ...tables.agh_handoff_records[0],
+      id: "rec-form",
+      submission_channel: "web_form",
+    };
+  }
+  return tables;
+}
+
+Deno.test("manual web form receipt sets SENT and the backdated receipt in the same call", async () => {
+  const tables = webFormTables({
+    outreach_drafts: [
+      draft({ id: "draft-held", generated_by: "fendi", channel: "web_form", metadata: { handoff_record_id: "rec-form" } }),
+    ],
+  });
+  const sb = stubSb(tables);
+  const res = await markManualFormSubmitted(
+    sb,
+    { handoff_record_id: "rec-form", evidence: evidence() },
+    grokActor(),
+  );
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals(res.data.queue_state, "SENT");
+  assertEquals(res.data.queue_state_updated, true);
+  assertEquals(tables.agh_handoff_records[0].queue_state, "SENT");
+  assertEquals(tables.agh_handoff_records[0].submitted_at, RECEIPT_AT);
+  assertEquals(tables.agh_handoff_records[0].submitted_by, "grok_playlist_control");
+  assertEquals(tables.agh_handoff_records[0].submitted_by_label, "grok_playlist_control");
+  assertEquals(tables.pitch_log.length, 1);
+  assertEquals(tables.pitch_log[0].sent_at, RECEIPT_AT);
+  assertEquals(tables.pitch_log[0].method, "web_form");
+  assertEquals(tables.playlist_targets[0].form_manual_submitted_at, RECEIPT_AT);
+  assertEquals(tables.outreach_drafts[0].status, "approved");
+  assertEquals(tables.outreach_drafts[0].generated_by, "fendi");
+  assertEquals(sb._writes.filter((w: { table: string }) => w.table === "outreach_drafts"), []);
+
+  const handoffWrites = sb._writes.filter((w: { table: string }) => w.table === "agh_handoff_records");
+  assertEquals(handoffWrites.length, 2);
+  assertEquals(handoffWrites[0].row.submitted_at, RECEIPT_AT);
+  assertEquals(handoffWrites[0].row.queue_state, undefined);
+  assertEquals(handoffWrites[1].row.queue_state, "SENT");
+  assertEquals(handoffWrites[1].row.submitted_at, undefined);
+
+  sb._writes.length = 0;
+  const replay = await markManualFormSubmitted(
+    sb,
+    { handoff_record_id: "rec-form", evidence: evidence("2026-08-20T12:00:00.000Z") },
+    grokActor(),
+  );
+  assertEquals(replay.status, 200, JSON.stringify(replay.data));
+  assertEquals(replay.data.idempotent, true);
+  assertEquals(replay.data.noop, true);
+  assertEquals(tables.pitch_log.length, 1);
+  assertEquals(tables.agh_handoff_records[0].submitted_at, RECEIPT_AT);
+  assertEquals(tables.agh_handoff_records[0].submitted_by, "grok_playlist_control");
+  assertEquals(tables.agh_handoff_records[0].queue_state, "SENT");
+  assertEquals(tables.playlist_targets[0].form_manual_submitted_at, RECEIPT_AT);
+  assertEquals(tables.outreach_drafts[0].status, "approved");
+  assertEquals(sb._writes.filter((w: { op: string }) => w.op === "update"), []);
+});
+
+Deno.test("web form replay fills a leftover APPROVED_FOR_SEND and leaves a later status", async () => {
+  const behind = webFormTables({
+    agh_handoff_records: [{
+      id: "rec-form",
+      queue_state: "APPROVED_FOR_SEND",
+      track_id: TRACK_ID,
+      playlist_target_id: PLAYLIST_ID,
+      submission_channel: "web_form",
+      song_dna_version_id: DNA_ID,
+      submitted_at: RECEIPT_AT,
+      submitted_by: "grok_playlist_control",
+      submitted_by_label: "grok_playlist_control",
+      packet: { submission_receipt: { pitch_log_id: "pitch-log-existing" } },
+    }],
+    pitch_log: [{ id: "pitch-log-existing", method: "web_form", sent_at: RECEIPT_AT }],
+    outreach_drafts: [draft({ id: "draft-held", generated_by: "fendi", channel: "web_form" })],
+  });
+  behind.playlist_targets[0].form_manual_submitted_at = RECEIPT_AT;
+  const sb = stubSb(behind);
+  const res = await markManualFormSubmitted(
+    sb,
+    { handoff_record_id: "rec-form", evidence: evidence("2026-08-20T12:00:00.000Z") },
+    grokActor(),
+  );
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals(res.data.queue_state_updated, true);
+  assertEquals(behind.agh_handoff_records[0].queue_state, "SENT");
+  assertEquals(behind.agh_handoff_records[0].submitted_at, RECEIPT_AT);
+  assertEquals(behind.pitch_log.length, 1);
+  assertEquals(behind.playlist_targets[0].form_manual_submitted_at, RECEIPT_AT);
+  assertEquals(behind.outreach_drafts[0].status, "approved");
+
+  const later = webFormTables({
+    agh_handoff_records: [{
+      id: "rec-form",
+      queue_state: "IMPORTED_TO_AGH",
+      track_id: TRACK_ID,
+      playlist_target_id: PLAYLIST_ID,
+      submission_channel: "web_form",
+      song_dna_version_id: DNA_ID,
+      submitted_at: RECEIPT_AT,
+      submitted_by: "fendi",
+      submitted_by_label: "fendi",
+      packet: { submission_receipt: { pitch_log_id: "pitch-log-existing" } },
+    }],
+    pitch_log: [{ id: "pitch-log-existing" }],
+  });
+  const laterSb = stubSb(later);
+  const kept = await markManualFormSubmitted(
+    laterSb,
+    { handoff_record_id: "rec-form", evidence: evidence("2026-08-20T12:00:00.000Z") },
+    grokActor(),
+  );
+  assertEquals(kept.status, 200, JSON.stringify(kept.data));
+  assertEquals(kept.data.noop, true);
+  assertEquals(kept.data.queue_state_updated, false);
+  assertEquals(later.agh_handoff_records[0].queue_state, "IMPORTED_TO_AGH");
+  assertEquals(later.agh_handoff_records[0].submitted_at, RECEIPT_AT);
+  assertEquals(later.agh_handoff_records[0].submitted_by, "fendi");
+  assertEquals(later.pitch_log.length, 1);
+  assertEquals(laterSb._writes.filter((w: { op: string }) => w.op === "update"), []);
 });

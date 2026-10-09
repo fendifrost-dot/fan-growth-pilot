@@ -102,8 +102,9 @@ export const HANDOFF_TRANSITIONS: Record<HandoffQueueState, readonly HandoffQueu
   REJECTED_BY_GROK: [],
   AWAITING_AGH_IMPORT: ["IMPORTED_TO_AGH"],
   IMPORTED_TO_AGH: [],
-  // Written by a successful email send. Not an advance target: approval still
-  // has to happen before the send, and this state is not a way to skip it.
+  // Written by a successful email send or a manual IG / web-form receipt.
+  // Not an advance target: approval still has to happen before the send,
+  // and this state is not a way to skip it.
   SENT: [],
 };
 
@@ -907,6 +908,55 @@ export function igReceiptTargetPatch(opts: {
   return Object.keys(patch).length ? patch : null;
 }
 
+/**
+ * A manual receipt moves APPROVED_FOR_SEND to SENT.
+ * SENT itself, and anything already past it (import) or otherwise terminal
+ * (reject), stays put so a replay cannot downgrade the row.
+ */
+export function manualReceiptSentTransition(queueState: unknown): "SENT" | null {
+  return String(queueState ?? "").trim() === "APPROVED_FOR_SEND" ? "SENT" : null;
+}
+
+/**
+ * Second write after the submitted_at stamp. The manual-submission trigger
+ * inserts pitch_log only while queue_state is still APPROVED_FOR_SEND and
+ * submitted_at was previously null. Setting SENT in that same update raises
+ * pass_approval_required and rolls the receipt back. This update does not
+ * touch submitted_at or submitted_by.
+ */
+async function closeManualReceiptQueue(
+  sb: SupabaseClient,
+  record: Record<string, unknown>,
+): Promise<{ ok: true; promoted: boolean } | { ok: false; error: string }> {
+  if (manualReceiptSentTransition(record.queue_state) !== "SENT") {
+    return { ok: true, promoted: false };
+  }
+  const { data, error } = await sb
+    .from("agh_handoff_records")
+    .update({
+      queue_state: "SENT",
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", record.id)
+    .eq("queue_state", "APPROVED_FOR_SEND")
+    .select("id")
+    .maybeSingle();
+  if (error) return { ok: false, error: error.message };
+  if (data) record.queue_state = "SENT";
+  return { ok: true, promoted: data != null };
+}
+
+function manualReceiptQueueFailure(record: Record<string, unknown>, error: string): RunResult {
+  return {
+    status: 500,
+    data: {
+      error: `receipt logged but queue_state was not moved to SENT: ${error}`,
+      code: "queue_state_followthrough_failed",
+      record,
+    },
+  };
+}
+
 function receiptPitchLogId(record: Record<string, unknown>): string {
   const receipt = packetObject(packetObject(record.packet).submission_receipt);
   return String(receipt.pitch_log_id ?? "").trim();
@@ -1114,15 +1164,16 @@ async function markManualHandoffSubmission(
 
   // Idempotency: never overwrite original submission timestamp or submitting actor.
   // The pitch_log row was written by the manual-submission trigger on the first stamp.
-  // An IG replay only fills a target or draft that the first stamp left behind, using
-  // that original receipt time.
+  // A replay fills a target, draft, or queue_state the first stamp left behind, using
+  // that original receipt time. It does not insert another pitch_log.
   if (record.submitted_at != null && String(record.submitted_at).trim() !== "") {
+    let follow: { status: number; data: Record<string, unknown>; extra: Record<string, unknown> } | null = null;
     if (channel === "instagram_dm") {
       const submittedAt = receiptInstant(record.submitted_at);
       if (!submittedAt) {
         return { status: 500, data: { error: "stored submitted_at is not a timestamp", record } };
       }
-      const follow = await finishManualIgDmReceipt(sb, {
+      follow = await finishManualIgDmReceipt(sb, {
         record,
         submittedAt,
         result: String(record.manual_submit_result ?? "submitted"),
@@ -1130,30 +1181,25 @@ async function markManualHandoffSubmission(
         replay: true,
       });
       if (follow.status >= 400) return { status: follow.status, data: follow.data };
-      return {
-        status: 200,
-        data: {
-          ok: true,
-          noop: follow.extra.repaired !== true,
-          idempotent: true,
-          record,
-          automated_submit: false,
-          bulk_dm: false,
-          unattended_send: false,
-          ...follow.extra,
-        },
-      };
     }
+    const closed = await closeManualReceiptQueue(sb, record);
+    if (!closed.ok) return manualReceiptQueueFailure(record, closed.error);
+    const extra = follow?.extra ?? {};
+    const repaired = extra.repaired === true || closed.promoted;
     return {
       status: 200,
       data: {
         ok: true,
-        noop: true,
+        noop: !repaired,
         idempotent: true,
         record,
         automated_submit: false,
         bulk_dm: false,
         unattended_send: false,
+        ...extra,
+        repaired,
+        queue_state: record.queue_state,
+        queue_state_updated: closed.promoted,
       },
     };
   }
@@ -1281,6 +1327,7 @@ async function markManualHandoffSubmission(
     })
     .eq("id", record.id)
     .eq("queue_state", "APPROVED_FOR_SEND")
+    .is("submitted_at", null)
     .select()
     .maybeSingle();
   if (updErr) {
@@ -1294,11 +1341,15 @@ async function markManualHandoffSubmission(
 
   // Web forms mirror manual markers only. An Instagram receipt also moves the
   // target to pitched and closes the matching approved draft, using this same time.
+  // queue_state stays APPROVED_FOR_SEND until those writes finish: the pitch_log
+  // trigger rejects a first stamp whose new queue_state is already SENT.
+  const stamped = updated as Record<string, unknown>;
+  let followExtra: Record<string, unknown> = {};
   if (channel === "web_form") {
     const { error: ptErr } = await sb
       .from("playlist_targets")
       .update({
-        form_manual_submitted_at: updated.submitted_at,
+        form_manual_submitted_at: stamped.submitted_at,
         form_manual_submit_result: result,
         form_manual_submitted_by: attr.actor_label,
         updated_at: new Date().toISOString(),
@@ -1307,43 +1358,39 @@ async function markManualHandoffSubmission(
     if (ptErr) {
       return {
         status: 500,
-        data: { error: `handoff stamped but playlist_targets mirror failed: ${ptErr.message}`, record: updated },
+        data: { error: `handoff stamped but playlist_targets mirror failed: ${ptErr.message}`, record: stamped },
       };
     }
   } else {
-    const submittedAt = receiptInstant(updated.submitted_at);
+    const submittedAt = receiptInstant(stamped.submitted_at);
     if (!submittedAt) {
-      return { status: 500, data: { error: "stored submitted_at is not a timestamp", record: updated } };
+      return { status: 500, data: { error: "stored submitted_at is not a timestamp", record: stamped } };
     }
     const follow = await finishManualIgDmReceipt(sb, {
-      record: updated as Record<string, unknown>,
+      record: stamped,
       submittedAt,
       result,
       actorLabel: attr.actor_label,
       replay: false,
     });
     if (follow.status >= 400) return { status: follow.status, data: follow.data };
-    return {
-      status: 200,
-      data: {
-        ok: true,
-        record: updated,
-        automated_submit: false,
-        bulk_dm: false,
-        unattended_send: false,
-        ...follow.extra,
-      },
-    };
+    followExtra = follow.extra;
   }
+
+  const closed = await closeManualReceiptQueue(sb, stamped);
+  if (!closed.ok) return manualReceiptQueueFailure(stamped, closed.error);
 
   return {
     status: 200,
     data: {
       ok: true,
-      record: updated,
+      record: stamped,
       automated_submit: false,
       bulk_dm: false,
       unattended_send: false,
+      ...followExtra,
+      queue_state: stamped.queue_state,
+      queue_state_updated: closed.promoted,
     },
   };
 }

@@ -1086,6 +1086,78 @@ Deno.test("get_playlist_discovery_work returns only active campaigns with approv
   assert(!tracks.some((t) => t.track_id === "track-no-dna"));
 });
 
+function reverifyFixture(n: number): Row[] {
+  return Array.from({ length: n }, (_, i) => ({
+    id: `pt-${i}`,
+    playlist_id: `mv-${String(i).padStart(3, "0")}`,
+    playlist_name: `Manual ${i}`,
+    lane: "rap_general",
+    verification_status: "manually_verified",
+    is_active: true,
+    path_verified: false,
+    curator_email: `c${i}@example.com`,
+  }));
+}
+
+function reverifyQueueSb(n: number) {
+  return stubSb({
+    pitch_campaigns: [{ track_id: "track-active", status: "active" }],
+    tracks: [{ id: "track-active", name: "Fixture Track Active", approved_song_dna_version_id: "dna-active" }],
+    song_dna_versions: [{
+      id: "dna-active",
+      track_id: "track-active",
+      approval_state: "approved",
+      short_pitch: "Fixture DNA pitch",
+      approved_lanes: ["rap_general"],
+      excluded_lanes: [],
+      primary_genre: "hip-hop",
+    }],
+    discovery_profiles: [],
+    ops_settings: [],
+    playlist_targets: reverifyFixture(n),
+    outreach_drafts: [],
+    discovery_saturation_log: [],
+  });
+}
+
+Deno.test("re-verify queue pages past the first 25 rows", async () => {
+  const ops = playlistDiscoveryActor();
+
+  const first = await getPlaylistDiscoveryWork(reverifyQueueSb(79), ops);
+  assertEquals(first.status, 200);
+  const p1 = first.data.manually_verified_supply as Row;
+  assertEquals(p1.needs_reverify_count, 79);
+  assertEquals((p1.rows as Row[]).length, 25);
+  assertEquals(p1.next_reverify_offset, 25);
+
+  const seen = new Set((p1.rows as Row[]).map((r) => r.playlist_id));
+  let offset = p1.next_reverify_offset as number | null;
+  let pages = 1;
+  while (offset !== null) {
+    const res = await getPlaylistDiscoveryWork(reverifyQueueSb(79), ops, { reverify_offset: offset });
+    const page = res.data.manually_verified_supply as Row;
+    for (const r of page.rows as Row[]) seen.add(r.playlist_id);
+    offset = page.next_reverify_offset as number | null;
+    pages++;
+  }
+  assertEquals(pages, 4);
+  assertEquals(seen.size, 79);
+
+  const big = await getPlaylistDiscoveryWork(reverifyQueueSb(79), ops, { reverify_offset: 0, reverify_limit: 100 });
+  const all = big.data.manually_verified_supply as Row;
+  assertEquals((all.rows as Row[]).length, 79);
+  assertEquals(all.next_reverify_offset, null);
+});
+
+Deno.test("re-verify paging args are validated; unknown args still rejected", () => {
+  assertEquals(validateToolArgs("get_playlist_discovery_work", {}), null);
+  assertEquals(validateToolArgs("get_playlist_discovery_work", { reverify_offset: 25, reverify_limit: 50 }), null);
+  assertEquals(validateToolArgs("get_playlist_discovery_work", { reverify_limit: 0 })?.status, 400);
+  assertEquals(validateToolArgs("get_playlist_discovery_work", { reverify_limit: 101 })?.status, 400);
+  assertEquals(validateToolArgs("get_playlist_discovery_work", { reverify_offset: -1 })?.status, 400);
+  assertEquals(validateToolArgs("get_playlist_discovery_work", { page: 2 })?.status, 400);
+});
+
 Deno.test("OAuth inventory attribution stays claude_playlist_discovery (not Fendi)", () => {
   const a = attributionFrom(playlistDiscoveryActor());
   assertEquals(a.actor_kind, "claude_playlist_discovery");

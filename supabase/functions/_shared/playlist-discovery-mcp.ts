@@ -296,7 +296,10 @@ export const PLAYLIST_DISCOVERY_TOOL_SCHEMAS: Record<
 > = {
   get_playlist_discovery_work: {
     type: "object",
-    properties: {},
+    properties: {
+      reverify_offset: { type: "integer", minimum: 0, maximum: 10000 },
+      reverify_limit: { type: "integer", minimum: 1, maximum: 100 },
+    },
     additionalProperties: false,
   },
   submit_playlist_candidates: {
@@ -803,6 +806,7 @@ export async function resolvePlaylistTargetKey(
 export async function getPlaylistDiscoveryWork(
   sb: SupabaseClient,
   ops: OpsActor,
+  args: Record<string, unknown> = {},
 ): Promise<ToolResult> {
   const denied = denyUnlessCan(ops, "read_playlist_discovery_work");
   if (denied) return denied;
@@ -932,18 +936,30 @@ export async function getPlaylistDiscoveryWork(
       })),
       daily_target: capacity,
       per_song_funnel: perSong,
-      manually_verified_supply: await loadManuallyVerifiedSupply(sb),
+      manually_verified_supply: await loadManuallyVerifiedSupply(sb, {
+        offset: typeof args.reverify_offset === "number" ? args.reverify_offset : 0,
+        limit: typeof args.reverify_limit === "number" ? args.reverify_limit : REVERIFY_PAGE_DEFAULT,
+      }),
     },
   };
 }
+
+const REVERIFY_PAGE_DEFAULT = 25;
+const REVERIFY_SCAN_LIMIT = 1000;
 
 /**
  * Catalog rows a human marked manually_verified that are not yet draftable by this
  * actor (no verified submission path / no known channel). Submitting one of these
  * playlist_ids through submit_playlist_candidates re-verifies its route and, if it
  * passes (plus the normal lane/DNA/pair checks), makes it draftable.
+ *
+ * Paged by reverify_offset / reverify_limit over a stable playlist_id order; a row
+ * not on this page is not unreachable — follow next_reverify_offset until it is null.
  */
-async function loadManuallyVerifiedSupply(sb: SupabaseClient): Promise<Record<string, unknown>> {
+async function loadManuallyVerifiedSupply(
+  sb: SupabaseClient,
+  page: { offset: number; limit: number } = { offset: 0, limit: REVERIFY_PAGE_DEFAULT },
+): Promise<Record<string, unknown>> {
   const { data, error } = await sb
     .from("playlist_targets")
     .select(
@@ -951,18 +967,28 @@ async function loadManuallyVerifiedSupply(sb: SupabaseClient): Promise<Record<st
     )
     .eq("verification_status", "manually_verified")
     .eq("is_active", true)
-    .limit(200);
+    .order("playlist_id", { ascending: true })
+    .limit(REVERIFY_SCAN_LIMIT);
   if (error) {
     return { status: "query_failed", error: error.message, rows: [] };
   }
   const needsReverify = (data ?? []).filter((r) =>
     r.path_verified !== true || resolveTargetChannel(r as Record<string, unknown>) == null
   );
+  const offset = Math.max(0, Math.floor(page.offset));
+  const limit = Math.max(1, Math.floor(page.limit));
+  const pageRows = needsReverify.slice(offset, offset + limit);
+  const end = offset + pageRows.length;
   return {
     status: "ok",
     total_scanned: (data ?? []).length,
+    scan_limit_reached: (data ?? []).length >= REVERIFY_SCAN_LIMIT,
     needs_reverify_count: needsReverify.length,
-    rows: needsReverify.slice(0, 25).map((r) => ({
+    reverify_offset: offset,
+    reverify_limit: limit,
+    returned: pageRows.length,
+    next_reverify_offset: end < needsReverify.length ? end : null,
+    rows: pageRows.map((r) => ({
       playlist_id: r.playlist_id,
       playlist_name: r.playlist_name ?? null,
       lane: r.lane ?? null,
@@ -973,7 +999,7 @@ async function loadManuallyVerifiedSupply(sb: SupabaseClient): Promise<Record<st
       has_ig: Boolean(r.ig_curator_account),
     })),
     how_to_use:
-      "Submit the playlist_id (plus lane, source_evidence and the route fields) via submit_playlist_candidates to re-verify and make it draftable.",
+      "Submit the playlist_id (plus lane, source_evidence and the route fields) via submit_playlist_candidates to re-verify and make it draftable. More rows than this page: call get_playlist_discovery_work again with reverify_offset = next_reverify_offset.",
   };
 }
 
@@ -2609,7 +2635,7 @@ export async function runPlaylistDiscoveryTool(
 
   switch (tool) {
     case "get_playlist_discovery_work":
-      return getPlaylistDiscoveryWork(sb, ops);
+      return getPlaylistDiscoveryWork(sb, ops, args);
     case "submit_playlist_candidates":
       return submitPlaylistCandidates(sb, ops, args);
     case "create_playlist_draft_inventory":

@@ -21,6 +21,7 @@ import {
   isClaudeSyncDiscoveryCredential,
   isGrokCredential,
   isHubServiceCredential,
+  isMuseIgReceiptCredential,
   isSchedulerCredential,
   resolveOpsActor,
 } from './ops-actors.ts';
@@ -42,6 +43,7 @@ export type Actor =
   | { kind: 'claude_playlist_discovery' }
   | { kind: 'claude_sync_discovery' }
   | { kind: 'grok_playlist_control' }
+  | { kind: 'muse_ig_receipt' }
   | { kind: 'anonymous' };
 
 export type AuthDecision =
@@ -523,6 +525,16 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
     capability: 'create_handoff_batch',
     surface: 'admin-write',
   },
+  review_queue: {
+    cls: 'capability',
+    capability: 'create_handoff_batch',
+    surface: 'admin-write',
+  },
+  promote_stranded_claude_batches: {
+    cls: 'capability',
+    capability: 'create_handoff_batch',
+    surface: 'admin-write',
+  },
   get_handoff_batch: {
     cls: 'capability',
     capability: 'create_handoff_batch',
@@ -923,6 +935,7 @@ async function resolveUser(
 export function resolveCredentialActor(req: Request): Actor | null {
   if (isSchedulerCredential(req)) return { kind: 'scheduler' };
   if (isGrokCredential(req)) return { kind: 'grok_playlist_control' };
+  if (isMuseIgReceiptCredential(req)) return { kind: 'muse_ig_receipt' };
   if (isClaudeSyncDiscoveryCredential(req)) return { kind: 'claude_sync_discovery' };
   if (isClaudePlaylistDiscoveryCredential(req)) return { kind: 'claude_playlist_discovery' };
   if (isClaudeCredential(req)) return { kind: 'claude' };
@@ -971,6 +984,32 @@ export async function authorizeAction(
       error: `Unknown action: ${action}`,
       cls: 'unknown',
     };
+  }
+
+  // muse_ig_receipt is a Control Center receipt token. It is not a reviewer
+  // and not a sender. Every other action, including public and authenticated
+  // reads, is denied. Grok still wins when that secret is presented.
+  if (isMuseIgReceiptCredential(req) && !isGrokCredential(req)) {
+    const denyCls: Exclude<AuthClass, 'capability'> | 'unknown' =
+      spec.cls === 'capability'
+        ? spec.surface
+        : spec.cls === 'public-read'
+        ? 'public-read'
+        : spec.cls === 'authenticated-read'
+        ? 'authenticated-read'
+        : spec.cls === 'internal-scheduler'
+        ? 'internal-scheduler'
+        : spec.cls === 'webhook'
+        ? 'webhook'
+        : 'unknown';
+    if (action !== 'mark_manual_ig_dm_submitted') {
+      return {
+        ok: false,
+        status: 403,
+        error: 'muse_ig_receipt may only call mark_manual_ig_dm_submitted',
+        cls: denyCls,
+      };
+    }
   }
 
   // Public reads only when explicitly allowlisted.
@@ -1074,6 +1113,7 @@ export async function authorizeAction(
       'claude_playlist_discovery',
       'claude_sync_discovery',
       'grok_playlist_control',
+      'muse_ig_receipt',
       'service',
       'scheduler',
     ]);
@@ -1097,6 +1137,15 @@ export async function authorizeAction(
 
   // Capability-gated mutation — the only write path for machines and humans.
   if (spec.cls === 'capability') {
+    if (opsActor.kind === 'muse_ig_receipt' && action === 'mark_manual_ig_dm_submitted') {
+      return {
+        ok: true,
+        actor,
+        cls: spec.surface,
+        opsActor,
+        capability: null,
+      };
+    }
     if (!can(opsActor, spec.capability)) {
       return {
         ok: false,

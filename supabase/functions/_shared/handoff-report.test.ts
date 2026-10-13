@@ -122,6 +122,9 @@ Deno.test("grok report: backlog, reviewed vs approved vs submitted, holds, rejec
   assertEquals(d.review_backlog.records, 2);
   assertEquals(d.review_backlog.oldest_pending_batch_id, "old-pending");
   assertEquals(d.review_backlog.oldest_pending_age_hours, 50);
+  // 50 hours on the oldest pending batch, expressed in days. Record created_at
+  // wins when a pending record has one; these fixture records do not.
+  assertEquals(d.review_backlog.oldest_pending_age, 2.1);
   assertEquals(d.reviewed_not_approved_records, 1);
   assertEquals(d.approved_not_submitted_records, 1);
   assertEquals(d.manual_submissions_recorded, 1);

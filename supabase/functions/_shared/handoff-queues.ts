@@ -56,6 +56,8 @@ export const HANDOFF_ACTIONS = [
   "advance_claude_ready_batches",
   "review_handoff_batch",
   "list_handoff_batches",
+  "review_queue",
+  "promote_stranded_claude_batches",
   "get_handoff_batch",
   "mark_manual_form_submitted",
   "mark_manual_ig_dm_submitted",
@@ -107,6 +109,39 @@ export const HANDOFF_TRANSITIONS: Record<HandoffQueueState, readonly HandoffQueu
   // and this state is not a way to skip it.
   SENT: [],
 };
+
+/**
+ * Batch label once no record is still AWAITING_GROK_REVIEW.
+ * APPROVED_FOR_SEND, SENT, and IMPORTED_TO_AGH are decided. Does not approve records.
+ * Mirrors public.agh_decided_handoff_rollup_target.
+ */
+export function decidedBatchRollupTarget(counts: {
+  total: number;
+  awaiting: number;
+  reviewed: number;
+  rejected: number;
+  approved: number;
+  awaitingImport: number;
+  sent: number;
+  imported: number;
+}): HandoffQueueState | null {
+  const total = counts.total ?? 0;
+  const awaiting = counts.awaiting ?? 0;
+  const reviewed = counts.reviewed ?? 0;
+  const rejected = counts.rejected ?? 0;
+  const approved = counts.approved ?? 0;
+  const awaitingImport = counts.awaitingImport ?? 0;
+  const sent = counts.sent ?? 0;
+  const imported = counts.imported ?? 0;
+  if (total <= 0 || awaiting > 0) return null;
+  if (reviewed + rejected + approved + awaitingImport + sent + imported !== total) return null;
+  if (rejected === total) return "REJECTED_BY_GROK";
+  if (reviewed > 0) return "GROK_REVIEWED";
+  if (approved > 0 || awaitingImport > 0) return "APPROVED_FOR_SEND";
+  if (sent > 0 && imported === 0) return "SENT";
+  if (imported > 0 && sent === 0) return "IMPORTED_TO_AGH";
+  return "APPROVED_FOR_SEND";
+}
 
 const KNOWN_CHANNELS = new Set(["email", "web_form", "instagram_dm"]);
 
@@ -1120,13 +1155,25 @@ async function markManualHandoffSubmission(
   ops: OpsActor,
   channel: "web_form" | "instagram_dm",
 ): Promise<RunResult> {
-  if (ops.kind !== "grok_playlist_control" && ops.kind !== "fendi") {
+  // muse_ig_receipt records an already-approved Instagram receipt only. It cannot
+  // approve, send a pitch, or stamp a web form. PLC and Fendi keep send authority.
+  const museReceipt = ops.kind === "muse_ig_receipt";
+  if (museReceipt && channel !== "instagram_dm") {
+    return {
+      status: 403,
+      data: {
+        error: "muse_ig_receipt may only record an approved Instagram DM receipt",
+        code: "muse_ig_receipt_scope",
+      },
+    };
+  }
+  if (!museReceipt && ops.kind !== "grok_playlist_control" && ops.kind !== "fendi") {
     return {
       status: 403,
       data: { error: `${ops.label} cannot mark manual submissions — Grok Playlist Control or Fendi only` },
     };
   }
-  if (!can(ops, "send_playlist_pitches") && ops.kind !== "fendi") {
+  if (!museReceipt && !can(ops, "send_playlist_pitches") && ops.kind !== "fendi") {
     return { status: 403, data: { error: `${ops.label} lacks send authority for manual submission` } };
   }
 
@@ -1403,6 +1450,13 @@ function isDryRun(value: unknown): boolean {
   return value === true || value === "true";
 }
 
+/** Null business dates stay in a dated sweep. An empty requested date matches everything. */
+function businessDateMatches(rowDate: unknown, requested: string | null): boolean {
+  if (!requested) return true;
+  if (rowDate == null || String(rowDate).trim() === "") return true;
+  return String(rowDate).slice(0, 10) === requested.slice(0, 10);
+}
+
 /** Records advance_agh_handoff_batch would rewrite. Individually rejected rows stay put. */
 function movableRecordCount(records: Record<string, unknown>[]): number {
   return records.filter((r) => String(r.queue_state ?? "") !== "REJECTED_BY_GROK").length;
@@ -1451,10 +1505,15 @@ export async function advanceClaudeReadyBatches(
       .order("created_at", { ascending: true })
       .limit(200);
     if (batchKind) q = q.eq("batch_kind", batchKind);
-    if (businessDate) q = q.eq("business_date_ct", businessDate);
+    // Equality on business_date_ct drops NULL dates, which is how legacy batches
+    // never matched a dated sweep. Keep null dates, and keep an explicit date
+    // when the caller passed one. Filter here so test stubs do not need .or().
     const { data, error } = await q;
     if (error) return { status: 500, data: { error: error.message, dry_run: dryRun } };
-    candidateIds = (data ?? []).map((b) => String(b.id));
+    const rows = (data ?? []) as Record<string, unknown>[];
+    candidateIds = rows
+      .filter((b) => businessDateMatches(b.business_date_ct, businessDate))
+      .map((b) => String(b.id));
   }
 
   // Optional track scope — batches carry no track_id, so resolve through their records.
@@ -1603,6 +1662,10 @@ export async function playlistPipelineReport(
     const t = Date.parse(String(iso ?? ""));
     return Number.isFinite(t) ? Math.round((now.getTime() - t) / 36e5 * 10) / 10 : null;
   };
+  const ageDays = (iso: unknown) => {
+    const t = Date.parse(String(iso ?? ""));
+    return Number.isFinite(t) ? Math.round((now.getTime() - t) / 864e5 * 10) / 10 : null;
+  };
   const isRepair = (b: Record<string, unknown>) =>
     String((b.payload as Record<string, unknown> | null)?.route_hold_repair ?? "") === "true";
 
@@ -1620,6 +1683,12 @@ export async function playlistPipelineReport(
 
   const pendingReview = batchRows.filter((b) => b.queue_state === "AWAITING_GROK_REVIEW");
   const oldestPending = pendingReview[0] ?? null;
+  const oldestPendingRecord = records
+    .filter((r) => r.queue_state === "AWAITING_GROK_REVIEW" && !r.submitted_at)
+    .map((r) => ({ r, t: Date.parse(String(r.created_at ?? "")) }))
+    .filter((x) => Number.isFinite(x.t))
+    .sort((a, b) => a.t - b.t)[0]?.r ?? null;
+  const oldestPendingAgeSource = oldestPendingRecord?.created_at ?? oldestPending?.created_at ?? null;
   const stranded = batchRows.filter((b) =>
     (b.queue_state === "CLAUDE_BATCH_READY" || b.queue_state === "CLAUDE_PLAYLIST_COMPLETE") &&
     !isRepair(b) && (ageHours(b.created_at) ?? 0) >= staleHours
@@ -1653,6 +1722,8 @@ export async function playlistPipelineReport(
         records: records.filter((r) => r.queue_state === "AWAITING_GROK_REVIEW").length,
         oldest_pending_batch_id: oldestPending?.id ?? null,
         oldest_pending_age_hours: oldestPending ? ageHours(oldestPending.created_at) : null,
+        oldest_pending_record_id: oldestPendingRecord?.id ?? null,
+        oldest_pending_age: ageDays(oldestPendingAgeSource),
       },
       reviewed_not_approved_records: records.filter((r) => r.queue_state === "GROK_REVIEWED").length,
       approved_not_submitted_records: records.filter((r) =>
@@ -2045,6 +2116,164 @@ export async function getHandoffBatchDetail(
   };
 }
 
+const REVIEW_QUEUE_FIELDS = [
+  "id",
+  "batch_id",
+  "track_id",
+  "playlist_target_id",
+  "submission_channel",
+  "queue_state",
+  "created_at",
+  "song_dna_version_id",
+] as const;
+
+/**
+ * Pending handoff records, oldest first, across every business date.
+ * Batch listing stays capped; this is the reviewer drain. Packet, email, and
+ * curator fields are not returned.
+ */
+export async function listHandoffReviewQueue(
+  sb: SupabaseClient,
+  body: Record<string, unknown>,
+  ops: OpsActor,
+): Promise<RunResult> {
+  const limit = Math.min(Math.max(1, Math.floor(Number(body.limit) || 50)), 100);
+  const offset = Math.max(0, Math.floor(Number(body.offset) || 0));
+  const queueState = typeof body.queue_state === "string" && body.queue_state.trim()
+    ? body.queue_state.trim()
+    : "AWAITING_GROK_REVIEW";
+  const oldestFirst = String(body.order ?? "oldest_first").toLowerCase() !== "newest_first";
+  const now = new Date();
+
+  let bq = sb
+    .from("agh_handoff_batches")
+    .select("id, business_date_ct, discovered_by, batch_kind")
+    .eq("batch_kind", "playlist")
+    .limit(5000);
+  if (!unscopedHandoffReader(ops)) bq = bq.eq("discovered_by", ops.kind);
+  const { data: batches, error: bErr } = await bq;
+  if (bErr) return { status: 500, data: { error: bErr.message } };
+  const batchRows = (batches ?? []) as Record<string, unknown>[];
+  const batchById = new Map(batchRows.map((b) => [String(b.id), b]));
+  const batchIds = [...batchById.keys()];
+  if (batchIds.length === 0) {
+    return {
+      status: 200,
+      data: {
+        ok: true,
+        rows: [],
+        queue_state: queueState,
+        order: oldestFirst ? "oldest_first" : "newest_first",
+        offset,
+        limit,
+        total_count: 0,
+        has_more: false,
+        scoped: !unscopedHandoffReader(ops),
+      },
+    };
+  }
+
+  let rq = sb
+    .from("agh_handoff_records")
+    .select(REVIEW_QUEUE_FIELDS.join(","), { count: "exact" })
+    .eq("queue_state", queueState)
+    .in("batch_id", batchIds)
+    .order("created_at", { ascending: oldestFirst });
+  rq = rq.range(offset, offset + limit - 1);
+  const { data, error, count } = await rq;
+  if (error) return { status: 500, data: { error: error.message } };
+
+  const rows = ((data ?? []) as unknown as Record<string, unknown>[]).map((r) => {
+    const created = r.created_at;
+    const t = Date.parse(String(created ?? ""));
+    const ageHours = Number.isFinite(t) ? Math.round((now.getTime() - t) / 36e5 * 10) / 10 : null;
+    const ageDays = Number.isFinite(t) ? Math.round((now.getTime() - t) / 864e5 * 10) / 10 : null;
+    const batch = batchById.get(String(r.batch_id));
+    return {
+      id: r.id,
+      batch_id: r.batch_id,
+      track_id: r.track_id ?? null,
+      playlist_target_id: r.playlist_target_id ?? null,
+      submission_channel: r.submission_channel ?? null,
+      queue_state: r.queue_state,
+      created_at: created ?? null,
+      song_dna_version_id: r.song_dna_version_id ?? null,
+      business_date_ct: batch?.business_date_ct ?? null,
+      age_hours: ageHours,
+      age_days: ageDays,
+    };
+  });
+  const total = typeof count === "number" ? count : null;
+  return {
+    status: 200,
+    data: {
+      ok: true,
+      rows,
+      queue_state: queueState,
+      order: oldestFirst ? "oldest_first" : "newest_first",
+      offset,
+      limit,
+      total_count: total,
+      has_more: total != null ? offset + rows.length < total : rows.length === limit,
+      scoped: !unscopedHandoffReader(ops),
+    },
+  };
+}
+
+/**
+ * Operator preview of the scheduled Claude-ready promotion. Defaults to dry_run.
+ * The hourly cron calls agh_handoff_backlog_maintenance directly; this action
+ * does not approve, and stale routes are held inside the SQL function.
+ */
+export async function promoteStrandedClaudeBatches(
+  sb: SupabaseClient,
+  body: Record<string, unknown>,
+  ops: OpsActor,
+): Promise<RunResult> {
+  const clean = stripSpoofedAttribution(body);
+  const dryRun = !(clean.dry_run === false || clean.dry_run === "false");
+  const authErr = authorizeHandoffState(ops, "AWAITING_GROK_REVIEW");
+  if (authErr) return { status: 403, data: { error: authErr, code: "authority_denied", dry_run: dryRun } };
+  const explicitIds = Array.isArray(clean.batch_ids)
+    ? clean.batch_ids.map((v) => String(v ?? "").trim()).filter(Boolean)
+    : [];
+  const { data, error } = await sb.rpc("agh_promote_claude_ready_batches", {
+    p_dry_run: dryRun,
+    p_business_date: null,
+    p_batch_ids: explicitIds.length > 0 ? explicitIds : null,
+  });
+  if (error) {
+    const msg = String(error.message || "");
+    const unavailable =
+      /could not find the function/i.test(msg) ||
+      /permission denied/i.test(msg) ||
+      error.code === "PGRST202" ||
+      error.code === "42883";
+    return {
+      status: unavailable ? 503 : 500,
+      data: {
+        error: unavailable
+          ? "agh_promote_claude_ready_batches RPC unavailable — apply 20261013150000 via Lovable SQL Editor"
+          : `promote failed: ${msg}`,
+        code: unavailable ? "rpc_unavailable" : "rpc_failed",
+        dry_run: dryRun,
+      },
+    };
+  }
+  const result = (data && typeof data === "object") ? data as Record<string, unknown> : {};
+  return {
+    status: 200,
+    data: {
+      ok: true,
+      dry_run: dryRun,
+      promoted: false,
+      approved: false,
+      ...result,
+      note: "Stops at AWAITING_GROK_REVIEW. Stale routes are re-verified, not promoted. grok_playlist_control remains the reviewer.",
+    },
+  };
+}
+
 export async function runHandoffAction(
   action: string,
   body: Record<string, unknown>,
@@ -2104,6 +2333,10 @@ export async function runHandoffAction(
         },
       };
     }
+    case "review_queue":
+      return listHandoffReviewQueue(sb, body, ops);
+    case "promote_stranded_claude_batches":
+      return promoteStrandedClaudeBatches(sb, body, ops);
     case "playlist_pipeline_report":
       return playlistPipelineReport(sb, body, ops);
     case "get_handoff_batch":

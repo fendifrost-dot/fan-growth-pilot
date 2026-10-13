@@ -11,7 +11,7 @@
 // SECURITY: this verifies a shared ?secret= against RESEND_WEBHOOK_SECRET when that env var
 // is set. (Resend also offers Svix-signed webhooks; swap in svix verification if preferred.)
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import { markLinkedHandoffEmailBounced } from "../_shared/handoff-sent.ts";
 
 const corsHeaders = {

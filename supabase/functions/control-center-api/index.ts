@@ -451,7 +451,7 @@ async function ingestAppleSpins(
         snapshot_week: week,
         metadata: { source: 'amfa_kpi_city_breakout' },
       };
-    }).filter((r) => (r.spins_total ?? 0) > 0);
+    }).filter((r: { spins_total?: number }) => (r.spins_total ?? 0) > 0);
 
     if (cityRows.length) {
       const { error: cErr } = await supabase

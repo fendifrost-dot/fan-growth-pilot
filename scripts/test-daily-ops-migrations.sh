@@ -1052,5 +1052,92 @@ assert_eq "cooldown_helper_not_public" "$(run_sql -c "select has_function_privil
 run_sql -c "update public.agh_handoff_records set packet=packet || '{\"review_defer\":{}}'::jsonb where id='cccccccc-0000-0000-0000-0000000000c1'; select public.agh_review_handoff_records((select batch_id from public.agh_handoff_records where id='cccccccc-0000-0000-0000-0000000000c1'), '[{\"record_id\":\"cccccccc-0000-0000-0000-0000000000c1\",\"decision\":\"reviewed\"}]', 'grok_playlist_control', 'grok_playlist_control');" >/dev/null
 assert_eq "explicit_review_resolves_defer" "$(run_sql -c "select (packet ? 'review_defer')::text || ':' || queue_state from public.agh_handoff_records where id='cccccccc-0000-0000-0000-0000000000c1';")" "false:GROK_REVIEWED"
 
+echo "==> Handoff backlog rollup, promotion, and aging (2026-10-13)"
+run_sql -c "alter table public.playlist_targets add column if not exists last_verified_at timestamptz;" >/dev/null
+apply_with_rollback "$ROOT/supabase/migrations/20261013150000_handoff_backlog_rollup_promotion.sql"
+
+run_sql_pretty <<'SQL' >/dev/null
+insert into public.agh_handoff_batches (id, batch_kind, queue_state, business_date_ct, payload)
+values
+  ('b1000000-0000-4000-8000-000000000001', 'playlist', 'AWAITING_GROK_REVIEW', null, '{}'),
+  ('b1000000-0000-4000-8000-000000000002', 'playlist', 'AWAITING_GROK_REVIEW', null, '{}'),
+  ('b1000000-0000-4000-8000-000000000003', 'playlist', 'AWAITING_GROK_REVIEW', null, '{}'),
+  ('b1000000-0000-4000-8000-000000000004', 'playlist', 'AWAITING_GROK_REVIEW', null, '{}'),
+  ('b1000000-0000-4000-8000-000000000005', 'playlist', 'AWAITING_GROK_REVIEW', null, '{}'),
+  ('b1000000-0000-4000-8000-000000000011', 'playlist', 'CLAUDE_BATCH_READY', null, '{}'),
+  ('b1000000-0000-4000-8000-000000000012', 'playlist', 'CLAUDE_BATCH_READY', date '2026-09-10', '{}'),
+  ('b1000000-0000-4000-8000-000000000013', 'playlist', 'CLAUDE_BATCH_READY', date '2026-02-02', '{}'),
+  ('b1000000-0000-4000-8000-000000000021', 'playlist', 'AWAITING_GROK_REVIEW', null, '{}');
+
+insert into public.playlist_targets (playlist_id, lane, verification_status, path_verified, curator_email, is_active, last_verified_at)
+values
+  ('promo-fresh', 'rap_general', 'auto_verified', true, 'route@example.test', true, now()),
+  ('promo-stale', 'rap_general', 'auto_verified', true, 'route@example.test', true, now() - interval '8 days'),
+  ('promo-dated', 'rap_general', 'auto_verified', true, 'route@example.test', true, now()),
+  ('promo-other', 'rap_general', 'auto_verified', true, 'route@example.test', true, now());
+
+insert into public.agh_handoff_records (id, batch_id, queue_state, submission_channel, playlist_target_id, reviewed_by, approved_by, rejected_by, packet, created_at)
+values
+  ('b2000000-0000-4000-8000-000000000001', 'b1000000-0000-4000-8000-000000000001', 'APPROVED_FOR_SEND', 'email', 'promo-fresh', 'grok_playlist_control', 'grok_playlist_control', null, '{}', now()),
+  ('b2000000-0000-4000-8000-000000000002', 'b1000000-0000-4000-8000-000000000001', 'REJECTED_BY_GROK', 'email', 'promo-stale', 'grok_playlist_control', null, 'grok_playlist_control', '{}', now()),
+  ('b2000000-0000-4000-8000-000000000003', 'b1000000-0000-4000-8000-000000000002', 'REJECTED_BY_GROK', 'email', 'promo-stale', 'grok_playlist_control', null, 'grok_playlist_control', '{}', now()),
+  ('b2000000-0000-4000-8000-000000000004', 'b1000000-0000-4000-8000-000000000002', 'REJECTED_BY_GROK', 'email', 'promo-stale', 'grok_playlist_control', null, 'grok_playlist_control', '{}', now()),
+  ('b2000000-0000-4000-8000-000000000005', 'b1000000-0000-4000-8000-000000000003', 'GROK_REVIEWED', 'email', 'promo-fresh', 'grok_playlist_control', null, null, '{}', now()),
+  ('b2000000-0000-4000-8000-000000000006', 'b1000000-0000-4000-8000-000000000003', 'REJECTED_BY_GROK', 'email', 'promo-stale', 'grok_playlist_control', null, 'grok_playlist_control', '{}', now()),
+  ('b2000000-0000-4000-8000-000000000007', 'b1000000-0000-4000-8000-000000000004', 'APPROVED_FOR_SEND', 'email', 'promo-fresh', 'grok_playlist_control', 'grok_playlist_control', null, '{}', now()),
+  ('b2000000-0000-4000-8000-000000000008', 'b1000000-0000-4000-8000-000000000004', 'AWAITING_GROK_REVIEW', 'email', 'promo-fresh', null, null, null, '{}', now()),
+  ('b2000000-0000-4000-8000-000000000009', 'b1000000-0000-4000-8000-000000000005', 'SENT', 'email', 'promo-fresh', 'grok_playlist_control', 'grok_playlist_control', null, '{}', now()),
+  ('b2000000-0000-4000-8000-00000000000a', 'b1000000-0000-4000-8000-000000000005', 'REJECTED_BY_GROK', 'email', 'promo-stale', 'grok_playlist_control', null, 'grok_playlist_control', '{}', now()),
+  ('b2000000-0000-4000-8000-000000000011', 'b1000000-0000-4000-8000-000000000011', 'CLAUDE_BATCH_READY', 'email', 'promo-fresh', null, null, null, '{}', now()),
+  ('b2000000-0000-4000-8000-000000000012', 'b1000000-0000-4000-8000-000000000011', 'CLAUDE_BATCH_READY', 'email', 'promo-stale', null, null, null, '{"route_hold":{"code":"stale_route"}}', now()),
+  ('b2000000-0000-4000-8000-000000000013', 'b1000000-0000-4000-8000-000000000012', 'CLAUDE_BATCH_READY', 'email', 'promo-dated', null, null, null, '{}', now()),
+  ('b2000000-0000-4000-8000-000000000014', 'b1000000-0000-4000-8000-000000000013', 'CLAUDE_BATCH_READY', 'email', 'promo-other', null, null, null, '{}', now()),
+  ('b2000000-0000-4000-8000-000000000021', 'b1000000-0000-4000-8000-000000000021', 'AWAITING_GROK_REVIEW', 'email', 'promo-fresh', null, null, null, '{}', now() - interval '8 days'),
+  ('b2000000-0000-4000-8000-000000000022', 'b1000000-0000-4000-8000-000000000021', 'AWAITING_GROK_REVIEW', 'email', 'promo-fresh', null, null, null, '{}', now() - interval '6 days'),
+  ('b2000000-0000-4000-8000-000000000023', 'b1000000-0000-4000-8000-000000000021', 'AWAITING_GROK_REVIEW', 'email', 'promo-fresh', null, null, null, '{}', now() - interval '7 days' + interval '1 hour'),
+  ('b2000000-0000-4000-8000-000000000024', 'b1000000-0000-4000-8000-000000000021', 'GROK_REVIEWED', 'email', 'promo-fresh', 'grok_playlist_control', null, null, '{}', now() - interval '30 days');
+SQL
+
+ROLL=$(run_sql -c "select public.agh_rollup_decided_handoff_batch('b1000000-0000-4000-8000-000000000001', null, null, true)->>'to_status';")
+assert_eq "rollup_approved_plus_rejected" "${ROLL}" "APPROVED_FOR_SEND"
+STAMP=$(run_sql -c "select coalesce(reviewed_by,'') || ':' || coalesce(approved_by,'') || ':' || coalesce(rejected_by,'') from public.agh_handoff_batches where id='b1000000-0000-4000-8000-000000000001';")
+assert_eq "rollup_copies_reviewer_stamp" "${STAMP}" "grok_playlist_control:grok_playlist_control:"
+REC_UNCHANGED=$(run_sql -c "select string_agg(queue_state, ',' order by id::text) from public.agh_handoff_records where batch_id='b1000000-0000-4000-8000-000000000001';")
+assert_eq "rollup_does_not_rewrite_records" "${REC_UNCHANGED}" "APPROVED_FOR_SEND,REJECTED_BY_GROK"
+assert_eq "rollup_all_rejected" "$(run_sql -c "select public.agh_rollup_decided_handoff_batch('b1000000-0000-4000-8000-000000000002', null, null, true)->>'to_status';")" "REJECTED_BY_GROK"
+assert_eq "rollup_reviewed_wins" "$(run_sql -c "select public.agh_rollup_decided_handoff_batch('b1000000-0000-4000-8000-000000000003', null, null, true)->>'to_status';")" "GROK_REVIEWED"
+assert_eq "rollup_awaiting_blocks" "$(run_sql -c "select public.agh_rollup_decided_handoff_batch('b1000000-0000-4000-8000-000000000004', null, null, false)->>'reason';")" "records_still_pending_or_empty"
+assert_eq "rollup_awaiting_unchanged" "$(run_sql -c "select queue_state from public.agh_handoff_batches where id='b1000000-0000-4000-8000-000000000004';")" "AWAITING_GROK_REVIEW"
+assert_eq "rollup_sent_label" "$(run_sql -c "select public.agh_rollup_decided_handoff_batch('b1000000-0000-4000-8000-000000000005', null, null, true)->>'to_status';")" "SENT"
+
+run_sql -c "create table if not exists public._backlog_preview (id text primary key, result jsonb); insert into public._backlog_preview (id, result) values ('promote', public.agh_promote_claude_ready_batches(true, date '2026-09-10', array['b1000000-0000-4000-8000-000000000011','b1000000-0000-4000-8000-000000000012','b1000000-0000-4000-8000-000000000013']::uuid[])) on conflict (id) do update set result = excluded.result;" >/dev/null
+assert_eq "promote_dry_run_includes_null_date" "$(run_sql -c "select (result->'batches') @> '[{\"batch_id\":\"b1000000-0000-4000-8000-000000000011\",\"null_business_date\":true}]'::jsonb from public._backlog_preview where id='promote';")" "t"
+assert_eq "promote_dry_run_keeps_matching_date" "$(run_sql -c "select (result->'batches') @> '[{\"batch_id\":\"b1000000-0000-4000-8000-000000000012\"}]'::jsonb from public._backlog_preview where id='promote';")" "t"
+assert_eq "promote_dry_run_drops_other_date" "$(run_sql -c "select (result->'batches') @> '[{\"batch_id\":\"b1000000-0000-4000-8000-000000000013\"}]'::jsonb from public._backlog_preview where id='promote';")" "f"
+assert_eq "promote_dry_run_splits_hold" "$(run_sql -c "select elem->>'action' || ':' || (elem->>'would_promote') || ':' || (elem->>'reverify') from public._backlog_preview p, jsonb_array_elements(p.result->'batches') elem where p.id='promote' and elem->>'batch_id'='b1000000-0000-4000-8000-000000000011';")" "split_promote:1:1"
+assert_eq "promote_dry_run_writes_nothing" "$(run_sql -c "select queue_state from public.agh_handoff_records where id='b2000000-0000-4000-8000-000000000011';")" "CLAUDE_BATCH_READY"
+
+APPLY_PROMO=$(run_sql -c "select public.agh_promote_claude_ready_batches(false, null, array['b1000000-0000-4000-8000-000000000011']::uuid[])->>'promoted_batches';")
+assert_eq "promote_apply_count" "${APPLY_PROMO}" "1"
+assert_eq "promote_fresh_stops_at_review" "$(run_sql -c "select queue_state from public.agh_handoff_records where id='b2000000-0000-4000-8000-000000000011';")" "AWAITING_GROK_REVIEW"
+assert_eq "promote_stale_not_promoted" "$(run_sql -c "select r.queue_state || ':' || coalesce(b.payload->>'route_hold_repair','false') || ':' || coalesce(r.packet->'route_hold'->>'code','') from public.agh_handoff_records r join public.agh_handoff_batches b on b.id=r.batch_id where r.id='b2000000-0000-4000-8000-000000000012';")" "CLAUDE_BATCH_READY:true:stale_route"
+assert_eq "promote_does_not_approve" "$(run_sql -c "select count(*) from public.agh_handoff_records where id in ('b2000000-0000-4000-8000-000000000011','b2000000-0000-4000-8000-000000000012') and queue_state in ('APPROVED_FOR_SEND','GROK_REVIEWED');")" "0"
+assert_eq "promote_does_not_stamp_reviewer" "$(run_sql -c "select count(*) from public.agh_handoff_batches where id='b1000000-0000-4000-8000-000000000011' and reviewed_by is null and approved_by is null;")" "1"
+
+run_sql -c "insert into public._backlog_preview (id, result) values ('age', public.agh_age_pending_handoff_records(true, interval '7 days')) on conflict (id) do update set result = excluded.result;" >/dev/null
+assert_eq "age_dry_run_selects_older_than_7_days" "$(run_sql -c "select (result->'record_ids') @> '[\"b2000000-0000-4000-8000-000000000021\"]'::jsonb from public._backlog_preview where id='age';")" "t"
+assert_eq "age_dry_run_skips_newer" "$(run_sql -c "select (result->'record_ids') @> '[\"b2000000-0000-4000-8000-000000000022\"]'::jsonb from public._backlog_preview where id='age';")" "f"
+assert_eq "age_dry_run_skips_not_yet_7_days" "$(run_sql -c "select (result->'record_ids') @> '[\"b2000000-0000-4000-8000-000000000023\"]'::jsonb from public._backlog_preview where id='age';")" "f"
+assert_eq "age_dry_run_skips_reviewed" "$(run_sql -c "select (result->'record_ids') @> '[\"b2000000-0000-4000-8000-000000000024\"]'::jsonb from public._backlog_preview where id='age';")" "f"
+
+AGE_APPLY=$(run_sql -c "select public.agh_age_pending_handoff_records(false, interval '7 days')->>'ok';")
+assert_eq "age_apply_ok" "${AGE_APPLY}" "true"
+assert_eq "age_apply_returns_to_reverify" "$(run_sql -c "select r.queue_state || ':' || coalesce(r.packet->'route_hold'->>'code','') || ':' || coalesce(b.payload->>'route_hold_repair','false') from public.agh_handoff_records r join public.agh_handoff_batches b on b.id=r.batch_id where r.id='b2000000-0000-4000-8000-000000000021';")" "CLAUDE_BATCH_READY:pending_review_aged:true"
+assert_eq "age_apply_leaves_recent" "$(run_sql -c "select queue_state from public.agh_handoff_records where id='b2000000-0000-4000-8000-000000000022';")" "AWAITING_GROK_REVIEW"
+
+assert_eq "promote_not_for_authenticated" "$(run_sql -c "select has_function_privilege('authenticated', 'public.agh_promote_claude_ready_batches(boolean, date, uuid[])', 'execute');")" "f"
+assert_eq "age_not_for_authenticated" "$(run_sql -c "select has_function_privilege('authenticated', 'public.agh_age_pending_handoff_records(boolean, interval)', 'execute');")" "f"
+assert_eq "rollup_not_for_authenticated" "$(run_sql -c "select has_function_privilege('authenticated', 'public.agh_rollup_decided_handoff_batch(uuid, text, text, boolean)', 'execute');")" "f"
+assert_eq "maintenance_not_for_authenticated" "$(run_sql -c "select has_function_privilege('authenticated', 'public.agh_handoff_backlog_maintenance(boolean)', 'execute');")" "f"
 
 echo "==> PASS: daily-ops migrations applied + authoritative RPC assertions verified"

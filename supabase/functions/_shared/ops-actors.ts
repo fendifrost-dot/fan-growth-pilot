@@ -22,6 +22,7 @@ export type OpsActorKind =
   | "claude_playlist_discovery"
   | "claude_sync_discovery"
   | "grok_playlist_control"
+  | "muse_ig_receipt"
   | "fendi"
   | "scheduler"
   | "human_admin"
@@ -411,6 +412,39 @@ export function agentLabelHeader(req: Request | null): string {
   return (header(req, "x-agh-agent") || header(req, "x-ops-agent")).toLowerCase();
 }
 
+const BROADER_SECRET_ENV = [
+  "FANFUEL_HUB_KEY",
+  "GROK_PLAYLIST_CONTROL_SECRET",
+  "CLAUDE_AGENT_SECRET",
+  "CLAUDE_PLAYLIST_DISCOVERY_SECRET",
+  "CLAUDE_SYNC_DISCOVERY_SECRET",
+  "OUTREACH_SCHEDULER_SECRET",
+] as const;
+
+function shadowsBroaderSecret(expected: string): boolean {
+  for (const name of BROADER_SECRET_ENV) {
+    const other = (Deno.env.get(name) || "").trim();
+    if (other && secretsEqual(other, expected)) return true;
+  }
+  return false;
+}
+
+/**
+ * Receipt-only credential for Control Center (Enki / Muse).
+ * Matches x-muse-ig-receipt-secret or x-api-key. A secret that copies the hub,
+ * Grok, Claude, or scheduler secret does not authenticate as this actor.
+ */
+export function isMuseIgReceiptCredential(req: Request | null): boolean {
+  const expected = (Deno.env.get("MUSE_IG_RECEIPT_SECRET") || "").trim();
+  if (!expected || !req || shadowsBroaderSecret(expected)) return false;
+  const presented = header(req, "x-muse-ig-receipt-secret") || presentedApiKey(req);
+  for (const name of BROADER_SECRET_ENV) {
+    const other = (Deno.env.get(name) || "").trim();
+    if (other && secretsEqual(presented, other) && !secretsEqual(presented, expected)) return false;
+  }
+  return secretsEqual(presented, expected);
+}
+
 export function isGrokCredential(req: Request | null): boolean {
   const expected = (Deno.env.get("GROK_PLAYLIST_CONTROL_SECRET") || "").trim();
   if (!expected || !req) return false;
@@ -512,6 +546,9 @@ export function resolveOpsActor(actor: Actor | null, req: Request | null = null)
   if (actor?.kind === "grok_playlist_control" || isGrokCredential(req)) {
     return { kind: "grok_playlist_control", userId: null, label: "grok_playlist_control" };
   }
+  if (actor?.kind === "muse_ig_receipt" || isMuseIgReceiptCredential(req)) {
+    return { kind: "muse_ig_receipt", userId: null, label: "muse_ig_receipt" };
+  }
   if (actor?.kind === "claude_sync_discovery" || isClaudeSyncDiscoveryCredential(req)) {
     return {
       kind: "claude_sync_discovery",
@@ -565,6 +602,8 @@ export function capabilitiesFor(kind: OpsActorKind): ReadonlySet<OpsCapability> 
       return CLAUDE_CAPS;
     case "grok_playlist_control":
       return GROK_CAPS;
+    case "muse_ig_receipt":
+      return new Set();
     case "fendi":
       return FENDI_CAPS;
     case "human_admin":

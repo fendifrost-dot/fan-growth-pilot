@@ -15,6 +15,7 @@ import {
   isClaudePlaylistDiscoveryCredential,
   isGrokCredential,
   isHubServiceCredential,
+  isMuseIgReceiptCredential,
   secretsEqual,
 } from '../_shared/ops-actors.ts';
 import { buildCutoverReadinessReport } from '../_shared/outreach-decision.ts';
@@ -38,7 +39,7 @@ import { isYouTubeShareAction, runYouTubeShareAction } from '../_shared/youtube-
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers':
-    'authorization, x-client-info, apikey, content-type, x-api-key, x-fanfuel-hub-key, x-outreach-scheduler-secret, x-grok-playlist-control-secret, x-grok-agent-secret, x-claude-agent-secret, x-claude-agent-key, x-claude-playlist-discovery-secret, x-agh-playlist-discovery-secret, x-claude-sync-discovery-secret, x-agh-sync-discovery-secret, x-agh-agent, x-ops-agent',
+    'authorization, x-client-info, apikey, content-type, x-api-key, x-fanfuel-hub-key, x-outreach-scheduler-secret, x-grok-playlist-control-secret, x-grok-agent-secret, x-claude-agent-secret, x-claude-agent-key, x-claude-playlist-discovery-secret, x-agh-playlist-discovery-secret, x-claude-sync-discovery-secret, x-agh-sync-discovery-secret, x-muse-ig-receipt-secret, x-agh-agent, x-ops-agent',
 };
 
 const PLATFORM_STAT_IDENTIFIERS = [
@@ -75,7 +76,8 @@ function gateHubKey(req: Request): HubGateResult {
     isGrokCredential(req) ||
     isClaudeCredential(req) ||
     isClaudePlaylistDiscoveryCredential(req) ||
-    isClaudeSyncDiscoveryCredential(req)
+    isClaudeSyncDiscoveryCredential(req) ||
+    isMuseIgReceiptCredential(req)
   ) {
     return { ok: true, via: 'hub_key' };
   }

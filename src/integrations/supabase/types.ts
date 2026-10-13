@@ -10,7 +10,7 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "14.5"
+    PostgrestVersion: "13.0.5"
   }
   public: {
     Tables: {
@@ -6866,6 +6866,10 @@ export type Database = {
         }
         Returns: Json
       }
+      agh_age_pending_handoff_records: {
+        Args: { p_dry_run?: boolean; p_max_age?: string }
+        Returns: Json
+      }
       agh_backfill_email_handoff_sent: { Args: never; Returns: Json }
       agh_compose_rejection_reason: {
         Args: { p_codes: Json; p_reason: string }
@@ -6888,6 +6892,19 @@ export type Database = {
           sample_ids: string
         }[]
       }
+      agh_decided_handoff_rollup_target: {
+        Args: {
+          p_approved: number
+          p_awaiting: number
+          p_awaiting_import: number
+          p_imported: number
+          p_rejected: number
+          p_reviewed: number
+          p_sent: number
+          p_total: number
+        }
+        Returns: string
+      }
       agh_email_handoff_packet_merge: {
         Args: {
           p_curator_email: string
@@ -6902,6 +6919,10 @@ export type Database = {
       agh_fit_requeue_reason_safe: {
         Args: { p_packet: Json; p_reason: string }
         Returns: boolean
+      }
+      agh_handoff_backlog_maintenance: {
+        Args: { p_dry_run?: boolean }
+        Returns: Json
       }
       agh_handoff_state_audit: {
         Args: { p_batch_ids?: string[] }
@@ -7006,6 +7027,14 @@ export type Database = {
       }
       agh_pipeline_health: { Args: never; Returns: Json }
       agh_pipeline_quota: { Args: { p_track?: string }; Returns: Json }
+      agh_promote_claude_ready_batches: {
+        Args: {
+          p_batch_ids?: string[]
+          p_business_date?: string
+          p_dry_run?: boolean
+        }
+        Returns: Json
+      }
       agh_raise_contact_policy: { Args: { p_policy: Json }; Returns: undefined }
       agh_record_can_approve: { Args: { p_id: string }; Returns: Json }
       agh_requeue_contact_cooldown: {
@@ -7019,6 +7048,15 @@ export type Database = {
           p_actor_label: string
           p_batch_id: string
           p_decisions: Json
+        }
+        Returns: Json
+      }
+      agh_rollup_decided_handoff_batch: {
+        Args: {
+          p_actor?: string
+          p_actor_label?: string
+          p_apply?: boolean
+          p_batch_id: string
         }
         Returns: Json
       }

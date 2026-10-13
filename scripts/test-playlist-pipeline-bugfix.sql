@@ -217,13 +217,138 @@ begin
   assert (select submitted_at from agh_handoff_records where id = sent_rec) is null, 'SENT does not stamp submitted_at';
   assert (select queue_state from agh_handoff_records where id = form_rec) = 'APPROVED_FOR_SEND', 'web form on the same playlist stays approved';
   assert (select queue_state from agh_handoff_records where id = bounce_rec) = 'APPROVED_FOR_SEND', 'a bounce does not count as sent';
+  assert (again->>'bounces_recorded')::int = 1, 'a bounce is recorded without counting as sent';
+  assert (select packet->'email_dispatch'->>'outcome' from agh_handoff_records where id = bounce_rec) = 'bounced', 'bounce outcome is bounced';
   assert (select count(*) from pitch_log where track_id = tr) = logs_before, 'backfill does not insert pitch_log';
   assert (select count(*) from agh_manual_submission_receipts mr join pitch_log l on l.id = mr.pitch_log_id where l.track_id = tr) = 0, 'backfill does not write a manual receipt';
   q_after := (agh_pipeline_quota(tr)->0->>'submissions_today')::int;
   assert q_after = q_before, 'quota does not change when the handoff moves to SENT';
   again := agh_backfill_email_handoff_sent();
   assert (again->>'updated')::int = 0, 'running the backfill again changes nothing';
+  assert (again->>'bounces_recorded')::int = 0, 'recording the bounce again changes nothing';
   assert (select queue_state from agh_handoff_records where id = sent_rec) = 'SENT', 'the sent record stays SENT';
+  assert (select queue_state from agh_handoff_records where id = bounce_rec) = 'APPROVED_FOR_SEND', 'the bounce stays unsent';
+end $$;
+
+-- Sent drafts whose handoffs never reached APPROVED_FOR_SEND still move to SENT.
+-- Bounces, Soundplate, and generated_by=fendi do not.
+do $$
+declare
+  tr uuid := gen_random_uuid();
+  b uuid := gen_random_uuid();
+  d_review uuid := gen_random_uuid();
+  d_grok uuid := gen_random_uuid();
+  d_imported uuid := gen_random_uuid();
+  d_import_wait uuid := gen_random_uuid();
+  d_bounce uuid := gen_random_uuid();
+  d_placed uuid := gen_random_uuid();
+  d_fendi uuid := gen_random_uuid();
+  d_plate uuid := gen_random_uuid();
+  d_reject uuid := gen_random_uuid();
+  d_unsent uuid := gen_random_uuid();
+  d_form uuid := gen_random_uuid();
+  rec_review uuid := gen_random_uuid();
+  rec_grok uuid := gen_random_uuid();
+  rec_imported uuid := gen_random_uuid();
+  rec_import_wait uuid := gen_random_uuid();
+  rec_bounce uuid := gen_random_uuid();
+  rec_placed uuid := gen_random_uuid();
+  rec_fendi uuid := gen_random_uuid();
+  rec_plate uuid := gen_random_uuid();
+  rec_reject uuid := gen_random_uuid();
+  rec_unsent uuid := gen_random_uuid();
+  rec_form uuid := gen_random_uuid();
+  logs_before int;
+  result jsonb;
+begin
+  insert into tracks(id, name, status) values (tr, 'Drift handoff fixture', 'active');
+  insert into playlist_targets(playlist_id, playlist_name, curator_email, lane, is_active, path_verified, verification_status, submission_cost)
+  values
+    ('drift-review', 'Drift review', 'drift-review@playlist-bugfix.test', 'rap', true, true, 'manually_verified', 'free'),
+    ('drift-grok', 'Drift grok', 'drift-grok@playlist-bugfix.test', 'rap', true, true, 'manually_verified', 'free'),
+    ('drift-imported', 'Drift imported', 'drift-imported@playlist-bugfix.test', 'rap', true, true, 'manually_verified', 'free'),
+    ('drift-wait', 'Drift wait', 'drift-wait@playlist-bugfix.test', 'rap', true, true, 'manually_verified', 'free'),
+    ('drift-bounce', 'Drift bounce', 'drift-bounce@playlist-bugfix.test', 'rap', true, true, 'manually_verified', 'free'),
+    ('drift-placed', 'Drift placed bounce', 'drift-placed@playlist-bugfix.test', 'rap', true, true, 'manually_verified', 'free'),
+    ('drift-fendi', 'Drift fendi', 'drift-fendi@playlist-bugfix.test', 'rap', true, true, 'manually_verified', 'free'),
+    ('drift-plate', 'Drift soundplate', 'drift-plate@playlist-bugfix.test', 'rap', true, true, 'manually_verified', 'free'),
+    ('drift-reject', 'Drift reject', 'drift-reject@playlist-bugfix.test', 'rap', true, true, 'manually_verified', 'free'),
+    ('drift-unsent', 'Drift unsent', 'drift-unsent@playlist-bugfix.test', 'rap', true, true, 'manually_verified', 'free'),
+    ('drift-form', 'Drift form', 'drift-form@playlist-bugfix.test', 'rap', true, true, 'manually_verified', 'free');
+  update playlist_targets
+     set form_url = 'https://play.soundplate.com/drift', submission_method = 'soundplate'
+   where playlist_id = 'drift-plate';
+  insert into outreach_drafts(id, playlist_id, track_id, track_name, channel, recipient, body, status, generated_by)
+  values
+    (d_review, 'drift-review', tr, 'Drift handoff fixture', 'email', 'drift-review@playlist-bugfix.test', 'sent body', 'sent', 'grok'),
+    (d_grok, 'drift-grok', tr, 'Drift handoff fixture', 'email', 'drift-grok@playlist-bugfix.test', 'sent body', 'sent', 'auto'),
+    (d_imported, 'drift-imported', tr, 'Drift handoff fixture', 'email', 'drift-imported@playlist-bugfix.test', 'sent body', 'sent', 'auto'),
+    (d_import_wait, 'drift-wait', tr, 'Drift handoff fixture', 'email', 'drift-wait@playlist-bugfix.test', 'sent body', 'sent', 'auto'),
+    (d_bounce, 'drift-bounce', tr, 'Drift handoff fixture', 'email', 'drift-bounce@playlist-bugfix.test', 'sent body', 'sent', 'auto'),
+    (d_placed, 'drift-placed', tr, 'Drift handoff fixture', 'email', 'drift-placed@playlist-bugfix.test', 'sent body', 'sent', 'auto'),
+    (d_fendi, 'drift-fendi', tr, 'Drift handoff fixture', 'email', 'drift-fendi@playlist-bugfix.test', 'sent body', 'sent', 'fendi'),
+    (d_plate, 'drift-plate', tr, 'Drift handoff fixture', 'email', 'drift-plate@playlist-bugfix.test', 'sent body', 'sent', 'auto'),
+    (d_reject, 'drift-reject', tr, 'Drift handoff fixture', 'email', 'drift-reject@playlist-bugfix.test', 'sent body', 'sent', 'auto'),
+    (d_unsent, 'drift-unsent', tr, 'Drift handoff fixture', 'email', 'drift-unsent@playlist-bugfix.test', 'still approved', 'approved', 'auto'),
+    (d_form, 'drift-form', tr, 'Drift handoff fixture', 'web_form', 'https://forms.example.test/drift', 'sent body', 'sent', 'auto');
+  insert into agh_handoff_batches(id, track_id, queue_state) values (b, tr, 'AWAITING_GROK_REVIEW');
+  insert into agh_handoff_records(id, batch_id, track_id, playlist_target_id, queue_state, submission_channel, outreach_draft_id, record_kind, packet)
+  values
+    (rec_review, b, tr, 'drift-review', 'AWAITING_GROK_REVIEW', 'email', d_review, 'playlist_target', '{"grok_review":{"verdict":"PASS"}}'),
+    (rec_grok, b, tr, 'drift-grok', 'GROK_REVIEWED', 'email', d_grok, 'playlist_target', '{}'),
+    (rec_imported, b, tr, 'drift-imported', 'IMPORTED_TO_AGH', 'email', d_imported, 'playlist_target', '{}'),
+    (rec_import_wait, b, tr, 'drift-wait', 'AWAITING_AGH_IMPORT', 'email', d_import_wait, 'playlist_target', '{}'),
+    (rec_bounce, b, tr, 'drift-bounce', 'AWAITING_GROK_REVIEW', 'email', d_bounce, 'playlist_target', '{}'),
+    (rec_placed, b, tr, 'drift-placed', 'GROK_REVIEWED', 'email', d_placed, 'playlist_target', '{}'),
+    (rec_fendi, b, tr, 'drift-fendi', 'IMPORTED_TO_AGH', 'email', d_fendi, 'playlist_target', '{}'),
+    (rec_plate, b, tr, 'drift-plate', 'IMPORTED_TO_AGH', 'email', d_plate, 'playlist_target', '{}'),
+    (rec_reject, b, tr, 'drift-reject', 'REJECTED_BY_GROK', 'email', d_reject, 'playlist_target', '{}'),
+    (rec_unsent, b, tr, 'drift-unsent', 'AWAITING_GROK_REVIEW', 'email', d_unsent, 'playlist_target', '{}'),
+    (rec_form, b, tr, 'drift-form', 'IMPORTED_TO_AGH', 'web_form', d_form, 'playlist_target', '{}');
+  insert into pitch_log(playlist_id, track_id, track_name, curator_email, method, status, placement_status, sent_at, pitched_at, draft_id, resend_message_id)
+  values
+    ('drift-review', tr, 'Drift handoff fixture', 'drift-review@playlist-bugfix.test', 'email', 'sent', 'unknown', now(), now(), d_review, 're_drift_review'),
+    ('drift-grok', tr, 'Drift handoff fixture', 'drift-grok@playlist-bugfix.test', 'email', 'sent', 'unknown', now(), now(), d_grok, 're_drift_grok'),
+    ('drift-imported', tr, 'Drift handoff fixture', 'drift-imported@playlist-bugfix.test', 'email', 'sent', 'unknown', now(), now(), d_imported, 're_drift_imported'),
+    ('drift-wait', tr, 'Drift handoff fixture', 'drift-wait@playlist-bugfix.test', 'email', 'sent', 'unknown', now(), now(), d_import_wait, 're_drift_wait'),
+    ('drift-bounce', tr, 'Drift handoff fixture', 'drift-bounce@playlist-bugfix.test', 'email', 'bounced', 'unknown', now(), now(), d_bounce, 're_drift_bounce'),
+    ('drift-placed', tr, 'Drift handoff fixture', 'drift-placed@playlist-bugfix.test', 'email', 'sent', 'bounced', now(), now(), d_placed, 're_drift_placed'),
+    ('drift-fendi', tr, 'Drift handoff fixture', 'drift-fendi@playlist-bugfix.test', 'email', 'sent', 'unknown', now(), now(), d_fendi, 're_drift_fendi'),
+    ('drift-plate', tr, 'Drift handoff fixture', 'drift-plate@playlist-bugfix.test', 'email', 'sent', 'unknown', now(), now(), d_plate, 're_drift_plate'),
+    ('drift-reject', tr, 'Drift handoff fixture', 'drift-reject@playlist-bugfix.test', 'email', 'sent', 'unknown', now(), now(), d_reject, 're_drift_reject'),
+    ('drift-unsent', tr, 'Drift handoff fixture', 'drift-unsent@playlist-bugfix.test', 'email', 'sent', 'unknown', now(), now(), d_unsent, 're_drift_unsent'),
+    ('drift-form', tr, 'Drift handoff fixture', 'drift-form@playlist-bugfix.test', 'web_form', 'sent', 'unknown', now(), now(), d_form, 're_drift_form');
+
+  logs_before := (select count(*) from pitch_log where track_id = tr);
+  result := agh_backfill_email_handoff_sent();
+  assert (result->>'updated')::int = 4, 'review, grok, imported, and awaiting-import sends move';
+  assert (result->>'bounces_recorded')::int = 2, 'status bounce and placement bounce are both recorded';
+  assert (select queue_state from agh_handoff_records where id = rec_review) = 'SENT', 'awaiting review send moves to SENT';
+  assert (select queue_state from agh_handoff_records where id = rec_grok) = 'SENT', 'grok reviewed send moves to SENT';
+  assert (select queue_state from agh_handoff_records where id = rec_imported) = 'SENT', 'imported send moves to SENT';
+  assert (select queue_state from agh_handoff_records where id = rec_import_wait) = 'SENT', 'awaiting import send moves to SENT';
+  assert (select submitted_at from agh_handoff_records where id = rec_review) is null, 'backfill does not stamp submitted_at';
+  assert (select packet->'email_dispatch'->>'outcome' from agh_handoff_records where id = rec_review) = 'sent', 'sent outcome is sent';
+  assert (select packet->'email_dispatch'->>'prior_queue_state' from agh_handoff_records where id = rec_review) = 'AWAITING_GROK_REVIEW', 'prior state is kept';
+  assert (select packet->'email_dispatch'->>'resend_message_id' from agh_handoff_records where id = rec_imported) = 're_drift_imported', 'resend id is stored';
+  assert (select packet->'grok_review'->>'verdict' from agh_handoff_records where id = rec_review) = 'PASS', 'existing packet fields stay';
+  assert (select queue_state from agh_handoff_records where id = rec_bounce) = 'AWAITING_GROK_REVIEW', 'a bounced send stays in review';
+  assert (select packet->'email_dispatch'->>'outcome' from agh_handoff_records where id = rec_bounce) = 'bounced', 'bounced status is recorded as bounced';
+  assert (select queue_state from agh_handoff_records where id = rec_placed) = 'GROK_REVIEWED', 'placement_status bounced is not SENT';
+  assert (select packet->'email_dispatch'->>'outcome' from agh_handoff_records where id = rec_placed) = 'bounced', 'placement bounce is recorded as bounced';
+  assert (select queue_state from agh_handoff_records where id = rec_fendi) = 'IMPORTED_TO_AGH', 'fendi drafts are not moved';
+  assert (select packet ? 'email_dispatch' from agh_handoff_records where id = rec_fendi) = false, 'fendi drafts are not stamped';
+  assert (select queue_state from agh_handoff_records where id = rec_plate) = 'IMPORTED_TO_AGH', 'soundplate records are not moved';
+  assert (select packet ? 'email_dispatch' from agh_handoff_records where id = rec_plate) = false, 'soundplate records are not stamped';
+  assert (select queue_state from agh_handoff_records where id = rec_reject) = 'REJECTED_BY_GROK', 'a rejection stays rejected';
+  assert (select queue_state from agh_handoff_records where id = rec_unsent) = 'AWAITING_GROK_REVIEW', 'a draft that is not sent stays in review';
+  assert (select queue_state from agh_handoff_records where id = rec_form) = 'IMPORTED_TO_AGH', 'a web form stays imported';
+  assert (select count(*) from pitch_log where track_id = tr) = logs_before, 'drift backfill does not insert pitch_log';
+  result := agh_backfill_email_handoff_sent();
+  assert (result->>'updated')::int = 0, 'drift backfill is idempotent for sends';
+  assert (result->>'bounces_recorded')::int = 0, 'drift backfill is idempotent for bounces';
+  assert (select queue_state from agh_handoff_records where id = rec_review) = 'SENT', 'sent drift row stays SENT';
+  assert (select queue_state from agh_handoff_records where id = rec_bounce) = 'AWAITING_GROK_REVIEW', 'bounced drift row stays unsent';
 end $$;
 
 -- Cross-channel cooldown and operator groups.

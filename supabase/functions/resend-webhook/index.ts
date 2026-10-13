@@ -4,6 +4,7 @@
 // spam complaint we mark the matching playlist_targets row: bump bounce_count, stamp
 // last_bounced_at, and after 2 bounces flip verification_status to 'bounced' and add the
 // domain to domain_blocklist so it stops re-entering the draft pipeline.
+// The linked email handoff is stamped bounced and is not left labeled SENT.
 //
 // Configure in Resend → Webhooks, pointing at:
 //   https://<project-ref>.functions.supabase.co/resend-webhook?secret=<RESEND_WEBHOOK_SECRET>
@@ -11,6 +12,7 @@
 // is set. (Resend also offers Svix-signed webhooks; swap in svix verification if preferred.)
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { markLinkedHandoffEmailBounced } from "../_shared/handoff-sent.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -71,6 +73,8 @@ Deno.serve(async (req) => {
   const emails = recipients(ev);
   const reason = type === "email.complained" ? "spam_flag" : "bounce";
   const updated: string[] = [];
+  const emailId = String(ev.data?.email_id ?? "").trim();
+  const bouncedPitchIds: string[] = [];
 
   for (const email of emails) {
     const { data: targets } = await supabase.from("playlist_targets")
@@ -101,7 +105,6 @@ Deno.serve(async (req) => {
     // curator cooldown still treated the bounce as delivered. Clear both.
     // Match the provider id when Resend sent one; otherwise only the latest
     // sent row for this address, so a bounce does not rewrite older songs.
-    const emailId = String(ev.data?.email_id ?? "").trim();
     if (emailId) {
       await supabase.from("pitch_log").update({
         status: "bounced",
@@ -120,7 +123,27 @@ Deno.serve(async (req) => {
           status: "bounced",
           cooldown_until: null,
         }).eq("id", pitchId).eq("status", "sent");
+        bouncedPitchIds.push(String(pitchId));
       }
+    }
+  }
+
+  // A bounce is not a delivery. Do not leave the linked handoff labeled SENT.
+  const bouncedAt = new Date().toISOString();
+  if (emailId) {
+    const handoff = await markLinkedHandoffEmailBounced(supabase, {
+      resendMessageId: emailId,
+      bouncedAt,
+    });
+    if (handoff.error) console.error("handoff bounce stamp failed:", handoff.error, { emailId });
+  } else {
+    for (const pitchId of bouncedPitchIds) {
+      const handoff = await markLinkedHandoffEmailBounced(supabase, {
+        resendMessageId: null,
+        pitchLogId: pitchId,
+        bouncedAt,
+      });
+      if (handoff.error) console.error("handoff bounce stamp failed:", handoff.error, { pitchId });
     }
   }
 

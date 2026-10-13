@@ -59,6 +59,83 @@ const NEGATED_ROUTE_EVIDENCE = [
   /\bno (public )?(way|means) to submit\b/i,
 ];
 
+/**
+ * Page-text signals for server-side route fetch. Kept next to NEGATED_ROUTE_EVIDENCE
+ * so the SQL mirror and the fetcher share one phrase list.
+ */
+const LOGIN_WALL_EVIDENCE = [
+  /\b(sign[\s-]*in|log[\s-]*in|login) to (continue|submit|access|view)\b/i,
+  /\bplease (log[\s-]*in|sign[\s-]*in)\b/i,
+  /\bauthentication required\b/i,
+  /\bcreate an account to submit\b/i,
+  /\boauth\b/i,
+];
+
+const PAYWALL_EVIDENCE = [
+  /\bpay[\s-]*to[\s-]*play\b/i,
+  /\bbuy credits\b/i,
+  /\bcredits? (are )?required\b/i,
+  /\bsubscribe to submit\b/i,
+  /\bpaid submissions?\b/i,
+];
+
+const CAPTCHA_EVIDENCE = [
+  /hcaptcha/i,
+  /g-recaptcha/i,
+  /recaptcha/i,
+  /cf-turnstile/i,
+  /challenges\.cloudflare\.com/i,
+  /verify you are human/i,
+  /data-sitekey/i,
+];
+
+const FOLLOW_GATE_EVIDENCE = [
+  /\btoneden\b/i,
+  /\bhypeddit\b/i,
+  /\bfollow to unlock\b/i,
+  /\bfollow to download\b/i,
+  /\bfollow gate\b/i,
+  /\bfollow (us|me) to submit\b/i,
+];
+
+const DEAD_PAGE_EVIDENCE = [
+  /\bpage not found\b/i,
+  /\b404 not found\b/i,
+  /\bthis page (does not|doesn't) exist\b/i,
+  /\bno longer available\b/i,
+  /\bform (has been )?(closed|deleted|not found)\b/i,
+];
+
+/** Grok structural rejection codes that must not be re-drafted on the same route. */
+const STRUCTURAL_REJECTION_RE =
+  /\b(login[_ -]*only|login[_ -]*required|paywall(?:[_ -]*pool)?|pay[_ -]*to[_ -]*play|captcha(?:[_ -]*block)?|dead[_ -]*form(?:[_ -]*url)?|follow[_ -]*gate)\b/i;
+
+function matchesAny(text: string, patterns: RegExp[]): boolean {
+  return patterns.some((re) => re.test(text));
+}
+
+export function evidenceLooksLikeLoginWall(text: string): boolean {
+  return matchesAny(text, LOGIN_WALL_EVIDENCE);
+}
+
+export function evidenceLooksLikePaywall(text: string): boolean {
+  if (matchesAny(text, PAYWALL_EVIDENCE)) return true;
+  // "$" plus a submit action. $0 is not a price.
+  return /\$\s?(?!0(?:\.00)?\b)\d{1,4}(?:\.\d{2})?\b/.test(text) && /\bsubmit\b/i.test(text);
+}
+
+export function evidenceLooksLikeCaptcha(text: string): boolean {
+  return matchesAny(text, CAPTCHA_EVIDENCE);
+}
+
+export function evidenceLooksLikeFollowGate(text: string): boolean {
+  return matchesAny(text, FOLLOW_GATE_EVIDENCE);
+}
+
+export function evidenceLooksLikeDeadPage(text: string): boolean {
+  return matchesAny(text, DEAD_PAGE_EVIDENCE);
+}
+
 export function hostOf(url: string): string | null {
   try {
     return new URL(url.trim()).hostname.toLowerCase().replace(/^www\./, "");
@@ -73,6 +150,115 @@ export function isNonFormHost(url: string): boolean {
   return NON_FORM_HOSTS.some((bad) => h === bad || h.endsWith(`.${bad}`));
 }
 
+export function isFormBuilderHost(urlOrHost: string): boolean {
+  const h = urlOrHost.includes("://") ? hostOf(urlOrHost) : urlOrHost.toLowerCase().replace(/^www\./, "");
+  if (!h) return false;
+  return FORM_BUILDER_HOSTS.some((b) => h === b || h.endsWith(`.${b}`));
+}
+
+const ROUTE_FETCH_BLOCKING_SIGNALS = [
+  "dead",
+  "login_required",
+  "paywall_or_pay_to_play",
+  "captcha",
+  "follow_gate",
+  "submissions_closed",
+] as const;
+
+/** A stored server_fetch pass is proof of the route. Rejection signals still fail it. */
+export function serverFetchPassesRoute(input: Record<string, unknown>): boolean {
+  const rc = input.research_context;
+  if (!rc || typeof rc !== "object") return false;
+  const rf = (rc as Record<string, unknown>).route_fetch;
+  if (!rf || typeof rf !== "object") return false;
+  if ((rf as Record<string, unknown>).method !== "server_fetch") return false;
+  const signals = (rf as Record<string, unknown>).signals;
+  if (signals && typeof signals === "object") {
+    const s = signals as Record<string, unknown>;
+    if (ROUTE_FETCH_BLOCKING_SIGNALS.some((k) => s[k] === true)) return false;
+  }
+  return true;
+}
+
+/**
+ * True when a prior Grok rejection is structural (login / paywall / captcha / dead form /
+ * follow gate). Fit rejections do not match.
+ */
+export function isStructuralRouteRejection(reason: unknown): boolean {
+  return typeof reason === "string" && STRUCTURAL_REJECTION_RE.test(reason);
+}
+
+function recordReasonText(record: Record<string, unknown>): string {
+  const packet = (record.packet && typeof record.packet === "object")
+    ? record.packet as Record<string, unknown>
+    : {};
+  return [record.rejection_reason, packet.rejection_reason, packet.reason, packet.reason_code]
+    .filter((v) => v != null && String(v).trim() !== "")
+    .map((v) => String(v))
+    .join(" ");
+}
+
+function priorRouteHost(record: Record<string, unknown>): string | null {
+  const packet = (record.packet && typeof record.packet === "object")
+    ? record.packet as Record<string, unknown>
+    : {};
+  const url = str(packet.form_url) || str(packet.submission_url);
+  return url ? hostOf(url) : null;
+}
+
+function priorIgHandle(record: Record<string, unknown>): string | null {
+  const packet = (record.packet && typeof record.packet === "object")
+    ? record.packet as Record<string, unknown>
+    : {};
+  const handle = str(packet.ig_curator_account) || str(packet.curator_instagram);
+  return handle ? handle.replace(/^@/, "").toLowerCase() : null;
+}
+
+/**
+ * A (track, playlist) record Grok already rejected for a structural route problem,
+ * on the same route. A different form host (or a different channel) may proceed.
+ * Returns the matching record, or null.
+ */
+export function priorStructuralRouteBlock(
+  records: Array<Record<string, unknown>>,
+  current: {
+    channel: string;
+    form_url?: string | null;
+    ig_account?: string | null;
+    email?: string | null;
+  },
+): { record_id: string; reason: string; prior_route: string | null } | null {
+  const channel = current.channel.toLowerCase();
+  const currentHost = current.form_url ? hostOf(current.form_url) : null;
+  const currentIg = str(current.ig_account).replace(/^@/, "").toLowerCase();
+  const currentEmail = str(current.email).toLowerCase();
+  for (const record of records) {
+    const reason = recordReasonText(record);
+    if (!isStructuralRouteRejection(reason)) continue;
+    const priorChannel = str(record.submission_channel).toLowerCase();
+    if (priorChannel && priorChannel !== channel) continue;
+    if (channel === "web_form") {
+      const priorHost = priorRouteHost(record);
+      if (priorHost && currentHost && priorHost !== currentHost) continue;
+    } else if (channel === "instagram_dm") {
+      const priorIg = priorIgHandle(record);
+      if (priorIg && currentIg && priorIg !== currentIg) continue;
+    } else if (channel === "email") {
+      const packet = (record.packet && typeof record.packet === "object")
+        ? record.packet as Record<string, unknown>
+        : {};
+      const priorEmail = str(packet.curator_email).toLowerCase();
+      if (priorEmail && currentEmail && priorEmail !== currentEmail) continue;
+    }
+    return {
+      record_id: str(record.id),
+      reason: reason.slice(0, 240),
+      prior_route: priorRouteHost(record) ?? priorIgHandle(record),
+    };
+  }
+  return null;
+}
+
 export function isSpotifyUrl(url: string): boolean {
   const h = hostOf(url);
   return !!h && (h === "spotify.com" || h.endsWith(".spotify.com") || h === "spotify.link" ||
@@ -80,7 +266,7 @@ export function isSpotifyUrl(url: string): boolean {
 }
 
 /** Hosted form builders: the URL itself identifies one specific form. */
-const FORM_BUILDER_HOSTS = [
+export const FORM_BUILDER_HOSTS = [
   "docs.google.com",
   "forms.gle",
   "typeform.com",
@@ -204,6 +390,11 @@ export function assessSubmissionRoute(
     if (playlistUrl && playlistUrl.replace(/\/+$/, "") === formUrl.replace(/\/+$/, "")) {
       return { ok: false, channel, code: "playlist_url_as_form", reason: "form_url is the playlist's own URL", route: formUrl };
     }
+    // A server_fetch pass already loaded the page. Agent text is not the proof, and the
+    // SQL mirror (agh_route_failure_code) accepts the same method so recertify does not demote it.
+    if (serverFetchPassesRoute(input)) {
+      return { ok: true, channel, code: "route_ok", reason: "server fetched the form page", route: formUrl };
+    }
     const evidence = str(input.form_source_evidence ?? input.source_evidence ?? input.evidence);
     if (!evidence) {
       return { ok: false, channel, code: "missing_form_evidence", reason: "web_form route has no source evidence", route: formUrl };
@@ -238,6 +429,15 @@ export function assessSubmissionRoute(
   }
   if (!IG_HANDLE_RE.test(handle)) {
     return { ok: false, channel, code: "invalid_ig_account", reason: `curator Instagram account is invalid: ${handle}`, route: handle };
+  }
+  if (serverFetchPassesRoute(input)) {
+    return {
+      ok: true,
+      channel,
+      code: "route_ok",
+      reason: "server fetched a page that names the Instagram handle",
+      route: handle.replace(/^@/, "").toLowerCase(),
+    };
   }
   const evidence = str(input.ig_source_evidence ?? input.source_evidence ?? input.evidence);
   if (!evidence) {

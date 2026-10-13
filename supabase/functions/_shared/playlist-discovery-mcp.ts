@@ -18,12 +18,14 @@ import { allocateDiscovery, buildPerSongFunnel } from "./playlist-funnel.ts";
 import { enforceTrackDnaLaneEnvelope, resolveCurrentApprovedDna } from "./track-dna-envelope.ts";
 import { resolveTrackPitchCopy } from "./pitch-copy.ts";
 import { rejectCallerPlaylistCopy } from "./pitch-descriptor-guard.ts";
-import { evaluateSubmissionPath, isValidFormUrl, isValidIgAccount } from "./multichannel-path.ts";
+import { evaluateSubmissionPath, isValidFormUrl, isValidIgAccount, type RouteFetchDeps } from "./multichannel-path.ts";
 import {
   assertSubmissionReady,
   assessSubmissionRoute,
+  priorStructuralRouteBlock,
   releaseRouteHoldsForTarget,
   routeActionability,
+  serverFetchPassesRoute,
   submissionTerms,
 } from "./submission-route.ts";
 import { curatorContactContext } from "./curator-contact.ts";
@@ -179,6 +181,10 @@ export function buildDiscoveryPlaylistTargetInsert(opts: {
   followerCount?: number | null;
   submissionTerms?: string | null;
   loginRequired?: boolean | null;
+  /** server_fetch when the fetch decided the route; agent_text for IG text-only proof. */
+  routeMethod?: string | null;
+  /** research_context.route_fetch. No page body. */
+  routeFetch?: Record<string, unknown> | null;
 }): Record<string, unknown> {
   const researchContext: Record<string, unknown> = {
     source: "claude_playlist_discovery",
@@ -186,8 +192,11 @@ export function buildDiscoveryPlaylistTargetInsert(opts: {
     identity_resolved: opts.identityResolved !== false,
   };
   if (opts.identityResolved === false) researchContext.identity_kind = "route_only";
-  // Who/what verified the route: the server's shared route rules on the submitted evidence.
-  if (opts.pathVerified) researchContext.route_verified_by = "server_route_rules";
+  // Who/what verified the route. server_fetch when AGH loaded the page; agent text is not the proof.
+  if (opts.pathVerified) researchContext.route_verified_by = opts.routeMethod || "server_route_rules";
+  if (opts.routeFetch && opts.routeFetch.method === "server_fetch") {
+    researchContext.route_fetch = opts.routeFetch;
+  }
   const terms = ["free", "paid", "tip_appreciated"].includes(String(opts.submissionTerms ?? ""))
     ? String(opts.submissionTerms)
     : "unknown";
@@ -678,7 +687,7 @@ async function findExistingTargetByRoute(
 export async function reverifyManuallyVerifiedTarget(
   sb: SupabaseClient,
   ops: OpsActor,
-  opts: { playlistId: string; evidence: string; candidate: Record<string, unknown> },
+  opts: { playlistId: string; evidence: string; candidate: Record<string, unknown>; routeFetch?: RouteFetchDeps },
 ): Promise<
   | { ok: true; reverified: boolean; reason: string; channel: string | null }
   | { ok: false; error: string }
@@ -697,11 +706,13 @@ export async function reverifyManuallyVerifiedTarget(
   const priorStatus = String(row.verification_status ?? "");
   const c = opts.candidate;
   const str = (v: unknown) => (v == null ? "" : String(v).trim());
-  const rowFormOk = !!str(row.form_url) &&
+  const rowFormOk = !!str(row.form_url) && (
+    serverFetchPassesRoute({ research_context: row.research_context, form_url: row.form_url }) ||
     assessSubmissionRoute(
       { form_url: row.form_url, form_source_evidence: row.form_source_evidence, research_context: row.research_context },
       "web_form",
-    ).ok;
+    ).ok
+  );
   const email = str(row.curator_email) || str(c.curator_email);
   const form = (rowFormOk ? str(row.form_url) : "") || str(c.form_url);
   const ig = str(row.ig_curator_account) || str(row.curator_instagram) || str(c.ig_curator_account);
@@ -730,7 +741,7 @@ export async function reverifyManuallyVerifiedTarget(
       submission_url: form || null,
       source_url: sourceUrl,
     },
-    { sb },
+    { sb, routeFetch: opts.routeFetch },
   );
   if (!path.path_verified || !path.channel) {
     return { ok: true, reverified: false, reason: path.reason, channel: path.channel };
@@ -768,6 +779,11 @@ export async function reverifyManuallyVerifiedTarget(
   if (path.channel === "web_form" && candSource && candSource !== str(rc0.source_url)) {
     rcPatch = { ...(rcPatch ?? rc0), source_url: candSource };
     if (str(rc0.source_url)) rcPatch.prior_source_url = rc0.source_url;
+  }
+  if (path.route_fetch || path.route_method) {
+    rcPatch = { ...(rcPatch ?? rc0) };
+    if (path.route_fetch) rcPatch.route_fetch = path.route_fetch;
+    if (path.route_method) rcPatch.route_verified_by = path.route_method;
   }
   if (rcPatch) patch.research_context = rcPatch;
   const schemaErr = Object.keys(patch).find((k) => !PLAYLIST_TARGETS_SCHEMA_INSERT_KEYS.has(k));
@@ -1074,6 +1090,7 @@ export async function submitPlaylistCandidates(
   sb: SupabaseClient,
   ops: OpsActor,
   body: Record<string, unknown>,
+  deps?: { routeFetch?: RouteFetchDeps },
 ): Promise<ToolResult> {
   const denied = denyUnlessCan(ops, "submit_playlist_candidates");
   if (denied) return denied;
@@ -1305,6 +1322,7 @@ export async function submitPlaylistCandidates(
             playlistId: id,
             evidence,
             candidate: c,
+            routeFetch: deps?.routeFetch,
           });
           if (!re.ok) {
             rejected.push({
@@ -1408,22 +1426,35 @@ export async function submitPlaylistCandidates(
           playlist_url: playlistUrl,
           source_url: rawSourceUrl || null,
         },
-        { sb },
+        { sb, routeFetch: deps?.routeFetch },
       );
 
       if (path.retryable) {
-        // Temporary host failure (e.g. MX lookup error) — don't store an unverified row
+        // Temporary host failure (timeout, 5xx, DNS) — don't store an unverified row
         // that would never be re-checked; defer and let the candidate be resubmitted.
         deferred.push({
           playlist_id: id,
           reason: path.reason,
           code: "temporary_host_failure",
           retry: "resubmit this candidate later",
+          retry_after: path.retry_after ?? null,
         });
         continue;
       }
 
-      if (!identityResolved && !path.path_verified) {
+      if (path.block_insert) {
+        // Login wall, paywall, captcha, dead form, follow gate, closed submissions, SSRF.
+        // No target row and no draft.
+        rejected.push({
+          playlist_id: id,
+          reason: path.reason,
+          code: path.code ?? "route_rejected",
+          route_verification: { method: path.route_method ?? "server_fetch" },
+        });
+        continue;
+      }
+
+      if (!identityResolved && !path.path_verified && path.code !== "js_render_required") {
         // Route-only candidates are accepted only on a verified first-party route —
         // without it there is neither a platform identity nor a usable route.
         rejected.push({
@@ -1467,6 +1498,8 @@ export async function submitPlaylistCandidates(
           followerCount: typeof c.follower_count === "number" ? c.follower_count : null,
           submissionTerms: c.submission_terms != null ? String(c.submission_terms) : null,
           loginRequired: typeof c.login_required === "boolean" ? c.login_required : null,
+          routeMethod: path.route_method ?? null,
+          routeFetch: path.route_fetch ?? null,
         });
       } catch (e) {
         rejected.push({
@@ -1561,6 +1594,8 @@ export async function submitPlaylistCandidates(
         song_dna_version_id: dna.songDnaVersionId,
         path_reason: path.reason,
         identity_resolved: identityResolved,
+        ...(path.code === "js_render_required" ? { code: "js_render_required", reason: path.reason } : {}),
+        ...(path.route_method ? { route_verification: { method: path.route_method } } : {}),
       };
       if (path.path_verified && (VERIFIED_STATUSES as readonly string[]).includes(path.status)) {
         acceptedVerified.push(entry);
@@ -1711,6 +1746,17 @@ async function promotePlaylistInventoryBatch(
   return { error: null, queue_state: queueState };
 }
 
+function routeVerificationMethod(target: Record<string, unknown>): "server_fetch" | "server_route_rules" {
+  const rc = target.research_context;
+  if (rc && typeof rc === "object") {
+    const fetch = (rc as Record<string, unknown>).route_fetch;
+    if (fetch && typeof fetch === "object" && (fetch as Record<string, unknown>).method === "server_fetch") {
+      return "server_fetch";
+    }
+  }
+  return "server_route_rules";
+}
+
 export async function createPlaylistDraftInventory(
   sb: SupabaseClient,
   ops: OpsActor,
@@ -1809,6 +1855,7 @@ export async function createPlaylistDraftInventory(
   const items: Prepared[] = [];
   const reusedPreview: Record<string, unknown>[] = [];
   const policyDeferred: Record<string, unknown>[] = [];
+  const priorStructuralRejections: Record<string, unknown>[] = [];
 
   for (const requestedId of candidateIds) {
     // Accept any supported Spotify form for a stored target (ID / spotify:ID / URL).
@@ -1872,6 +1919,40 @@ export async function createPlaylistDraftInventory(
           playlist_id: playlistId,
         },
       };
+    }
+
+    // Do not re-draft a track/playlist whose last Grok rejection on this same route
+    // was structural (login, paywall, captcha, dead form, follow gate). Fit rejections
+    // stay on agh_fit_rejection_requeue. A different form host may proceed.
+    const { data: priorRejected, error: priorErr } = await sb
+      .from("agh_handoff_records")
+      .select("id, rejection_reason, packet, submission_channel, playlist_target_id, track_id, queue_state")
+      .eq("playlist_target_id", playlistId)
+      .eq("track_id", trackId)
+      .eq("queue_state", "REJECTED_BY_GROK")
+      .limit(50);
+    if (priorErr) {
+      return {
+        status: 500,
+        data: { error: `prior_rejection_query_failed:${priorErr.message}`, code: "db_error", playlist_id: playlistId },
+      };
+    }
+    const structural = priorStructuralRouteBlock((priorRejected ?? []) as Record<string, unknown>[], {
+      channel,
+      form_url: String(target.form_url ?? target.submission_url ?? "") || null,
+      ig_account: String(target.ig_curator_account ?? target.curator_instagram ?? "") || null,
+      email: String(target.curator_email ?? "") || null,
+    });
+    if (structural) {
+      priorStructuralRejections.push({
+        playlist_id: playlistId,
+        code: "prior_structural_rejection",
+        reason: structural.reason,
+        prior_record_id: structural.record_id,
+        prior_route: structural.prior_route,
+        channel,
+      });
+      continue;
     }
 
     const envelope = await enforceTrackDnaLaneEnvelope(sb, {
@@ -2007,9 +2088,9 @@ export async function createPlaylistDraftInventory(
       ops_idempotency_key: key,
       // Authoritative fit decision + DNA/policy version, so review disagreements are diagnosable.
       song_fit: decideLaneFit(dnaRow as ApprovedDnaLanes | null, target.lane),
-      // What established the route: the server's shared route rules applied to Claude's evidence.
+      // server_fetch when AGH loaded the page; otherwise the shared text rules (older rows stay comparable).
       route_verification: {
-        method: "server_route_rules",
+        method: routeVerificationMethod(target as Record<string, unknown>),
         submitted_by: ops.label,
         verification_status: target.verification_status ?? null,
         verified_at: target.last_verified_at ?? null,
@@ -2053,6 +2134,18 @@ export async function createPlaylistDraftInventory(
 
   const persistAttr = inventoryPersistAttr(ops);
 
+  if (!items.length && !reusedPreview.length && priorStructuralRejections.length) {
+    return {
+      status: 409,
+      data: {
+        error: "prior structural rejection on the same route — not re-drafted",
+        code: "prior_structural_rejection",
+        prior_structural_rejections: priorStructuralRejections,
+        policy_deferred: policyDeferred,
+      },
+    };
+  }
+
   if (!items.length && !reusedPreview.length && policyDeferred.length) {
     return {
       status: 409,
@@ -2060,6 +2153,7 @@ export async function createPlaylistDraftInventory(
         error: "every candidate is refused by contact policy — nothing to persist",
         code: "policy_deferred_all",
         policy_deferred: policyDeferred,
+        prior_structural_rejections: priorStructuralRejections,
       },
     };
   }
@@ -2098,6 +2192,7 @@ export async function createPlaylistDraftInventory(
         server_pitch_source: pitchProbe.source,
         records: { ok: true, inserted: 0, duplicates: reusedPreview.length, rows: [] },
         policy_deferred: policyDeferred,
+        prior_structural_rejections: priorStructuralRejections,
         stored_pitch_sources: reusedPreview.map((r) => ({
           outreach_draft_id: r.outreach_draft_id ?? null,
           playlist_target_id: r.playlist_id ?? null,
@@ -2116,6 +2211,7 @@ export async function createPlaylistDraftInventory(
         error: "request mixes existing and new inventory pairs — split the call",
         code: "mixed_idempotent_set",
         existing: reusedPreview,
+        prior_structural_rejections: priorStructuralRejections,
       },
     };
   }
@@ -2193,6 +2289,7 @@ export async function createPlaylistDraftInventory(
       })),
       race_resolved: result.race_resolved ?? false,
       policy_deferred: policyDeferred,
+      prior_structural_rejections: priorStructuralRejections,
     },
   };
 }

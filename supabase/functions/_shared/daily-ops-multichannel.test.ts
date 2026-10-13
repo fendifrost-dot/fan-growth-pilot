@@ -29,6 +29,7 @@ import {
   isValidFormUrl,
   isValidIgAccount,
 } from "./multichannel-path.ts";
+import { DEFAULT_FORM_PAGE_HTML, routeFetchDepsReturning } from "./route-fetch.ts";
 import {
   HANDOFF_QUEUE_STATES,
   assertKnownChannel,
@@ -188,7 +189,7 @@ Deno.test("web form and IG DM can verify without email", async () => {
     submission_channel: "web_form",
     form_url: "https://example.com/submit",
     form_source_evidence: "https://curator.example/page#form",
-  });
+  }, { routeFetch: routeFetchDepsReturning(DEFAULT_FORM_PAGE_HTML) });
   assertEquals(form.ok, true);
   assertEquals(form.path_verified, true);
   assertEquals(form.channel, "web_form");

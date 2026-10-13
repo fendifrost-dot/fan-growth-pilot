@@ -3,6 +3,9 @@
  * Grok handoff path, OAuth consent, and denial matrix.
  */
 import { assertSubmissionReady } from "./submission-route.ts";
+import { DEFAULT_FORM_PAGE_HTML, routeFetchDepsReturning } from "./route-fetch.ts";
+
+const verifiedFormFetch = { routeFetch: routeFetchDepsReturning(DEFAULT_FORM_PAGE_HTML) };
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
   can,
@@ -615,7 +618,7 @@ Deno.test("web-form and IG targets retain their channels when verified", async (
       submission_channel: "web_form",
       form_url: "https://curator.example/submit",
     }],
-  });
+  }, verifiedFormFetch);
   assertEquals(form.status, 200);
   const formRows = [
     ...((form.data.verified_eligible as Row[]) ?? []),
@@ -1909,7 +1912,7 @@ Deno.test("submit new Spotify candidate persists without playlist_url column", a
       submission_channel: "web_form",
       form_url: "https://curator.example/submit",
     }],
-  });
+  }, verifiedFormFetch);
   assertEquals(res.status, 200, JSON.stringify(res.data));
   assertEquals(res.data.accepted_count, 1, JSON.stringify(res.data));
   assertEquals(res.data.rejected_count, 0, JSON.stringify(res.data));
@@ -2294,7 +2297,7 @@ Deno.test("route-only candidate (form + name + evidence, no Spotify id) is accep
   const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
     track_id: RT_TRACK,
     candidates: [cand],
-  });
+  }, verifiedFormFetch);
   assertEquals(res.status, 200, JSON.stringify(res.data));
   assertEquals(res.data.rejected_count, 0, JSON.stringify(res.data));
   assertEquals(res.data.verified_eligible_count, 1);
@@ -2314,7 +2317,7 @@ Deno.test("route-only candidate (form + name + evidence, no Spotify id) is accep
   const again = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
     track_id: RT_TRACK,
     candidates: [{ ...cand, form_url: "https://Curator.example/submit/" }],
-  });
+  }, verifiedFormFetch);
   assertEquals(again.status, 200);
   assertEquals((sb._tables.playlist_targets as Row[]).length, 1);
   assertEquals(
@@ -2360,7 +2363,7 @@ Deno.test("route-only dedupes onto an existing target with the same route + name
       submission_channel: "web_form",
       form_url: "https://curator.example/submit",
     }],
-  });
+  }, verifiedFormFetch);
   assertEquals(res.status, 200, JSON.stringify(res.data));
   assertEquals((sb._tables.playlist_targets as Row[]).length, 1);
   assertEquals(res.data.eligible_existing_playlist_ids, ["0DAtAjCytSoXd6T42mP0NW"]);
@@ -2405,7 +2408,7 @@ Deno.test("manually_verified catalog row is re-verified and becomes verified_eli
       submission_channel: "web_form",
       form_url: "https://curator.example/submit",
     }],
-  });
+  }, verifiedFormFetch);
   assertEquals(res.status, 200, JSON.stringify(res.data));
   assertEquals(res.data.verified_eligible_count, 1, JSON.stringify(res.data));
   const v = (res.data.verified_eligible as Row[])[0];
@@ -2445,7 +2448,7 @@ Deno.test("re-verify stores the evidence that verified the route (stored row pas
       submission_channel: "web_form",
       form_url: "https://play.soundplate.com/abstract218",
     }],
-  });
+  }, verifiedFormFetch);
   assertEquals(res.status, 200, JSON.stringify(res.data));
   const row = (sb._tables.playlist_targets as Row[])[0];
   assertEquals(row.path_verified, true);
@@ -2526,7 +2529,7 @@ Deno.test("submit: a valid evidenced form still becomes verified_eligible", asyn
       form_url: "https://dailyplaylists.com/submit-song/add-song",
       source_evidence: "DailyPlaylists free house list: Club Music 2025 (73,487 followers)",
     }],
-  });
+  }, verifiedFormFetch);
   assertEquals(res.status, 200, JSON.stringify(res.data));
   assertEquals(res.data.verified_eligible_count, 1, JSON.stringify(res.data));
 });
@@ -2585,7 +2588,7 @@ Deno.test("submit: spotify:-prefixed catalog row is found and re-verified (no ne
       form_url: "https://curator.example/submit",
       source_evidence: "Curator site links this submission form for the playlist",
     }],
-  });
+  }, verifiedFormFetch);
   assertEquals(res.status, 200, JSON.stringify(res.data));
   const rows = sb._tables.playlist_targets as Row[];
   // Same row, no duplicate canonical row created.
@@ -2792,6 +2795,7 @@ Deno.test("re-verify accepts same-host proof from the candidate source_url and s
       form_url: "https://play.soundplate.com/boom102",
       source_url: "https://play.soundplate.com/boom102",
     },
+    routeFetch: verifiedFormFetch.routeFetch,
   });
   assert(res.ok && res.reverified, JSON.stringify(res));
   const rc = writes[0].research_context as Record<string, unknown>;
@@ -2811,4 +2815,169 @@ Deno.test("re-verify still rejects web-form evidence with no same-host link", as
   });
   assert(res.ok && !res.reverified);
   assertEquals(writes.length, 0);
+});
+
+Deno.test("submit rejects a fetched login wall and inserts no target", async () => {
+  const sb = stubSb(routeFixture());
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: RT_TRACK,
+    candidates: [{
+      playlist_id: "0DAtAjCytSoXd6T42mP0AA",
+      playlist_name: "Wall",
+      lane: "rap_general",
+      source_evidence: "submitlink host named in the agent note",
+      submission_channel: "web_form",
+      form_url: "https://submitlink.io/wall",
+    }],
+  }, { routeFetch: routeFetchDepsReturning("<html><p>Please log in to continue</p></html>") });
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals((res.data.rejected as Row[])[0].code, "login_required");
+  assertEquals((res.data.verified_eligible as Row[] | undefined)?.length ?? 0, 0);
+  assertEquals((sb._tables.playlist_targets as Row[]).length, 0);
+});
+
+function structuralDraftFixture(formUrl: string, records: Row[]): { trackId: string; tables: Record<string, Row[]> } {
+  const trackId = "11111111-1111-1111-1111-111111111111";
+  const dnaId = "22222222-2222-2222-2222-222222222222";
+  return {
+    trackId,
+    tables: {
+      tracks: [{ id: trackId, name: "Song", approved_song_dna_version_id: dnaId }],
+      song_dna_versions: [{
+        id: dnaId,
+        track_id: trackId,
+        approval_state: "approved",
+        short_pitch: "pitch",
+        approved_lanes: ["rap_general"],
+        excluded_lanes: [],
+        primary_genre: "rap",
+      }],
+      playlist_targets: [{
+        playlist_id: "pl-form",
+        contact_method: "web_form",
+        submission_method: "web_form",
+        path_verified: true,
+        verification_status: "auto_verified",
+        form_url: formUrl,
+        form_source_evidence: "submitlink curator form on the listed site",
+        lane: "rap_general",
+      }],
+      outreach_drafts: [],
+      agh_handoff_records: records,
+      agh_handoff_batches: [],
+    },
+  };
+}
+
+Deno.test("draft inventory does not re-draft a structural rejection on the same route", async () => {
+  const ops = playlistDiscoveryActor();
+  const reasons = ["login_only", "LOGIN_REQUIRED/PAYWALL_POOL", "PAY_TO_PLAY", "CAPTCHA_BLOCK", "DEAD_FORM_URL", "FOLLOW_GATE"];
+  for (const reason of reasons) {
+    let persisted = false;
+    const { trackId, tables } = structuralDraftFixture("https://submitlink.io/form", [{
+      id: "rec-rej",
+      playlist_target_id: "pl-form",
+      track_id: "11111111-1111-1111-1111-111111111111",
+      queue_state: "REJECTED_BY_GROK",
+      submission_channel: "web_form",
+      rejection_reason: reason,
+      packet: { form_url: "https://submitlink.io/form" },
+    }]);
+    const res = await createPlaylistDraftInventory(stubSb(tables), ops, {
+      track_id: trackId,
+      accepted_candidate_ids: ["pl-form"],
+    }, {
+      persistInventory: async () => {
+        persisted = true;
+        return { data: { ok: true }, error: null };
+      },
+    });
+    assertEquals(res.status, 409, reason + " " + JSON.stringify(res.data));
+    assertEquals(res.data.code, "prior_structural_rejection");
+    assertEquals(persisted, false, reason);
+  }
+});
+
+Deno.test("a fit rejection and a different form host can still be drafted", async () => {
+  const ops = playlistDiscoveryActor();
+  const fit = structuralDraftFixture("https://submitlink.io/form", [{
+    id: "rec-fit",
+    playlist_target_id: "pl-form",
+    track_id: "11111111-1111-1111-1111-111111111111",
+    queue_state: "REJECTED_BY_GROK",
+    submission_channel: "web_form",
+    rejection_reason: "DNA_LANE_MISMATCH",
+    packet: { form_url: "https://submitlink.io/form" },
+  }]);
+  let fitPersisted = false;
+  const fitRes = await createPlaylistDraftInventory(stubSb(fit.tables), ops, {
+    track_id: fit.trackId,
+    accepted_candidate_ids: ["pl-form"],
+  }, {
+    composeDraft: async () => {
+      throw new Error("composeDraft must not be called for web_form");
+    },
+    persistInventory: async () => {
+      fitPersisted = true;
+      fit.tables.agh_handoff_batches.push({ id: "b1", batch_kind: "playlist", queue_state: "CLAUDE_BATCH_READY", record_count: 1 });
+      return {
+        data: {
+          ok: true,
+          idempotent: false,
+          batch_id: "b1",
+          inserted: 1,
+          record_count: 1,
+          email_drafts: [],
+          manual_packets: [{ playlist_id: "pl-form", channel: "web_form" }],
+          items: [{ playlist_id: "pl-form", channel: "web_form", reused: false }],
+        },
+        error: null,
+      };
+    },
+  });
+  assertEquals(fitRes.status, 200, JSON.stringify(fitRes.data));
+  assertEquals(fitPersisted, true);
+
+  const moved = structuralDraftFixture("https://curator.example/submit", [{
+    id: "rec-old",
+    playlist_target_id: "pl-form",
+    track_id: "11111111-1111-1111-1111-111111111111",
+    queue_state: "REJECTED_BY_GROK",
+    submission_channel: "web_form",
+    rejection_reason: "DEAD_FORM",
+    packet: { form_url: "https://submitlink.io/old" },
+  }]);
+  (moved.tables.playlist_targets[0] as Row).form_source_evidence = "curator.example submission form";
+  let movedPersisted = false;
+  const movedRes = await createPlaylistDraftInventory(stubSb(moved.tables), ops, {
+    track_id: moved.trackId,
+    accepted_candidate_ids: ["pl-form"],
+  }, {
+    persistInventory: async () => {
+      movedPersisted = true;
+      moved.tables.agh_handoff_batches.push({ id: "b2", batch_kind: "playlist", queue_state: "CLAUDE_BATCH_READY", record_count: 1 });
+      return {
+        data: {
+          ok: true, idempotent: false, batch_id: "b2", inserted: 1, record_count: 1,
+          email_drafts: [], manual_packets: [], items: [{ playlist_id: "pl-form", reused: false }],
+        },
+        error: null,
+      };
+    },
+  });
+  assertEquals(movedRes.status, 200, JSON.stringify(movedRes.data));
+  assertEquals(movedPersisted, true);
+});
+
+Deno.test("a prior-rejection query failure is a database error", async () => {
+  const ops = playlistDiscoveryActor();
+  const { trackId, tables } = structuralDraftFixture("https://submitlink.io/form", []);
+  const res = await createPlaylistDraftInventory(
+    stubSb(tables, { failTables: { agh_handoff_records: "relation missing" } }),
+    ops,
+    { track_id: trackId, accepted_candidate_ids: ["pl-form"] },
+  );
+  assertEquals(res.status, 500);
+  assertEquals(res.data.code, "db_error");
+  assert(String(res.data.error).includes("prior_rejection_query_failed"));
 });

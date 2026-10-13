@@ -241,7 +241,7 @@ export async function runSendRadioPitch(
       curator_email: email,
       curator_name: target.contact_name,
       track_name: trackName,
-      song_id: draftRow.song_id,
+      song_id: draftRow?.song_id ?? null,
       subject,
       body: pitchBody,
       pitch_log_id: pitchLogId,

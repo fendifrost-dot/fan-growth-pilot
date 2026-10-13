@@ -1,4 +1,4 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { createClient, SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1';
 import { isPlaylistAgentAction, runPlaylistAgentAction } from '../_shared/playlist-agent-run.ts';
 import { isRadioAction, runRadioAction } from '../_shared/radio-outreach.ts';
 import { isFanEngagementAction, runFanEngagementAction } from '../_shared/fan-engagement-run.ts';
@@ -91,7 +91,7 @@ function gateHubKey(req: Request): HubGateResult {
   return { ok: false, reason: 'bad x-api-key' };
 }
 
-async function resolveArtistUserId(supabase: ReturnType<typeof createClient>): Promise<string> {
+async function resolveArtistUserId(supabase: SupabaseClient): Promise<string> {
   const envId = (Deno.env.get('ARTIST_USER_ID') || '').trim();
   if (envId) return envId;
 
@@ -392,7 +392,7 @@ function mondayOf(d: Date): string {
  * clobbering manual fields (contact_email, pitch_status, notes are not in the payload).
  */
 async function ingestAppleSpins(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClient,
   body: any,
 ) {
   const artistId = String(body.artist_id || '').trim();
@@ -451,7 +451,7 @@ async function ingestAppleSpins(
         snapshot_week: week,
         metadata: { source: 'amfa_kpi_city_breakout' },
       };
-    }).filter((r) => (r.spins_total ?? 0) > 0);
+    }).filter((r: { spins_total?: number }) => (r.spins_total ?? 0) > 0);
 
     if (cityRows.length) {
       const { error: cErr } = await supabase
@@ -506,7 +506,7 @@ async function ingestAppleSpins(
   };
 }
 
-async function getRadioTargets(supabase: ReturnType<typeof createClient>) {
+async function getRadioTargets(supabase: SupabaseClient) {
   const { data, error } = await supabase
     .from('radio_targets')
     .select('*')
@@ -517,7 +517,7 @@ async function getRadioTargets(supabase: ReturnType<typeof createClient>) {
 }
 
 async function getIgRosterCounts(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClient,
 ): Promise<{ mutual: number; total: number }> {
   const [{ count: mutual, error: e1 }, { count: total, error: e2 }] = await Promise.all([
     supabase.from('instagram_curator_roster').select('*', { count: 'exact', head: true }).eq('is_mutual', true),
@@ -532,7 +532,7 @@ async function getIgRosterCounts(
 }
 
 /** Cross-channel counts for admin Send center. */
-async function getOutreachStats(supabase: ReturnType<typeof createClient>) {
+async function getOutreachStats(supabase: SupabaseClient) {
   const dayAgo = new Date(Date.now() - 86400000).toISOString();
 
   const [
@@ -577,7 +577,7 @@ async function getOutreachStats(supabase: ReturnType<typeof createClient>) {
   };
 }
 
-async function getFanStats(supabase: ReturnType<typeof createClient>) {
+async function getFanStats(supabase: SupabaseClient) {
   const userId = await resolveArtistUserId(supabase);
 
   // Lead counts (scoped via owning smart_link — lead.user_id is often null)
@@ -636,7 +636,7 @@ async function getFanStats(supabase: ReturnType<typeof createClient>) {
   };
 }
 
-async function getLeads(supabase: ReturnType<typeof createClient>) {
+async function getLeads(supabase: SupabaseClient) {
   const userId = await resolveArtistUserId(supabase);
   const { data, error } = await supabase
     .from('smart_link_leads')
@@ -677,7 +677,7 @@ async function getLeads(supabase: ReturnType<typeof createClient>) {
  * seed keys are re-applied.
  */
 async function upsertSmartLink(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClient,
   body: any,
 ) {
   const links = Array.isArray(body?.links) ? body.links : [body];
@@ -760,7 +760,7 @@ async function upsertSmartLink(
   };
 }
 
-async function getMomentumAlerts(supabase: ReturnType<typeof createClient>) {
+async function getMomentumAlerts(supabase: SupabaseClient) {
   const userId = await resolveArtistUserId(supabase);
   const { data, error } = await supabase
     .from('momentum_events')
@@ -774,7 +774,7 @@ async function getMomentumAlerts(supabase: ReturnType<typeof createClient>) {
   return { alerts: data || [] };
 }
 
-async function getMarketingActions(supabase: ReturnType<typeof createClient>) {
+async function getMarketingActions(supabase: SupabaseClient) {
   const userId = await resolveArtistUserId(supabase);
   const { data, error } = await supabase
     .from('marketing_actions')
@@ -788,7 +788,7 @@ async function getMarketingActions(supabase: ReturnType<typeof createClient>) {
   return { actions: data || [] };
 }
 
-async function getPlatformMetrics(supabase: ReturnType<typeof createClient>) {
+async function getPlatformMetrics(supabase: SupabaseClient) {
   const userId = await resolveArtistUserId(supabase);
   const { data, error } = await supabase
     .from('fan_data')

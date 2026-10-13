@@ -883,7 +883,7 @@ export async function runSplitSheetAction(
         split_sheet_id: String(ev.split_sheet_id),
         event_kind: "evidence_verify",
         ops,
-        document_hash: hash,
+        document_hash: declaredHash,
         detail: { evidence_id: evidenceId },
       });
       return { status: 200, data: { ok: true, evidence: data } };

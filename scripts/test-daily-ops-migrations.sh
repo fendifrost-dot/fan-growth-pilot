@@ -1140,4 +1140,23 @@ assert_eq "age_not_for_authenticated" "$(run_sql -c "select has_function_privile
 assert_eq "rollup_not_for_authenticated" "$(run_sql -c "select has_function_privilege('authenticated', 'public.agh_rollup_decided_handoff_batch(uuid, text, text, boolean)', 'execute');")" "f"
 assert_eq "maintenance_not_for_authenticated" "$(run_sql -c "select has_function_privilege('authenticated', 'public.agh_handoff_backlog_maintenance(boolean)', 'execute');")" "f"
 
+echo "==> Server-side route fetch (functions replaced, 0 playlist_targets rows changed)"
+PT_BEFORE=$(run_sql -c "select count(*) from public.playlist_targets;")
+apply_with_rollback "$ROOT/supabase/migrations/20261013220000_route_fetch_server_verification.sql"
+PT_AFTER=$(run_sql -c "select count(*) from public.playlist_targets;")
+assert_eq "route_fetch_migration_changes_zero_targets" "${PT_BEFORE}:${PT_AFTER}" "${PT_BEFORE}:${PT_BEFORE}"
+# Applying twice is a no-op for rows and for the ops setting.
+apply_with_rollback "$ROOT/supabase/migrations/20261013220000_route_fetch_server_verification.sql"
+PT_TWICE=$(run_sql -c "select count(*) from public.playlist_targets;")
+assert_eq "route_fetch_migration_idempotent_targets" "${PT_TWICE}" "${PT_BEFORE}"
+assert_eq "text_rule_still_rejects_unlinked" "$(run_sql -c "select public.agh_route_failure_code('web_form','auto_verified',true,null,'https://dailyplaylists.com/',null,'Spotify playlist by curator Spot, surfaced in a search for rap playlists accepting free 2026 submissions.',null,null);")" "evidence_not_linked_to_form"
+assert_eq "server_fetch_accepts_unlinked_evidence" "$(run_sql -c "select coalesce(public.agh_route_failure_code('web_form','auto_verified',true,null,'https://dailyplaylists.com/',null,'Spotify playlist by curator Spot, surfaced in a search for rap playlists accepting free 2026 submissions.',null,null,null,null,'server_fetch'),'ok');")" "ok"
+assert_eq "server_fetch_still_rejects_spotify" "$(run_sql -c "select public.agh_route_failure_code('web_form','auto_verified',true,null,'https://open.spotify.com/playlist/370YtLfVc3bwtUp3uhyyAO',null,'server fetched',null,null,null,null,'server_fetch');")" "spotify_url_as_form"
+assert_eq "server_fetch_still_rejects_bad_ig_handle" "$(run_sql -c "select public.agh_route_failure_code('instagram_dm','auto_verified',true,null,null,null,null,'not a handle',null,null,null,'server_fetch');")" "invalid_ig_account"
+assert_eq "server_fetch_accepts_ig_without_evidence_text" "$(run_sql -c "select coalesce(public.agh_route_failure_code('instagram_dm','auto_verified',true,null,null,null,null,'@curator',null,null,null,'server_fetch'),'ok');")" "ok"
+assert_eq "recertify_preview_updates_zero" "$(run_sql -c "select public.agh_route_recertify_targets(false)->>'targets_updated';")" "0"
+assert_eq "firecrawl_fallback_default_off" "$(run_sql -c "select (setting_value->>'enabled') || ':' || (setting_value->>'daily_cap') from public.ops_settings where setting_key='route_fetch_firecrawl_fallback';")" "false:25"
+assert_eq "firecrawl_fallback_single_row" "$(run_sql -c "select count(*) from public.ops_settings where setting_key='route_fetch_firecrawl_fallback';")" "1"
+assert_eq "promote_still_runs_after_method_arg" "$(run_sql -c "select public.agh_promote_claude_ready_batches(true)->>'ok';")" "true"
+
 echo "==> PASS: daily-ops migrations applied + authoritative RPC assertions verified"

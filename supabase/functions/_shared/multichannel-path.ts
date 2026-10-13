@@ -20,7 +20,20 @@ import {
   rejectCallerPlaylistCopy,
 } from "./pitch-descriptor-guard.ts";
 import { resolveTrackPitchCopy } from "./pitch-copy.ts";
-import { assessSubmissionRoute, isNonFormHost } from "./submission-route.ts";
+import { assessSubmissionRoute, hostLabel, hostOf, isFormBuilderHost, isNonFormHost } from "./submission-route.ts";
+import {
+  blockingSignal,
+  classifyRoutePage,
+  fetchRoutePage,
+  isDeferredFetch,
+  isFirstPartySource,
+  isInstagramHost,
+  renderJsPage,
+  routeFetchRecord,
+  type RouteFetchDeps,
+  type RoutePage,
+  type RoutePageSignals,
+} from "./route-fetch.ts";
 
 export type RunResult = { status: number; data: Record<string, unknown> };
 
@@ -63,6 +76,8 @@ export type PathVerifyInput = {
   song_dna_version_id?: string | null;
 };
 
+export type RouteVerificationMethod = "server_fetch" | "server_route_rules" | "agent_text";
+
 export type PathVerifyResult = {
   ok: boolean;
   path_verified: boolean;
@@ -72,7 +87,22 @@ export type PathVerifyResult = {
   code?: string;
   /** Temporary host/lookup failure — defer and retry; never a permanent rejection. */
   retryable?: boolean;
+  /** ISO time the caller may resubmit after a temporary fetch failure. */
+  retry_after?: string | null;
+  /** What decided the route. Packet method is server_fetch only when the fetch decided it. */
+  route_method?: RouteVerificationMethod;
+  /** Stored on playlist_targets.research_context.route_fetch. No page body. */
+  route_fetch?: Record<string, unknown> | null;
+  /**
+   * Login wall, paywall, captcha, dead form, follow gate, closed submissions, or SSRF.
+   * Do not insert a playlist_targets row.
+   */
+  block_insert?: boolean;
 };
+
+const RETRY_AFTER_MS = 30 * 60 * 1000;
+
+export type { RouteFetchDeps };
 
 /**
  * Pure path verification — email still uses MX/format checks;
@@ -80,7 +110,7 @@ export type PathVerifyResult = {
  */
 export async function evaluateSubmissionPath(
   input: PathVerifyInput,
-  opts?: { bounceCount?: number; sb?: SupabaseClient },
+  opts?: { bounceCount?: number; sb?: SupabaseClient; routeFetch?: RouteFetchDeps },
 ): Promise<PathVerifyResult> {
   const channelRaw = (input.submission_channel ?? "").trim().toLowerCase() || null;
   if (channelRaw) {
@@ -154,38 +184,12 @@ export async function evaluateSubmissionPath(
     };
   }
 
-  if (channel === "web_form" || channel === "instagram_dm") {
-    // One shared rule set (submission-route.ts) for every boundary.
-    const route = assessSubmissionRoute(
-      {
-        form_url: input.form_url ?? input.submission_url ?? null,
-        form_source_evidence: input.form_source_evidence ?? null,
-        ig_curator_account: input.ig_curator_account ?? input.curator_instagram ?? null,
-        ig_source_evidence: input.ig_source_evidence ?? null,
-        playlist_url: input.playlist_url ?? null,
-        source_url: input.source_url ?? null,
-      },
-      channel,
-    );
-    if (!route.ok) {
-      return {
-        ok: false,
-        path_verified: false,
-        channel,
-        status: "unverified",
-        reason: route.reason,
-        code: route.code,
-      };
-    }
-    return {
-      ok: true,
-      path_verified: true,
-      channel,
-      status: "auto_verified",
-      reason: channel === "web_form"
-        ? "web form URL + source evidence verified (no automated submit)"
-        : "IG curator account + source evidence verified (draft-only; no bulk DM)",
-    };
+  if (channel === "web_form") {
+    return await evaluateWebFormPath(input, opts);
+  }
+
+  if (channel === "instagram_dm") {
+    return await evaluateInstagramPath(input, opts);
   }
 
   return {
@@ -196,6 +200,202 @@ export async function evaluateSubmissionPath(
     reason: "unknown channel fail-closed",
     code: "unknown_channel",
   };
+}
+
+function unverified(
+  channel: string,
+  reason: string,
+  code: string,
+  extra: Partial<PathVerifyResult> = {},
+): PathVerifyResult {
+  return { ok: false, path_verified: false, channel, status: "unverified", reason, code, ...extra };
+}
+
+function deferredPath(channel: string, reason: string): PathVerifyResult {
+  return unverified(channel, reason, "temporary_host_failure", {
+    retryable: true,
+    retry_after: new Date(Date.now() + RETRY_AFTER_MS).toISOString(),
+    route_method: "server_fetch",
+  });
+}
+
+function fetchFailure(channel: string, page: RoutePage): PathVerifyResult | null {
+  if (page.error_class === "ssrf" || page.error_class === "non_https") {
+    return unverified(channel, `refused to fetch route: ${page.error ?? page.error_class}`, "ssrf_refused", {
+      block_insert: true,
+      route_method: "server_fetch",
+    });
+  }
+  if (page.error_class === "policy") {
+    return unverified(channel, "instagram.com is not scraped", "instagram_not_scraped", {
+      block_insert: true,
+      route_method: "server_fetch",
+    });
+  }
+  if (isDeferredFetch(page)) {
+    return deferredPath(channel, `temporary fetch failure (${page.error_class}): ${page.error ?? "unreachable"}`);
+  }
+  return null;
+}
+
+function hardPageRejection(channel: string, page: RoutePage, code: string): PathVerifyResult {
+  return unverified(channel, `submission page rejected: ${code}`, code, {
+    block_insert: true,
+    route_method: "server_fetch",
+    route_fetch: routeFetchRecord(page),
+  });
+}
+
+function passPath(channel: string, reason: string, page: RoutePage): PathVerifyResult {
+  return {
+    ok: true,
+    path_verified: true,
+    channel,
+    status: "auto_verified",
+    reason,
+    route_method: "server_fetch",
+    route_fetch: routeFetchRecord(page),
+  };
+}
+
+function labelsMatch(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  const ha = hostOf(a);
+  const hb = hostOf(b);
+  if (!ha || !hb) return false;
+  if (ha === hb) return true;
+  const la = hostLabel(ha);
+  const lb = hostLabel(hb);
+  return la.length >= 3 && la === lb;
+}
+
+function pageNamesHandle(page: RoutePage, handle: string): boolean {
+  const h = handle.replace(/^@/, "").toLowerCase();
+  if (!h) return false;
+  const hay = `${page.title ?? ""} ${page.text_excerpt} ${page.links.join(" ")}`.toLowerCase();
+  if (hay.includes(`instagram.com/${h}`)) return true;
+  const escaped = h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^a-z0-9._])${escaped}([^a-z0-9._]|$)`, "i").test(hay);
+}
+
+async function evaluateWebFormPath(
+  input: PathVerifyInput,
+  opts?: { sb?: SupabaseClient; routeFetch?: RouteFetchDeps },
+): Promise<PathVerifyResult> {
+  const formUrl = (input.form_url ?? input.submission_url ?? "").trim();
+  const structural = assessSubmissionRoute(
+    {
+      form_url: formUrl || null,
+      form_source_evidence: input.form_source_evidence ?? "server-fetch",
+      playlist_url: input.playlist_url ?? null,
+      source_url: input.source_url ?? null,
+    },
+    "web_form",
+  );
+  // URL shape only. Evidence text is a hint; a missing or unlinked note is not a rejection yet.
+  if (!structural.ok && structural.code !== "missing_form_evidence" && structural.code !== "evidence_not_linked_to_form" &&
+    structural.code !== "evidence_negates_route") {
+    return unverified("web_form", structural.reason, structural.code);
+  }
+  if (!formUrl) return unverified("web_form", structural.reason, structural.code || "missing_form_url");
+
+  const page = await fetchRoutePage(formUrl, { deps: opts?.routeFetch, formUrl });
+  const failed = fetchFailure("web_form", page);
+  if (failed) return failed;
+  const blocked = blockingSignal(page.signals);
+  if (blocked) return hardPageRejection("web_form", page, blocked);
+
+  const builder = isFormBuilderHost(formUrl) || (!!page.final_url && isFormBuilderHost(page.final_url));
+  const formOnHost = page.signals.has_form && labelsMatch(page.final_url ?? formUrl, formUrl);
+  let sourceLinks = false;
+  const sourceUrl = (input.source_url ?? "").trim();
+  if (sourceUrl && isFirstPartySource(sourceUrl) && !labelsMatch(sourceUrl, formUrl) && !isInstagramHost(sourceUrl)) {
+    const source = await fetchRoutePage(sourceUrl, { deps: opts?.routeFetch, formUrl });
+    const sourceFailed = fetchFailure("web_form", source);
+    if (sourceFailed?.retryable && !formOnHost && !builder) return sourceFailed;
+    if (sourceFailed?.block_insert) return sourceFailed;
+    if (!sourceFailed && source.signals.links_to_form && !blockingSignal(source.signals)) sourceLinks = true;
+  }
+
+  if (formOnHost || builder || sourceLinks) {
+    return passPath("web_form", "server fetched the submission page (no automated submit)", page);
+  }
+
+  if (page.signals.js_only) {
+    const rendered = await renderJsPage(opts?.sb as never, page.final_url ?? formUrl, opts?.routeFetch);
+    if (rendered) {
+      const signals: RoutePageSignals = classifyRoutePage({
+        status: 200,
+        final_url: page.final_url,
+        title: page.title,
+        text_excerpt: rendered.markdown.slice(0, 8_000),
+        html: rendered.html,
+        links: page.links,
+      }, { formUrl });
+      const renderedPage: RoutePage = { ...page, signals, text_excerpt: rendered.markdown.slice(0, 1_500), error: null, error_class: null, ok: true };
+      const again = blockingSignal(signals);
+      if (again) return hardPageRejection("web_form", renderedPage, again);
+      if (signals.has_form || signals.links_to_form) {
+        return passPath("web_form", "server fetched the submission page via JS render (no automated submit)", renderedPage);
+      }
+    }
+    return unverified(
+      "web_form",
+      "page looks JavaScript-only; Firecrawl fallback is off or did not render a form",
+      "js_render_required",
+      { route_method: "server_fetch", route_fetch: routeFetchRecord({ ...page, signals: { ...page.signals, js_only: true } }) },
+    );
+  }
+
+  return unverified("web_form", "fetched page has no submission form", "no_form_on_page", {
+    route_method: "server_fetch",
+    route_fetch: routeFetchRecord(page),
+  });
+}
+
+async function evaluateInstagramPath(
+  input: PathVerifyInput,
+  opts?: { routeFetch?: RouteFetchDeps },
+): Promise<PathVerifyResult> {
+  const handle = (input.ig_curator_account ?? input.curator_instagram ?? "").trim();
+  const structural = assessSubmissionRoute(
+    {
+      ig_curator_account: handle || null,
+      ig_source_evidence: input.ig_source_evidence ?? null,
+    },
+    "instagram_dm",
+  );
+  if (!structural.ok && structural.code !== "missing_ig_evidence" && structural.code !== "evidence_negates_route") {
+    return unverified("instagram_dm", structural.reason, structural.code);
+  }
+  if (!handle) return unverified("instagram_dm", structural.reason, structural.code || "missing_ig_account");
+
+  const sourceUrl = (input.source_url ?? "").trim();
+  // instagram.com is never scraped. Without a first-party source, the text rule stands.
+  if (!isFirstPartySource(sourceUrl)) {
+    if (!structural.ok) return unverified("instagram_dm", structural.reason, structural.code);
+    return {
+      ok: true,
+      path_verified: true,
+      channel: "instagram_dm",
+      status: "auto_verified",
+      reason: "IG curator account + source evidence verified (draft-only; no bulk DM)",
+      route_method: "agent_text",
+    };
+  }
+
+  const page = await fetchRoutePage(sourceUrl, { deps: opts?.routeFetch });
+  const failed = fetchFailure("instagram_dm", page);
+  if (failed) return failed;
+  const blocked = blockingSignal(page.signals);
+  if (blocked) return hardPageRejection("instagram_dm", page, blocked);
+  if (!pageNamesHandle(page, handle)) {
+    return unverified("instagram_dm", "first-party source page does not name the Instagram handle", "ig_handle_not_on_source", {
+      route_method: "server_fetch",
+      route_fetch: routeFetchRecord(page),
+    });
+  }
+  return passPath("instagram_dm", "server fetched a page that names the Instagram handle (draft-only; no bulk DM)", page);
 }
 
 /** Build a structured web-form packet for Grok review — never auto-submits. */
@@ -279,6 +479,9 @@ export async function runMultichannelAction(
       if (error) return { status: 500, data: { error: error.message } };
       if (data) row = { ...data, ...clean };
     }
+    const rowRc = (row.research_context && typeof row.research_context === "object")
+      ? row.research_context as Record<string, unknown>
+      : {};
     const verdict = await evaluateSubmissionPath(
       {
         submission_channel: (row.submission_channel ?? row.contact_method ?? row.submission_method) as string,
@@ -287,6 +490,8 @@ export async function runMultichannelAction(
         form_source_evidence: row.form_source_evidence as string,
         ig_curator_account: (row.ig_curator_account ?? row.curator_instagram) as string,
         ig_source_evidence: row.ig_source_evidence as string,
+        playlist_url: (rowRc.playlist_url as string) ?? null,
+        source_url: (row.source_url as string) ?? (rowRc.source_url as string) ?? null,
       },
       { sb, bounceCount: Number(row.bounce_count ?? 0) },
     );
@@ -318,6 +523,15 @@ export async function runMultichannelAction(
         patch.ig_curator_account = row.ig_curator_account ?? row.curator_instagram ?? null;
         patch.ig_source_evidence = row.ig_source_evidence ?? null;
         patch.ig_verified_at = new Date().toISOString();
+      }
+      if (verdict.route_fetch) {
+        patch.research_context = {
+          ...rowRc,
+          route_fetch: verdict.route_fetch,
+          route_verified_by: verdict.route_method ?? "server_fetch",
+        };
+      } else if (verdict.route_method) {
+        patch.research_context = { ...rowRc, route_verified_by: verdict.route_method };
       }
       // Do NOT write song_dna_version_id onto playlist_targets as authoritative.
       const { error: updErr } = await sb.from("playlist_targets").update(patch).eq("playlist_id", playlistId);

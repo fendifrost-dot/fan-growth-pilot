@@ -13,6 +13,7 @@ import {
   submissionTerms,
 } from "./submission-route.ts";
 import { evaluateSubmissionPath } from "./multichannel-path.ts";
+import { DEFAULT_FORM_PAGE_HTML, routeFetchDepsReturning } from "./route-fetch.ts";
 import {
   advanceClaudeReadyBatches,
   batchStatusSummary,
@@ -162,7 +163,7 @@ Deno.test("verify: the playlist's own Spotify URL no longer infers a web-form ro
     submission_channel: "web_form",
     form_url: "https://dailyplaylists.com/submit-song/add-song",
     form_source_evidence: DAILYPLAYLISTS_EVIDENCE,
-  });
+  }, { routeFetch: routeFetchDepsReturning(DEFAULT_FORM_PAGE_HTML) });
   assertEquals(ok.path_verified, true);
   assertEquals(ok.status, "auto_verified");
 });

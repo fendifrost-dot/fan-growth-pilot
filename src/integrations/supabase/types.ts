@@ -7070,6 +7070,7 @@ export type Database = {
           p_ig_evidence: string
           p_is_active?: boolean
           p_path_verified: boolean
+          p_route_method?: string
           p_source_url?: string
           p_submission_url: string
           p_verification_status: string

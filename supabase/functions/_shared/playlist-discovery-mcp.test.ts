@@ -2834,6 +2834,92 @@ Deno.test("submit rejects a fetched login wall and inserts no target", async () 
   assertEquals((res.data.rejected as Row[])[0].code, "login_required");
   assertEquals((res.data.verified_eligible as Row[] | undefined)?.length ?? 0, 0);
   assertEquals((sb._tables.playlist_targets as Row[]).length, 0);
+  const logs = sb._tables.agh_route_fetch_outcomes as Row[];
+  assertEquals(logs.length, 1);
+  assertEquals(logs[0].playlist_id, "0DAtAjCytSoXd6T42mP0AA");
+  assertEquals(logs[0].route_url, "https://submitlink.io/wall");
+  assertEquals(logs[0].disposition, "rejected");
+  assertEquals(logs[0].failure_code, "login_required");
+  assertEquals(logs[0].http_status, 200);
+  assert(typeof logs[0].fetched_at === "string" && String(logs[0].fetched_at).length > 0);
+  assert(!JSON.stringify(logs[0]).includes("text_excerpt"));
+});
+
+Deno.test("submit reuses a logged route rejection and does not refetch or insert a target", async () => {
+  const sb = stubSb(routeFixture());
+  let pageFetches = 0;
+  const now = new Date("2026-10-14T12:00:00.000Z");
+  const base = routeFetchDepsReturning(
+    "<html><head><title>Sign in hidden.user@example.com</title></head><body>Please log in. BODYONLY_SECRET_9f3a bob@other.test</body></html>",
+  );
+  const inner = base.fetchImpl!;
+  const routeFetch = {
+    ...base,
+    now: () => now,
+    fetchImpl: (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (!url.startsWith("https://dns.google")) pageFetches++;
+      return inner(input, init);
+    },
+  };
+  const body = {
+    track_id: RT_TRACK,
+    candidates: [{
+      playlist_id: "0DAtAjCytSoXd6T42mP0AA",
+      playlist_name: "Wall",
+      lane: "rap_general",
+      source_evidence: "submitlink host named in the agent note",
+      submission_channel: "web_form",
+      form_url: "https://SubmitLink.io/wall/?utm_source=newsletter&email=hidden.user@example.com",
+    }],
+  };
+  const first = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), body, { routeFetch });
+  assertEquals(first.status, 200, JSON.stringify(first.data));
+  assertEquals((first.data.rejected as Row[])[0].code, "login_required");
+  const fetchedOnce = pageFetches;
+  assert(fetchedOnce >= 1);
+  const second = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), body, { routeFetch });
+  assertEquals((second.data.rejected as Row[])[0].code, "login_required");
+  assertEquals(pageFetches, fetchedOnce);
+  assertEquals((sb._tables.playlist_targets as Row[]).length, 0);
+  const logs = sb._tables.agh_route_fetch_outcomes as Row[];
+  assertEquals(logs.length, 1);
+  assertEquals(logs[0].route_url, "https://submitlink.io/wall");
+  assertEquals(logs[0].fetched_at, "2026-10-14T12:00:00.000Z");
+  const blob = JSON.stringify(logs[0]);
+  assert(!blob.includes("hidden.user@example.com"), blob);
+  assert(!blob.includes("bob@other.test"), blob);
+  assert(!blob.includes("BODYONLY_SECRET_9f3a"), blob);
+  assert(!blob.includes("utm_source"), blob);
+  assert(String(logs[0].evidence_summary).includes("login_required"));
+  assert(String(logs[0].evidence_summary).includes("[redacted]"));
+});
+
+Deno.test("submit logs a 5xx deferral without inserting a target", async () => {
+  const sb = stubSb(routeFixture());
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: RT_TRACK,
+    candidates: [{
+      playlist_id: "0DAtAjCytSoXd6T42mP0BB",
+      playlist_name: "Down",
+      lane: "rap_general",
+      source_evidence: "curator form",
+      submission_channel: "web_form",
+      form_url: "https://curator.example/submit",
+    }],
+  }, { routeFetch: routeFetchDepsReturning("nope", 503) });
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  const deferred = res.data.deferred as Row[];
+  assertEquals(deferred[0].code, "temporary_host_failure");
+  assertEquals((res.data.rejected as Row[]).length, 0);
+  assertEquals((sb._tables.playlist_targets as Row[]).length, 0);
+  const logs = sb._tables.agh_route_fetch_outcomes as Row[];
+  assertEquals(logs.length, 1);
+  assertEquals(logs[0].playlist_id, "0DAtAjCytSoXd6T42mP0BB");
+  assertEquals(logs[0].disposition, "deferred");
+  assertEquals(logs[0].failure_code, "http_5xx");
+  assertEquals(logs[0].http_status, 503);
+  assertEquals(logs[0].route_url, "https://curator.example/submit");
 });
 
 function structuralDraftFixture(formUrl: string, records: Row[]): { trackId: string; tables: Record<string, Row[]> } {

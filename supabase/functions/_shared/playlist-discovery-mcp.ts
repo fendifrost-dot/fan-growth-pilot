@@ -740,6 +740,7 @@ export async function reverifyManuallyVerifiedTarget(
       // Only a real form URL counts; legacy submission_url often holds the playlist URL.
       submission_url: form || null,
       source_url: sourceUrl,
+      playlist_id: opts.playlistId,
     },
     { sb, routeFetch: opts.routeFetch },
   );
@@ -1425,6 +1426,7 @@ export async function submitPlaylistCandidates(
           submission_url: c.form_url != null ? String(c.form_url) : null,
           playlist_url: playlistUrl,
           source_url: rawSourceUrl || null,
+          playlist_id: id,
         },
         { sb, routeFetch: deps?.routeFetch },
       );

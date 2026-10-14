@@ -208,6 +208,7 @@ Deno.test("an aborted fetch is a timeout and stays deferred", async () => {
       else signal?.addEventListener("abort", abort);
     });
   });
+  deps.timeoutMs = 40;
   const page = await fetchRoutePage("https://curator.example/submit", { deps, timeoutMs: 40 });
   assertEquals(page.error_class, "timeout");
   assertEquals(isDeferredFetch(page), true);

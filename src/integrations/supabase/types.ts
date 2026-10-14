@@ -610,6 +610,42 @@ export type Database = {
           },
         ]
       }
+      agh_route_fetch_outcomes: {
+        Row: {
+          created_at: string
+          disposition: string
+          evidence_summary: string | null
+          failure_code: string
+          fetched_at: string
+          http_status: number | null
+          id: string
+          playlist_id: string | null
+          route_url: string
+        }
+        Insert: {
+          created_at?: string
+          disposition: string
+          evidence_summary?: string | null
+          failure_code: string
+          fetched_at: string
+          http_status?: number | null
+          id?: string
+          playlist_id?: string | null
+          route_url: string
+        }
+        Update: {
+          created_at?: string
+          disposition?: string
+          evidence_summary?: string | null
+          failure_code?: string
+          fetched_at?: string
+          http_status?: number | null
+          id?: string
+          playlist_id?: string | null
+          route_url?: string
+        }
+        Relationships: []
+      }
       analytics_snapshots: {
         Row: {
           chartmetric_rank: number | null

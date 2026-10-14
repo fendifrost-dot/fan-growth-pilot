@@ -8,6 +8,13 @@
       "when": 1791934169504,
       "tag": "0000_route_fetch_server_verification",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1791942496466,
+      "tag": "0001_route_fetch_outcome_log",
+      "breakpoints": true
     }
   ]
 }

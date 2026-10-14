@@ -65,6 +65,8 @@ export type RoutePage = {
   fetched_at: string;
   error: string | null;
   error_class: RouteFetchErrorClass | null;
+  /** Rebuilt from agh_route_fetch_outcomes. Not a new network fetch. */
+  recalled?: boolean;
 };
 
 export type RouteFetchDeps = {
@@ -73,6 +75,8 @@ export type RouteFetchDeps = {
   now?: () => Date;
   /** Test double for the Firecrawl renderer. Production uses firecrawlScrape. */
   firecrawlRender?: (url: string) => Promise<{ html: string; markdown: string }>;
+  /** Overrides the 8s timeout. Production leaves this unset. */
+  timeoutMs?: number;
 };
 
 type FetchOpts = {
@@ -478,7 +482,7 @@ function errorClassOf(e: unknown): RouteFetchErrorClass {
  */
 export async function fetchRoutePage(rawUrl: string, opts: FetchOpts = {}): Promise<RoutePage> {
   const now = opts.deps?.now?.() ?? new Date();
-  const timeoutMs = opts.timeoutMs ?? ROUTE_FETCH_TIMEOUT_MS;
+  const timeoutMs = opts.timeoutMs ?? opts.deps?.timeoutMs ?? ROUTE_FETCH_TIMEOUT_MS;
   const maxRedirects = opts.maxRedirects ?? ROUTE_FETCH_MAX_REDIRECTS;
   const maxBytes = opts.maxBytes ?? ROUTE_FETCH_MAX_BYTES;
   const deps = opts.deps ?? {};
@@ -486,9 +490,9 @@ export async function fetchRoutePage(rawUrl: string, opts: FetchOpts = {}): Prom
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
 
-  const fail = (error: string, errorClass: RouteFetchErrorClass): RoutePage => {
+  const fail = (error: string, errorClass: RouteFetchErrorClass, status: number | null = null): RoutePage => {
     clearTimeout(timer);
-    return emptyPage(error, errorClass, now);
+    return { ...emptyPage(error, errorClass, now), status };
   };
 
   try {
@@ -543,8 +547,7 @@ export async function fetchRoutePage(rawUrl: string, opts: FetchOpts = {}): Prom
     }
     if (!res || !current.url) return fail("no_response", "network");
     const status = res.status;
-    if (status >= 500) return fail(`http_${status}`, "http_5xx");
-    if (status === 429) return fail("http_429", "http_5xx");
+    if (status >= 500 || status === 429) return fail(`http_${status}`, "http_5xx", status);
     const contentType = res.headers.get("content-type");
     const { html } = await readCapped(res, maxBytes);
     const text = stripHtml(html);

@@ -24,7 +24,6 @@ import { assessSubmissionRoute, hostLabel, hostOf, isFormBuilderHost, isNonFormH
 import {
   blockingSignal,
   classifyRoutePage,
-  fetchRoutePage,
   isDeferredFetch,
   isFirstPartySource,
   isInstagramHost,
@@ -34,6 +33,7 @@ import {
   type RoutePage,
   type RoutePageSignals,
 } from "./route-fetch.ts";
+import { fetchRoutePageRemembered, noteRouteFetchOutcome, ROUTE_DEFER_SKIP_MS } from "./route-fetch-log.ts";
 
 export type RunResult = { status: number; data: Record<string, unknown> };
 
@@ -74,6 +74,8 @@ export type PathVerifyInput = {
   /** Listing page the candidate came from (may name the form's site). */
   source_url?: string | null;
   song_dna_version_id?: string | null;
+  /** Stored on a rejected or deferred fetch. Not inserted as a target. */
+  playlist_id?: string | null;
 };
 
 export type RouteVerificationMethod = "server_fetch" | "server_route_rules" | "agent_text";
@@ -100,7 +102,7 @@ export type PathVerifyResult = {
   block_insert?: boolean;
 };
 
-const RETRY_AFTER_MS = 30 * 60 * 1000;
+const RETRY_AFTER_MS = ROUTE_DEFER_SKIP_MS;
 
 export type { RouteFetchDeps };
 
@@ -211,10 +213,12 @@ function unverified(
   return { ok: false, path_verified: false, channel, status: "unverified", reason, code, ...extra };
 }
 
-function deferredPath(channel: string, reason: string): PathVerifyResult {
+function deferredPath(channel: string, reason: string, page?: RoutePage): PathVerifyResult {
+  const fetchedAt = page?.recalled ? Date.parse(page.fetched_at) : Number.NaN;
+  const retryAt = Number.isFinite(fetchedAt) ? fetchedAt + RETRY_AFTER_MS : Date.now() + RETRY_AFTER_MS;
   return unverified(channel, reason, "temporary_host_failure", {
     retryable: true,
-    retry_after: new Date(Date.now() + RETRY_AFTER_MS).toISOString(),
+    retry_after: new Date(retryAt).toISOString(),
     route_method: "server_fetch",
   });
 }
@@ -233,7 +237,7 @@ function fetchFailure(channel: string, page: RoutePage): PathVerifyResult | null
     });
   }
   if (isDeferredFetch(page)) {
-    return deferredPath(channel, `temporary fetch failure (${page.error_class}): ${page.error ?? "unreachable"}`);
+    return deferredPath(channel, `temporary fetch failure (${page.error_class}): ${page.error ?? "unreachable"}`, page);
   }
   return null;
 }
@@ -299,7 +303,12 @@ async function evaluateWebFormPath(
   }
   if (!formUrl) return unverified("web_form", structural.reason, structural.code || "missing_form_url");
 
-  const page = await fetchRoutePage(formUrl, { deps: opts?.routeFetch, formUrl });
+  const page = await fetchRoutePageRemembered(formUrl, {
+    deps: opts?.routeFetch,
+    formUrl,
+    sb: opts?.sb ?? null,
+    playlistId: input.playlist_id ?? null,
+  });
   const failed = fetchFailure("web_form", page);
   if (failed) return failed;
   const blocked = blockingSignal(page.signals);
@@ -310,7 +319,12 @@ async function evaluateWebFormPath(
   let sourceLinks = false;
   const sourceUrl = (input.source_url ?? "").trim();
   if (sourceUrl && isFirstPartySource(sourceUrl) && !labelsMatch(sourceUrl, formUrl) && !isInstagramHost(sourceUrl)) {
-    const source = await fetchRoutePage(sourceUrl, { deps: opts?.routeFetch, formUrl });
+    const source = await fetchRoutePageRemembered(sourceUrl, {
+      deps: opts?.routeFetch,
+      formUrl,
+      sb: opts?.sb ?? null,
+      playlistId: input.playlist_id ?? null,
+    });
     const sourceFailed = fetchFailure("web_form", source);
     if (sourceFailed?.retryable && !formOnHost && !builder) return sourceFailed;
     if (sourceFailed?.block_insert) return sourceFailed;
@@ -334,7 +348,14 @@ async function evaluateWebFormPath(
       }, { formUrl });
       const renderedPage: RoutePage = { ...page, signals, text_excerpt: rendered.markdown.slice(0, 1_500), error: null, error_class: null, ok: true };
       const again = blockingSignal(signals);
-      if (again) return hardPageRejection("web_form", renderedPage, again);
+      if (again) {
+        await noteRouteFetchOutcome(opts?.sb ?? null, {
+          playlistId: input.playlist_id ?? null,
+          routeUrl: formUrl,
+          page: renderedPage,
+        });
+        return hardPageRejection("web_form", renderedPage, again);
+      }
       if (signals.has_form || signals.links_to_form) {
         return passPath("web_form", "server fetched the submission page via JS render (no automated submit)", renderedPage);
       }
@@ -355,7 +376,7 @@ async function evaluateWebFormPath(
 
 async function evaluateInstagramPath(
   input: PathVerifyInput,
-  opts?: { routeFetch?: RouteFetchDeps },
+  opts?: { sb?: SupabaseClient; routeFetch?: RouteFetchDeps },
 ): Promise<PathVerifyResult> {
   const handle = (input.ig_curator_account ?? input.curator_instagram ?? "").trim();
   const structural = assessSubmissionRoute(
@@ -384,7 +405,11 @@ async function evaluateInstagramPath(
     };
   }
 
-  const page = await fetchRoutePage(sourceUrl, { deps: opts?.routeFetch });
+  const page = await fetchRoutePageRemembered(sourceUrl, {
+    deps: opts?.routeFetch,
+    sb: opts?.sb ?? null,
+    playlistId: input.playlist_id ?? null,
+  });
   const failed = fetchFailure("instagram_dm", page);
   if (failed) return failed;
   const blocked = blockingSignal(page.signals);
@@ -492,6 +517,7 @@ export async function runMultichannelAction(
         ig_source_evidence: row.ig_source_evidence as string,
         playlist_url: (rowRc.playlist_url as string) ?? null,
         source_url: (row.source_url as string) ?? (rowRc.source_url as string) ?? null,
+        playlist_id: playlistId || null,
       },
       { sb, bounceCount: Number(row.bounce_count ?? 0) },
     );

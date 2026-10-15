@@ -14,7 +14,7 @@ import {
   type OpsActor,
 } from "./ops-actors.ts";
 import { buildDiscoveryCapacityPlan, dailyTargetFromPlan } from "./discovery-capacity.ts";
-import { allocateDiscovery, buildPerSongFunnel } from "./playlist-funnel.ts";
+import { allocateDiscovery, buildPerSongFunnel, isFrozenDiscoveryRouteUrl } from "./playlist-funnel.ts";
 import { enforceTrackDnaLaneEnvelope, resolveCurrentApprovedDna } from "./track-dna-envelope.ts";
 import { resolveTrackPitchCopy } from "./pitch-copy.ts";
 import { rejectCallerPlaylistCopy } from "./pitch-descriptor-guard.ts";
@@ -23,6 +23,7 @@ import {
   assertSubmissionReady,
   assessSubmissionRoute,
   priorStructuralRouteBlock,
+  recordRouteHold,
   releaseRouteHoldsForTarget,
   routeActionability,
   serverFetchPassesRoute,
@@ -684,6 +685,36 @@ async function findExistingTargetByRoute(
  * Spotify playlist URL in form_url) may be replaced, and the old value is kept in
  * path_verification_notes for audit. Lane/DNA/pair eligibility is re-checked by the caller.
  */
+/** Route proof older than this sends records back to re-verification (matches the SQL sweep). */
+export const ROUTE_PROOF_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * True when a verified target needs its route re-verified before its records can move:
+ * an open record carries a route_hold, or last_verified_at is missing or over 7 days old.
+ * Frozen-route hosts (Soundplate) never qualify: they stay held pending Fendi's decision.
+ */
+export async function targetNeedsRouteRefresh(
+  sb: SupabaseClient,
+  playlistId: string,
+  now: number = Date.now(),
+): Promise<boolean> {
+  const { data: t, error } = await sb
+    .from("playlist_targets")
+    .select("form_url, submission_url, last_verified_at")
+    .eq("playlist_id", playlistId)
+    .maybeSingle();
+  if (error || !t) return false;
+  if (isFrozenDiscoveryRouteUrl(t.form_url) || isFrozenDiscoveryRouteUrl(t.submission_url)) return false;
+  const verifiedAt = t.last_verified_at ? Date.parse(String(t.last_verified_at)) : NaN;
+  if (!Number.isFinite(verifiedAt) || now - verifiedAt > ROUTE_PROOF_MAX_AGE_MS) return true;
+  const { data: recs, error: rErr } = await sb
+    .from("agh_handoff_records")
+    .select("id, packet, submitted_at")
+    .eq("playlist_target_id", playlistId);
+  if (rErr) return false;
+  return ((recs ?? []) as Record<string, unknown>[]).some((r) => !r.submitted_at && recordRouteHold(r));
+}
+
 export async function reverifyManuallyVerifiedTarget(
   sb: SupabaseClient,
   ops: OpsActor,
@@ -1315,9 +1346,15 @@ export async function submitPlaylistCandidates(
         // route (fresh evidence) and re-classify under the normal lane/DNA/pair checks.
         let manualReverify: Record<string, unknown> | null = null;
         // Also covers rows whose stored route fails the shared route rules.
+        // And verified rows whose open records sit on a route hold (e.g. pending_review_aged)
+        // or whose route proof is over 7 days old: promotion keeps those held until the
+        // route is re-verified, and this resubmission is the only path that does it.
         if (
           classified.classification === "existing_unverified" ||
-          (classified.classification === "existing_verified_eligible" && !classified.channel)
+          (classified.classification === "existing_verified_eligible" && !classified.channel) ||
+          ((classified.classification === "existing_verified_eligible" ||
+            classified.classification === "existing_pair_already_drafted") &&
+            await targetNeedsRouteRefresh(sb, id))
         ) {
           const re = await reverifyManuallyVerifiedTarget(sb, ops, {
             playlistId: id,

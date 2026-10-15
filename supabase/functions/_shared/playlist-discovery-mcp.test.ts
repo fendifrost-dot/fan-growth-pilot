@@ -32,6 +32,7 @@ import {
   createPlaylistDraftInventory,
   inventoryPolicyDeferral,
   reverifyManuallyVerifiedTarget,
+  targetNeedsRouteRefresh,
   startClaudePlaylistStation,
   completeClaudePlaylistStation,
   assertPlaylistTargetInsertSchema,
@@ -3066,4 +3067,33 @@ Deno.test("a prior-rejection query failure is a database error", async () => {
   assertEquals(res.status, 500);
   assertEquals(res.data.code, "db_error");
   assert(String(res.data.error).includes("prior_rejection_query_failed"));
+});
+
+function refreshSb(target: Record<string, unknown> | null, records: Record<string, unknown>[] = []) {
+  return {
+    from: (table: string) => ({
+      select: () => ({
+        eq: () =>
+          table === "playlist_targets"
+            ? { maybeSingle: () => Promise.resolve({ data: target, error: null }) }
+            : Promise.resolve({ data: records, error: null }),
+      }),
+    }),
+  } as unknown as Parameters<typeof targetNeedsRouteRefresh>[0];
+}
+
+Deno.test("targetNeedsRouteRefresh: aged hold or stale proof needs re-verify; Soundplate never", async () => {
+  const now = Date.parse("2026-10-15T12:00:00Z");
+  const fresh = "2026-10-14T12:00:00Z";
+  const form = "https://forms.example-curator.com/submit";
+  const held = [{ id: "r1", submitted_at: null, packet: { route_hold: { code: "pending_review_aged" } } }];
+  assertEquals(await targetNeedsRouteRefresh(refreshSb({ form_url: form, last_verified_at: null }), "p", now), true);
+  assertEquals(await targetNeedsRouteRefresh(refreshSb({ form_url: form, last_verified_at: "2026-10-01T00:00:00Z" }), "p", now), true);
+  assertEquals(await targetNeedsRouteRefresh(refreshSb({ form_url: form, last_verified_at: fresh }, held), "p", now), true);
+  assertEquals(await targetNeedsRouteRefresh(refreshSb({ form_url: form, last_verified_at: fresh }, []), "p", now), false);
+  assertEquals(
+    await targetNeedsRouteRefresh(refreshSb({ form_url: "https://play.soundplate.com/boom102", last_verified_at: null }, held), "p", now),
+    false,
+  );
+  assertEquals(await targetNeedsRouteRefresh(refreshSb(null), "p", now), false);
 });

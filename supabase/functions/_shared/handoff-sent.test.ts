@@ -200,6 +200,91 @@ Deno.test("a fendi draft and a Soundplate row are not moved on send", async () =
   assertEquals((tables.agh_handoff_records[1].packet as Row).email_dispatch, undefined);
 });
 
+Deno.test("a Soundplate URL stored only on the playlist target does not block an email send", async () => {
+  const { sb, tables } = stubSb({
+    agh_handoff_records: [
+      {
+        id: "email-url",
+        outreach_draft_id: "draft-url",
+        playlist_target_id: "pl-url",
+        track_id: "track-1",
+        queue_state: "AWAITING_GROK_REVIEW",
+        submission_channel: "email",
+        packet: { outreach_draft_id: "draft-url" },
+      },
+      {
+        id: "packet-url",
+        outreach_draft_id: "draft-packet",
+        playlist_target_id: "pl-packet",
+        track_id: "track-1",
+        queue_state: "AWAITING_GROK_REVIEW",
+        submission_channel: "email",
+        packet: { form_url: "https://play.soundplate.com/packet" },
+      },
+    ],
+    outreach_drafts: [
+      { id: "draft-url", generated_by: "claude_playlist_discovery" },
+      { id: "draft-packet", generated_by: "claude_playlist_discovery" },
+    ],
+    playlist_targets: [
+      {
+        playlist_id: "pl-url",
+        form_url: "https://play.soundplate.com/dhach",
+        submission_url: "https://play.soundplate.com/dhach",
+        curator_website: null,
+        submission_method: "email",
+      },
+      { playlist_id: "pl-packet", form_url: "https://forms.example.test/submit", submission_method: "email" },
+    ],
+  });
+  const sent = await markLinkedHandoffEmailSent(sb, {
+    draftId: "draft-url",
+    playlistId: "pl-url",
+    trackId: "track-1",
+    pitchLogId: "log-url",
+    resendMessageId: "re_url",
+    sentAt,
+  });
+  assertEquals(sent.error, undefined);
+  assertEquals(sent.updated_ids, ["email-url"]);
+  assertEquals(tables.agh_handoff_records[0].queue_state, "SENT");
+  assertEquals(tables.agh_handoff_records[0].submitted_at, undefined);
+  assertEquals(((tables.agh_handoff_records[0].packet as Row).email_dispatch as Row).outcome, "sent");
+  assertEquals(((tables.agh_handoff_records[0].packet as Row).email_dispatch as Row).prior_queue_state, "AWAITING_GROK_REVIEW");
+
+  const packet = await markLinkedHandoffEmailSent(sb, {
+    draftId: "draft-packet",
+    playlistId: "pl-packet",
+    trackId: "track-1",
+    pitchLogId: "log-packet",
+    resendMessageId: "re_packet",
+    sentAt,
+  });
+  assertEquals(packet.updated_ids, []);
+  assertEquals(tables.agh_handoff_records[1].queue_state, "AWAITING_GROK_REVIEW");
+  assertEquals((tables.agh_handoff_records[1].packet as Row).email_dispatch, undefined);
+});
+
+Deno.test("a bounce on an email whose target only stores a Soundplate URL is recorded", async () => {
+  const { sb, tables } = stubSb({
+    pitch_log: [
+      { id: "log-url-b", draft_id: "draft-url-b", status: "bounced", placement_status: "unknown", resend_message_id: "re_url_bounce" },
+    ],
+    outreach_drafts: [{ id: "draft-url-b", generated_by: "claude_playlist_discovery" }],
+    playlist_targets: [
+      { playlist_id: "pl-url", form_url: "https://play.soundplate.com/dhach", submission_url: "https://play.soundplate.com/dhach", submission_method: "email" },
+    ],
+    agh_handoff_records: [
+      { id: "url-bounce", outreach_draft_id: "draft-url-b", playlist_target_id: "pl-url", queue_state: "AWAITING_GROK_REVIEW", submission_channel: "email", packet: {} },
+    ],
+  });
+  const res = await markLinkedHandoffEmailBounced(sb, { resendMessageId: "re_url_bounce", bouncedAt: sentAt });
+  assertEquals(res.error, undefined);
+  assertEquals(res.updated_ids, ["url-bounce"]);
+  assertEquals(tables.agh_handoff_records[0].queue_state, "AWAITING_GROK_REVIEW");
+  assertEquals(((tables.agh_handoff_records[0].packet as Row).email_dispatch as Row).outcome, "bounced");
+});
+
 Deno.test("a bounce is recorded and a false SENT is put back", async () => {
   const { sb, tables } = stubSb({
     pitch_log: [

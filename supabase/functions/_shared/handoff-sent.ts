@@ -3,11 +3,13 @@
  * Approve-and-send does not wait for the handoff to be APPROVED_FOR_SEND, so a
  * linked row still in review or already imported moves too.
  * Does not insert pitch_log, receipts, or submitted_at, so quota is unchanged.
- * Does not send anything. Soundplate rows and generated_by='fendi' drafts stay put.
+ * Does not send anything. A Soundplate submission method, a Soundplate URL on
+ * the handoff packet, and generated_by='fendi' drafts stay put. A Soundplate
+ * form URL stored only on the playlist target does not block an email send.
  * A bounce is recorded on the packet and is not labeled SENT.
  */
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
-import { isSoundplateRecord } from "./playlist-funnel.ts";
+import { isFrozenDiscoveryRouteUrl } from "./playlist-funnel.ts";
 
 export type HandoffSentResult = { updated_ids: string[]; error?: string };
 
@@ -66,6 +68,24 @@ async function loadTargets(
   return { byId };
 }
 
+/**
+ * An email handoff is a Soundplate route when the target or the packet says
+ * submission_method soundplate, or when the packet itself carries a Soundplate
+ * form. A form URL that only lives on playlist_targets is contact metadata for
+ * a different route and must not block a Resend accept.
+ */
+function emailRouteIsSoundplate(
+  row: Record<string, unknown>,
+  target: Record<string, unknown> | null,
+): boolean {
+  const packet = asPacket(row.packet);
+  const methodSource = target && target.submission_method != null
+    ? target.submission_method
+    : packet.submission_method;
+  if (s(methodSource).toLowerCase() === "soundplate") return true;
+  return isFrozenDiscoveryRouteUrl(packet.form_url) || isFrozenDiscoveryRouteUrl(packet.submission_url);
+}
+
 function skipRow(
   row: Record<string, unknown>,
   fendi: Set<string>,
@@ -75,13 +95,13 @@ function skipRow(
   if (channel !== "email") return true;
   if (fendi.has(s(row.outreach_draft_id))) return true;
   const target = targets.get(s(row.playlist_target_id)) ?? null;
-  return isSoundplateRecord(row, target);
+  return emailRouteIsSoundplate(row, target);
 }
 
 /**
  * Mark linked email handoffs that belong to this accept. Web forms, Instagram
- * DMs, Soundplate, and fendi drafts are left alone. A missing provider id does
- * not move anything. Playlist+track matching stays limited to APPROVED_FOR_SEND
+ * DMs, Soundplate submission routes, and fendi drafts are left alone. A missing
+ * provider id does not move anything. Playlist+track matching stays limited to APPROVED_FOR_SEND
  * so a send cannot close a different review row on the same playlist.
  */
 export async function markLinkedHandoffEmailSent(

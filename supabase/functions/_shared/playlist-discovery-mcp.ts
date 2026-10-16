@@ -46,6 +46,13 @@ import {
   parseSpotifyPlaylistId,
   playlistTargetKeyAliases,
 } from "./discovery-utils.ts";
+import {
+  loadBlockedOperatorIndex,
+  matchBlockedOperator,
+  type BlockedOperatorIndex,
+  type OperatorCandidate,
+  type OperatorMatch,
+} from "./blocked-operator.ts";
 import { runDraftPitch } from "./playlist-agent-run.ts";
 import { VERIFIED_STATUSES } from "./verify-target.ts";
 import {
@@ -568,6 +575,80 @@ function isVerifiedEligible(row: Record<string, unknown>): boolean {
 
 /** Prefix for route-only playlist_targets ids (never 22-char Spotify-shaped). */
 export const ROUTE_ONLY_ID_PREFIX = "route-";
+
+/** True when the row has no resolved Spotify playlist id (route-only identity). */
+export function unresolvedRouteOnlyTarget(row: {
+  playlist_id?: unknown;
+  research_context?: unknown;
+}): boolean {
+  const id = String(row.playlist_id ?? "");
+  if (id.startsWith(ROUTE_ONLY_ID_PREFIX)) return true;
+  const rc = row.research_context;
+  if (!rc || typeof rc !== "object" || Array.isArray(rc)) return false;
+  const o = rc as Record<string, unknown>;
+  return o.identity_resolved === false || String(o.identity_kind ?? "") === "route_only";
+}
+
+function blockedOperatorRejection(match: OperatorMatch, playlistId: string): Record<string, unknown> {
+  return {
+    playlist_id: playlistId,
+    reason: `matches blocked or inactive pay-to-play operator ${match.operator_group_id}`,
+    code: "blocked_operator",
+    operator_group_id: match.operator_group_id,
+    matched_on: match.matched_on,
+  };
+}
+
+function routeOnlyEmailRejection(playlistId: string, stored = false): Record<string, unknown> {
+  return {
+    playlist_id: playlistId,
+    reason: "route-only target has no resolved Spotify playlist id — not drafted for email",
+    code: "route_only_email_not_drafted",
+    identity_resolved: false,
+    ...(stored ? { stored: true } : {}),
+  };
+}
+
+function operatorCandidateFrom(
+  c: Record<string, unknown>,
+  extra: {
+    playlistId?: string | null;
+    playlistName?: string | null;
+    playlistUrl?: string | null;
+    sourceUrl?: string | null;
+    stored?: Record<string, unknown> | null;
+  },
+): OperatorCandidate {
+  const stored = extra.stored ?? {};
+  const pick = (key: string, fallback?: unknown) => {
+    const raw = c[key] != null && String(c[key]).trim() !== "" ? c[key] : fallback;
+    return raw == null || String(raw).trim() === "" ? null : String(raw);
+  };
+  return {
+    playlistId: extra.playlistId,
+    playlistName: extra.playlistName ?? pick("playlist_name", stored.playlist_name),
+    curatorEmail: pick("curator_email", stored.curator_email),
+    curatorName: pick("curator_name", stored.curator_name),
+    formUrl: pick("form_url", stored.form_url),
+    submissionUrl: pick("submission_url", stored.submission_url),
+    playlistUrl: extra.playlistUrl,
+    sourceUrl: extra.sourceUrl ?? pick("source_url"),
+    website: pick("curator_website", stored.curator_website),
+    igAccount: pick("ig_curator_account", stored.ig_curator_account ?? stored.curator_instagram),
+  };
+}
+
+function isRouteOnlyEmailTarget(
+  row: Record<string, unknown>,
+  candidateChannel?: string | null,
+): boolean {
+  if (!unresolvedRouteOnlyTarget(row)) return false;
+  const stored = resolveTargetChannel(row);
+  const requested = String(candidateChannel ?? "").trim().toLowerCase();
+  const channel = stored ??
+    (requested === "email" || requested === "web_form" || requested === "instagram_dm" ? requested : null);
+  return channel === "email";
+}
 
 export type RouteOnlyIdentity = {
   playlist_id: string;
@@ -1179,6 +1260,18 @@ export async function submitPlaylistCandidates(
     .maybeSingle();
   const trackName = trackRow?.name != null ? String(trackRow.name) : null;
 
+  const blockedLoad = await loadBlockedOperatorIndex(sb);
+  if (blockedLoad.error) {
+    return {
+      status: 503,
+      data: {
+        error: `blocked_operator_lookup_failed:${blockedLoad.error}`,
+        code: "db_error",
+      },
+    };
+  }
+  const blockedOperators: BlockedOperatorIndex = blockedLoad.index;
+
   // Server-side raw denominator: one row per (day, song, candidate identity).
   const evalLog = createEvaluationLogger(sb, trackId);
   for (const raw of candidates) {
@@ -1327,14 +1420,36 @@ export async function submitPlaylistCandidates(
       logKey = id;
       const { data: existing, error: existErr } = await sb
         .from("playlist_targets")
-        .select("playlist_id")
+        .select(
+          "playlist_id, playlist_name, research_context, contact_method, submission_method, curator_email, curator_name, form_url, submission_url, ig_curator_account, curator_instagram, curator_website",
+        )
         .eq("playlist_id", id)
         .maybeSingle();
       if (existErr) {
         rejected.push({ playlist_id: id, reason: `dedupe_query_failed:${existErr.message}` });
         continue;
       }
+      const operatorSignals = operatorCandidateFrom(c, {
+        playlistId: id,
+        playlistName: name,
+        playlistUrl,
+        sourceUrl: rawSourceUrl || null,
+        stored: existing as Record<string, unknown> | null,
+      });
+      const operatorMatch = matchBlockedOperator(blockedOperators, operatorSignals);
+      if (operatorMatch) {
+        rejected.push(blockedOperatorRejection(operatorMatch, id));
+        continue;
+      }
+
       if (existing) {
+        if (isRouteOnlyEmailTarget(
+          existing as Record<string, unknown>,
+          c.submission_channel != null ? String(c.submission_channel) : null,
+        )) {
+          rejected.push(routeOnlyEmailRejection(id));
+          continue;
+        }
         let classified = await classifyExistingPlaylistTarget(sb, {
           trackId,
           playlistId: id,
@@ -1552,6 +1667,10 @@ export async function submitPlaylistCandidates(
       const { error: insErr } = await sb.from("playlist_targets").insert(row);
       if (insErr) {
         if (String(insErr.message).includes("duplicate") || insErr.code === "23505") {
+          if (!identityResolved && path.channel === "email") {
+            rejected.push(routeOnlyEmailRejection(id, true));
+            continue;
+          }
           const classified = await classifyExistingPlaylistTarget(sb, {
             trackId,
             playlistId: id,
@@ -1624,6 +1743,11 @@ export async function submitPlaylistCandidates(
       }
 
       createdTarget = true;
+      if (!identityResolved && channel === "email") {
+        // Kept for dedupe. Not an email-draft candidate: no Spotify playlist id.
+        rejected.push(routeOnlyEmailRejection(id, true));
+        continue;
+      }
       const entry = {
         playlist_id: id,
         lane,
@@ -1871,6 +1995,18 @@ export async function createPlaylistDraftInventory(
   }
   const trackName = trackRow?.name != null ? String(trackRow.name) : "unknown";
 
+  const blockedLoad = await loadBlockedOperatorIndex(sb);
+  if (blockedLoad.error) {
+    return {
+      status: 503,
+      data: {
+        error: `blocked_operator_lookup_failed:${blockedLoad.error}`,
+        code: "db_error",
+      },
+    };
+  }
+  const blockedOperators: BlockedOperatorIndex = blockedLoad.index;
+
   const composeDraft = deps.composeDraft ?? runDraftPitch;
   const persistInventory = deps.persistInventory ??
     ((client, args) =>
@@ -1895,6 +2031,8 @@ export async function createPlaylistDraftInventory(
   const reusedPreview: Record<string, unknown>[] = [];
   const policyDeferred: Record<string, unknown>[] = [];
   const priorStructuralRejections: Record<string, unknown>[] = [];
+  const blockedOperatorSkips: Record<string, unknown>[] = [];
+  const routeOnlyEmailSkips: Record<string, unknown>[] = [];
 
   for (const requestedId of candidateIds) {
     // Accept any supported Spotify form for a stored target (ID / spotify:ID / URL).
@@ -1916,7 +2054,7 @@ export async function createPlaylistDraftInventory(
     const { data: target, error: tErr } = await sb
       .from("playlist_targets")
       .select(
-        "playlist_id, contact_method, submission_method, path_verified, verification_status, form_url, submission_url, curator_email, ig_curator_account, curator_instagram, form_source_evidence, ig_source_evidence, research_context, is_active, lane, last_verified_at, submission_cost, form_login_required",
+        "playlist_id, playlist_name, contact_method, submission_method, path_verified, verification_status, form_url, submission_url, curator_email, curator_name, curator_website, ig_curator_account, curator_instagram, form_source_evidence, ig_source_evidence, research_context, is_active, lane, last_verified_at, submission_cost, form_login_required",
       )
       .eq("playlist_id", playlistId)
       .maybeSingle();
@@ -1958,6 +2096,31 @@ export async function createPlaylistDraftInventory(
           playlist_id: playlistId,
         },
       };
+    }
+
+    const operatorMatch = matchBlockedOperator(
+      blockedOperators,
+      operatorCandidateFrom({}, {
+        playlistId,
+        stored: target as Record<string, unknown>,
+      }),
+    );
+    if (operatorMatch) {
+      blockedOperatorSkips.push({
+        playlist_id: playlistId,
+        code: "blocked_operator",
+        operator_group_id: operatorMatch.operator_group_id,
+        matched_on: operatorMatch.matched_on,
+      });
+      continue;
+    }
+    if (channel === "email" && unresolvedRouteOnlyTarget(target as Record<string, unknown>)) {
+      routeOnlyEmailSkips.push({
+        playlist_id: playlistId,
+        code: "route_only_email_not_drafted",
+        identity_resolved: false,
+      });
+      continue;
     }
 
     // Do not re-draft a track/playlist whose last Grok rejection on this same route
@@ -2193,6 +2356,32 @@ export async function createPlaylistDraftInventory(
         code: "policy_deferred_all",
         policy_deferred: policyDeferred,
         prior_structural_rejections: priorStructuralRejections,
+        blocked_operators: blockedOperatorSkips,
+        route_only_email: routeOnlyEmailSkips,
+      },
+    };
+  }
+
+  if (!items.length && !reusedPreview.length && (blockedOperatorSkips.length || routeOnlyEmailSkips.length)) {
+    const onlyBlocked = blockedOperatorSkips.length > 0 && routeOnlyEmailSkips.length === 0;
+    const onlyRoute = routeOnlyEmailSkips.length > 0 && blockedOperatorSkips.length === 0;
+    return {
+      status: 409,
+      data: {
+        error: onlyBlocked
+          ? "blocked or inactive pay-to-play operator — not drafted"
+          : onlyRoute
+          ? "route-only target has no resolved Spotify playlist id — not drafted for email"
+          : "candidates are not draftable",
+        code: onlyBlocked
+          ? "blocked_operator"
+          : onlyRoute
+          ? "route_only_email_not_drafted"
+          : "not_drafted",
+        blocked_operators: blockedOperatorSkips,
+        route_only_email: routeOnlyEmailSkips,
+        policy_deferred: policyDeferred,
+        prior_structural_rejections: priorStructuralRejections,
       },
     };
   }
@@ -2232,6 +2421,8 @@ export async function createPlaylistDraftInventory(
         records: { ok: true, inserted: 0, duplicates: reusedPreview.length, rows: [] },
         policy_deferred: policyDeferred,
         prior_structural_rejections: priorStructuralRejections,
+        blocked_operators: blockedOperatorSkips,
+        route_only_email: routeOnlyEmailSkips,
         stored_pitch_sources: reusedPreview.map((r) => ({
           outreach_draft_id: r.outreach_draft_id ?? null,
           playlist_target_id: r.playlist_id ?? null,
@@ -2329,6 +2520,8 @@ export async function createPlaylistDraftInventory(
       race_resolved: result.race_resolved ?? false,
       policy_deferred: policyDeferred,
       prior_structural_rejections: priorStructuralRejections,
+      blocked_operators: blockedOperatorSkips,
+      route_only_email: routeOnlyEmailSkips,
     },
   };
 }

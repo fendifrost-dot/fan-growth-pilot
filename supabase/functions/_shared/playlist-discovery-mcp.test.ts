@@ -3097,3 +3097,365 @@ Deno.test("targetNeedsRouteRefresh: aged hold or stale proof needs re-verify; So
   );
   assertEquals(await targetNeedsRouteRefresh(refreshSb(null), "p", now), false);
 });
+
+// ---------------------------------------------------------------------------
+// Blocked operators and route-only email are not drafted
+// ---------------------------------------------------------------------------
+
+const BLOCKED_OPERATORS: Row[] = [
+  {
+    playlist_id: "1YuMdtA1WFqr3C9byzPtmZ",
+    playlist_name: "House Music 2025 - Colonize Media",
+    operator_group_id: "colonizemedia",
+    curator_email: "submissions@colonizemedia.com",
+    curator_name: "Colonize Media",
+    pitch_status: "blocked",
+    fraud_verdict: "safe",
+    is_active: false,
+    contact_method: "email",
+    submission_method: "email",
+    verification_status: "auto_verified",
+    path_verified: true,
+    lane: "house_general",
+  },
+  {
+    playlist_id: "1UtqKLhKNxWsMNafBROKWG",
+    playlist_name: "RAP-ON",
+    operator_group_id: "lordvincent",
+    curator_email: "lordvincentbusiness@gmail.com",
+    curator_name: "LORD VINCENT",
+    pitch_status: "pay_to_play",
+    fraud_verdict: "safe",
+    is_active: false,
+    submission_cost: "paid",
+    contact_method: "email",
+    verification_status: "auto_verified",
+    path_verified: true,
+    lane: "rap_general",
+  },
+  {
+    playlist_id: "2j9H3UJI4FgvKhQKHdljnS",
+    playlist_name: "Living In Playlists - Deep House",
+    operator_group_id: "livinginplaylists",
+    curator_email: "livinginplaylists@gmail.com",
+    curator_name: "Living In Playlists",
+    pitch_status: "pay_to_play",
+    is_active: false,
+    contact_method: "email",
+    verification_status: "auto_verified",
+    lane: "house_general",
+  },
+  {
+    playlist_id: "6U8tMyyG7d07qhN6whFPhu",
+    playlist_name: "UNDERGROUND MUSIC 2025",
+    operator_group_id: "aisultangm",
+    curator_name: "alexrodrigo320",
+    ig_curator_account: "aisultangm",
+    pitch_status: "pay_to_play",
+    is_active: false,
+    contact_method: "instagram_dm",
+    submission_method: "instagram_dm",
+    verification_status: "auto_verified",
+    lane: "rap_general",
+  },
+];
+
+function blockedDiscoverySb(): ReturnType<typeof stubSb> {
+  return stubSb(routeFixture(BLOCKED_OPERATORS.map((row) => ({ ...row }))));
+}
+
+Deno.test("colonizemedia route-only email is rejected and not stored", async () => {
+  const sb = blockedDiscoverySb();
+  const before = (sb._tables.playlist_targets as Row[]).length;
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: RT_TRACK,
+    candidates: [{
+      playlist_name: "Colonize Media",
+      lane: "rap_general",
+      source_evidence: "Colonize Media submissions page lists submissions@colonizemedia.com",
+      submission_channel: "email",
+      curator_email: "submissions@colonizemedia.com",
+      curator_name: "Colonize Media",
+      source_url: "https://colonizemedia.com/submit",
+    }],
+  });
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals(res.data.verified_eligible_count, 0);
+  assertEquals(res.data.accepted_unverified_count, 0);
+  const rejected = (res.data.rejected as Row[])[0];
+  assertEquals(rejected.code, "blocked_operator");
+  assertEquals(rejected.operator_group_id, "colonizemedia");
+  assertEquals((sb._tables.playlist_targets as Row[]).length, before);
+});
+
+Deno.test("pay-to-play operators match email local-part, curator name, and IG handle", async () => {
+  const sb = blockedDiscoverySb();
+  const before = (sb._tables.playlist_targets as Row[]).length;
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: RT_TRACK,
+    candidates: [
+      {
+        playlist_id: "3aB7kLmNpQrStUvWxYz012",
+        playlist_name: "New Lord Vincent List",
+        lane: "rap_general",
+        source_evidence: "curator contact on the playlist page",
+        submission_channel: "email",
+        curator_email: "lordvincentofficial@gmail.com",
+      },
+      {
+        playlist_id: "4bC8lMnOqRsTuVwXyZa013",
+        playlist_name: "Another Deep List",
+        lane: "rap_general",
+        source_evidence: "curator name on the playlist page",
+        curator_name: "Living In Playlists",
+        submission_channel: "email",
+        curator_email: "brand-new@example.com",
+      },
+      {
+        playlist_id: "5cD9mNoPqRsTuVwXyZa014",
+        playlist_name: "Underground Follow-up",
+        lane: "rap_general",
+        source_evidence: "IG handle aisultangm on the playlist page",
+        submission_channel: "instagram_dm",
+        ig_curator_account: "@Aisultangm",
+      },
+    ],
+  });
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  const rejected = res.data.rejected as Row[];
+  assertEquals(rejected.length, 3, JSON.stringify(res.data));
+  assertEquals(rejected.map((r) => r.operator_group_id).sort(), [
+    "aisultangm",
+    "livinginplaylists",
+    "lordvincent",
+  ]);
+  assert(rejected.every((r) => r.code === "blocked_operator"));
+  assertEquals((sb._tables.playlist_targets as Row[]).length, before);
+  assertEquals(res.data.verified_eligible_count, 0);
+});
+
+Deno.test("resubmitting a blocked operator playlist is not verified_eligible", async () => {
+  const sb = blockedDiscoverySb();
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: RT_TRACK,
+    candidates: [{
+      playlist_id: "1UtqKLhKNxWsMNafBROKWG",
+      playlist_name: "RAP-ON",
+      lane: "rap_general",
+      source_evidence: "same curator, new song",
+      submission_channel: "email",
+      curator_email: "lordvincentbusiness@gmail.com",
+    }],
+  });
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals(res.data.verified_eligible_count, 0);
+  assertEquals((res.data.eligible_existing_playlist_ids as string[]).length, 0);
+  assertEquals((res.data.rejected as Row[])[0].code, "blocked_operator");
+  assertEquals((res.data.rejected as Row[])[0].operator_group_id, "lordvincent");
+});
+
+Deno.test("existing route-only email target is not returned as draftable", async () => {
+  const sb = stubSb(routeFixture([{
+    playlist_id: "route-cleanemail0001",
+    playlist_name: "Top Lister (Top Rap)",
+    curator_email: "submit.playlistersnetwork@gmail.com",
+    contact_method: "email",
+    submission_method: "email",
+    verification_status: "auto_verified",
+    path_verified: true,
+    is_active: true,
+    lane: "rap_general",
+    research_context: { identity_resolved: false, identity_kind: "route_only" },
+    form_source_evidence: "email listed on the curator page",
+  }]));
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: RT_TRACK,
+    candidates: [{
+      playlist_id: "route-cleanemail0001",
+      playlist_name: "Top Lister (Top Rap)",
+      lane: "rap_general",
+      source_evidence: "email listed on the curator page",
+      submission_channel: "email",
+      curator_email: "submit.playlistersnetwork@gmail.com",
+    }],
+  });
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals(res.data.verified_eligible_count, 0);
+  assertEquals((res.data.eligible_existing_playlist_ids as string[]).length, 0);
+  assertEquals((res.data.rejected as Row[])[0].code, "route_only_email_not_drafted");
+  assertEquals((sb._tables.playlist_targets as Row[]).length, 1);
+});
+
+function draftInventoryBase(targets: Row[]): { trackId: string; dnaId: string; tables: Record<string, Row[]> } {
+  const trackId = RT_TRACK;
+  const dnaId = RT_DNA;
+  return {
+    trackId,
+    dnaId,
+    tables: {
+      tracks: [{ id: trackId, name: "Fixture Track", approved_song_dna_version_id: dnaId }],
+      song_dna_versions: [{
+        id: dnaId,
+        track_id: trackId,
+        approval_state: "approved",
+        approved_lanes: ["rap_general"],
+        excluded_lanes: [],
+        short_pitch: "Fixture DNA pitch",
+        primary_genre: "rap",
+      }],
+      playlist_targets: targets,
+      outreach_drafts: [],
+      agh_handoff_records: [],
+      agh_handoff_batches: [],
+      domain_blocklist: [],
+      non_curator_domains: [],
+    },
+  };
+}
+
+Deno.test("draft inventory does not email a blocked operator, even when the new row is still active", async () => {
+  const ops = playlistDiscoveryActor();
+  const routeId = "route-7b86fed9eaa42824d2021138e2c32b94";
+  const { trackId, tables } = draftInventoryBase([
+    ...BLOCKED_OPERATORS.map((row) => ({ ...row })),
+    {
+      playlist_id: routeId,
+      playlist_name: "Colonize Media",
+      curator_email: "submissions@colonizemedia.com",
+      contact_method: "email",
+      submission_method: "email",
+      path_verified: true,
+      verification_status: "auto_verified",
+      is_active: true,
+      lane: "rap_general",
+      operator_group_id: "colonizemedia",
+      pitch_status: "blocked",
+      research_context: { identity_resolved: false, identity_kind: "route_only" },
+    },
+  ]);
+  let composed = 0;
+  const res = await createPlaylistDraftInventory(
+    stubSb(tables),
+    ops,
+    { track_id: trackId, accepted_candidate_ids: [routeId] },
+    {
+      composeDraft: async () => {
+        composed += 1;
+        return { status: 500, data: { error: "should not compose" } };
+      },
+      persistInventory: async () => {
+        throw new Error("should not persist a blocked operator");
+      },
+    },
+  );
+  assertEquals(composed, 0);
+  assertEquals(res.status, 409);
+  assertEquals(res.data.code, "blocked_operator");
+  assertEquals((res.data.blocked_operators as Row[])[0].operator_group_id, "colonizemedia");
+});
+
+Deno.test("draft inventory does not email a route-only target with no Spotify playlist id", async () => {
+  const ops = playlistDiscoveryActor();
+  const routeId = "route-cleanemail0001";
+  const { trackId, tables } = draftInventoryBase([{
+    playlist_id: routeId,
+    playlist_name: "Top Lister (Top Rap)",
+    curator_email: "submit.playlistersnetwork@gmail.com",
+    contact_method: "email",
+    submission_method: "email",
+    path_verified: true,
+    verification_status: "auto_verified",
+    is_active: true,
+    lane: "rap_general",
+    research_context: { identity_resolved: false, identity_kind: "route_only" },
+  }]);
+  let composed = 0;
+  const res = await createPlaylistDraftInventory(
+    stubSb(tables),
+    ops,
+    { track_id: trackId, accepted_candidate_ids: [routeId] },
+    {
+      composeDraft: async () => {
+        composed += 1;
+        return { status: 500, data: { error: "should not compose" } };
+      },
+      persistInventory: async () => {
+        throw new Error("should not persist a route-only email draft");
+      },
+    },
+  );
+  assertEquals(composed, 0);
+  assertEquals(res.status, 409);
+  assertEquals(res.data.code, "route_only_email_not_drafted");
+});
+
+Deno.test("draft inventory still accepts a route-only web form", async () => {
+  const ops = playlistDiscoveryActor();
+  const routeId = "route-formonly0001";
+  const { trackId, dnaId, tables } = draftInventoryBase([{
+    playlist_id: routeId,
+    playlist_name: "Iframe Curator Rap List",
+    contact_method: "web_form",
+    submission_method: "web_form",
+    form_url: "https://curator.example/submit",
+    form_source_evidence: "https://curator.example/rap — submission form linked",
+    path_verified: true,
+    verification_status: "auto_verified",
+    is_active: true,
+    lane: "rap_general",
+    research_context: {
+      identity_resolved: false,
+      identity_kind: "route_only",
+      source_url: "https://curator.example/rap",
+    },
+  }]);
+  let composed = 0;
+  let persisted: string | null = null;
+  const res = await createPlaylistDraftInventory(
+    stubSb(tables),
+    ops,
+    { track_id: trackId, accepted_candidate_ids: [routeId] },
+    {
+      composeDraft: async () => {
+        composed += 1;
+        return { status: 500, data: { error: "web form does not compose email" } };
+      },
+      persistInventory: async (client, args) => {
+        persisted = String((args.items[0] as Row).playlist_id);
+        const sb = client as { _tables: Record<string, Row[]> };
+        sb._tables.agh_handoff_batches.push({
+          id: "batch-form",
+          record_count: 1,
+          batch_kind: "playlist",
+          queue_state: "CLAUDE_BATCH_READY",
+          discovered_by: "claude_playlist_discovery",
+          drafted_by: "claude_playlist_discovery",
+        });
+        sb._tables.agh_handoff_records.push({
+          id: "rec-form",
+          batch_id: "batch-form",
+          queue_state: "CLAUDE_BATCH_READY",
+          submission_channel: "web_form",
+          playlist_target_id: routeId,
+        });
+        return {
+          data: {
+            ok: true,
+            idempotent: false,
+            batch_id: "batch-form",
+            inserted: 1,
+            record_count: 1,
+            items: [{ playlist_id: routeId, reused: false }],
+            email_drafts: [],
+            manual_packets: [{ playlist_id: routeId, channel: "web_form" }],
+          },
+          error: null,
+        };
+      },
+    },
+  );
+  assertEquals(composed, 0);
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals(persisted, routeId);
+  assertEquals(dnaId.length > 0, true);
+});

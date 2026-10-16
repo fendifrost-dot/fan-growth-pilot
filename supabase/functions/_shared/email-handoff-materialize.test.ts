@@ -123,3 +123,22 @@ Deno.test("materialize migration writes packet curator_email + outreach_draft_id
   assert(sql.includes("web_form"));
   assert(!/meditate|designed for me|designedforme/i.test(sql));
 });
+
+Deno.test("materialize does not clone rejected drafts and does not touch Soundplate or fendi", () => {
+  const sql = Deno.readTextFileSync(
+    new URL("../../migrations/20261016153000_skip_blocked_operators_and_rejected_rematerialize.sql", import.meta.url),
+  );
+  assert(sql.includes("rejected_draft_not_cloned"));
+  assert(sql.includes("lower(coalesce(v_draft.status, '')) = 'rejected'"));
+  assert(sql.includes("soundplate_untouched"));
+  assert(sql.includes("fendi_draft_untouched"));
+  assert(sql.includes("generated_by = 'fendi'"));
+  assert(sql.includes("soundplate\\.com"));
+  // Superseded unsent copy can still be cloned. Rejected cannot.
+  assert(sql.includes("cloned_pending_draft"));
+  assert(sql.includes("terminal_unsent_handoff"));
+  const rejectedAt = sql.indexOf("rejected_draft_not_cloned");
+  const cloneAt = sql.indexOf("v_action := 'cloned_pending_draft'");
+  assert(rejectedAt > 0 && cloneAt > rejectedAt);
+  assert(!/meditate|designed for me|designedforme/i.test(sql));
+});

@@ -1,22 +1,36 @@
 // resend-webhook
 //
-// Public endpoint for Resend delivery events (bounces / complaints). On a hard bounce or
-// spam complaint we mark the matching playlist_targets row: bump bounce_count, stamp
-// last_bounced_at, and after 2 bounces flip verification_status to 'bounced' and add the
-// domain to domain_blocklist so it stops re-entering the draft pipeline.
-// The linked email handoff is stamped bounced and is not left labeled SENT.
+// Public endpoint for Resend delivery failures. On a hard bounce, a suppression,
+// or a spam complaint we mark the matching playlist_targets row: bump bounce_count,
+// stamp last_bounced_at, and after 2 bounces flip verification_status to 'bounced'
+// and add the domain to domain_blocklist so it stops re-entering the draft pipeline.
+// The matching pitch_log is status bounced, placement_status bounced, and its
+// cooldown is cleared. The linked email handoff is stamped bounced and is not
+// left labeled SENT. Soundplate routes and generated_by='fendi' drafts stay put;
+// that skip lives in markLinkedHandoffEmailBounced.
 //
-// Configure in Resend → Webhooks, pointing at:
-//   https://<project-ref>.functions.supabase.co/resend-webhook?secret=<RESEND_WEBHOOK_SECRET>
-// SECURITY: this verifies a shared ?secret= against RESEND_WEBHOOK_SECRET when that env var
-// is set. (Resend also offers Svix-signed webhooks; swap in svix verification if preferred.)
+// Subscribe the Resend webhook to email.bounced, email.complained, and
+// email.suppressed. Point it at:
+//   https://<project-ref>.supabase.co/functions/v1/resend-webhook
+// Auth: Svix signature (svix-id, svix-timestamp, svix-signature) when
+// RESEND_WEBHOOK_SECRET is the endpoint's whsec_ signing secret, or the legacy
+// shared secret via ?secret= / x-webhook-secret. A normal Resend delivery does
+// not send the query secret, so a whsec_ secret is what makes subscription work.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import { markLinkedHandoffEmailBounced } from "../_shared/handoff-sent.ts";
+import {
+  authorizeResendWebhook,
+  pitchLogBouncePatch,
+  resendDeliveryFailure,
+  resendProviderEmailId,
+  resendRecipients,
+} from "../_shared/resend-webhook-event.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-api-key",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type, x-api-key, svix-id, svix-timestamp, svix-signature, webhook-id, webhook-timestamp, webhook-signature",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
@@ -24,13 +38,15 @@ const BOUNCE_BLOCK_THRESHOLD = 2;
 
 type ResendEvent = {
   type?: string;
-  data?: { email_id?: string; to?: string[] | string; email?: string; subject?: string };
+  data?: Record<string, unknown>;
 };
 
-function recipients(ev: ResendEvent): string[] {
-  const to = ev.data?.to ?? ev.data?.email ?? [];
-  const arr = Array.isArray(to) ? to : [to];
-  return arr.map((e) => String(e).trim().toLowerCase()).filter(Boolean);
+function header(req: Request, ...names: string[]): string | null {
+  for (const name of names) {
+    const value = req.headers.get(name);
+    if (value) return value;
+  }
+  return null;
 }
 
 function domainOf(email: string): string | null {
@@ -42,27 +58,40 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   if (req.method !== "POST") return new Response("Method not allowed", { status: 405, headers: corsHeaders });
 
-  const expectedSecret = Deno.env.get("RESEND_WEBHOOK_SECRET");
-  if (expectedSecret) {
-    const provided = new URL(req.url).searchParams.get("secret")
-      ?? req.headers.get("x-webhook-secret");
-    if (provided !== expectedSecret) {
-      return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-    }
+  const rawBody = await req.text();
+  const expectedSecret = Deno.env.get("RESEND_WEBHOOK_SECRET") ?? "";
+  const provided = new URL(req.url).searchParams.get("secret") ?? req.headers.get("x-webhook-secret");
+  const authorized = await authorizeResendWebhook({
+    expectedSecret,
+    providedSecret: provided,
+    rawBody,
+    svixId: header(req, "svix-id", "webhook-id"),
+    svixTimestamp: header(req, "svix-timestamp", "webhook-timestamp"),
+    svixSignature: header(req, "svix-signature", "webhook-signature"),
+  });
+  if (!authorized) {
+    return new Response(JSON.stringify({ error: "unauthorized" }), {
+      status: 401,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 
   let ev: ResendEvent;
   try {
-    ev = await req.json() as ResendEvent;
+    ev = JSON.parse(rawBody) as ResendEvent;
   } catch {
-    return new Response(JSON.stringify({ error: "invalid json" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    return new Response(JSON.stringify({ error: "invalid json" }), {
+      status: 400,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 
   const type = String(ev.type ?? "");
-  const isBounce = type === "email.bounced" || type === "email.complained";
-  if (!isBounce) {
-    // Acknowledge other event types (delivered, opened, …) without action.
-    return new Response(JSON.stringify({ ok: true, ignored: type }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  const failure = resendDeliveryFailure(type);
+  if (!failure) {
+    return new Response(JSON.stringify({ ok: true, ignored: type }), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 
   const supabase = createClient(
@@ -70,11 +99,22 @@ Deno.serve(async (req) => {
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
   );
 
-  const emails = recipients(ev);
-  const reason = type === "email.complained" ? "spam_flag" : "bounce";
+  const emails = resendRecipients(ev.data);
+  const reason = failure === "complaint" ? "spam_flag" : "bounce";
   const updated: string[] = [];
-  const emailId = String(ev.data?.email_id ?? "").trim();
+  const emailId = resendProviderEmailId(ev.data);
   const bouncedPitchIds: string[] = [];
+  const bouncePatch = pitchLogBouncePatch();
+
+  // Match the provider id even when the recipient list is missing. The id is
+  // data.email_id. Do not fall back to a different song when that id is present
+  // and matches nothing.
+  if (emailId) {
+    const { error } = await supabase.from("pitch_log").update(bouncePatch)
+      .eq("status", "sent")
+      .eq("resend_message_id", emailId);
+    if (error) console.error("pitch_log bounce update failed:", error.message, { emailId });
+  }
 
   for (const email of emails) {
     const { data: targets } = await supabase.from("playlist_targets")
@@ -92,7 +132,6 @@ Deno.serve(async (req) => {
       updated.push(String(t.playlist_id));
     }
 
-    // Block the domain after the threshold (or immediately on a complaint).
     const domain = domainOf(email);
     if (domain && (reason === "spam_flag" || (targets?.some((t) => Number(t.bounce_count ?? 0) + 1 >= BOUNCE_BLOCK_THRESHOLD)))) {
       await supabase.from("domain_blocklist").upsert(
@@ -101,16 +140,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    // The send row kept resend_message_id and cooldown_until, so quota and
-    // curator cooldown still treated the bounce as delivered. Clear both.
-    // Match the provider id when Resend sent one; otherwise only the latest
-    // sent row for this address, so a bounce does not rewrite older songs.
-    if (emailId) {
-      await supabase.from("pitch_log").update({
-        status: "bounced",
-        cooldown_until: null,
-      }).eq("status", "sent").eq("resend_message_id", emailId);
-    } else {
+    if (!emailId) {
       const { data: latest } = await supabase.from("pitch_log")
         .select("id")
         .ilike("curator_email", email)
@@ -119,16 +149,12 @@ Deno.serve(async (req) => {
         .limit(1);
       const pitchId = latest?.[0]?.id;
       if (pitchId) {
-        await supabase.from("pitch_log").update({
-          status: "bounced",
-          cooldown_until: null,
-        }).eq("id", pitchId).eq("status", "sent");
+        await supabase.from("pitch_log").update(bouncePatch).eq("id", pitchId).eq("status", "sent");
         bouncedPitchIds.push(String(pitchId));
       }
     }
   }
 
-  // A bounce is not a delivery. Do not leave the linked handoff labeled SENT.
   const bouncedAt = new Date().toISOString();
   if (emailId) {
     const handoff = await markLinkedHandoffEmailBounced(supabase, {

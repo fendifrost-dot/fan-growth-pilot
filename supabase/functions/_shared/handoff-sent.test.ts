@@ -349,6 +349,10 @@ Deno.test("a bounce is recorded and a false SENT is put back", async () => {
 
 Deno.test("resend webhook records the bounce on the linked handoff", () => {
   const src = Deno.readTextFileSync(new URL("../resend-webhook/index.ts", import.meta.url));
+  const bounce = Deno.readTextFileSync(new URL("./resend-webhook-event.ts", import.meta.url));
   assert(src.includes("markLinkedHandoffEmailBounced"));
-  assert(src.includes('status: "bounced"'));
+  assert(src.includes("pitchLogBouncePatch"));
+  assert(bounce.includes('status: "bounced"'));
+  assert(bounce.includes('placement_status: "bounced"'));
+  assert(bounce.includes("cooldown_until: null"));
 });

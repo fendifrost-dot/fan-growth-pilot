@@ -35,7 +35,7 @@ export function pitchLogBouncePatch(): {
   return { status: "bounced", placement_status: "bounced", cooldown_until: null };
 }
 
-function decodeWhsec(secret: string): Uint8Array | null {
+function decodeWhsec(secret: string): Uint8Array<ArrayBuffer> | null {
   if (!secret.startsWith("whsec_")) return null;
   try {
     const bin = atob(secret.slice("whsec_".length));

@@ -2,6 +2,8 @@
  * After a real email send, move the linked handoff record to SENT.
  * Approve-and-send does not wait for the handoff to be APPROVED_FOR_SEND, so a
  * linked row still in review or already imported moves too.
+ * When every record in the parent batch is SENT, the batch moves to SENT and
+ * receives sent_by / sent_by_label from the dispatching actor.
  * Does not insert pitch_log, receipts, or submitted_at, so quota is unchanged.
  * Does not send anything. A Soundplate submission method, a Soundplate URL on
  * the handoff packet, and generated_by='fendi' drafts stay put. A Soundplate
@@ -99,6 +101,71 @@ function skipRow(
 }
 
 /**
+ * Dispatching actor for the batch stamp. The caller passes the actor that
+ * accepted the send. A missing caller falls back to the record approver so a
+ * completed batch still records who cleared it.
+ */
+function batchSentActor(
+  explicitBy: string,
+  explicitLabel: string,
+  rows: Record<string, unknown>[],
+): { sentBy: string; sentByLabel: string } {
+  const fromRecord = rows.find((row) => s(row.approved_by));
+  const sentBy = explicitBy || s(fromRecord?.approved_by);
+  const sentByLabel = explicitLabel || (explicitBy ? explicitBy : s(fromRecord?.approved_by_label) || sentBy);
+  return { sentBy, sentByLabel };
+}
+
+/**
+ * Move a batch to SENT only after every one of its records is already SENT.
+ * A batch that still has an open record, or any record tied to a fendi draft,
+ * stays where it is. Does not write records, drafts, or pitch_log.
+ */
+async function rollBatchesWhenFullySent(
+  sb: SupabaseClient,
+  batchIds: string[],
+  actor: { sentBy: string; sentByLabel: string },
+  sentAt: string,
+): Promise<string | undefined> {
+  const unique = [...new Set(batchIds.map(s).filter(Boolean))];
+  for (const batchId of unique) {
+    const { data, error } = await sb.from("agh_handoff_records")
+      .select("id, queue_state, outreach_draft_id")
+      .eq("batch_id", batchId);
+    if (error) return error.message;
+    const rows = (data ?? []) as Record<string, unknown>[];
+    if (!rows.length || rows.some((row) => s(row.queue_state) !== "SENT")) continue;
+
+    const fendi = await loadFendiDraftIds(sb, rows.map((row) => s(row.outreach_draft_id)));
+    if (fendi.error) return fendi.error;
+    if (rows.some((row) => fendi.ids.has(s(row.outreach_draft_id)))) continue;
+
+    const { data: batches, error: batchErr } = await sb.from("agh_handoff_batches")
+      .select("id, queue_state, sent_by, sent_by_label")
+      .eq("id", batchId);
+    if (batchErr) return batchErr.message;
+    const batch = ((batches ?? []) as Record<string, unknown>[])[0];
+    if (!batch || s(batch.queue_state) === "SENT") continue;
+
+    const patch: Record<string, unknown> = {
+      queue_state: "SENT",
+      updated_at: sentAt,
+    };
+    if (actor.sentBy) {
+      patch.sent_by = actor.sentBy;
+      patch.sent_by_label = actor.sentByLabel || actor.sentBy;
+    }
+    const { error: updErr } = await sb.from("agh_handoff_batches")
+      .update(patch)
+      .eq("id", batchId)
+      .eq("queue_state", s(batch.queue_state))
+      .select("id");
+    if (updErr) return updErr.message;
+  }
+  return undefined;
+}
+
+/**
  * Mark linked email handoffs that belong to this accept. Web forms, Instagram
  * DMs, Soundplate submission routes, and fendi drafts are left alone. A missing
  * provider id does not move anything. Playlist+track matching stays limited to APPROVED_FOR_SEND
@@ -113,6 +180,9 @@ export async function markLinkedHandoffEmailSent(
     pitchLogId: string | null;
     resendMessageId: string | null;
     sentAt: string;
+    /** Dispatching actor. Stamped on the batch once every record is SENT. */
+    sentBy?: string | null;
+    sentByLabel?: string | null;
   },
 ): Promise<HandoffSentResult> {
   const resendMessageId = s(opts.resendMessageId);
@@ -123,7 +193,7 @@ export async function markLinkedHandoffEmailSent(
   const playlistId = s(opts.playlistId);
   const trackId = s(opts.trackId);
   const found = new Map<string, Record<string, unknown>>();
-  const cols = "id, queue_state, submission_channel, packet, outreach_draft_id, playlist_target_id";
+  const cols = "id, batch_id, queue_state, submission_channel, packet, outreach_draft_id, playlist_target_id, approved_by, approved_by_label";
 
   if (draftId) {
     const { data, error } = await sb.from("agh_handoff_records").select(cols).eq("outreach_draft_id", draftId);
@@ -148,6 +218,7 @@ export async function markLinkedHandoffEmailSent(
   if (targets.error) return { updated_ids: [], error: targets.error };
 
   const updated: string[] = [];
+  let recordError: string | undefined;
   for (const [id, row] of found) {
     if (!SENT_FROM.has(s(row.queue_state))) continue;
     if (skipRow(row, fendi.ids, targets.byId)) continue;
@@ -169,9 +240,24 @@ export async function markLinkedHandoffEmailSent(
       .eq("id", id)
       .eq("queue_state", s(row.queue_state))
       .select("id");
-    if (error) return { updated_ids: updated, error: error.message };
+    if (error) {
+      recordError = error.message;
+      break;
+    }
     if ((data ?? []).length) updated.push(id);
   }
+
+  const touched = updated
+    .map((id) => found.get(id))
+    .filter((row): row is Record<string, unknown> => !!row);
+  const actor = batchSentActor(s(opts.sentBy), s(opts.sentByLabel), touched);
+  const rollError = await rollBatchesWhenFullySent(
+    sb,
+    touched.map((row) => s(row.batch_id)),
+    actor,
+    opts.sentAt,
+  );
+  if (recordError || rollError) return { updated_ids: updated, error: recordError ?? rollError };
   return { updated_ids: updated };
 }
 

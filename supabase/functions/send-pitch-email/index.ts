@@ -199,6 +199,7 @@ Deno.serve(async (req) => {
     }).eq("id", draftId);
 
     if (logRow?.id && sent.id) {
+      const dispatchingActor = String(draft.approved_by ?? "").trim();
       const handoff = await markLinkedHandoffEmailSent(supabase, {
         draftId,
         playlistId,
@@ -206,6 +207,8 @@ Deno.serve(async (req) => {
         pitchLogId: logRow.id,
         resendMessageId: sent.id,
         sentAt,
+        sentBy: dispatchingActor || null,
+        sentByLabel: dispatchingActor || null,
       });
       if (handoff.error) console.error("handoff sent stamp failed:", handoff.error, { draftId, playlistId });
     }

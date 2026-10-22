@@ -347,6 +347,367 @@ Deno.test("a bounce is recorded and a false SENT is put back", async () => {
   assertEquals((tables.agh_handoff_records[3].packet as Row).email_dispatch, undefined);
 });
 
+Deno.test("a finished batch rolls to SENT with the dispatching actor", async () => {
+  const { sb, tables } = stubSb({
+    agh_handoff_batches: [
+      { id: "batch-done", queue_state: "APPROVED_FOR_SEND", sent_by: null, sent_by_label: null },
+      { id: "batch-open", queue_state: "APPROVED_FOR_SEND", sent_by: null, sent_by_label: null },
+      { id: "batch-imported", queue_state: "IMPORTED_TO_AGH", sent_by: null, sent_by_label: null },
+    ],
+    agh_handoff_records: [
+      {
+        id: "email-last",
+        batch_id: "batch-done",
+        outreach_draft_id: "draft-1",
+        playlist_target_id: "pl-1",
+        track_id: "track-1",
+        queue_state: "APPROVED_FOR_SEND",
+        submission_channel: "email",
+        approved_by: "record-approver",
+        approved_by_label: "Record Approver",
+        packet: { grok_review: { verdict: "PASS" } },
+      },
+      {
+        id: "email-earlier",
+        batch_id: "batch-done",
+        outreach_draft_id: "draft-earlier",
+        playlist_target_id: "pl-earlier",
+        track_id: "track-1",
+        queue_state: "SENT",
+        submission_channel: "email",
+        packet: {},
+      },
+      {
+        id: "form-open",
+        batch_id: "batch-open",
+        outreach_draft_id: "draft-1",
+        playlist_target_id: "pl-1",
+        track_id: "track-1",
+        queue_state: "APPROVED_FOR_SEND",
+        submission_channel: "web_form",
+        packet: {},
+      },
+      {
+        id: "email-open",
+        batch_id: "batch-open",
+        outreach_draft_id: "draft-open",
+        playlist_target_id: "pl-open",
+        track_id: "track-1",
+        queue_state: "APPROVED_FOR_SEND",
+        submission_channel: "email",
+        packet: {},
+      },
+      {
+        id: "email-imported",
+        batch_id: "batch-imported",
+        outreach_draft_id: "draft-imported",
+        playlist_target_id: "pl-imported",
+        track_id: "track-imported",
+        queue_state: "IMPORTED_TO_AGH",
+        submission_channel: "email",
+        packet: {},
+      },
+    ],
+    outreach_drafts: [
+      { id: "draft-1", generated_by: "grok_cos" },
+      { id: "draft-earlier", generated_by: "grok_cos" },
+      { id: "draft-open", generated_by: "grok_cos" },
+      { id: "draft-imported", generated_by: "claude_playlist_discovery" },
+    ],
+  });
+  const res = await markLinkedHandoffEmailSent(sb, {
+    draftId: "draft-1",
+    playlistId: "pl-1",
+    trackId: "track-1",
+    pitchLogId: "log-1",
+    resendMessageId: "re_123",
+    sentAt,
+    sentBy: "grok_playlist_control",
+    sentByLabel: "grok_playlist_control",
+  });
+  assertEquals(res.error, undefined);
+  assertEquals(res.updated_ids, ["email-last"]);
+  const done = tables.agh_handoff_batches.find((b) => b.id === "batch-done")!;
+  assertEquals(done.queue_state, "SENT");
+  assertEquals(done.sent_by, "grok_playlist_control");
+  assertEquals(done.sent_by_label, "grok_playlist_control");
+  assertEquals(done.updated_at, sentAt);
+  const open = tables.agh_handoff_batches.find((b) => b.id === "batch-open")!;
+  assertEquals(open.queue_state, "APPROVED_FOR_SEND");
+  assertEquals(open.sent_by, null);
+  const byId = new Map(tables.agh_handoff_records.map((r) => [String(r.id), r]));
+  assertEquals(byId.get("email-last")!.queue_state, "SENT");
+  assertEquals(byId.get("email-last")!.submitted_at, undefined);
+  assertEquals((byId.get("email-last")!.packet as Row).email_dispatch, {
+    pitch_log_id: "log-1",
+    resend_message_id: "re_123",
+    sent_at: sentAt,
+    channel: "email",
+    outcome: "sent",
+    prior_queue_state: "APPROVED_FOR_SEND",
+  });
+  assertEquals(byId.get("form-open")!.queue_state, "APPROVED_FOR_SEND");
+  assertEquals(byId.get("email-open")!.queue_state, "APPROVED_FOR_SEND");
+
+  const imported = await markLinkedHandoffEmailSent(sb, {
+    draftId: "draft-imported",
+    playlistId: "pl-imported",
+    trackId: "track-imported",
+    pitchLogId: "log-imported",
+    resendMessageId: "re_imported",
+    sentAt,
+    sentBy: "grok_playlist_control",
+    sentByLabel: "grok_playlist_control",
+  });
+  assertEquals(imported.updated_ids, ["email-imported"]);
+  const importedBatch = tables.agh_handoff_batches.find((b) => b.id === "batch-imported")!;
+  assertEquals(importedBatch.queue_state, "SENT");
+  assertEquals(importedBatch.sent_by, "grok_playlist_control");
+  assertEquals(importedBatch.sent_by_label, "grok_playlist_control");
+});
+
+Deno.test("a batch stays put until every record is SENT, and a later call does not rewrite sent_by", async () => {
+  const { sb, tables } = stubSb({
+    agh_handoff_batches: [
+      { id: "batch-partial", queue_state: "APPROVED_FOR_SEND", sent_by: null, sent_by_label: null },
+      { id: "batch-kept", queue_state: "SENT", sent_by: "earlier-actor", sent_by_label: "Earlier Actor" },
+    ],
+    agh_handoff_records: [
+      {
+        id: "email-partial",
+        batch_id: "batch-partial",
+        outreach_draft_id: "draft-partial",
+        playlist_target_id: "pl-partial",
+        track_id: "track-1",
+        queue_state: "APPROVED_FOR_SEND",
+        submission_channel: "email",
+        packet: {},
+      },
+      {
+        id: "still-review",
+        batch_id: "batch-partial",
+        outreach_draft_id: "draft-review",
+        playlist_target_id: "pl-review",
+        track_id: "track-1",
+        queue_state: "AWAITING_GROK_REVIEW",
+        submission_channel: "email",
+        packet: {},
+      },
+      {
+        id: "email-kept",
+        batch_id: "batch-kept",
+        outreach_draft_id: "draft-kept",
+        playlist_target_id: "pl-kept",
+        track_id: "track-kept",
+        queue_state: "APPROVED_FOR_SEND",
+        submission_channel: "email",
+        approved_by: "record-approver",
+        approved_by_label: "Record Approver",
+        packet: {},
+      },
+    ],
+    outreach_drafts: [
+      { id: "draft-partial", generated_by: "grok_cos" },
+      { id: "draft-review", generated_by: "grok_cos" },
+      { id: "draft-kept", generated_by: "grok_cos" },
+    ],
+  });
+  const partial = await markLinkedHandoffEmailSent(sb, {
+    draftId: "draft-partial",
+    playlistId: null,
+    trackId: null,
+    pitchLogId: "log-partial",
+    resendMessageId: "re_partial",
+    sentAt,
+    sentBy: "grok_playlist_control",
+    sentByLabel: "grok_playlist_control",
+  });
+  assertEquals(partial.error, undefined);
+  assertEquals(partial.updated_ids, ["email-partial"]);
+  assertEquals(tables.agh_handoff_batches[0].queue_state, "APPROVED_FOR_SEND");
+  assertEquals(tables.agh_handoff_batches[0].sent_by, null);
+  assertEquals(tables.agh_handoff_records[1].queue_state, "AWAITING_GROK_REVIEW");
+
+  const kept = await markLinkedHandoffEmailSent(sb, {
+    draftId: "draft-kept",
+    playlistId: null,
+    trackId: null,
+    pitchLogId: "log-kept",
+    resendMessageId: "re_kept",
+    sentAt,
+    sentBy: "grok_playlist_control",
+    sentByLabel: "grok_playlist_control",
+  });
+  assertEquals(kept.updated_ids, ["email-kept"]);
+  assertEquals(tables.agh_handoff_batches[1].queue_state, "SENT");
+  assertEquals(tables.agh_handoff_batches[1].sent_by, "earlier-actor");
+  assertEquals(tables.agh_handoff_batches[1].sent_by_label, "Earlier Actor");
+
+  const again = await markLinkedHandoffEmailSent(sb, {
+    draftId: "draft-kept",
+    playlistId: null,
+    trackId: null,
+    pitchLogId: "log-kept",
+    resendMessageId: "re_kept",
+    sentAt: "2026-10-22T12:00:00.000Z",
+    sentBy: "someone-else",
+    sentByLabel: "Someone Else",
+  });
+  assertEquals(again.updated_ids, []);
+  assertEquals(tables.agh_handoff_batches[1].sent_by, "earlier-actor");
+  assertEquals(tables.agh_handoff_batches[1].updated_at, undefined);
+});
+
+Deno.test("a fendi draft is not moved and does not roll its batch", async () => {
+  const { sb, tables } = stubSb({
+    agh_handoff_batches: [
+      { id: "batch-fendi", queue_state: "APPROVED_FOR_SEND", sent_by: null, sent_by_label: null },
+      { id: "batch-mixed", queue_state: "APPROVED_FOR_SEND", sent_by: null, sent_by_label: null },
+    ],
+    agh_handoff_records: [
+      {
+        id: "fendi-row",
+        batch_id: "batch-fendi",
+        outreach_draft_id: "fendi-draft",
+        playlist_target_id: "pl-fendi",
+        track_id: "track-1",
+        queue_state: "APPROVED_FOR_SEND",
+        submission_channel: "email",
+        packet: {},
+      },
+      {
+        id: "normal-row",
+        batch_id: "batch-mixed",
+        outreach_draft_id: "normal-draft",
+        playlist_target_id: "pl-normal",
+        track_id: "track-1",
+        queue_state: "APPROVED_FOR_SEND",
+        submission_channel: "email",
+        packet: {},
+      },
+      {
+        id: "fendi-sibling",
+        batch_id: "batch-mixed",
+        outreach_draft_id: "fendi-sibling",
+        playlist_target_id: "pl-fendi-sib",
+        track_id: "track-1",
+        queue_state: "SENT",
+        submission_channel: "email",
+        packet: {},
+      },
+    ],
+    outreach_drafts: [
+      { id: "fendi-draft", generated_by: "fendi" },
+      { id: "normal-draft", generated_by: "grok_cos" },
+      { id: "fendi-sibling", generated_by: "fendi" },
+    ],
+  });
+  const fendi = await markLinkedHandoffEmailSent(sb, {
+    draftId: "fendi-draft",
+    playlistId: "pl-fendi",
+    trackId: "track-1",
+    pitchLogId: "log-f",
+    resendMessageId: "re_fendi",
+    sentAt,
+    sentBy: "grok_playlist_control",
+    sentByLabel: "grok_playlist_control",
+  });
+  assertEquals(fendi.updated_ids, []);
+  assertEquals(tables.agh_handoff_records[0].queue_state, "APPROVED_FOR_SEND");
+  assertEquals(tables.agh_handoff_batches[0].queue_state, "APPROVED_FOR_SEND");
+  assertEquals(tables.agh_handoff_batches[0].sent_by, null);
+
+  const mixed = await markLinkedHandoffEmailSent(sb, {
+    draftId: "normal-draft",
+    playlistId: null,
+    trackId: null,
+    pitchLogId: "log-n",
+    resendMessageId: "re_normal",
+    sentAt,
+    sentBy: "grok_playlist_control",
+    sentByLabel: "grok_playlist_control",
+  });
+  assertEquals(mixed.updated_ids, ["normal-row"]);
+  assertEquals(tables.agh_handoff_records[1].queue_state, "SENT");
+  assertEquals(tables.agh_handoff_records[2].queue_state, "SENT");
+  assertEquals(tables.agh_handoff_batches[1].queue_state, "APPROVED_FOR_SEND");
+  assertEquals(tables.agh_handoff_batches[1].sent_by, null);
+});
+
+Deno.test("a missing dispatching actor falls back to the record approver", async () => {
+  const { sb, tables } = stubSb({
+    agh_handoff_batches: [
+      { id: "batch-approver", queue_state: "IMPORTED_TO_AGH", sent_by: null, sent_by_label: null },
+    ],
+    agh_handoff_records: [
+      {
+        id: "email-approver",
+        batch_id: "batch-approver",
+        outreach_draft_id: "draft-approver",
+        playlist_target_id: "pl-approver",
+        track_id: "track-1",
+        queue_state: "IMPORTED_TO_AGH",
+        submission_channel: "email",
+        approved_by: "grok_playlist_control",
+        approved_by_label: "grok_playlist_control",
+        packet: {},
+      },
+    ],
+    outreach_drafts: [{ id: "draft-approver", generated_by: "claude_playlist_discovery" }],
+  });
+  const res = await markLinkedHandoffEmailSent(sb, {
+    draftId: "draft-approver",
+    playlistId: null,
+    trackId: null,
+    pitchLogId: "log-a",
+    resendMessageId: "re_approver",
+    sentAt,
+  });
+  assertEquals(res.error, undefined);
+  assertEquals(res.updated_ids, ["email-approver"]);
+  assertEquals(tables.agh_handoff_batches[0].queue_state, "SENT");
+  assertEquals(tables.agh_handoff_batches[0].sent_by, "grok_playlist_control");
+  assertEquals(tables.agh_handoff_batches[0].sent_by_label, "grok_playlist_control");
+});
+
+Deno.test("batch sent backfill only rolls batches and does not resend", () => {
+  const sql = Deno.readTextFileSync(
+    new URL("../../migrations/20261022140000_handoff_batch_sent_rollup.sql", import.meta.url),
+  );
+  const exec = Deno.readTextFileSync(new URL("../execute-pitch/index.ts", import.meta.url));
+  const send = Deno.readTextFileSync(new URL("../send-pitch-email/index.ts", import.meta.url));
+  assert(sql.includes("queue_state = 'SENT'"));
+  assert(sql.includes("sent_by"));
+  assert(sql.includes("sent_by_label"));
+  assert(sql.includes("trim(d.generated_by) = 'fendi'"));
+  assert(sql.includes("packet.email_dispatch"));
+  assert(!/insert\s+into\s+(public\.)?pitch_log/i.test(sql));
+  assert(!/update\s+(public\.)?outreach_drafts/i.test(sql));
+  assert(!/update\s+(public\.)?agh_handoff_records/i.test(sql));
+  assert(!/resend/i.test(sql));
+  assert(!/net\.http/i.test(sql));
+  for (const id of [
+    "0332f2aa-da2b-4530-be35-85d086341649",
+    "94dd3881-fab2-4096-a2a5-3f565593cc0e",
+    "89302ebe-9f40-415a-8aa3-bae47ca82282",
+    "a5b61bee-88e9-426a-9e28-baa2288f67c5",
+    "4f2bbad3-496a-4f3b-9b3d-663a732620cb",
+    "d7af2f98-5955-4611-b7ad-4706afa99d29",
+    "addd70ff-17c1-4363-b884-a3dd5a9a8bd6",
+    "219b7c3f-7c16-4106-9210-0bbeedc13fe5",
+    "8129e879-c814-4a51-aa73-9c57f5a44408",
+    "f4229e77-9fe6-4271-bf3d-f5dc457c33f9",
+  ]) {
+    assert(sql.includes(id), id);
+  }
+  assert(exec.includes("sentBy: approvedBy"));
+  assert(exec.includes("sentByLabel: approvedBy"));
+  assert(exec.includes('draft.generated_by === "fendi"'));
+  assert(exec.includes('p_channel: "email"'));
+  assert(send.includes("sentBy: dispatchingActor || null"));
+  assert(send.includes("String(draft.approved_by"));
+});
+
 Deno.test("resend webhook records the bounce on the linked handoff", () => {
   const src = Deno.readTextFileSync(new URL("../resend-webhook/index.ts", import.meta.url));
   const bounce = Deno.readTextFileSync(new URL("./resend-webhook-event.ts", import.meta.url));

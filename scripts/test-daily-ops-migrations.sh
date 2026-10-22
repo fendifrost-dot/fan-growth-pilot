@@ -1159,4 +1159,79 @@ assert_eq "firecrawl_fallback_default_off" "$(run_sql -c "select (setting_value-
 assert_eq "firecrawl_fallback_single_row" "$(run_sql -c "select count(*) from public.ops_settings where setting_key='route_fetch_firecrawl_fallback';")" "1"
 assert_eq "promote_still_runs_after_method_arg" "$(run_sql -c "select public.agh_promote_claude_ready_batches(true)->>'ok';")" "true"
 
+echo "==> Handoff batch SENT rollup backfill"
+run_sql_pretty <<'SQL' >/dev/null
+alter table public.outreach_drafts add column if not exists approved_by text;
+alter table public.pitch_log add column if not exists id uuid default gen_random_uuid();
+alter table public.pitch_log add column if not exists approved_by text;
+alter table public.pitch_log add column if not exists dispatched_via text;
+SQL
+STUCK_BEFORE=$(run_sql -c "select count(*) from public.agh_handoff_batches b where b.queue_state is distinct from 'SENT' and exists (select 1 from public.agh_handoff_records r where r.batch_id=b.id) and not exists (select 1 from public.agh_handoff_records r where r.batch_id=b.id and r.queue_state is distinct from 'SENT');")
+assert_eq "no_fully_sent_batch_stuck_before_backfill" "${STUCK_BEFORE}" "0"
+PITCH_BEFORE=$(run_sql -c "select count(*) from public.pitch_log;")
+DRAFT_BEFORE=$(run_sql -c "select count(*) from public.outreach_drafts;")
+apply_with_rollback "$ROOT/supabase/migrations/20261022140000_handoff_batch_sent_rollup.sql"
+assert_eq "backfill_apply_does_not_insert_pitch_log" "$(run_sql -c "select count(*) from public.pitch_log;")" "${PITCH_BEFORE}"
+assert_eq "backfill_apply_does_not_insert_drafts" "$(run_sql -c "select count(*) from public.outreach_drafts;")" "${DRAFT_BEFORE}"
+assert_eq "backfill_apply_leaves_partial_batch" "$(run_sql -c "select queue_state from public.agh_handoff_batches where id='b1000000-0000-4000-8000-000000000001';")" "APPROVED_FOR_SEND"
+
+run_sql_pretty <<'SQL' >/dev/null
+insert into public.outreach_drafts (id, playlist_id, track_name, channel, status, generated_by, approved_by)
+values
+  ('d3000000-0000-4000-8000-000000000002', 'batch-sent-pl', 'Batch sent', 'email', 'sent', 'claude_playlist_discovery', 'grok_playlist_control'),
+  ('d3000000-0000-4000-8000-000000000007', 'batch-sent-pl', 'Batch sent', 'email', 'sent', 'fendi', 'grok_playlist_control');
+insert into public.pitch_log (id, playlist_id, track_name, curator_email, status, approved_by, dispatched_via)
+values
+  ('d4000000-0000-4000-8000-000000000003', 'batch-sent-pl', 'Batch sent', 'a@example.test', 'sent', 'grok_playlist_control', 'grok_playlist_control'),
+  ('d4000000-0000-4000-8000-000000000004', 'batch-sent-pl', 'Batch sent', 'a@example.test', 'sent', null, 'grok_playlist_control'),
+  ('d4000000-0000-4000-8000-000000000005', 'batch-sent-pl', 'Batch sent', 'a@example.test', 'sent', 'grok_playlist_control', 'execute-pitch');
+insert into public.agh_handoff_batches (id, batch_kind, queue_state, payload)
+values
+  ('d1000000-0000-4000-8000-000000000001', 'playlist', 'APPROVED_FOR_SEND', '{}'),
+  ('d1000000-0000-4000-8000-000000000002', 'playlist', 'IMPORTED_TO_AGH', '{}'),
+  ('d1000000-0000-4000-8000-000000000003', 'playlist', 'IMPORTED_TO_AGH', '{}'),
+  ('d1000000-0000-4000-8000-000000000004', 'playlist', 'APPROVED_FOR_SEND', '{}'),
+  ('d1000000-0000-4000-8000-000000000005', 'playlist', 'APPROVED_FOR_SEND', '{}'),
+  ('d1000000-0000-4000-8000-000000000006', 'playlist', 'APPROVED_FOR_SEND', '{}'),
+  ('d1000000-0000-4000-8000-000000000007', 'playlist', 'IMPORTED_TO_AGH', '{}'),
+  ('d1000000-0000-4000-8000-000000000008', 'playlist', 'SENT', '{}');
+update public.agh_handoff_batches
+   set sent_by = 'kept', sent_by_label = 'Kept'
+ where id = 'd1000000-0000-4000-8000-000000000008';
+insert into public.agh_handoff_records (id, batch_id, queue_state, submission_channel, outreach_draft_id, approved_by, approved_by_label, packet)
+values
+  ('d2000000-0000-4000-8000-000000000001', 'd1000000-0000-4000-8000-000000000001', 'SENT', 'email', null, 'grok_playlist_control', 'grok_playlist_control', '{}'),
+  ('d2000000-0000-4000-8000-000000000002', 'd1000000-0000-4000-8000-000000000002', 'SENT', 'email', 'd3000000-0000-4000-8000-000000000002', null, null, '{}'),
+  ('d2000000-0000-4000-8000-000000000003', 'd1000000-0000-4000-8000-000000000003', 'SENT', 'email', null, null, null, '{"email_dispatch":{"pitch_log_id":"d4000000-0000-4000-8000-000000000003","outcome":"sent"}}'),
+  ('d2000000-0000-4000-8000-000000000004', 'd1000000-0000-4000-8000-000000000004', 'SENT', 'email', null, null, null, '{"email_dispatch":{"pitch_log_id":"d4000000-0000-4000-8000-000000000004","outcome":"sent"}}'),
+  ('d2000000-0000-4000-8000-000000000005', 'd1000000-0000-4000-8000-000000000005', 'SENT', 'email', null, null, null, '{"email_dispatch":{"pitch_log_id":"d4000000-0000-4000-8000-000000000005","outcome":"sent"}}'),
+  ('d2000000-0000-4000-8000-000000000006', 'd1000000-0000-4000-8000-000000000006', 'SENT', 'email', null, 'grok_playlist_control', 'grok_playlist_control', '{}'),
+  ('d2000000-0000-4000-8000-000000000016', 'd1000000-0000-4000-8000-000000000006', 'APPROVED_FOR_SEND', 'web_form', null, 'grok_playlist_control', 'grok_playlist_control', '{}'),
+  ('d2000000-0000-4000-8000-000000000007', 'd1000000-0000-4000-8000-000000000007', 'SENT', 'email', 'd3000000-0000-4000-8000-000000000007', 'grok_playlist_control', 'grok_playlist_control', '{}'),
+  ('d2000000-0000-4000-8000-000000000008', 'd1000000-0000-4000-8000-000000000008', 'SENT', 'email', null, 'grok_playlist_control', 'grok_playlist_control', '{}');
+SQL
+PITCH_SEEDED=$(run_sql -c "select count(*) from public.pitch_log;")
+RECORD_STATES=$(run_sql -c "select string_agg(id::text || ':' || queue_state, ',' order by id::text) from public.agh_handoff_records where id::text like 'd2000000-%';")
+BACKFILL=$(run_sql -c "select public.agh_backfill_handoff_batch_sent()->>'updated';")
+assert_eq "batch_sent_backfill_updates_five" "${BACKFILL}" "5"
+assert_eq "batch_sent_from_record_approver" "$(run_sql -c "select queue_state || ':' || sent_by || ':' || sent_by_label from public.agh_handoff_batches where id='d1000000-0000-4000-8000-000000000001';")" "SENT:grok_playlist_control:grok_playlist_control"
+assert_eq "batch_sent_from_draft_approver" "$(run_sql -c "select queue_state || ':' || sent_by || ':' || sent_by_label from public.agh_handoff_batches where id='d1000000-0000-4000-8000-000000000002';")" "SENT:grok_playlist_control:grok_playlist_control"
+assert_eq "batch_sent_from_dispatch_pitch" "$(run_sql -c "select queue_state || ':' || sent_by || ':' || sent_by_label from public.agh_handoff_batches where id='d1000000-0000-4000-8000-000000000003';")" "SENT:grok_playlist_control:grok_playlist_control"
+assert_eq "batch_sent_from_dispatch_actor" "$(run_sql -c "select queue_state || ':' || sent_by || ':' || sent_by_label from public.agh_handoff_batches where id='d1000000-0000-4000-8000-000000000004';")" "SENT:grok_playlist_control:grok_playlist_control"
+assert_eq "batch_sent_ignores_route_name" "$(run_sql -c "select queue_state || ':' || sent_by || ':' || sent_by_label from public.agh_handoff_batches where id='d1000000-0000-4000-8000-000000000005';")" "SENT:grok_playlist_control:grok_playlist_control"
+assert_eq "batch_sent_leaves_open_record" "$(run_sql -c "select queue_state || ':' || coalesce(sent_by,'') from public.agh_handoff_batches where id='d1000000-0000-4000-8000-000000000006';")" "APPROVED_FOR_SEND:"
+assert_eq "batch_sent_leaves_fendi" "$(run_sql -c "select queue_state || ':' || coalesce(sent_by,'') from public.agh_handoff_batches where id='d1000000-0000-4000-8000-000000000007';")" "IMPORTED_TO_AGH:"
+assert_eq "batch_sent_keeps_existing_actor" "$(run_sql -c "select queue_state || ':' || sent_by || ':' || sent_by_label from public.agh_handoff_batches where id='d1000000-0000-4000-8000-000000000008';")" "SENT:kept:Kept"
+assert_eq "batch_sent_does_not_rewrite_records" "$(run_sql -c "select string_agg(id::text || ':' || queue_state, ',' order by id::text) from public.agh_handoff_records where id::text like 'd2000000-%';")" "${RECORD_STATES}"
+assert_eq "batch_sent_does_not_insert_pitch_log" "$(run_sql -c "select count(*) from public.pitch_log;")" "${PITCH_SEEDED}"
+assert_eq "batch_sent_does_not_touch_fendi_draft" "$(run_sql -c "select status || ':' || generated_by from public.outreach_drafts where id='d3000000-0000-4000-8000-000000000007';")" "sent:fendi"
+AGAIN=$(run_sql -c "select public.agh_backfill_handoff_batch_sent()->>'updated';")
+assert_eq "batch_sent_backfill_idempotent" "${AGAIN}" "0"
+assert_eq "batch_sent_actor_stable" "$(run_sql -c "select sent_by from public.agh_handoff_batches where id='d1000000-0000-4000-8000-000000000001';")" "grok_playlist_control"
+run_sql -c "update public.agh_handoff_batches set sent_by=null, sent_by_label=null where id='d1000000-0000-4000-8000-000000000001';" >/dev/null
+assert_eq "batch_sent_does_not_restamp_sent_rows" "$(run_sql -c "select public.agh_backfill_handoff_batch_sent()->>'updated';")" "0"
+assert_eq "batch_sent_null_actor_stays_when_already_sent" "$(run_sql -c "select coalesce(sent_by,'') from public.agh_handoff_batches where id='d1000000-0000-4000-8000-000000000001';")" ""
+assert_eq "batch_sent_backfill_not_for_authenticated" "$(run_sql -c "select has_function_privilege('authenticated', 'public.agh_backfill_handoff_batch_sent()', 'execute');")" "f"
+assert_eq "batch_sent_backfill_not_for_anon" "$(run_sql -c "select has_function_privilege('anon', 'public.agh_backfill_handoff_batch_sent()', 'execute');")" "f"
+
 echo "==> PASS: daily-ops migrations applied + authoritative RPC assertions verified"

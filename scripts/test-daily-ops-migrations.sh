@@ -259,10 +259,52 @@ echo "==> Rerun guarded 160000 successfully after reconcile"
 apply_with_rollback "$ROOT/supabase/migrations/20260907160000_mcp_inventory_open_pair_guard_and_persist.sql"
 apply_with_rollback "$ROOT/supabase/migrations/20260915120000_playlist_inventory_drafted_by_promote.sql"
 apply_with_rollback "$ROOT/supabase/migrations/20260916120000_email_handoff_packet_materialize.sql"
+apply_with_rollback "$ROOT/supabase/migrations/20261022160000_claude_ig_dm_drafts.sql"
 OPEN_IDX_AFTER=$(run_sql -c "select count(*) from pg_indexes where schemaname='public' and indexname='agh_handoff_records_open_pair_uidx';")
 assert_eq "open_pair_index_present_after_guard" "${OPEN_IDX_AFTER}" "1"
 PERSIST_OK=$(run_sql -c "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='agh_mcp_persist_playlist_inventory';")
 assert_eq "persist_fn_present_after_guard" "${PERSIST_OK}" "1"
+
+echo "==> instagram_dm inventory item with a server-composed draft creates a linked outreach_drafts row"
+run_sql_pretty <<'SQL'
+insert into public.tracks (id, name) values ('44444444-4444-4444-4444-444444444444', 'IG Track');
+insert into public.song_dna_versions (id, track_id, approval_state, approved_lanes, short_pitch)
+values ('55555555-5555-5555-5555-555555555555', '44444444-4444-4444-4444-444444444444', 'approved', array['rap_general'], 'pitch');
+insert into public.playlist_targets (playlist_id, playlist_name, lane, verification_status)
+values ('0DAtAjCytSoXd6T42mP0IG', 'IG Fixture List', 'rap_general', 'auto_verified'),
+       ('0DAtAjCytSoXd6T42mP0IH', 'IG Fixture List 2', 'rap_general', 'auto_verified');
+SQL
+IG_PERSIST=$(run_sql -c "select public.agh_mcp_persist_playlist_inventory(
+  '44444444-4444-4444-4444-444444444444',
+  '55555555-5555-5555-5555-555555555555',
+  '{\"discovered_by\":\"claude_playlist_discovery\",\"drafted_by\":\"claude_playlist_discovery\"}'::jsonb,
+  '[{\"playlist_id\":\"0DAtAjCytSoXd6T42mP0IG\",\"channel\":\"instagram_dm\",\"record_kind\":\"playlist_target\",\"queue_state\":\"CLAUDE_BATCH_READY\",\"packet\":{\"packet_kind\":\"manual_ig_dm_packet\",\"channel\":\"instagram_dm\",\"automated_dm\":false,\"ig_curator_account\":\"curatorhandle\"},\"draft\":{\"track_name\":\"IG Track\",\"body\":\"server composed dm\",\"recipient\":\"@curatorhandle\",\"generated_by\":\"claude_playlist_discovery\",\"metadata\":{}}}]'::jsonb
+) ->> 'ok';")
+assert_eq "ig_persist_ok" "${IG_PERSIST}" "true"
+IG_DRAFT_ROW=$(run_sql -c "select channel || ':' || status || ':' || generated_by || ':' || recipient || ':' || coalesce(subject, '<null>') from public.outreach_drafts where track_id='44444444-4444-4444-4444-444444444444';")
+assert_eq "ig_draft_row" "${IG_DRAFT_ROW}" "instagram_dm:pending:claude_playlist_discovery:@curatorhandle:<null>"
+IG_LINK=$(run_sql -c "select count(*) from public.agh_handoff_records r join public.outreach_drafts d on d.id = r.outreach_draft_id where r.track_id='44444444-4444-4444-4444-444444444444' and r.submission_channel='instagram_dm' and d.metadata->>'handoff_record_id' = r.id::text and r.packet->>'outreach_draft_id' = d.id::text and (r.packet->>'automated_dm') = 'false' and not (r.packet ? 'body');")
+assert_eq "ig_draft_linked_copy_free" "${IG_LINK}" "1"
+IG_NODRAFT=$(run_sql -c "select coalesce(public.agh_mcp_persist_playlist_inventory(
+  '44444444-4444-4444-4444-444444444444',
+  '55555555-5555-5555-5555-555555555555',
+  '{}'::jsonb,
+  '[{\"playlist_id\":\"0DAtAjCytSoXd6T42mP0IH\",\"channel\":\"instagram_dm\",\"packet\":{\"packet_kind\":\"manual_ig_dm_packet\",\"ig_curator_account\":\"other\"}}]'::jsonb
+) -> 'items' -> 0 ->> 'outreach_draft_id', '<none>');")
+assert_eq "ig_packet_without_draft_stays_manual" "${IG_NODRAFT}" "<none>"
+IG_DRAFT_COUNT=$(run_sql -c "select count(*) from public.outreach_drafts where track_id='44444444-4444-4444-4444-444444444444';")
+assert_eq "ig_draft_count_after_manual_packet" "${IG_DRAFT_COUNT}" "1"
+# Remove the IG fixture so later whole-table counts (concurrent_one_active_draft) stay meaningful.
+run_sql_pretty <<'SQL'
+delete from public.agh_handoff_records where track_id = '44444444-4444-4444-4444-444444444444';
+delete from public.agh_handoff_batches where track_id = '44444444-4444-4444-4444-444444444444';
+delete from public.outreach_drafts where track_id = '44444444-4444-4444-4444-444444444444';
+delete from public.playlist_targets where playlist_id in ('0DAtAjCytSoXd6T42mP0IG', '0DAtAjCytSoXd6T42mP0IH');
+update public.tracks set approved_song_dna_version_id = null where id = '44444444-4444-4444-4444-444444444444';
+delete from public.song_dna_versions where id = '55555555-5555-5555-5555-555555555555';
+delete from public.tracks where id = '44444444-4444-4444-4444-444444444444';
+SQL
+echo "OK: ig fixture removed"
 
 echo "==> MCP OAuth tables exist with actor check"
 OAUTH_TBL=$(run_sql -c "select count(*) from information_schema.tables where table_schema='public' and table_name='agh_mcp_oauth_tokens';")

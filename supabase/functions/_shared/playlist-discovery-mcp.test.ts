@@ -42,6 +42,7 @@ import {
   getBatchCandidates,
   routeOnlyPlaylistIdentity,
   ROUTE_ONLY_ID_PREFIX,
+  igHandleForDraft,
 } from "./playlist-discovery-mcp.ts";
 import { startDailyStationRun } from "./daily-ops.ts";
 import {
@@ -3458,4 +3459,263 @@ Deno.test("draft inventory still accepts a route-only web form", async () => {
   assertEquals(res.status, 200, JSON.stringify(res.data));
   assertEquals(persisted, routeId);
   assertEquals(dnaId.length > 0, true);
+});
+
+// ---------------------------------------------------------------------------
+// Claude-authored Instagram DM drafts (2026-10-22)
+// ---------------------------------------------------------------------------
+
+function igInventoryFixture(): { trackId: string; dnaId: string; playlistId: string; tables: Record<string, Row[]> } {
+  const trackId = "11111111-1111-1111-1111-111111111111";
+  const dnaId = "22222222-2222-2222-2222-222222222222";
+  const playlistId = "0DAtAjCytSoXd6T42mP0IG";
+  return {
+    trackId,
+    dnaId,
+    playlistId,
+    tables: {
+      tracks: [{ id: trackId, name: "Song", approved_song_dna_version_id: dnaId }],
+      song_dna_versions: [{
+        id: dnaId,
+        track_id: trackId,
+        approval_state: "approved",
+        approved_lanes: ["rap_general"],
+        excluded_lanes: ["house_general"],
+        short_pitch: "server-composed DNA pitch only",
+        primary_genre: "rap",
+      }],
+      playlist_targets: [{
+        playlist_id: playlistId,
+        contact_method: "instagram_dm",
+        submission_method: "instagram_dm",
+        path_verified: true,
+        verification_status: "auto_verified",
+        ig_curator_account: "curatorhandle",
+        ig_source_evidence: "https://ig.example/proof",
+        lane: "rap_general",
+      }],
+      outreach_drafts: [],
+      agh_handoff_records: [],
+      agh_handoff_batches: [],
+      domain_blocklist: [],
+      non_curator_domains: [],
+    },
+  };
+}
+
+function composedIgDm(overrides: Row = {}): { status: number; data: Row } {
+  return {
+    status: 200,
+    data: {
+      ok: true,
+      composed: true,
+      persist: false,
+      channel: "instagram_dm",
+      subject: null,
+      body: "Hi there, server-composed DNA pitch only",
+      recipient: null,
+      track_name: "Song",
+      pitch_copy_source: "song_dna_versions.short_pitch",
+      pitch_copy_hash: "abc",
+      generated_by: "claude_playlist_discovery",
+      metadata: { stream_link: "https://open.spotify.com/track/x", tone: "warm_personal" },
+      ...overrides,
+    },
+  };
+}
+
+Deno.test("instagram_dm inventory: Claude composes the DM server-side; draft rides item.draft, packet stays copy-free", async () => {
+  const ops = playlistDiscoveryActor();
+  const { trackId, dnaId, playlistId, tables } = igInventoryFixture();
+  let composeArgs: Row | null = null;
+  let persistItems: Row[] | null = null;
+  let persistAttr: Row | null = null;
+
+  const res = await createPlaylistDraftInventory(
+    stubSb(tables),
+    ops,
+    { track_id: trackId, accepted_candidate_ids: [playlistId] },
+    {
+      composeDraft: async (body) => {
+        composeArgs = body as Row;
+        return composedIgDm();
+      },
+      persistInventory: async (_sb, args) => {
+        persistItems = args.items as Row[];
+        persistAttr = args.attr as Row;
+        const key = inventoryIdempotencyKey(trackId, playlistId, "instagram_dm", dnaId);
+        tables.outreach_drafts.push({
+          id: "draft-ig",
+          status: "pending",
+          ops_idempotency_key: key,
+          track_id: trackId,
+          playlist_id: playlistId,
+          channel: "instagram_dm",
+          generated_by: "claude_playlist_discovery",
+          body: "Hi there, server-composed DNA pitch only",
+        });
+        tables.agh_handoff_batches.push({
+          id: "batch-ig",
+          record_count: 1,
+          batch_kind: "playlist",
+          queue_state: "CLAUDE_BATCH_READY",
+          discovered_by: "claude_playlist_discovery",
+          drafted_by: "claude_playlist_discovery",
+        });
+        tables.agh_handoff_records.push({
+          id: "rec-ig",
+          batch_id: "batch-ig",
+          track_id: trackId,
+          playlist_target_id: playlistId,
+          submission_channel: "instagram_dm",
+          song_dna_version_id: dnaId,
+          outreach_draft_id: "draft-ig",
+          queue_state: "CLAUDE_BATCH_READY",
+          drafted_by: "claude_playlist_discovery",
+        });
+        return {
+          data: {
+            ok: true,
+            idempotent: false,
+            batch_id: "batch-ig",
+            inserted: 1,
+            record_count: 1,
+            email_drafts: [],
+            ig_dm_drafts: [{ playlist_id: playlistId, outreach_draft_id: "draft-ig", ig_curator_account: "@curatorhandle" }],
+            manual_packets: [{ playlist_id: playlistId, channel: "instagram_dm", outreach_draft_id: "draft-ig" }],
+            items: [{
+              playlist_id: playlistId,
+              channel: "instagram_dm",
+              outreach_draft_id: "draft-ig",
+              handoff_record_id: "rec-ig",
+              batch_id: "batch-ig",
+              reused: false,
+            }],
+          },
+          error: null,
+        };
+      },
+    },
+  );
+
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assert(composeArgs);
+  assertEquals(composeArgs!.channel, "instagram_dm");
+  assertEquals(composeArgs!.compose_only, true);
+  assertEquals(composeArgs!.persist, false);
+  assertEquals(composeArgs!.track_id, trackId);
+
+  assert(persistAttr);
+  assertEquals(persistAttr!.drafted_by, "claude_playlist_discovery");
+  assert(persistItems);
+  assertEquals(persistItems!.length, 1);
+  const item = persistItems![0];
+  assertEquals(item.channel, "instagram_dm");
+  assertEquals(item.idempotency_key, inventoryIdempotencyKey(trackId, playlistId, "instagram_dm", dnaId));
+
+  const draft = item.draft as Row;
+  assertEquals(draft.body, "Hi there, server-composed DNA pitch only");
+  assertEquals(draft.recipient, "@curatorhandle");
+  assertEquals(draft.subject, null);
+  assertEquals(draft.generated_by, "claude_playlist_discovery");
+  assertEquals(draft.pitch_copy_source, "song_dna_versions.short_pitch");
+  assertEquals((draft.metadata as Row).send_mode, "manual_from_artist_phone");
+  assertEquals((draft.metadata as Row).automated_dm, false);
+  assertEquals((draft.metadata as Row).stream_link, "https://open.spotify.com/track/x");
+
+  const pkt = item.packet as Row;
+  assertEquals(pkt.packet_kind, "manual_ig_dm_packet");
+  assertEquals(pkt.automated_dm, false);
+  assertEquals(pkt.automated_submit, false);
+  assertEquals(pkt.ig_curator_account, "curatorhandle");
+  for (const k of ["body", "subject", "pitch", "draft_body", "ig_dm_draft"]) assertEquals(pkt[k], undefined, k);
+
+  assertEquals(res.data.drafted_by, "claude_playlist_discovery");
+  assertEquals((res.data.ig_dm_drafts as Row[])[0].outreach_draft_id, "draft-ig");
+  assertEquals((res.data.manual_packets as Row[])[0].channel, "instagram_dm");
+  assertEquals(res.data.queue_state, "AWAITING_GROK_REVIEW");
+  assertEquals(tables.agh_handoff_records[0].queue_state, "AWAITING_GROK_REVIEW");
+  assertEquals(tables.agh_handoff_records[0].drafted_by, "claude_playlist_discovery");
+});
+
+Deno.test("instagram_dm inventory: a compose failure is returned and nothing is persisted", async () => {
+  const ops = playlistDiscoveryActor();
+  const { trackId, playlistId, tables } = igInventoryFixture();
+  let persisted = 0;
+  const res = await createPlaylistDraftInventory(
+    stubSb(tables),
+    ops,
+    { track_id: trackId, accepted_candidate_ids: [playlistId] },
+    {
+      composeDraft: async () => ({
+        status: 422,
+        data: { error: "No pitch template configured", tone: "warm_personal", channel: "instagram_dm", is_warm: false },
+      }),
+      persistInventory: async () => {
+        persisted += 1;
+        throw new Error("must not persist when the DM could not be composed");
+      },
+    },
+  );
+  assertEquals(persisted, 0);
+  assertEquals(res.status, 422);
+  assertEquals(res.data.code, "ig_dm_compose_failed");
+  assertEquals(res.data.playlist_id, playlistId);
+  assertEquals(tables.agh_handoff_records.length, 0);
+});
+
+Deno.test("instagram_dm inventory: a DM without a stream link is refused (missing_stream_link)", async () => {
+  const ops = playlistDiscoveryActor();
+  const { trackId, playlistId, tables } = igInventoryFixture();
+  let persisted = 0;
+  const res = await createPlaylistDraftInventory(
+    stubSb(tables),
+    ops,
+    { track_id: trackId, accepted_candidate_ids: [playlistId] },
+    {
+      composeDraft: async () => composedIgDm({ metadata: { stream_link: null } }),
+      persistInventory: async () => {
+        persisted += 1;
+        throw new Error("must not persist a DM without a link");
+      },
+    },
+  );
+  assertEquals(persisted, 0);
+  assertEquals(res.status, 422);
+  assertEquals(res.data.code, "missing_stream_link");
+});
+
+Deno.test("instagram_dm inventory: a target whose handle is not a handle is refused upstream and never composed", async () => {
+  const ops = playlistDiscoveryActor();
+  const { trackId, playlistId, tables } = igInventoryFixture();
+  tables.playlist_targets[0].ig_curator_account = "https://instagram.com/not-a-handle";
+  let composed = 0;
+  let persisted = 0;
+  const res = await createPlaylistDraftInventory(
+    stubSb(tables),
+    ops,
+    { track_id: trackId, accepted_candidate_ids: [playlistId] },
+    {
+      composeDraft: async () => {
+        composed += 1;
+        return composedIgDm({ recipient: null });
+      },
+      persistInventory: async () => {
+        persisted += 1;
+        throw new Error("must not persist without a handle");
+      },
+    },
+  );
+  assertEquals(composed, 0);
+  assertEquals(persisted, 0);
+  assertEquals(res.status, 422, JSON.stringify(res.data));
+  assertEquals(res.data.code, "not_verified_eligible");
+});
+
+Deno.test("igHandleForDraft prefers the composed recipient, then the target, always as @handle", () => {
+  assertEquals(igHandleForDraft("@Composed.One", { ig_curator_account: "fallback" }), "@Composed.One");
+  assertEquals(igHandleForDraft(null, { ig_curator_account: "@fallback" }), "@fallback");
+  assertEquals(igHandleForDraft(null, { curator_instagram: "legacy_col" }), "@legacy_col");
+  assertEquals(igHandleForDraft("https://instagram.com/x", { ig_curator_account: "" }), null);
+  assertEquals(igHandleForDraft(undefined, {}), null);
 });

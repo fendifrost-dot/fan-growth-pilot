@@ -1863,6 +1863,23 @@ export async function inventoryPolicyDeferral(
   };
 }
 
+/**
+ * Recipient for a Claude-composed Instagram DM, as "@handle". The composer
+ * returns playlist_targets.curator_instagram; discovery rows usually carry
+ * ig_curator_account instead, so both are tried. Null when no valid handle.
+ */
+export function igHandleForDraft(
+  composedRecipient: unknown,
+  target: Record<string, unknown>,
+): string | null {
+  for (const raw of [composedRecipient, target.ig_curator_account, target.curator_instagram]) {
+    const s = String(raw ?? "").trim();
+    if (!s || !isValidIgAccount(s)) continue;
+    return `@${s.replace(/^@+/, "")}`;
+  }
+  return null;
+}
+
 function inventoryPersistAttr(ops: OpsActor): Record<string, string> {
   const attr = attributionFrom(ops);
   return {
@@ -2277,6 +2294,74 @@ export async function createPlaylistDraftInventory(
     } else if (channel === "web_form") {
       packetKind = "manual_web_form_packet";
     } else if (channel === "instagram_dm") {
+      // The DM is still hand-sent from the artist phone, but its text is composed
+      // here, server-side, from approved Song DNA copy under the Claude discovery
+      // credential. The body rides item.draft (never the packet), so the
+      // outreach_drafts row is honestly generated_by claude_playlist_discovery.
+      const composed = await composeDraft(
+        {
+          playlist_id: playlistId,
+          track_id: trackId,
+          channel: "instagram_dm",
+          song_dna_version_id: songDnaVersionId,
+          persist: false,
+          compose_only: true,
+        },
+        sb,
+        playlistDiscoveryCredentialActor(),
+        null,
+      );
+      const composedData = (composed.data ?? {}) as Record<string, unknown>;
+      if (composed.status >= 400) {
+        return {
+          status: composed.status,
+          data: {
+            ...composedData,
+            error: composedData.error ?? "ig_dm_compose_failed",
+            code: composedData.code ?? "ig_dm_compose_failed",
+            playlist_id: playlistId,
+          },
+        };
+      }
+      const dmBody = String(composedData.body ?? "").trim();
+      if (!dmBody) {
+        return {
+          status: 500,
+          data: { error: "compose returned no body", code: "ig_dm_compose_failed", playlist_id: playlistId },
+        };
+      }
+      const igHandle = igHandleForDraft(composedData.recipient, target as Record<string, unknown>);
+      if (!igHandle) {
+        return {
+          status: 422,
+          data: {
+            error: "instagram_dm inventory requires a valid ig_curator_account",
+            code: "missing_ig_curator_account",
+            playlist_id: playlistId,
+          },
+        };
+      }
+      const composedMeta = (composedData.metadata ?? {}) as Record<string, unknown>;
+      if (!String(composedMeta.stream_link ?? "").trim()) {
+        return {
+          status: 422,
+          data: {
+            error: "instagram_dm draft has no stream link for the track — a DM without a link is not a pitch",
+            code: "missing_stream_link",
+            playlist_id: playlistId,
+          },
+        };
+      }
+      draftPayload = {
+        track_name: composedData.track_name ?? trackName,
+        subject: null,
+        body: dmBody,
+        recipient: igHandle,
+        pitch_copy_source: composedData.pitch_copy_source ?? pitchProbe.source,
+        pitch_copy_hash: composedData.pitch_copy_hash ?? null,
+        generated_by: composedData.generated_by ?? ops.label,
+        metadata: { ...composedMeta, automated_dm: false, send_mode: "manual_from_artist_phone" },
+      };
       packetKind = "manual_ig_dm_packet";
     }
 
@@ -2416,6 +2501,9 @@ export async function createPlaylistDraftInventory(
         manual_packets: reusedPreview
           .filter((r) => r.channel !== "email")
           .map((r) => ({ playlist_id: r.playlist_id, channel: r.channel, reused: true })),
+        ig_dm_drafts: reusedPreview
+          .filter((r) => r.channel === "instagram_dm" && r.outreach_draft_id)
+          .map((r) => ({ playlist_id: r.playlist_id, outreach_draft_id: r.outreach_draft_id, reused: true })),
         reused_pairs: reusedPreview,
         server_pitch_source: pitchProbe.source,
         records: { ok: true, inserted: 0, duplicates: reusedPreview.length, rows: [] },
@@ -2501,6 +2589,7 @@ export async function createPlaylistDraftInventory(
       drafted_by: persistAttr.drafted_by,
       queue_state: promoted.queue_state,
       email_drafts: result.email_drafts ?? [],
+      ig_dm_drafts: result.ig_dm_drafts ?? [],
       manual_packets: result.manual_packets ?? [],
       reused_pairs: resultItems.filter((i) => i.reused),
       server_pitch_source: pitchProbe.source,

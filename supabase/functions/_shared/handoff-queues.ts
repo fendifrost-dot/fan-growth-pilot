@@ -32,6 +32,7 @@ import {
 } from "./submission-route.ts";
 import { decideLaneFit, fitRejectionConflict, isFitRejectionReason, type ApprovedDnaLanes } from "./song-fit.ts";
 import { listWebFormHandoffs, plainManualSubmitError } from "./web-form-handoff.ts";
+import { listIgDmSendQueue } from "./ig-dm-send-queue.ts";
 
 export type RunResult = { status: number; data: Record<string, unknown> };
 
@@ -61,6 +62,7 @@ export const HANDOFF_ACTIONS = [
   "get_handoff_batch",
   "mark_manual_form_submitted",
   "mark_manual_ig_dm_submitted",
+  "list_ig_dm_send_queue",
   "materialize_email_handoff_drafts",
   "playlist_pipeline_report",
   "review_handoff_records",
@@ -2353,6 +2355,8 @@ export async function runHandoffAction(
       return markManualFormSubmitted(sb, body, ops);
     case "mark_manual_ig_dm_submitted":
       return markManualIgDmSubmitted(sb, body, ops);
+    case "list_ig_dm_send_queue":
+      return listIgDmSendQueue(sb, body, ops);
     case "materialize_email_handoff_drafts":
       return materializeEmailHandoffDrafts(sb, body, ops);
     default:

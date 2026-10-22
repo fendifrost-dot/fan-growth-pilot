@@ -3619,7 +3619,8 @@ Deno.test("instagram_dm inventory: Claude composes the DM server-side; draft rid
   assertEquals(draft.subject, null);
   assertEquals(draft.generated_by, "claude_playlist_discovery");
   assertEquals(draft.pitch_copy_source, "song_dna_versions.short_pitch");
-  assertEquals((draft.metadata as Row).send_mode, "manual_from_artist_phone");
+  assertEquals((draft.metadata as Row).send_mode, "muse_instagram_send");
+  assertEquals((draft.metadata as Row).send_owner, "muse");
   assertEquals((draft.metadata as Row).automated_dm, false);
   assertEquals((draft.metadata as Row).stream_link, "https://open.spotify.com/track/x");
 

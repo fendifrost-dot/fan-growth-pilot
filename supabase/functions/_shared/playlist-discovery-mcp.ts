@@ -2294,9 +2294,8 @@ export async function createPlaylistDraftInventory(
     } else if (channel === "web_form") {
       packetKind = "manual_web_form_packet";
     } else if (channel === "instagram_dm") {
-      // The DM is still hand-sent from the artist phone, but its text is composed
-      // here, server-side, from approved Song DNA copy under the Claude discovery
-      // credential. The body rides item.draft (never the packet), so the
+      // The DM text is composed here, server-side, from approved Song DNA copy
+      // under the Claude discovery credential. Grok approves it; Muse sends it. The body rides item.draft (never the packet), so the
       // outreach_drafts row is honestly generated_by claude_playlist_discovery.
       const composed = await composeDraft(
         {
@@ -2360,7 +2359,8 @@ export async function createPlaylistDraftInventory(
         pitch_copy_source: composedData.pitch_copy_source ?? pitchProbe.source,
         pitch_copy_hash: composedData.pitch_copy_hash ?? null,
         generated_by: composedData.generated_by ?? ops.label,
-        metadata: { ...composedMeta, automated_dm: false, send_mode: "manual_from_artist_phone" },
+        // Muse sends from the Hub send queue (list_ig_dm_send_queue) after Grok approves.
+        metadata: { ...composedMeta, automated_dm: false, send_mode: "muse_instagram_send", send_owner: "muse" },
       };
       packetKind = "manual_ig_dm_packet";
     }

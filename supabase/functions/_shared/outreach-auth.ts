@@ -68,6 +68,9 @@ type ActionSpec =
  * Discovery / research / draft actions Claude needs are capability-gated here
  * (not blanket-denied as legacy Phase-3 writes).
  */
+/** The only two actions the Muse Instagram credential may call. */
+export const MUSE_IG_ACTIONS: ReadonlySet<string> = new Set(['list_ig_dm_send_queue', 'mark_manual_ig_dm_submitted']);
+
 export const ACTION_SPEC: Record<string, ActionSpec> = {
   // ---- Public catalog / campaign reads ------------------------------------
   list_campaigns: { cls: 'public-read' },
@@ -560,6 +563,13 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
     capability: 'send_playlist_pitches',
     surface: 'outreach-write',
   },
+  // Read side of the approved Instagram path: Muse reads what Grok approved,
+  // sends it, then records the receipt above. Never a write.
+  list_ig_dm_send_queue: {
+    cls: 'capability',
+    capability: 'read_playlist_ops',
+    surface: 'outreach-write',
+  },
   materialize_email_handoff_drafts: {
     cls: 'capability',
     capability: 'write_playlist_ops',
@@ -986,9 +996,10 @@ export async function authorizeAction(
     };
   }
 
-  // muse_ig_receipt is a Control Center receipt token. It is not a reviewer
-  // and not a sender. Every other action, including public and authenticated
-  // reads, is denied. Grok still wins when that secret is presented.
+  // muse_ig_receipt is the Control Center (Muse) token on the Instagram path:
+  // Muse reads the send queue Grok approved, sends on Instagram, and records
+  // the receipt. It is not a reviewer: it cannot approve, reject, draft, or
+  // read anything else. Grok still wins when that secret is presented.
   if (isMuseIgReceiptCredential(req) && !isGrokCredential(req)) {
     const denyCls: Exclude<AuthClass, 'capability'> | 'unknown' =
       spec.cls === 'capability'
@@ -1002,11 +1013,11 @@ export async function authorizeAction(
         : spec.cls === 'webhook'
         ? 'webhook'
         : 'unknown';
-    if (action !== 'mark_manual_ig_dm_submitted') {
+    if (!MUSE_IG_ACTIONS.has(action)) {
       return {
         ok: false,
         status: 403,
-        error: 'muse_ig_receipt may only call mark_manual_ig_dm_submitted',
+        error: 'muse_ig_receipt may only call list_ig_dm_send_queue or mark_manual_ig_dm_submitted',
         cls: denyCls,
       };
     }
@@ -1137,7 +1148,7 @@ export async function authorizeAction(
 
   // Capability-gated mutation — the only write path for machines and humans.
   if (spec.cls === 'capability') {
-    if (opsActor.kind === 'muse_ig_receipt' && action === 'mark_manual_ig_dm_submitted') {
+    if (opsActor.kind === 'muse_ig_receipt' && MUSE_IG_ACTIONS.has(action)) {
       return {
         ok: true,
         actor,

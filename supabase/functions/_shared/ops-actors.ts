@@ -430,7 +430,8 @@ function shadowsBroaderSecret(expected: string): boolean {
 }
 
 /**
- * Receipt-only credential for Control Center (Enki / Muse).
+ * Control Center (Enki / Muse) credential for the Instagram path: it reads
+ * the approved send queue and records receipts; it cannot review or approve.
  * Matches x-muse-ig-receipt-secret or x-api-key. A secret that copies the hub,
  * Grok, Claude, or scheduler secret does not authenticate as this actor.
  */

@@ -875,7 +875,7 @@ export async function runApproveDraft(
     return { status: 200, data: { ok: true, status: "approved", sent: false, manual_submit: true, submission_url: draft.recipient, message: "Open the submission URL and paste the draft body manually." } };
   }
   if (channel === "instagram_dm") {
-    return { status: 422, data: { ok: true, status: "approved", sent: false, needs_manual_dm: true, recipient: draft.recipient, body: draft.body, message: "IG username → recipient_id resolution not automated. Copy body and DM manually." } };
+    return { status: 422, data: { ok: true, status: "approved", sent: false, needs_manual_dm: true, send_owner: "muse", recipient: draft.recipient, body: draft.body, message: "Approved. Muse sends this DM from the Hub Instagram send queue (list_ig_dm_send_queue) and records the receipt with mark_manual_ig_dm_submitted." } };
   }
   if (channel !== "email") return { status: 400, data: { error: `Send not implemented for channel: ${channel}` } };
 

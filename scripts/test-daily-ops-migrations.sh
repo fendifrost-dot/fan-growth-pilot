@@ -260,6 +260,7 @@ apply_with_rollback "$ROOT/supabase/migrations/20260907160000_mcp_inventory_open
 apply_with_rollback "$ROOT/supabase/migrations/20260915120000_playlist_inventory_drafted_by_promote.sql"
 apply_with_rollback "$ROOT/supabase/migrations/20260916120000_email_handoff_packet_materialize.sql"
 apply_with_rollback "$ROOT/supabase/migrations/20261022160000_claude_ig_dm_drafts.sql"
+apply_with_rollback "$ROOT/supabase/migrations/20261022190000_ig_dm_send_owner_muse.sql"
 OPEN_IDX_AFTER=$(run_sql -c "select count(*) from pg_indexes where schemaname='public' and indexname='agh_handoff_records_open_pair_uidx';")
 assert_eq "open_pair_index_present_after_guard" "${OPEN_IDX_AFTER}" "1"
 PERSIST_OK=$(run_sql -c "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='agh_mcp_persist_playlist_inventory';")
@@ -285,6 +286,8 @@ IG_DRAFT_ROW=$(run_sql -c "select channel || ':' || status || ':' || generated_b
 assert_eq "ig_draft_row" "${IG_DRAFT_ROW}" "instagram_dm:pending:claude_playlist_discovery:@curatorhandle:<null>"
 IG_LINK=$(run_sql -c "select count(*) from public.agh_handoff_records r join public.outreach_drafts d on d.id = r.outreach_draft_id where r.track_id='44444444-4444-4444-4444-444444444444' and r.submission_channel='instagram_dm' and d.metadata->>'handoff_record_id' = r.id::text and r.packet->>'outreach_draft_id' = d.id::text and (r.packet->>'automated_dm') = 'false' and not (r.packet ? 'body');")
 assert_eq "ig_draft_linked_copy_free" "${IG_LINK}" "1"
+IG_SEND_OWNER=$(run_sql -c "select (d.metadata->>'send_mode') || ':' || (d.metadata->>'send_owner') || ':' || (r.packet->>'send_owner') from public.outreach_drafts d join public.agh_handoff_records r on r.outreach_draft_id = d.id where d.track_id='44444444-4444-4444-4444-444444444444';")
+assert_eq "ig_send_owner_is_muse" "${IG_SEND_OWNER}" "muse_instagram_send:muse:muse"
 IG_NODRAFT=$(run_sql -c "select coalesce(public.agh_mcp_persist_playlist_inventory(
   '44444444-4444-4444-4444-444444444444',
   '55555555-5555-5555-5555-555555555555',

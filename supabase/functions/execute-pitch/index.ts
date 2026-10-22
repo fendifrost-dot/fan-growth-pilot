@@ -631,6 +631,8 @@ async function handleEmailPitch(
     pitchLogId: logRow?.id ?? null,
     resendMessageId,
     sentAt,
+    sentBy: approvedBy,
+    sentByLabel: approvedBy,
   });
   if (handoff.error) console.error("handoff sent stamp failed:", handoff.error, { draftId, playlistId });
   return jsonPitch({

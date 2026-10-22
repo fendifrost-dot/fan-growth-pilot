@@ -1,7 +1,19 @@
 # Handoff — Claude-authored Instagram DM drafts
 
-Code is on the branch. Nothing in this file has been applied to the live project.
-Do not treat a green test run as `LIVE`.
+**Status 2026-10-22 (verified from live output, not from claims):** LIVE. Nothing in this file
+remains to be applied. Kept as the record of what was verified and how to re-check it.
+
+| Step | Result |
+|---|---|
+| Code | PR #74 squash-merged to `main` as `5f211dd`. Fix commit `c4af92d` corrected the template seed (the first live apply failed inside its transaction and rolled back; the retry applied cleanly). |
+| Migration | Applied through Lovable's database tool. Check returned `ig_templates` = 8, `rpc_has_ig_branch` = true. |
+| `mcp-playlist-discovery` | Redeployed by the Lovable agent from the merged commit (source SHA-256 `7efb21a0…`). Live tool description contains `server-composed instagram_dm`. |
+| First real drafts | Five Instagram drafts created by `create_playlist_draft_inventory` for the 2026-10-22 pack curators. Step 3a query returned all five rows with `generated_by` = `claude_playlist_discovery`, `status` = `pending`, `queue_state` = `AWAITING_GROK_REVIEW`, `packet_has_body` = false, both links true. Batches `76271b9e` and `4e298cfd`. |
+| Prior hand-send pack | The five `grok_cos` drafts and their handoff records were marked `superseded` / `REJECTED_BY_GROK` ("replaced by Claude-authored draft"). Nothing was sent. |
+| Board | Note posted on the Control Center workboard (mission `6f14b53d`) for Grok Bot and Enki. |
+
+Still outside this repo, and not verified here: Grok's review of the two batches, Enki's send,
+and the receipts. Those happen on the Control Center board.
 
 ## Why this exists
 

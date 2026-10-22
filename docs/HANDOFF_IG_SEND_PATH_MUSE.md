@@ -25,13 +25,17 @@ Control Center gets the matching read surface: `GET /executive/ig-send-queue` on
 `muse-executive` proxies this action with the Muse secret. See
 `fendi-control-center/docs/HANDOFF_MUSE_IG_SEND_QUEUE.md`.
 
-## Status going in
+## Status 2026-10-22 16:19 UTC — LIVE, verified from live output
 
 | Thing | State |
 |---|---|
-| Code | On `main` once merged; see the commit list. Not live until the two redeploys below. |
-| Migration | Not applied until Step 1 below. |
-| `control-center-api`, `mcp-playlist-discovery` | Not redeployed until Step 2. |
+| Code | `main` `fa9ca5a`. |
+| Migration | Applied through Lovable's database tool. Check returned `rpc_names_sender` true, `claude_drafts_owned_by_muse` 5, `still_hand_send` 0. |
+| `control-center-api`, `mcp-playlist-discovery` | Redeployed by the Lovable agent from `fa9ca5a`. Anonymous probe 401 (sign-in gate runs first, so it cannot name the action). |
+| End-to-end | Control Center `GET /executive/ig-send-queue` (redeployed `muse-executive`, CC `main` `8438a9d`) returned 200 with `send_owner: muse`, 15 rows, 14 sendable: the five Claude drafts (Grok approved them 15:54–15:55 UTC) and nine older `grok_cos` rows; one older row blocked `draft_rejected`. Read with a one-use token that was revoked afterwards. |
+
+Nothing below remains to be applied. Kept as the record and the re-check procedure.
+
 
 ## Hard rules
 

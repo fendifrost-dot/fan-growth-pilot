@@ -418,7 +418,7 @@ begin
     return;
   end if;
 
-  insert into public.pitch_templates (tone, channel, is_warm, subject_template, body_template, is_active)
+  insert into public.pitch_templates (tone, channel, is_warm, subject_template, body_template)
   values
     ('warm_personal', 'instagram_dm', false,
      '{{track_name}} for {{playlist_name}}',

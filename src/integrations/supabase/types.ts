@@ -6907,6 +6907,7 @@ export type Database = {
         Returns: Json
       }
       agh_backfill_email_handoff_sent: { Args: never; Returns: Json }
+      agh_backfill_handoff_batch_sent: { Args: never; Returns: Json }
       agh_compose_rejection_reason: {
         Args: { p_codes: Json; p_reason: string }
         Returns: string

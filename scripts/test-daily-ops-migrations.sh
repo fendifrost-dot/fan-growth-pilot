@@ -1279,4 +1279,63 @@ assert_eq "batch_sent_null_actor_stays_when_already_sent" "$(run_sql -c "select 
 assert_eq "batch_sent_backfill_not_for_authenticated" "$(run_sql -c "select has_function_privilege('authenticated', 'public.agh_backfill_handoff_batch_sent()', 'execute');")" "f"
 assert_eq "batch_sent_backfill_not_for_anon" "$(run_sql -c "select has_function_privilege('anon', 'public.agh_backfill_handoff_batch_sent()', 'execute');")" "f"
 
+echo "==> Pending-review aging skips Fendi-authored drafts (2026-10-26)"
+REC_BEFORE=$(run_sql -c "select count(*) from public.agh_handoff_records;")
+BATCH_BEFORE=$(run_sql -c "select count(*) from public.agh_handoff_batches;")
+DRAFT_BEFORE=$(run_sql -c "select count(*) from public.outreach_drafts;")
+FENDI_DRAFT_BEFORE=$(run_sql -c "select status || ':' || generated_by from public.outreach_drafts where id='d3000000-0000-4000-8000-000000000007';")
+FENDI_RECORD_BEFORE=$(run_sql -c "select queue_state || ':' || batch_id::text from public.agh_handoff_records where id='d2000000-0000-4000-8000-000000000007';")
+apply_with_rollback "$ROOT/supabase/migrations/20261026010000_age_pending_handoff_skip_fendi.sql"
+assert_eq "age_fendi_migration_keeps_record_count" "$(run_sql -c "select count(*) from public.agh_handoff_records;")" "${REC_BEFORE}"
+assert_eq "age_fendi_migration_keeps_batch_count" "$(run_sql -c "select count(*) from public.agh_handoff_batches;")" "${BATCH_BEFORE}"
+assert_eq "age_fendi_migration_keeps_draft_count" "$(run_sql -c "select count(*) from public.outreach_drafts;")" "${DRAFT_BEFORE}"
+assert_eq "age_fendi_migration_leaves_existing_fendi_draft" "$(run_sql -c "select status || ':' || generated_by from public.outreach_drafts where id='d3000000-0000-4000-8000-000000000007';")" "${FENDI_DRAFT_BEFORE}"
+assert_eq "age_fendi_migration_leaves_existing_fendi_record" "$(run_sql -c "select queue_state || ':' || batch_id::text from public.agh_handoff_records where id='d2000000-0000-4000-8000-000000000007';")" "${FENDI_RECORD_BEFORE}"
+apply_with_rollback "$ROOT/supabase/migrations/20261026010000_age_pending_handoff_skip_fendi.sql"
+assert_eq "age_fendi_migration_reapply_keeps_record_count" "$(run_sql -c "select count(*) from public.agh_handoff_records;")" "${REC_BEFORE}"
+
+run_sql_pretty <<'SQL' >/dev/null
+insert into public.outreach_drafts (id, playlist_id, track_name, channel, status, generated_by, body)
+values
+  ('e3000000-0000-4000-8000-000000000001', 'promo-fresh', 'Fendi draft', 'email', 'pending', 'fendi', 'leave this draft alone'),
+  ('e3000000-0000-4000-8000-000000000002', 'promo-fresh', 'Claude draft', 'email', 'pending', 'claude_playlist_discovery', 'automation may age this'),
+  ('e3000000-0000-4000-8000-000000000003', 'promo-fresh', 'Blank author', 'email', 'pending', '', 'blank generated_by still ages'),
+  ('e3000000-0000-4000-8000-000000000004', 'promo-fresh', 'Null author', 'email', 'pending', null, 'null generated_by still ages');
+insert into public.agh_handoff_batches (id, batch_kind, queue_state, business_date_ct, payload)
+values
+  ('e1000000-0000-4000-8000-000000000001', 'playlist', 'AWAITING_GROK_REVIEW', null, '{}');
+insert into public.agh_handoff_records (
+  id, batch_id, queue_state, submission_channel, playlist_target_id, outreach_draft_id, packet, created_at
+) values
+  ('e2000000-0000-4000-8000-000000000001', 'e1000000-0000-4000-8000-000000000001', 'AWAITING_GROK_REVIEW', 'email', 'promo-fresh', 'e3000000-0000-4000-8000-000000000001', '{}', now() - interval '8 days'),
+  ('e2000000-0000-4000-8000-000000000002', 'e1000000-0000-4000-8000-000000000001', 'AWAITING_GROK_REVIEW', 'email', 'promo-fresh', 'e3000000-0000-4000-8000-000000000002', '{}', now() - interval '8 days'),
+  ('e2000000-0000-4000-8000-000000000003', 'e1000000-0000-4000-8000-000000000001', 'AWAITING_GROK_REVIEW', 'email', 'promo-fresh', null, '{}', now() - interval '8 days'),
+  ('e2000000-0000-4000-8000-000000000004', 'e1000000-0000-4000-8000-000000000001', 'AWAITING_GROK_REVIEW', 'email', 'promo-fresh', 'e3000000-0000-4000-8000-000000000003', '{}', now() - interval '8 days'),
+  ('e2000000-0000-4000-8000-000000000005', 'e1000000-0000-4000-8000-000000000001', 'AWAITING_GROK_REVIEW', 'email', 'promo-fresh', 'e3000000-0000-4000-8000-000000000004', '{}', now() - interval '8 days'),
+  ('e2000000-0000-4000-8000-000000000006', 'e1000000-0000-4000-8000-000000000001', 'AWAITING_GROK_REVIEW', 'email', 'promo-fresh', 'e3000000-0000-4000-8000-000000000001', '{}', now() - interval '2 days');
+SQL
+
+FENDI_BODY_BEFORE=$(run_sql -c "select status || ':' || generated_by || ':' || body from public.outreach_drafts where id='e3000000-0000-4000-8000-000000000001';")
+run_sql -c "insert into public._backlog_preview (id, result) values ('age_fendi', public.agh_age_pending_handoff_records(true, interval '7 days')) on conflict (id) do update set result = excluded.result;" >/dev/null
+assert_eq "age_skips_fendi_draft" "$(run_sql -c "select (result->'record_ids') @> '[\"e2000000-0000-4000-8000-000000000001\"]'::jsonb from public._backlog_preview where id='age_fendi';")" "f"
+assert_eq "age_still_selects_other_author" "$(run_sql -c "select (result->'record_ids') @> '[\"e2000000-0000-4000-8000-000000000002\"]'::jsonb from public._backlog_preview where id='age_fendi';")" "t"
+assert_eq "age_still_selects_unlinked" "$(run_sql -c "select (result->'record_ids') @> '[\"e2000000-0000-4000-8000-000000000003\"]'::jsonb from public._backlog_preview where id='age_fendi';")" "t"
+assert_eq "age_still_selects_blank_author" "$(run_sql -c "select (result->'record_ids') @> '[\"e2000000-0000-4000-8000-000000000004\"]'::jsonb from public._backlog_preview where id='age_fendi';")" "t"
+assert_eq "age_still_selects_null_author" "$(run_sql -c "select (result->'record_ids') @> '[\"e2000000-0000-4000-8000-000000000005\"]'::jsonb from public._backlog_preview where id='age_fendi';")" "t"
+assert_eq "age_still_skips_recent_fendi" "$(run_sql -c "select (result->'record_ids') @> '[\"e2000000-0000-4000-8000-000000000006\"]'::jsonb from public._backlog_preview where id='age_fendi';")" "f"
+assert_eq "age_dry_run_leaves_fendi_record" "$(run_sql -c "select queue_state || ':' || batch_id::text from public.agh_handoff_records where id='e2000000-0000-4000-8000-000000000001';")" "AWAITING_GROK_REVIEW:e1000000-0000-4000-8000-000000000001"
+assert_eq "age_dry_run_leaves_fendi_draft" "$(run_sql -c "select status || ':' || generated_by || ':' || body from public.outreach_drafts where id='e3000000-0000-4000-8000-000000000001';")" "${FENDI_BODY_BEFORE}"
+
+AGE_FENDI=$(run_sql -c "select public.agh_age_pending_handoff_records(false, interval '7 days')->>'ok';")
+assert_eq "age_apply_with_fendi_ok" "${AGE_FENDI}" "true"
+assert_eq "age_apply_leaves_fendi_record" "$(run_sql -c "select queue_state || ':' || batch_id::text || ':' || coalesce(packet->'route_hold'->>'code','') from public.agh_handoff_records where id='e2000000-0000-4000-8000-000000000001';")" "AWAITING_GROK_REVIEW:e1000000-0000-4000-8000-000000000001:"
+assert_eq "age_apply_leaves_recent_fendi" "$(run_sql -c "select queue_state from public.agh_handoff_records where id='e2000000-0000-4000-8000-000000000006';")" "AWAITING_GROK_REVIEW"
+assert_eq "age_apply_moves_other_author" "$(run_sql -c "select r.queue_state || ':' || coalesce(r.packet->'route_hold'->>'code','') || ':' || coalesce(b.payload->>'route_hold_repair','false') from public.agh_handoff_records r join public.agh_handoff_batches b on b.id=r.batch_id where r.id='e2000000-0000-4000-8000-000000000002';")" "CLAUDE_BATCH_READY:pending_review_aged:true"
+assert_eq "age_apply_moves_unlinked" "$(run_sql -c "select r.queue_state || ':' || coalesce(r.packet->'route_hold'->>'code','') from public.agh_handoff_records r where r.id='e2000000-0000-4000-8000-000000000003';")" "CLAUDE_BATCH_READY:pending_review_aged"
+assert_eq "age_apply_moves_blank_author" "$(run_sql -c "select queue_state from public.agh_handoff_records where id='e2000000-0000-4000-8000-000000000004';")" "CLAUDE_BATCH_READY"
+assert_eq "age_apply_moves_null_author" "$(run_sql -c "select queue_state from public.agh_handoff_records where id='e2000000-0000-4000-8000-000000000005';")" "CLAUDE_BATCH_READY"
+assert_eq "age_apply_does_not_touch_fendi_draft" "$(run_sql -c "select status || ':' || generated_by || ':' || body from public.outreach_drafts where id='e3000000-0000-4000-8000-000000000001';")" "${FENDI_BODY_BEFORE}"
+assert_eq "age_fendi_not_for_authenticated" "$(run_sql -c "select has_function_privilege('authenticated', 'public.agh_age_pending_handoff_records(boolean, interval)', 'execute');")" "f"
+assert_eq "age_fendi_not_for_anon" "$(run_sql -c "select has_function_privilege('anon', 'public.agh_age_pending_handoff_records(boolean, interval)', 'execute');")" "f"
+
 echo "==> PASS: daily-ops migrations applied + authoritative RPC assertions verified"

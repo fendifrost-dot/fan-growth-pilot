@@ -8,6 +8,7 @@ import {
   verifyApprovedContentHash,
   verifyDraftPitchIntegrity,
 } from "../_shared/pitch-copy-integrity.ts";
+import { gateEmailDispatch } from "../_shared/pre-send-gate.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -153,6 +154,24 @@ Deno.serve(async (req) => {
     }
 
     const resolvedTrackName = decision.trackName || trackName;
+
+    // Same pre-send gate as execute-pitch. A draft/batch approval does not
+    // authorize the linked handoff, and test flags cannot waive it.
+    const preSend = await gateEmailDispatch(supabase, { draft });
+    if (!preSend.sendable) {
+      console.warn("send-pitch-email pre-send gate refusal:", JSON.stringify({
+        draft_id: draftId,
+        playlist_id: playlistId,
+        track_id: trackId,
+        blockers: preSend.blockers,
+      }));
+      return json({
+        error: "Pre-send gate refused this pitch. Nothing was sent.",
+        code: "pre_send_blocked",
+        blockers: preSend.blockers,
+        draft_id: draftId,
+      }, 422);
+    }
 
     const plainBody = stripPitchMarkdown(body);
     const sent = await sendResendEmail({

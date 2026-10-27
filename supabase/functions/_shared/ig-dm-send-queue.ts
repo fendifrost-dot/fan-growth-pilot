@@ -9,11 +9,12 @@
  *      with mark_manual_ig_dm_submitted.
  *
  * This module is read-only. It never approves, never sends, never writes.
- * It exposes the approved DM text and the handle to the sender and nothing
- * else: no emails, no secrets, no unapproved copy.
+ * A row is sendable only after the shared pre-send gate passes. The DM body
+ * is withheld whenever any blocker remains: draft shape alone is not enough.
  */
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import { can, type OpsActor } from "./ops-actors.ts";
+import { decideHandoffSends, type PreSendDecision } from "./pre-send-gate.ts";
 
 type RunResult = { status: number; data: Record<string, unknown> };
 type Row = Record<string, unknown>;
@@ -93,6 +94,7 @@ export function sendQueueRow(
   draft: Row | null,
   target: Row | null,
   trackName: string | null,
+  decision: PreSendDecision | null,
 ): Row {
   const blockers: string[] = [];
   const body = draft ? str(draft.body) : "";
@@ -109,7 +111,10 @@ export function sendQueueRow(
     if (attributionHeld(draft)) blockers.push("attribution_held");
   }
   if (!handle) blockers.push("ig_handle_missing");
-  if (target && target.is_active === false) blockers.push("target_inactive");
+  if (!decision) blockers.push("pre_send_gate_missing");
+  else blockers.push(...decision.blockers);
+  const unique = [...new Set(blockers)];
+  const sendable = unique.length === 0 && decision?.sendable === true;
   return {
     handoff_record_id: record.id,
     batch_id: record.batch_id ?? null,
@@ -119,7 +124,7 @@ export function sendQueueRow(
     playlist_name: target ? str(target.playlist_name) || null : null,
     ig_handle: handle,
     ig_url: handle ? `https://instagram.com/${handle.slice(1)}` : null,
-    dm_body: blockers.length ? null : body,
+    dm_body: sendable ? body : null,
     outreach_draft_id: draft ? draft.id : null,
     draft_status: draft ? draft.status ?? null : null,
     generated_by: draft ? draft.generated_by ?? null : null,
@@ -129,8 +134,8 @@ export function sendQueueRow(
     queue_state: record.queue_state ?? null,
     send_owner: IG_SEND_OWNER,
     receipt_action: IG_RECEIPT_ACTION,
-    sendable: blockers.length === 0,
-    blockers,
+    sendable,
+    blockers: unique,
   };
 }
 
@@ -143,6 +148,7 @@ export async function listIgDmSendQueue(
   sb: SupabaseClient,
   body: Row,
   ops: OpsActor,
+  now = Date.now(),
 ): Promise<RunResult> {
   if (!igSendQueueReadable(ops)) {
     return { status: 403, data: { error: `${ops.label} cannot read the Instagram send queue`, code: "forbidden" } };
@@ -165,18 +171,18 @@ export async function listIgDmSendQueue(
   const trackIds = [...new Set(records.map((r) => str(r.track_id)).filter(Boolean))];
   const playlistIds = [...new Set(records.map((r) => str(r.playlist_target_id)).filter(Boolean))];
 
-  const trackNames = new Map<string, string>();
+  const tracks = new Map<string, Row>();
   if (trackIds.length) {
-    const { data: tracks, error: tErr } = await sb.from("tracks").select("id, name").in("id", trackIds);
+    const { data: trackRows, error: tErr } = await sb.from("tracks").select("id, name, approved_song_dna_version_id").in("id", trackIds);
     if (tErr) return { status: 500, data: { error: tErr.message, code: "db_error" } };
-    for (const t of (tracks ?? []) as Row[]) trackNames.set(str(t.id), str(t.name));
+    for (const t of (trackRows ?? []) as Row[]) tracks.set(str(t.id), t);
   }
 
   const targets = new Map<string, Row>();
   if (playlistIds.length) {
     const { data: rows, error: pErr } = await sb
       .from("playlist_targets")
-      .select("playlist_id, playlist_name, ig_curator_account, curator_instagram, curator_name, is_active, pitch_status")
+      .select("playlist_id, playlist_name, ig_curator_account, curator_instagram, curator_name, curator_email, curator_website, form_url, submission_url, operator_group_id, is_active, pitch_status, verification_status, path_verified, lane, submission_cost, last_verified_at, ig_verified_at, form_verified_at, ig_source_evidence, form_source_evidence, research_context, contact_method, submission_method")
       .in("playlist_id", playlistIds);
     if (pErr) return { status: 500, data: { error: pErr.message, code: "db_error" } };
     for (const t of (rows ?? []) as Row[]) targets.set(str(t.playlist_id), t);
@@ -186,16 +192,37 @@ export async function listIgDmSendQueue(
   if (playlistIds.length) {
     const { data: rows, error: dErr } = await sb
       .from("outreach_drafts")
-      .select("id, track_id, playlist_id, channel, status, body, recipient, generated_by, approved_by, approved_at, generated_at, created_at, metadata")
+      .select("id, track_id, playlist_id, channel, status, body, recipient, generated_by, approved_by, approved_at, generated_at, created_at, metadata, song_dna_version_id, subject")
       .eq("channel", "instagram_dm")
       .in("playlist_id", playlistIds);
     if (dErr) return { status: 500, data: { error: dErr.message, code: "db_error" } };
     drafts = (rows ?? []) as Row[];
   }
 
-  const out = records.map((r) =>
-    sendQueueRow(r, pickSendDraft(r, drafts), targets.get(str(r.playlist_target_id)) ?? null, trackNames.get(str(r.track_id)) ?? null)
-  );
+  const decisions = records.length
+    ? await decideHandoffSends(sb, {
+      channel: "instagram_dm",
+      now,
+      rows: records.map((record) => ({
+        record,
+        draft: pickSendDraft(record, drafts),
+        target: targets.get(str(record.playlist_target_id)) ?? null,
+        track: tracks.get(str(record.track_id)) ?? null,
+      })),
+    })
+    : new Map<string, PreSendDecision>();
+
+  const out = records.map((r) => {
+    const draft = pickSendDraft(r, drafts);
+    const track = tracks.get(str(r.track_id)) ?? null;
+    return sendQueueRow(
+      r,
+      draft,
+      targets.get(str(r.playlist_target_id)) ?? null,
+      track ? str(track.name) || null : null,
+      decisions.get(str(r.id)) ?? null,
+    );
+  });
   return {
     status: 200,
     data: {

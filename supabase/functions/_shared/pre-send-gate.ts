@@ -628,6 +628,6 @@ async function loadByIds(
   if (!ids.length) return { rows, error: false };
   const { data, error } = await sb.from(table).select(columns).in("id", ids);
   if (failed(error)) return { rows, error: true };
-  for (const row of (data ?? []) as Row[]) rows.set(str(row.id), row);
+  for (const row of (data ?? []) as unknown as Row[]) rows.set(str(row.id), row);
   return { rows, error: false };
 }

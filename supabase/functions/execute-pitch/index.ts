@@ -17,6 +17,7 @@ import {
 } from "../_shared/pitch-copy-integrity.ts";
 import { pitchBodyHtml } from "../_shared/pitch-templates.ts";
 import { markLinkedHandoffEmailSent } from "../_shared/handoff-sent.ts";
+import { gateEmailDispatch } from "../_shared/pre-send-gate.ts";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-api-key",
@@ -339,6 +340,25 @@ Deno.serve(async (req) => {
     }
     if (tier === 3 && !tierConfirmed) return jsonPitch({ ok:false, method_used:method, action_taken:"tier_gate", cooldown_until:null, message_to_user:"⚠️ *Tier 3 playlist* — *" + (row.playlist_name ?? playlistId) + "*\n\nFlagged for verify-first pitching. Reply *confirm* to send." });
     if (method === "email") {
+      // Record approval, current owner DNA, explicit fit/identity, fresh route,
+      // free terms, and canonical clearance. test_mode / cap / window flags are
+      // not passed in — none of them can waive this gate.
+      const preSend = await gateEmailDispatch(sb, { draft, target: row });
+      if (!preSend.sendable) {
+        console.warn("execute-pitch pre-send gate refusal:", JSON.stringify({
+          draft_id: draftId,
+          playlist_id: playlistId,
+          track_id: trackIdOut || null,
+          blockers: preSend.blockers,
+        }));
+        return jsonPitch({
+          ok: false,
+          method_used: "email",
+          action_taken: "skipped",
+          cooldown_until: null,
+          message_to_user: "🚫 Pre-send gate refused this pitch (" + preSend.blockers.join(", ") + "). Nothing was sent.",
+        }, 422);
+      }
       return await handleEmailPitch(
         sb,
         row,

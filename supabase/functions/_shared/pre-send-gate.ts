@@ -1,9 +1,11 @@
 /**
  * Shared pre-send gate for playlist email and the Muse Instagram DM queue.
  *
- * A row is sendable only when every check holds. Missing, unknown, and stale
- * evidence are named blockers. Pitch copy is returned on `dispatch` only when
- * `sendable` is true — a refusal never echoes a body, subject, or recipient.
+ * A row is sendable only when every blocking check holds. Missing and stale
+ * evidence are named blockers. Unknown or unconfirmed submission terms are not
+ * a blocker: they add the warning `terms_unconfirmed` ("confirm paid status on
+ * reply") and still allow dispatch. Pitch copy is returned on `dispatch` only
+ * when `sendable` is true — a refusal never echoes a body, subject, or recipient.
  *
  * Route freshness is PRE_SEND_ROUTE_FRESHNESS_MS (7 days), the same window as
  * playlist discovery's ROUTE_PROOF_MAX_AGE_MS. A stamp exactly that old is
@@ -13,8 +15,11 @@
  * An empty approved_lanes list is not a pass (stricter than decideLaneFit,
  * matching agh_record_can_approve). Identity is explicit only when
  * research_context.identity_resolved is boolean true and the row is not
- * route-only. Free terms mean submission_cost === "free". Anything else needs
- * a recorded owner override:
+ * route-only. Free terms mean submission_cost === "free" and add no warning.
+ * Unknown or unconfirmed terms (blank, "unknown", or any value that is not an
+ * explicit free / paid / tip) do not block. Explicit paid terms — "paid",
+ * "pay-to-submit", "pay_to_submit" — and tip_appreciated still block unless a
+ * recorded owner override is present:
  *   { by: "fendi", at: <iso time>, reason: <non-empty> }
  * on the handoff packet or the target research_context, as owner_terms_override.
  *
@@ -44,7 +49,6 @@ export const PRE_SEND_BLOCKERS = [
   "route_evidence_missing",
   "route_evidence_stale",
   "route_held",
-  "terms_unknown",
   "terms_not_free",
   "terms_paid",
   "terms_override_invalid",
@@ -84,6 +88,11 @@ export const PRE_SEND_BLOCKERS = [
 
 export type PreSendBlocker = typeof PRE_SEND_BLOCKERS[number];
 
+/** Non-blocking flags. They never withhold dispatch. */
+export const PRE_SEND_WARNINGS = ["terms_unconfirmed"] as const;
+
+export type PreSendWarning = typeof PRE_SEND_WARNINGS[number];
+
 export type PreSendChannel = "email" | "instagram_dm" | "web_form";
 
 export type PreSendCopy = {
@@ -95,6 +104,8 @@ export type PreSendCopy = {
 export type PreSendDecision = {
   sendable: boolean;
   blockers: PreSendBlocker[];
+  /** Non-blocking flags such as terms_unconfirmed. Present even when sendable. */
+  warnings: PreSendWarning[];
   /** Pitch copy. Null whenever sendable is false. */
   dispatch: PreSendCopy | null;
 };
@@ -138,6 +149,9 @@ const CLEARANCE_CODES: Record<string, PreSendBlocker> = {
   duplicate_contact: "clearance_duplicate",
 };
 
+/** Explicit pay-to-submit spellings. The column check only stores "paid". */
+const KNOWN_PAID_TERMS = new Set(["paid", "pay-to-submit", "pay_to_submit"]);
+
 const VERIFIED = new Set(["auto_verified", "manually_verified"]);
 const BLOCKED_PITCH = new Set(["blocked", "do_not_contact", "suppressed", "pay_to_play"]);
 const BLOCKED_VERIFICATION = new Set(["blocked", "invalid", "bounced", "spam_flagged"]);
@@ -156,12 +170,18 @@ function objectOf(v: unknown): Row | null {
   return v && typeof v === "object" && !Array.isArray(v) ? v as Row : null;
 }
 
-function finish(blockers: PreSendBlocker[], copy: PreSendCopy): PreSendDecision {
+function finish(
+  blockers: PreSendBlocker[],
+  warnings: PreSendWarning[],
+  copy: PreSendCopy,
+): PreSendDecision {
   const unique = [...new Set(blockers)];
-  if (unique.length) return { sendable: false, blockers: unique, dispatch: null };
+  const flags = [...new Set(warnings)];
+  if (unique.length) return { sendable: false, blockers: unique, warnings: flags, dispatch: null };
   return {
     sendable: true,
     blockers: [],
+    warnings: flags,
     dispatch: { body: copy.body, subject: copy.subject, recipient: copy.recipient },
   };
 }
@@ -224,6 +244,7 @@ function currentOwnerDna(track: Row | null, dna: Row | null): boolean {
  */
 export function evaluatePreSendGate(input: PreSendInput): PreSendDecision {
   const blockers: PreSendBlocker[] = [];
+  const warnings: PreSendWarning[] = [];
   const channel = input.channel;
 
   if (input.recordStatus === "lookup_failed") blockers.push("record_lookup_failed");
@@ -318,13 +339,11 @@ export function evaluatePreSendGate(input: PreSendInput): PreSendDecision {
     const overrides = overrideCandidates(input.record, target);
     const overrideOk = overrides.some((v) => ownerTermsOverrideValid(v));
     const overridePresent = overrides.length > 0;
-    if (cost !== "free") {
+    if (KNOWN_PAID_TERMS.has(cost) || cost === "tip_appreciated") {
       if (overridePresent && !overrideOk) blockers.push("terms_override_invalid");
-      if (!overrideOk) {
-        if (cost === "paid") blockers.push("terms_paid");
-        else if (cost === "tip_appreciated") blockers.push("terms_not_free");
-        else blockers.push("terms_unknown");
-      }
+      if (!overrideOk) blockers.push(KNOWN_PAID_TERMS.has(cost) ? "terms_paid" : "terms_not_free");
+    } else if (cost !== "free") {
+      warnings.push("terms_unconfirmed");
     }
 
     if (BLOCKED_PITCH.has(str(target.pitch_status).toLowerCase()) || BLOCKED_VERIFICATION.has(status)) {
@@ -346,7 +365,7 @@ export function evaluatePreSendGate(input: PreSendInput): PreSendDecision {
     }
   }
 
-  return finish(blockers, input.copy);
+  return finish(blockers, warnings, input.copy);
 }
 
 type QueryError = { message?: string } | null;

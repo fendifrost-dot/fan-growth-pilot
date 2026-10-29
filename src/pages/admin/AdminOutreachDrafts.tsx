@@ -116,7 +116,7 @@ const AdminOutreachDrafts: React.FC = () => {
           recipient: editRecipient,
         });
       }
-      const res = await callHubFn<{ status: string; sent?: boolean; needs_manual_dm?: boolean }>(
+      const res = await callHubFn<{ status: string; sent?: boolean; paused?: boolean; code?: string | null }>(
         "approve_draft",
         {
           draft_id: selected.id,
@@ -124,8 +124,8 @@ const AdminOutreachDrafts: React.FC = () => {
           send_immediately: sendImmediately,
         },
       );
-      if (res.needs_manual_dm) {
-        toast.message("Approved — copy body and DM manually on Instagram");
+      if (res.paused || res.code === "kill_switch") {
+        toast.message("Approved. Automatic Instagram send is paused, so nothing was sent.");
       } else if (res.sent) {
         toast.success("Approved and sent");
       } else {

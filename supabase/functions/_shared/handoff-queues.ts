@@ -33,6 +33,7 @@ import {
 import { decideLaneFit, fitRejectionConflict, isFitRejectionReason, type ApprovedDnaLanes } from "./song-fit.ts";
 import { listWebFormHandoffs, plainManualSubmitError } from "./web-form-handoff.ts";
 import { listIgDmSendQueue } from "./ig-dm-send-queue.ts";
+import { dispatchIgCuratorSends } from "./ig-curator-auto-send.ts";
 
 export type RunResult = { status: number; data: Record<string, unknown> };
 
@@ -63,6 +64,7 @@ export const HANDOFF_ACTIONS = [
   "mark_manual_form_submitted",
   "mark_manual_ig_dm_submitted",
   "list_ig_dm_send_queue",
+  "dispatch_ig_curator_sends",
   "materialize_email_handoff_drafts",
   "playlist_pipeline_report",
   "review_handoff_records",
@@ -2357,6 +2359,24 @@ export async function runHandoffAction(
       return markManualIgDmSubmitted(sb, body, ops);
     case "list_ig_dm_send_queue":
       return listIgDmSendQueue(sb, body, ops);
+    case "dispatch_ig_curator_sends": {
+      const dispatched = await dispatchIgCuratorSends(sb, {
+        handoffRecordId: body.handoff_record_id != null ? String(body.handoff_record_id) : null,
+        playlistId: body.playlist_id != null ? String(body.playlist_id) : null,
+        trackId: body.track_id != null ? String(body.track_id) : null,
+      });
+      return {
+        status: dispatched.status,
+        data: {
+          ok: dispatched.status < 400,
+          paused: dispatched.paused,
+          code: dispatched.code,
+          sent_count: dispatched.sent_count,
+          outcomes: dispatched.outcomes,
+          error: dispatched.error,
+        },
+      };
+    }
     case "materialize_email_handoff_drafts":
       return materializeEmailHandoffDrafts(sb, body, ops);
     default:

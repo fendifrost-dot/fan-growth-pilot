@@ -1,5 +1,10 @@
 # Handoff — the approved Instagram path (Claude drafts → Grok approves → Muse sends)
 
+> Superseded for the send step. As of the auto-send change, a gate-passing row is
+> sent by `dispatch_ig_curator_sends` (outreach scheduler). Enki is not asked to
+> confirm or to send the pack. The sections below are the 2026-10-22 record of
+> how the manual Muse path was built.
+
 Fendi, 2026-10-22: "Claude finds the curators and creates the message inside the Hub.
 Grok approves it. Muse, which is approved to send on Facebook, goes in and actually sends
 the messages. That is the path."

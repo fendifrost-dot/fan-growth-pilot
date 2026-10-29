@@ -6,12 +6,22 @@ The approved Instagram pitch path, as the Hub enforces it:
 |---|---|---|---|
 | 1. Find the curator and compose the DM inside the Hub | Claude | `create_playlist_draft_inventory` (MCP) | `claude_playlist_discovery` |
 | 2. Review the handoff record and approve the draft | Grok Playlist Control | `review_handoff_records` / `approve_handoff_records`, `approve_draft` | `grok_playlist_control` |
-| 3. Read what was approved and send it on Instagram | Muse (Enki, Control Center) | `list_ig_dm_send_queue` | `muse_ig_receipt` |
-| 4. Record the receipt | Muse | `mark_manual_ig_dm_submitted` | `muse_ig_receipt` |
+| 3. Send when the pre-send gate passes | Outreach scheduler | `dispatch_ig_curator_sends` | `x-outreach-scheduler-secret` |
+| 4. Receipt is the send log | Dispatcher | `agh_ig_dm_send_log` plus the handoff stamp | service role |
 
-Muse is not a reviewer. It cannot approve, reject, draft, or read anything other than
-its own send queue. Fendi can do everything. Nobody hand-sends from the artist phone:
-drafts carry `send_mode = muse_instagram_send` and `send_owner = muse`.
+Muse is not a reviewer and is not asked to confirm a send. Fendi's approval is the
+shared pre-send gate. When that gate marks a row sendable, `dispatch_ig_curator_sends`
+claims it and sends it. The kill switch is `IG_CURATOR_SEND_ENABLED=true` (anything
+else pauses every send). The daily cap is `IG_CURATOR_DAILY_CAP` (default 10, America/Chicago).
+
+`list_ig_dm_send_queue` is a status read. It is not a pack to send by hand.
+`warnings` may include `terms_unconfirmed` ("confirm paid status on reply"). That
+warning does not block the DM body. A blocker still withholds `dm_body`.
+
+The old per-send confirmation lived in `approve_draft`: an Instagram draft returned
+`needs_manual_dm` and the body, and this document told Enki to send each sendable
+row and then call `mark_manual_ig_dm_submitted`. That handoff is what a scheduler
+could list twice (the 2026-10-14 duplicate batch). It is gone.
 
 ## Credential
 
@@ -36,9 +46,9 @@ first, joined to its approved draft:
 ```json
 {
   "ok": true,
-  "send_owner": "muse",
-  "receipt_action": "mark_manual_ig_dm_submitted",
-  "path": ["claude_playlist_discovery composes…", "grok_playlist_control reviews…", "muse reads…", "muse records…"],
+  "send_owner": "ig_curator_auto_send",
+  "receipt_action": "dispatch_ig_curator_sends",
+  "path": ["claude_playlist_discovery composes…", "grok_playlist_control reviews…", "scheduler calls dispatch_ig_curator_sends…", "dispatcher writes the send log…"],
   "total_count": 2,
   "sendable_count": 1,
   "rows": [
@@ -49,15 +59,16 @@ first, joined to its approved draft:
       "dm_body": "Hi Akhil Sagar, I'm Fendi Frost. …",
       "outreach_draft_id": "…", "draft_status": "approved", "generated_by": "claude_playlist_discovery",
       "record_approved_by": "grok_playlist_control", "draft_approved_by": "grok_playlist_control",
-      "send_owner": "muse", "receipt_action": "mark_manual_ig_dm_submitted",
-      "sendable": true, "blockers": []
+      "send_owner": "ig_curator_auto_send", "receipt_action": "dispatch_ig_curator_sends",
+      "sendable": true, "blockers": [], "warnings": []
     }
   ]
 }
 ```
 
-`dm_body` is the exact text to send. It is null, and `sendable` is false, whenever a
-blocker is present:
+`dm_body` is the text the dispatcher would send. It is null, and `sendable` is false,
+whenever a blocker is present. `warnings` such as `terms_unconfirmed` do not withhold it.
+Do not copy this queue onto Instagram by hand:
 
 | blocker | meaning |
 |---|---|
@@ -68,10 +79,24 @@ blocker is present:
 | `ig_handle_missing` | no usable handle on the draft, packet, or target |
 | `target_inactive` | the playlist target is inactive |
 
-A row with blockers is not Muse's to fix. It is Grok's (review state) or Claude's
-(re-draft). Muse skips it and says why on the board.
+A row with blockers stays unsent. Grok fixes review state and Claude re-drafts.
+The dispatcher does not ask Fendi or Enki to approve it.
 
-## Action 2 — `mark_manual_ig_dm_submitted` (receipt)
+## Action 2 — `dispatch_ig_curator_sends`
+
+```json
+{ "action": "dispatch_ig_curator_sends" }
+```
+
+The outreach scheduler calls this. It re-runs the pre-send gate, claims one row per
+song and handle, then calls the Instagram Graph messages API. Set
+`IG_CURATOR_SEND_ENABLED=true` or every row comes back `kill_switch` and nothing is
+sent. A second call for the same song and handle does not send again.
+
+## Action 3 — `mark_manual_ig_dm_submitted` (legacy receipt)
+
+The automatic path does not use this action. It remains so a receipt that was already
+sent can still be recorded.
 
 ```json
 {
@@ -87,9 +112,10 @@ A row with blockers is not Muse's to fix. It is Grok's (review state) or Claude'
 ```
 
 The record must be `APPROVED_FOR_SEND`, the Instagram route must be submission-ready, and
-the song DNA envelope must pass. `submitted_by` is stamped `muse_ig_receipt`. The receipt
-moves the record to `SENT`, stamps the draft `sent`, and writes the `pitch_log` row that
-drives cooldowns. A second receipt for the same record is an idempotent replay.
+the song DNA envelope must pass. The receipt moves the record to `SENT` and writes the
+`pitch_log` row that drives cooldowns. A second receipt for the same record is an
+idempotent replay. The automatic sender stamps `submitted_by` as `ig_curator_auto_send`
+after the migration in this change is applied.
 
 ## Everything else
 

@@ -252,20 +252,6 @@ const specs: Spec[] = [
     }),
   },
   {
-    name: "terms unknown",
-    blockers: ["terms_unknown"],
-    build: () => input((row) => {
-      row.target!.submission_cost = null;
-    }),
-  },
-  {
-    name: "terms unknown when the column says unknown",
-    blockers: ["terms_unknown"],
-    build: () => input((row) => {
-      row.target!.submission_cost = "unknown";
-    }),
-  },
-  {
     name: "tip is not explicit free terms",
     blockers: ["terms_not_free"],
     build: () => input((row) => {
@@ -529,7 +515,53 @@ Deno.test("pre-send gate: a fully evidenced instagram row is sendable and return
   const decision = evaluatePreSendGate(base());
   assertEquals(decision.sendable, true);
   assertEquals(decision.blockers, []);
+  assertEquals(decision.warnings, []);
   assertEquals(decision.dispatch, { body: SECRET, subject: SECRET_SUBJECT, recipient: "@curator" });
+});
+
+Deno.test("pre-send gate: unknown terms pass with a non-blocking warning and the DM body", () => {
+  for (const submission_cost of [null, "", "unknown", "UNKNOWN", "not recorded"]) {
+    const decision = evaluatePreSendGate(input((row) => {
+      row.target!.submission_cost = submission_cost;
+    }));
+    assertEquals(decision.sendable, true, String(submission_cost));
+    assertEquals(decision.blockers, [], String(submission_cost));
+    assertEquals(decision.warnings, ["terms_unconfirmed"], String(submission_cost));
+    assertEquals(decision.dispatch?.body, SECRET, String(submission_cost));
+  }
+});
+
+Deno.test("pre-send gate: free terms pass with no terms warning", () => {
+  const decision = evaluatePreSendGate(input((row) => {
+    row.target!.submission_cost = "free";
+  }));
+  assertEquals(decision.sendable, true);
+  assertEquals(decision.warnings, []);
+  assertEquals(decision.dispatch?.body, SECRET);
+});
+
+Deno.test("pre-send gate: known paid and pay-to-submit still block unless Fendi overrides", () => {
+  for (const submission_cost of ["paid", "pay-to-submit", "pay_to_submit"]) {
+    const blocked = evaluatePreSendGate(input((row) => {
+      row.target!.submission_cost = submission_cost;
+    }));
+    assertEquals(blocked.sendable, false, submission_cost);
+    assertEquals(blocked.blockers, ["terms_paid"], submission_cost);
+    assertEquals(blocked.warnings, [], submission_cost);
+    assertEquals(blocked.dispatch, null, submission_cost);
+    assert(!JSON.stringify(blocked).includes(SECRET), submission_cost);
+
+    const cleared = evaluatePreSendGate(input((row) => {
+      row.target!.submission_cost = submission_cost;
+      row.record!.packet = {
+        owner_terms_override: { by: "fendi", at: FRESH, reason: "owner allowed this paid list" },
+      };
+    }));
+    assertEquals(cleared.sendable, true, submission_cost);
+    assertEquals(cleared.blockers, [], submission_cost);
+    assertEquals(cleared.warnings, [], submission_cost);
+    assertEquals(cleared.dispatch?.body, SECRET, submission_cost);
+  }
 });
 
 Deno.test("pre-send gate: email does not require an Instagram evidence stamp", () => {
@@ -596,8 +628,8 @@ Deno.test("pre-send gate: audit shape (review record, unnamed approval, unknown 
   assertEquals(decision.blockers, [
     "record_not_approved_for_send",
     "record_approval_unnamed",
-    "terms_unknown",
   ]);
+  assertEquals(decision.warnings, ["terms_unconfirmed"]);
   assertEquals(decision.sendable, false);
   assertEquals(decision.dispatch, null);
   assert(!JSON.stringify(decision).includes(SECRET));
@@ -734,8 +766,8 @@ Deno.test("gateEmailDispatch: the 2026-10-26 audit shape is refused with no copy
   assertEquals(decision.blockers, [
     "record_not_approved_for_send",
     "record_approval_unnamed",
-    "terms_unknown",
   ]);
+  assertEquals(decision.warnings, ["terms_unconfirmed"]);
   assertEquals(decision.sendable, false);
   assertEquals(decision.dispatch, null);
   assert(!JSON.stringify(decision).includes(SECRET));
@@ -749,6 +781,7 @@ Deno.test("gateEmailDispatch: a fully cleared email draft is sendable", async ()
     now: NOW,
   });
   assertEquals(decision.blockers, [], JSON.stringify(decision.blockers));
+  assertEquals(decision.warnings, []);
   assertEquals(decision.sendable, true);
   assertEquals(decision.dispatch?.body, SECRET);
 });

@@ -48,6 +48,7 @@ export type OpsCapability =
   | "approve_playlist_drafts"
   | "reject_playlist_drafts"
   | "send_playlist_pitches"
+  | "dispatch_ig_curator_sends"
   | "monitor_inbox"
   | "classify_replies"
   | "respond_to_curators"
@@ -181,6 +182,7 @@ const GROK_CAPS = new Set<OpsCapability>([
   "approve_playlist_drafts",
   "reject_playlist_drafts",
   "send_playlist_pitches",
+  "dispatch_ig_curator_sends",
   "monitor_inbox",
   "classify_replies",
   "respond_to_curators",
@@ -245,6 +247,7 @@ const FENDI_CAPS = new Set<OpsCapability>([
   "approve_playlist_drafts",
   "reject_playlist_drafts",
   "send_playlist_pitches",
+  "dispatch_ig_curator_sends",
   "open_incidents",
   "write_playlist_ops",
   "read_playlist_ops",
@@ -352,6 +355,7 @@ const SCHEDULER_CAPS = new Set<OpsCapability>([
   "read_ops_metrics",
   "run_daily_station",
   "read_daily_ops",
+  "dispatch_ig_curator_sends",
 ]);
 
 /**

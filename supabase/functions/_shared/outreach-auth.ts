@@ -570,6 +570,12 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
     capability: 'read_playlist_ops',
     surface: 'outreach-write',
   },
+  // Scheduler (and Grok/Fendi) run the send. This is not a per-row approval.
+  dispatch_ig_curator_sends: {
+    cls: 'capability',
+    capability: 'dispatch_ig_curator_sends',
+    surface: 'outreach-write',
+  },
   materialize_email_handoff_drafts: {
     cls: 'capability',
     capability: 'write_playlist_ops',

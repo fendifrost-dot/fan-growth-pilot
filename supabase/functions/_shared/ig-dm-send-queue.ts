@@ -11,6 +11,9 @@
  * This module is read-only. It never approves, never sends, never writes.
  * A row is sendable only after the shared pre-send gate passes. The DM body
  * is withheld whenever any blocker remains: draft shape alone is not enough.
+ * `warnings` (for example terms_unconfirmed) do not withhold the body. The
+ * sender is the automatic dispatcher (`dispatch_ig_curator_sends`), not a
+ * person confirming each row.
  */
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import { can, type OpsActor } from "./ops-actors.ts";
@@ -19,13 +22,13 @@ import { decideHandoffSends, type PreSendDecision } from "./pre-send-gate.ts";
 type RunResult = { status: number; data: Record<string, unknown> };
 type Row = Record<string, unknown>;
 
-export const IG_SEND_OWNER = "muse";
-export const IG_RECEIPT_ACTION = "mark_manual_ig_dm_submitted";
+export const IG_SEND_OWNER = "ig_curator_auto_send";
+export const IG_RECEIPT_ACTION = "dispatch_ig_curator_sends";
 export const IG_SEND_PATH = [
   "claude_playlist_discovery composes the DM in the Hub (create_playlist_draft_inventory)",
   "grok_playlist_control reviews the handoff record and approves the draft",
-  "muse reads list_ig_dm_send_queue and sends the DM on Instagram",
-  "muse records the receipt with mark_manual_ig_dm_submitted",
+  "the outreach scheduler calls dispatch_ig_curator_sends, which re-runs the pre-send gate and sends",
+  "the dispatcher writes agh_ig_dm_send_log (claim, then sent or failed) and stamps the handoff receipt",
 ] as const;
 
 /** Muse, Grok and Fendi may read the queue. Discovery credentials may not. */
@@ -115,6 +118,7 @@ export function sendQueueRow(
   else blockers.push(...decision.blockers);
   const unique = [...new Set(blockers)];
   const sendable = unique.length === 0 && decision?.sendable === true;
+  const warnings = decision?.warnings ?? [];
   return {
     handoff_record_id: record.id,
     batch_id: record.batch_id ?? null,
@@ -136,6 +140,7 @@ export function sendQueueRow(
     receipt_action: IG_RECEIPT_ACTION,
     sendable,
     blockers: unique,
+    warnings,
   };
 }
 

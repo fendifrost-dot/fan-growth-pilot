@@ -307,8 +307,10 @@ Deno.test("send queue releases a DM only when the shared pre-send gate passes", 
     assertEquals(c.dm_body, null);
 
     const terms = rows.find((r) => r.handoff_record_id === "rec-terms")!;
-    assertEquals(terms.blockers, ["terms_unknown"]);
-    assertEquals(terms.dm_body, null);
+    assertEquals(terms.sendable, true);
+    assertEquals(terms.blockers, []);
+    assertEquals(terms.warnings, ["terms_unconfirmed"]);
+    assertEquals(terms.dm_body, "TERMS_BODY_SHOULD_NOT_LEAK");
 
     const op = rows.find((r) => r.handoff_record_id === "rec-op")!;
     assertEquals(op.blockers, ["blocked_operator"]);
@@ -325,14 +327,17 @@ Deno.test("send queue releases a DM only when the shared pre-send gate passes", 
     const bare = rows.find((r) => r.handoff_record_id === "rec-bare")!;
     assertEquals(bare.sendable, false);
     assertEquals(bare.dm_body, null);
-    for (const code of ["dna_missing", "batch_missing", "terms_unknown", "identity_unresolved", "route_verification_missing"]) {
+    for (const code of ["dna_missing", "batch_missing", "identity_unresolved", "route_verification_missing"]) {
       assert((bare.blockers as string[]).includes(code), `${code} missing from ${JSON.stringify(bare.blockers)}`);
     }
+    assert(!(bare.blockers as string[]).includes("terms_unknown"));
+    assert((bare.warnings as string[]).includes("terms_unconfirmed"));
 
-    assertEquals(res.data.sendable_count, 1);
+    assertEquals(res.data.sendable_count, 2);
     const blob = JSON.stringify(res.data);
     assert(blob.includes(POSITIVE_BODY));
-    for (const secret of [STALE_BODY, BARE_BODY, "TERMS_BODY_SHOULD_NOT_LEAK", "OPERATOR_BODY_SHOULD_NOT_LEAK", "DOMAIN_BODY_SHOULD_NOT_LEAK", "COOLDOWN_BODY_SHOULD_NOT_LEAK"]) {
+    assert(blob.includes("TERMS_BODY_SHOULD_NOT_LEAK"));
+    for (const secret of [STALE_BODY, BARE_BODY, "OPERATOR_BODY_SHOULD_NOT_LEAK", "DOMAIN_BODY_SHOULD_NOT_LEAK", "COOLDOWN_BODY_SHOULD_NOT_LEAK"]) {
       assert(!blob.includes(secret), secret);
     }
   });
@@ -348,6 +353,7 @@ Deno.test("send queue refuses the discovery credential", async () => {
 const OPEN_DECISION: PreSendDecision = {
   sendable: true,
   blockers: [],
+  warnings: [],
   dispatch: { body: "x", subject: null, recipient: "@held_handle" },
 };
 
@@ -376,7 +382,7 @@ Deno.test("send queue row: a Fendi-authored draft is attribution-held, a missing
 
 Deno.test("send queue row withholds the DM when the pre-send gate is closed or missing", () => {
   const secret = "SECRET_DM_BODY_do_not_leak";
-  const closed: PreSendDecision = { sendable: false, blockers: ["terms_unknown"], dispatch: null };
+  const closed: PreSendDecision = { sendable: false, blockers: ["terms_paid"], warnings: [], dispatch: null };
   const row = sendQueueRow(
     { id: "r", playlist_target_id: "p", track_id: "t", outreach_draft_id: "d", packet: {} },
     { id: "d", status: "approved", body: secret, recipient: "@handle", generated_by: "claude_playlist_discovery" },
@@ -386,7 +392,7 @@ Deno.test("send queue row withholds the DM when the pre-send gate is closed or m
   );
   assertEquals(row.sendable, false);
   assertEquals(row.dm_body, null);
-  assertEquals(row.blockers, ["terms_unknown"]);
+  assertEquals(row.blockers, ["terms_paid"]);
   assert(!JSON.stringify(row).includes(secret));
 
   const missing = sendQueueRow(

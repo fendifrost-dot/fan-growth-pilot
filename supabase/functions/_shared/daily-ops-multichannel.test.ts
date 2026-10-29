@@ -338,8 +338,9 @@ Deno.test("existing email approve/send path remains in playlist-agent-run", () =
   assert(src.includes('channel !== "email"'));
   assert(src.includes("execute-pitch"));
   assert(src.includes("manual_submit: true"));
-  assert(src.includes("needs_manual_dm: true"));
-  // No new auto form POST helper
+  assert(src.includes("dispatchIgCuratorSends"));
+  assert(!src.includes("needs_manual_dm"));
+  // Web forms stay manual. Instagram curator DMs go through the dispatcher.
   assert(!src.includes("autoSubmitWebForm"));
   assert(!src.includes("bulkSendInstagramDm"));
 });

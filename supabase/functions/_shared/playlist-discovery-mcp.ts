@@ -2359,7 +2359,7 @@ export async function createPlaylistDraftInventory(
         pitch_copy_source: composedData.pitch_copy_source ?? pitchProbe.source,
         pitch_copy_hash: composedData.pitch_copy_hash ?? null,
         generated_by: composedData.generated_by ?? ops.label,
-        // Muse sends from the Hub send queue (list_ig_dm_send_queue) after Grok approves.
+        // The scheduler sends with dispatch_ig_curator_sends after the pre-send gate passes.
         metadata: { ...composedMeta, automated_dm: false, send_mode: "muse_instagram_send", send_owner: "muse" },
       };
       packetKind = "manual_ig_dm_packet";

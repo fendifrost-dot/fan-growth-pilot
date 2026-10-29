@@ -67,6 +67,7 @@ import {
   countIgDmsToday,
   type IgQueueInsert,
 } from "./ig-outreach.ts";
+import { dispatchIgCuratorSends } from "./ig-curator-auto-send.ts";
 import { runIgRosterAdmin } from "./ig-roster.ts";
 import { loadCatalogTracks, pickCatalogTrackForPlacement } from "./catalog-match.ts";
 import {
@@ -875,7 +876,36 @@ export async function runApproveDraft(
     return { status: 200, data: { ok: true, status: "approved", sent: false, manual_submit: true, submission_url: draft.recipient, message: "Open the submission URL and paste the draft body manually." } };
   }
   if (channel === "instagram_dm") {
-    return { status: 422, data: { ok: true, status: "approved", sent: false, needs_manual_dm: true, send_owner: "muse", recipient: draft.recipient, body: draft.body, message: "Approved. Muse sends this DM from the Hub Instagram send queue (list_ig_dm_send_queue) and records the receipt with mark_manual_ig_dm_submitted." } };
+    // The old branch handed the body back and told Muse to copy it onto
+    // Instagram. That was the per-send handoff. The gate is the approval;
+    // this call sends, or reports that the kill switch is on.
+    const meta = (draft.metadata && typeof draft.metadata === "object")
+      ? draft.metadata as Record<string, unknown>
+      : {};
+    const dispatched = await dispatchIgCuratorSends(sb, {
+      handoffRecordId: String(meta.handoff_record_id ?? "").trim() || null,
+      playlistId: String(draft.playlist_id ?? ""),
+      trackId: String(draft.track_id ?? ""),
+    });
+    return {
+      status: dispatched.status,
+      data: {
+        ok: dispatched.status < 400,
+        status: "approved",
+        sent: dispatched.sent_count > 0,
+        auto_send: true,
+        send_owner: "ig_curator_auto_send",
+        code: dispatched.code,
+        paused: dispatched.paused,
+        sent_count: dispatched.sent_count,
+        outcomes: dispatched.outcomes,
+        message: dispatched.paused
+          ? "Approved. Automatic Instagram send is paused (IG_CURATOR_SEND_ENABLED is not true). Nobody is asked to confirm this row."
+          : dispatched.sent_count > 0
+          ? "Approved and sent by the automatic Instagram dispatcher."
+          : "Approved. The automatic dispatcher did not deliver a DM.",
+      },
+    };
   }
   if (channel !== "email") return { status: 400, data: { error: `Send not implemented for channel: ${channel}` } };
 

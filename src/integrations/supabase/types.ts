@@ -7073,6 +7073,21 @@ export type Database = {
       }
       agh_pipeline_health: { Args: never; Returns: Json }
       agh_pipeline_quota: { Args: { p_track?: string }; Returns: Json }
+      agh_positive_submission_fee: {
+        Args: {
+          p_email: string
+          p_evidence: string
+          p_form_cost: string
+          p_form_url: string
+          p_fraud_verdict: string
+          p_pitch_status: string
+          p_submission_cost: string
+          p_submission_method: string
+          p_submission_url: string
+          p_website: string
+        }
+        Returns: boolean
+      }
       agh_promote_claude_ready_batches: {
         Args: {
           p_batch_ids?: string[]
@@ -7138,6 +7153,10 @@ export type Database = {
         Returns: string
       }
       agh_spotify_playlist_key: { Args: { p_id: string }; Returns: string }
+      agh_terms_status_at_send: {
+        Args: { p_submission_cost: string }
+        Returns: string
+      }
       agh_update_pitch_response: {
         Args: { p_actor: string; p_id: string; p_patch: Json }
         Returns: Json

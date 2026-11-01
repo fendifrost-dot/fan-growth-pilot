@@ -113,6 +113,8 @@ function pitchLogRow(
     dispatched_via?: string | null;
     approved_by?: string | null;
     approved_at?: string | null;
+    sent_by?: string | null;
+    audit_result?: string | null;
   } = {},
 ) {
   // Only attach subject/email_body/sent_at when explicitly provided so error rows keep
@@ -140,8 +142,15 @@ function pitchLogRow(
   if (extra.dispatched_via) row.dispatched_via = extra.dispatched_via;
   if (extra.approved_by) row.approved_by = extra.approved_by;
   if (extra.approved_at) row.approved_at = extra.approved_at;
+  if (extra.sent_by) row.sent_by = extra.sent_by;
+  if (extra.audit_result) row.audit_result = extra.audit_result;
 
   return row;
+}
+
+/** Ledger label for the pre-send gate. Only a sendable decision is PASS. */
+function preSendAuditResult(decision: { sendable: boolean }): "PASS" | null {
+  return decision.sendable ? "PASS" : null;
 }
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
@@ -380,8 +389,15 @@ Deno.serve(async (req) => {
           // the verified ops credential at approve time — e.g. grok_playlist_control),
           // never from caller-supplied body fields. Both are guaranteed present here
           // because verifyApprovedContentHash() rejects drafts missing either.
+          //
+          // sent_by uses that same sealed approver. This function authenticates
+          // only FANFUEL_HUB_KEY: that key is the service credential, not the
+          // acting agent, and x-agh-agent / x-ops-agent are not identity.
+          // Approve-and-send stamps opsActor.label on the draft, then proxies
+          // here with the hub key and draft_id.
           approvedBy: String(draft.approved_by ?? "").trim() || null,
           approvedAt: String(draft.approved_at ?? "").trim() || null,
+          auditResult: preSendAuditResult(preSend),
         },
       );
     }
@@ -433,6 +449,7 @@ async function handleEmailPitch(
     pitchCopyHash?: string | null;
     approvedBy?: string | null;
     approvedAt?: string | null;
+    auditResult?: "PASS" | null;
   } = {},
 
 ): Promise<Response> {
@@ -626,6 +643,11 @@ async function handleEmailPitch(
       dispatched_via: "execute-pitch",
       approved_by: approvedBy,
       approved_at: approvedAt,
+      // Successful sends only. Error rows (missing Resend key, Resend reject)
+      // are not sends and stay without these fields. sent_by is the sealed
+      // approver resolved above, including the draft re-read backstop.
+      sent_by: approvedBy,
+      audit_result: identity.auditResult,
     }))
     .select("id")
     .single();

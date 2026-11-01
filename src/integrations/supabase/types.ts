@@ -3221,6 +3221,7 @@ export type Database = {
           approval_required: boolean | null
           approved_at: string | null
           approved_by: string | null
+          audit_result: string | null
           campaign_id: string | null
           cooldown_until: string | null
           created_at: string | null
@@ -3245,6 +3246,7 @@ export type Database = {
           resend_message_id: string | null
           response_notes: string | null
           sent_at: string | null
+          sent_by: string | null
           song_dna_version_id: string | null
           status: string
           subject: string | null
@@ -3255,6 +3257,7 @@ export type Database = {
           approval_required?: boolean | null
           approved_at?: string | null
           approved_by?: string | null
+          audit_result?: string | null
           campaign_id?: string | null
           cooldown_until?: string | null
           created_at?: string | null
@@ -3279,6 +3282,7 @@ export type Database = {
           resend_message_id?: string | null
           response_notes?: string | null
           sent_at?: string | null
+          sent_by?: string | null
           song_dna_version_id?: string | null
           status?: string
           subject?: string | null
@@ -3289,6 +3293,7 @@ export type Database = {
           approval_required?: boolean | null
           approved_at?: string | null
           approved_by?: string | null
+          audit_result?: string | null
           campaign_id?: string | null
           cooldown_until?: string | null
           created_at?: string | null
@@ -3313,6 +3318,7 @@ export type Database = {
           resend_message_id?: string | null
           response_notes?: string | null
           sent_at?: string | null
+          sent_by?: string | null
           song_dna_version_id?: string | null
           status?: string
           subject?: string | null

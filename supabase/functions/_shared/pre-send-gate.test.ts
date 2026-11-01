@@ -826,4 +826,23 @@ Deno.test("WIRING: execute-pitch and send-pitch-email call the gate before any R
   assert(queue.includes("ig_verified_at"));
   assert(queue.includes("submission_cost"));
   assert(!queue.includes("sendable: blockers.length === 0"));
+
+  // Incident 75091b14: a successful execute-pitch send records the sealed
+  // approver and the gate decision. Error rows do not.
+  assert(exec.includes("auditResult: preSendAuditResult(preSend)"));
+  const sentAt = exec.indexOf('method, "sent"');
+  assert(sentAt > exec.indexOf("gateEmailDispatch("));
+  const sentBlock = exec.slice(sentAt, exec.indexOf("}));", sentAt));
+  assert(sentBlock.includes("sent_by: approvedBy"));
+  assert(sentBlock.includes("audit_result: identity.auditResult"));
+  let errorAt = 0;
+  let errorCount = 0;
+  while ((errorAt = exec.indexOf('method, "error"', errorAt)) !== -1) {
+    const errorBlock = exec.slice(errorAt, exec.indexOf("}));", errorAt));
+    assert(!errorBlock.includes("sent_by"));
+    assert(!errorBlock.includes("audit_result"));
+    errorCount += 1;
+    errorAt += 1;
+  }
+  assertEquals(errorCount, 2);
 });

@@ -1362,6 +1362,8 @@ async function markManualHandoffSubmission(
   }
   const attr = attributionFrom(ops);
   const result = String(clean.result ?? clean.response_status ?? "submitted").trim();
+  // submitted_at fires agh_log_manual_submission, which inserts pitch_log with
+  // sent_by (submitted_by, else approved_by), audit_result PASS, and terms_status_at_send.
   const { data: updated, error: updErr } = await sb
     .from("agh_handoff_records")
     .update({

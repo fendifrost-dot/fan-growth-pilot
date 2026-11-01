@@ -13,10 +13,15 @@
  * An empty approved_lanes list is not a pass (stricter than decideLaneFit,
  * matching agh_record_can_approve). Identity is explicit only when
  * research_context.identity_resolved is boolean true and the row is not
- * route-only. Free terms mean submission_cost === "free". Anything else needs
- * a recorded owner override:
+ * route-only. Unknown or blank submission_cost does not block a send.
+ * Positive fee evidence still does: submission_cost paid or any other
+ * recorded non-free value, a fee in form_cost, a pay-to-play pitch or
+ * fraud verdict, or a known paid platform (SubmitHub, Groover, Playlist
+ * Push, SubmitLink) on the method, URL, email, or route evidence.
+ * A recorded owner override still clears that terms block and nothing else:
  *   { by: "fendi", at: <iso time>, reason: <non-empty> }
  * on the handoff packet or the target research_context, as owner_terms_override.
+ * Pay-to-play and blocked operator groups stay on the operator check.
  *
  * This module only reads. It does not approve, send, or update rows.
  */
@@ -44,7 +49,6 @@ export const PRE_SEND_BLOCKERS = [
   "route_evidence_missing",
   "route_evidence_stale",
   "route_held",
-  "terms_unknown",
   "terms_not_free",
   "terms_paid",
   "terms_override_invalid",
@@ -146,7 +150,7 @@ const RECORD_COLUMNS =
   "id, batch_id, track_id, playlist_target_id, queue_state, submission_channel, song_dna_version_id, approved_by, packet, outreach_draft_id";
 
 const TARGET_COLUMNS =
-  "playlist_id, playlist_name, is_active, pitch_status, verification_status, path_verified, lane, submission_cost, last_verified_at, ig_verified_at, form_verified_at, ig_curator_account, curator_instagram, ig_source_evidence, form_url, submission_url, form_source_evidence, curator_email, curator_name, curator_website, operator_group_id, research_context, contact_method, submission_method";
+  "playlist_id, playlist_name, is_active, pitch_status, fraud_verdict, verification_status, path_verified, lane, submission_cost, form_cost, last_verified_at, ig_verified_at, form_verified_at, ig_curator_account, curator_instagram, ig_source_evidence, form_url, submission_url, form_source_evidence, curator_email, curator_name, curator_website, operator_group_id, research_context, contact_method, submission_method";
 
 function str(v: unknown): string {
   return v == null ? "" : String(v).trim();
@@ -189,6 +193,55 @@ export function ownerTermsOverrideValid(value: unknown): boolean {
   const reason = str(row.reason);
   const at = Date.parse(str(row.at));
   return by === "fendi" && reason.length > 0 && Number.isFinite(at);
+}
+
+const PAID_PLATFORM_METHODS = new Set(["submithub", "groover", "playlistpush", "playlist_push", "submitlink"]);
+
+/**
+ * What a successful send should record. Paid and tip rows are not sends, so
+ * they stay null. Unknown and blank stay "unknown" — never assumed free.
+ */
+export function termsStatusAtSend(submissionCost: unknown): "free" | "unknown" | null {
+  const cost = str(submissionCost).toLowerCase();
+  if (cost === "free") return "free";
+  if (!cost || cost === "unknown") return "unknown";
+  return null;
+}
+
+function formCostIsFee(value: unknown): boolean {
+  const cost = str(value).toLowerCase();
+  if (!cost || cost === "free" || cost === "unknown") return false;
+  if (cost === "paid" || cost === "tip_appreciated") return true;
+  return /[$€£]|\d/.test(cost);
+}
+
+/** SubmitHub, Groover, Playlist Push, and SubmitLink are fee evidence even when submission_cost is unknown. */
+export function paidPlatformSignal(target: Row): boolean {
+  const method = str(target.submission_method).toLowerCase();
+  if (PAID_PLATFORM_METHODS.has(method)) return true;
+  const text = [
+    target.form_url,
+    target.submission_url,
+    target.curator_website,
+    target.curator_submission_url,
+    target.curator_email,
+    target.form_source_evidence,
+    target.ig_source_evidence,
+  ].map((value) => str(value).toLowerCase()).join(" ");
+  if (!text.trim()) return false;
+  return /(submithub\.com|groover\.co|playlistpush\.com|submitlink\.(io|com))|(^|[^a-z0-9])(submithub|playlistpush|playlist push|submitlink)([^a-z0-9]|$)/.test(text);
+}
+
+/** Positive fee evidence only. Unknown and blank cost return null. */
+export function submissionFeeBlocker(target: Row): "terms_paid" | "terms_not_free" | null {
+  const cost = str(target.submission_cost).toLowerCase();
+  const payToPlay = str(target.pitch_status).toLowerCase() === "pay_to_play" ||
+    str(target.fraud_verdict).toLowerCase() === "pay_to_play";
+  if (payToPlay || paidPlatformSignal(target) || formCostIsFee(target.form_cost) || cost === "paid") {
+    return "terms_paid";
+  }
+  if (cost && cost !== "free" && cost !== "unknown") return "terms_not_free";
+  return null;
 }
 
 function lanesOf(value: unknown): string[] {
@@ -314,17 +367,13 @@ export function evaluatePreSendGate(input: PreSendInput): PreSendDecision {
       else if (evidence === "stale") blockers.push("route_evidence_stale");
     }
 
-    const cost = str(target.submission_cost).toLowerCase();
-    const overrides = overrideCandidates(input.record, target);
-    const overrideOk = overrides.some((v) => ownerTermsOverrideValid(v));
-    const overridePresent = overrides.length > 0;
-    if (cost !== "free") {
+    const fee = submissionFeeBlocker(target);
+    if (fee) {
+      const overrides = overrideCandidates(input.record, target);
+      const overrideOk = overrides.some((v) => ownerTermsOverrideValid(v));
+      const overridePresent = overrides.length > 0;
       if (overridePresent && !overrideOk) blockers.push("terms_override_invalid");
-      if (!overrideOk) {
-        if (cost === "paid") blockers.push("terms_paid");
-        else if (cost === "tip_appreciated") blockers.push("terms_not_free");
-        else blockers.push("terms_unknown");
-      }
+      if (!overrideOk) blockers.push(fee);
     }
 
     if (BLOCKED_PITCH.has(str(target.pitch_status).toLowerCase()) || BLOCKED_VERIFICATION.has(status)) {

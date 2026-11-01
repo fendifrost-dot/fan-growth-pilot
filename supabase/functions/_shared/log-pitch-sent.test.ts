@@ -96,5 +96,6 @@ Deno.test("log_pitch_sent persists track_id, song DNA and cooldown from the hand
   assertEquals(inserted[0].follow_up_at, "2026-11-01T00:00:00.000Z");
   assertEquals(inserted[0].cooldown_until, cooldownUntilIso("2026-10-04T16:00:00.000Z", 90));
   assertEquals(inserted[0].approved_by, "fendi");
+  assertEquals(inserted[0].terms_status_at_send, "unknown");
   assert(String(inserted[0].status) === "sent");
 });

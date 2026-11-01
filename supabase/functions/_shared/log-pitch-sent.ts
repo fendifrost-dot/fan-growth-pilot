@@ -4,6 +4,7 @@
  * or handoff onto pitch_log. It does not send anything.
  */
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import { termsStatusAtSend } from "./pre-send-gate.ts";
 
 export type LogPitchResult = { status: number; data: Record<string, unknown> };
 
@@ -82,7 +83,7 @@ export async function runLogPitchSent(
   if (!playlistId) return { status: 400, data: { error: "playlist_id (or target_id) required" } };
   const channel = s(body.channel ?? "email").toLowerCase() || "email";
   const { data: target, error: targetErr } = await sb.from("playlist_targets")
-    .select("playlist_id, track_name, curator_email")
+    .select("playlist_id, track_name, curator_email, submission_cost")
     .eq("playlist_id", playlistId)
     .maybeSingle();
   if (targetErr) return { status: 500, data: { error: targetErr.message } };
@@ -163,12 +164,14 @@ export async function runLogPitchSent(
 
   let pitchLogId: string | null = (existing as { id?: string } | null)?.id ?? null;
   let created = false;
+  const termsStatus = termsStatusAtSend((target as { submission_cost?: unknown }).submission_cost);
   const row = {
     method: channel,
     status: "sent",
     pitched_at: pitchedAt,
     sent_at: pitchedAt,
     dispatched_via: "log_pitch_sent",
+    ...(termsStatus ? { terms_status_at_send: termsStatus } : {}),
     ...identity,
   };
   if (pitchLogId) {

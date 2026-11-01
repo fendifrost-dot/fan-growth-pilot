@@ -182,7 +182,7 @@ export async function listIgDmSendQueue(
   if (playlistIds.length) {
     const { data: rows, error: pErr } = await sb
       .from("playlist_targets")
-      .select("playlist_id, playlist_name, ig_curator_account, curator_instagram, curator_name, curator_email, curator_website, form_url, submission_url, operator_group_id, is_active, pitch_status, verification_status, path_verified, lane, submission_cost, last_verified_at, ig_verified_at, form_verified_at, ig_source_evidence, form_source_evidence, research_context, contact_method, submission_method")
+      .select("playlist_id, playlist_name, ig_curator_account, curator_instagram, curator_name, curator_email, curator_website, form_url, submission_url, operator_group_id, is_active, pitch_status, fraud_verdict, verification_status, path_verified, lane, submission_cost, form_cost, last_verified_at, ig_verified_at, form_verified_at, ig_source_evidence, form_source_evidence, research_context, contact_method, submission_method")
       .in("playlist_id", playlistIds);
     if (pErr) return { status: 500, data: { error: pErr.message, code: "db_error" } };
     for (const t of (rows ?? []) as Row[]) targets.set(str(t.playlist_id), t);

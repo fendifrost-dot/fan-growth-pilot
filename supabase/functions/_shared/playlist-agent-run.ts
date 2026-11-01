@@ -2267,7 +2267,9 @@ const PATCH_SUBMISSION_METHOD = [
   "web_form", "form", "instagram_dm", "spotify_dm", "algorithmic",
 ] as const;
 // Stored values for playlist_targets.submission_cost. Matches the CHECK
-// constraint (free | paid | tip_appreciated | unknown). tip_appreciated is
+// constraint (free | paid | tip_appreciated | unknown). An unknown row can
+// later be corrected to free or paid through this action; that does not
+// rewrite pitch_log.terms_status_at_send. tip_appreciated is
 // accepted on purpose: enrichment already writes it, the admin UI renders it,
 // and is_paid maps it to false (a tip is not a placement fee). Rejecting it
 // here would force another direct SQL write for a legal column value.

@@ -17,7 +17,7 @@ import {
 } from "../_shared/pitch-copy-integrity.ts";
 import { pitchBodyHtml } from "../_shared/pitch-templates.ts";
 import { markLinkedHandoffEmailSent } from "../_shared/handoff-sent.ts";
-import { gateEmailDispatch } from "../_shared/pre-send-gate.ts";
+import { gateEmailDispatch, termsStatusAtSend } from "../_shared/pre-send-gate.ts";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-api-key",
@@ -115,6 +115,7 @@ function pitchLogRow(
     approved_at?: string | null;
     sent_by?: string | null;
     audit_result?: string | null;
+    terms_status_at_send?: "free" | "unknown" | null;
   } = {},
 ) {
   // Only attach subject/email_body/sent_at when explicitly provided so error rows keep
@@ -144,6 +145,7 @@ function pitchLogRow(
   if (extra.approved_at) row.approved_at = extra.approved_at;
   if (extra.sent_by) row.sent_by = extra.sent_by;
   if (extra.audit_result) row.audit_result = extra.audit_result;
+  if (extra.terms_status_at_send) row.terms_status_at_send = extra.terms_status_at_send;
 
   return row;
 }
@@ -350,7 +352,8 @@ Deno.serve(async (req) => {
     if (tier === 3 && !tierConfirmed) return jsonPitch({ ok:false, method_used:method, action_taken:"tier_gate", cooldown_until:null, message_to_user:"⚠️ *Tier 3 playlist* — *" + (row.playlist_name ?? playlistId) + "*\n\nFlagged for verify-first pitching. Reply *confirm* to send." });
     if (method === "email") {
       // Record approval, current owner DNA, explicit fit/identity, fresh route,
-      // free terms, and canonical clearance. test_mode / cap / window flags are
+      // and canonical clearance. Unknown submission terms do not block.
+      // Positive fee evidence still does. test_mode / cap / window flags are
       // not passed in — none of them can waive this gate.
       const preSend = await gateEmailDispatch(sb, { draft, target: row });
       if (!preSend.sendable) {
@@ -648,6 +651,7 @@ async function handleEmailPitch(
       // approver resolved above, including the draft re-read backstop.
       sent_by: approvedBy,
       audit_result: identity.auditResult,
+      terms_status_at_send: termsStatusAtSend(row.submission_cost),
     }))
     .select("id")
     .single();

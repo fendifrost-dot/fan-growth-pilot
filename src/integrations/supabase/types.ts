@@ -6961,6 +6961,10 @@ export type Database = {
         }
         Returns: Json
       }
+      agh_evidence_has_paid_signal: {
+        Args: { p_text: string }
+        Returns: boolean
+      }
       agh_fit_rejection_requeue: { Args: { p_apply?: boolean }; Returns: Json }
       agh_fit_requeue_reason_safe: {
         Args: { p_packet: Json; p_reason: string }
@@ -6974,6 +6978,7 @@ export type Database = {
         Args: { p_batch_ids?: string[] }
         Returns: Json
       }
+      agh_host_is_paid_platform: { Args: { p_host: string }; Returns: boolean }
       agh_log_candidate_evaluation: {
         Args: {
           p_business_date: string
@@ -7157,10 +7162,15 @@ export type Database = {
         Args: { p_submission_cost: string }
         Returns: string
       }
+      agh_text_has_submission_fee: {
+        Args: { p_text: string }
+        Returns: boolean
+      }
       agh_update_pitch_response: {
         Args: { p_actor: string; p_id: string; p_patch: Json }
         Returns: Json
       }
+      agh_url_host: { Args: { p_value: string }; Returns: string }
       bridge_upsert_email_contact: {
         Args: {
           p_email: string

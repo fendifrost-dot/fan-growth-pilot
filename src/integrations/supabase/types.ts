@@ -3250,6 +3250,7 @@ export type Database = {
           song_dna_version_id: string | null
           status: string
           subject: string | null
+          terms_status_at_send: string | null
           track_id: string | null
           track_name: string
         }
@@ -3286,6 +3287,7 @@ export type Database = {
           song_dna_version_id?: string | null
           status?: string
           subject?: string | null
+          terms_status_at_send?: string | null
           track_id?: string | null
           track_name: string
         }
@@ -3322,6 +3324,7 @@ export type Database = {
           song_dna_version_id?: string | null
           status?: string
           subject?: string | null
+          terms_status_at_send?: string | null
           track_id?: string | null
           track_name?: string
         }

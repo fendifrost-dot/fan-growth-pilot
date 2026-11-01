@@ -213,6 +213,11 @@ function fixture(): Record<string, Row[]> {
       readyTarget("pl-b", "linmusiclist", { playlist_name: "Rap & Trap" }),
       readyTarget("pl-c", "oldhandle", { playlist_name: "Old List", ig_verified_at: STALE }),
       readyTarget("pl-terms", "terms_handle", { submission_cost: "unknown" }),
+      readyTarget("pl-hub", "hub_handle", {
+        submission_cost: "unknown",
+        submission_method: "submithub",
+        form_url: "https://www.submithub.com/submit",
+      }),
       readyTarget("pl-op", "colonizehandle"),
       readyTarget("pl-domain", "domain_handle", { curator_email: "a@spam.test" }),
       readyTarget("pl-cool", "cool_handle"),
@@ -232,7 +237,8 @@ function fixture(): Record<string, Row[]> {
       readyDraft("draft-a", "pl-a", "akhilsagar", "rec-a"),
       readyDraft("draft-b", "pl-b", "linmusiclist", "rec-b", { status: "pending", body: "not approved yet" }),
       readyDraft("draft-c", "pl-c", "oldhandle", "rec-c", { body: STALE_BODY, recipient: "oldhandle" }),
-      readyDraft("draft-terms", "pl-terms", "terms_handle", "rec-terms", { body: "TERMS_BODY_SHOULD_NOT_LEAK" }),
+      readyDraft("draft-terms", "pl-terms", "terms_handle", "rec-terms", { body: "Unknown terms are sendable." }),
+      readyDraft("draft-hub", "pl-hub", "hub_handle", "rec-hub", { body: "PAID_PLATFORM_BODY_SHOULD_NOT_LEAK" }),
       readyDraft("draft-op", "pl-op", "colonizehandle", "rec-op", { body: "OPERATOR_BODY_SHOULD_NOT_LEAK" }),
       readyDraft("draft-domain", "pl-domain", "domain_handle", "rec-domain", { body: "DOMAIN_BODY_SHOULD_NOT_LEAK" }),
       readyDraft("draft-cool", "pl-cool", "cool_handle", "rec-cool", { body: "COOLDOWN_BODY_SHOULD_NOT_LEAK" }),
@@ -247,6 +253,7 @@ function fixture(): Record<string, Row[]> {
       readyRecord("rec-b", "pl-b", "draft-b", "2026-10-22T15:01:00Z"),
       readyRecord("rec-c", "pl-c", "draft-c", "2026-10-22T15:02:00Z"),
       readyRecord("rec-terms", "pl-terms", "draft-terms", "2026-10-22T15:03:00Z"),
+      readyRecord("rec-hub", "pl-hub", "draft-hub", "2026-10-22T15:03:30Z"),
       readyRecord("rec-op", "pl-op", "draft-op", "2026-10-22T15:04:00Z"),
       readyRecord("rec-domain", "pl-domain", "draft-domain", "2026-10-22T15:05:00Z"),
       readyRecord("rec-cool", "pl-cool", "draft-cool", "2026-10-22T15:06:00Z"),
@@ -307,8 +314,14 @@ Deno.test("send queue releases a DM only when the shared pre-send gate passes", 
     assertEquals(c.dm_body, null);
 
     const terms = rows.find((r) => r.handoff_record_id === "rec-terms")!;
-    assertEquals(terms.blockers, ["terms_unknown"]);
-    assertEquals(terms.dm_body, null);
+    assertEquals(terms.sendable, true);
+    assertEquals(terms.blockers, []);
+    assertEquals(terms.dm_body, "Unknown terms are sendable.");
+
+    const hub = rows.find((r) => r.handoff_record_id === "rec-hub")!;
+    assertEquals(hub.sendable, false);
+    assertEquals(hub.blockers, ["terms_paid"]);
+    assertEquals(hub.dm_body, null);
 
     const op = rows.find((r) => r.handoff_record_id === "rec-op")!;
     assertEquals(op.blockers, ["blocked_operator"]);
@@ -325,14 +338,15 @@ Deno.test("send queue releases a DM only when the shared pre-send gate passes", 
     const bare = rows.find((r) => r.handoff_record_id === "rec-bare")!;
     assertEquals(bare.sendable, false);
     assertEquals(bare.dm_body, null);
-    for (const code of ["dna_missing", "batch_missing", "terms_unknown", "identity_unresolved", "route_verification_missing"]) {
+    for (const code of ["dna_missing", "batch_missing", "identity_unresolved", "route_verification_missing"]) {
       assert((bare.blockers as string[]).includes(code), `${code} missing from ${JSON.stringify(bare.blockers)}`);
     }
 
-    assertEquals(res.data.sendable_count, 1);
+    assertEquals(res.data.sendable_count, 2);
     const blob = JSON.stringify(res.data);
     assert(blob.includes(POSITIVE_BODY));
-    for (const secret of [STALE_BODY, BARE_BODY, "TERMS_BODY_SHOULD_NOT_LEAK", "OPERATOR_BODY_SHOULD_NOT_LEAK", "DOMAIN_BODY_SHOULD_NOT_LEAK", "COOLDOWN_BODY_SHOULD_NOT_LEAK"]) {
+    assert(blob.includes("Unknown terms are sendable."));
+    for (const secret of [STALE_BODY, BARE_BODY, "PAID_PLATFORM_BODY_SHOULD_NOT_LEAK", "OPERATOR_BODY_SHOULD_NOT_LEAK", "DOMAIN_BODY_SHOULD_NOT_LEAK", "COOLDOWN_BODY_SHOULD_NOT_LEAK"]) {
       assert(!blob.includes(secret), secret);
     }
   });
@@ -376,7 +390,7 @@ Deno.test("send queue row: a Fendi-authored draft is attribution-held, a missing
 
 Deno.test("send queue row withholds the DM when the pre-send gate is closed or missing", () => {
   const secret = "SECRET_DM_BODY_do_not_leak";
-  const closed: PreSendDecision = { sendable: false, blockers: ["terms_unknown"], dispatch: null };
+  const closed: PreSendDecision = { sendable: false, blockers: ["terms_paid"], dispatch: null };
   const row = sendQueueRow(
     { id: "r", playlist_target_id: "p", track_id: "t", outreach_draft_id: "d", packet: {} },
     { id: "d", status: "approved", body: secret, recipient: "@handle", generated_by: "claude_playlist_discovery" },
@@ -386,7 +400,7 @@ Deno.test("send queue row withholds the DM when the pre-send gate is closed or m
   );
   assertEquals(row.sendable, false);
   assertEquals(row.dm_body, null);
-  assertEquals(row.blockers, ["terms_unknown"]);
+  assertEquals(row.blockers, ["terms_paid"]);
   assert(!JSON.stringify(row).includes(secret));
 
   const missing = sendQueueRow(
@@ -433,7 +447,7 @@ Deno.test("authorization: the Muse credential may read the send queue and record
     for (const denied of ["approve_handoff_records", "review_handoff_records", "list_web_form_handoffs", "list_handoff_batches"]) {
       const res = await authorizeAction(denied, muse, sb);
       assertEquals(res.ok, false, denied);
-      assertEquals(res.status, 403, denied);
+      if (!res.ok) assertEquals(res.status, 403, denied);
     }
   });
 });

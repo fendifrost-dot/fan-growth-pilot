@@ -4,6 +4,7 @@ import {
   PRE_SEND_ROUTE_FRESHNESS_MS,
   evaluatePreSendGate,
   gateEmailDispatch,
+  termsStatusAtSend,
   type PreSendInput,
 } from "./pre-send-gate.ts";
 
@@ -249,20 +250,6 @@ const specs: Spec[] = [
     blockers: ["route_held"],
     build: () => input((row) => {
       row.record!.packet = { route_hold: { reason: "recheck" } };
-    }),
-  },
-  {
-    name: "terms unknown",
-    blockers: ["terms_unknown"],
-    build: () => input((row) => {
-      row.target!.submission_cost = null;
-    }),
-  },
-  {
-    name: "terms unknown when the column says unknown",
-    blockers: ["terms_unknown"],
-    build: () => input((row) => {
-      row.target!.submission_cost = "unknown";
     }),
   },
   {
@@ -564,6 +551,61 @@ Deno.test("pre-send gate: a stamp exactly 7 days old is fresh and one millisecon
   assertEquals(stale.dispatch, null);
 });
 
+Deno.test("pre-send gate: unknown submission cost does not block", () => {
+  for (const cost of [null, "", "unknown", "UNKNOWN"]) {
+    const decision = evaluatePreSendGate(input((row) => {
+      row.target!.submission_cost = cost;
+    }));
+    assertEquals(decision.blockers, [], JSON.stringify({ cost, blockers: decision.blockers }));
+    assertEquals(decision.sendable, true);
+    assertEquals(decision.dispatch?.body, SECRET);
+  }
+  assertEquals(termsStatusAtSend(null), "unknown");
+  assertEquals(termsStatusAtSend("unknown"), "unknown");
+  assertEquals(termsStatusAtSend("free"), "free");
+  assertEquals(termsStatusAtSend("paid"), null);
+  assertEquals(termsStatusAtSend("tip_appreciated"), null);
+
+  const invalidOverride = evaluatePreSendGate(input((row) => {
+    row.target!.submission_cost = "unknown";
+    row.record!.packet = { owner_terms_override: { by: "grok" } };
+  }));
+  assertEquals(invalidOverride.blockers, [], JSON.stringify(invalidOverride.blockers));
+  assertEquals(invalidOverride.sendable, true);
+});
+
+Deno.test("pre-send gate: paid platforms and other positive fees still block unknown cost", () => {
+  const cases: Array<{ name: string; patch: Row; blocker: "terms_paid" | "terms_not_free" }> = [
+    { name: "submithub url", patch: { form_url: "https://www.submithub.com/blog/list" }, blocker: "terms_paid" },
+    { name: "groover host", patch: { curator_website: "https://groover.co/playlist" }, blocker: "terms_paid" },
+    { name: "playlist push method", patch: { submission_method: "playlist_push" }, blocker: "terms_paid" },
+    { name: "submitlink evidence", patch: { form_source_evidence: "submitlink host named in the agent note" }, blocker: "terms_paid" },
+    { name: "priced form", patch: { form_cost: "$15 per review" }, blocker: "terms_paid" },
+    { name: "pay-to-play verdict", patch: { fraud_verdict: "pay_to_play" }, blocker: "terms_paid" },
+    { name: "tip", patch: { submission_cost: "tip_appreciated" }, blocker: "terms_not_free" },
+    { name: "free label on submithub", patch: { submission_cost: "free", form_url: "https://submithub.com/p" }, blocker: "terms_paid" },
+  ];
+  for (const spec of cases) {
+    const decision = evaluatePreSendGate(input((row) => {
+      row.target!.submission_cost = "unknown";
+      Object.assign(row.target!, spec.patch);
+    }));
+    assert(decision.blockers.includes(spec.blocker), `${spec.name}: ${JSON.stringify(decision.blockers)}`);
+    assertEquals(decision.sendable, false, spec.name);
+    assertEquals(decision.dispatch, null, spec.name);
+  }
+
+  const waived = evaluatePreSendGate(input((row) => {
+    row.target!.submission_cost = "unknown";
+    row.target!.form_url = "https://submitlink.io/wall";
+    row.record!.packet = {
+      owner_terms_override: { by: "fendi", at: FRESH, reason: "owner allowed this one" },
+    };
+  }));
+  assertEquals(waived.blockers, [], JSON.stringify(waived.blockers));
+  assertEquals(waived.sendable, true);
+});
+
 Deno.test("pre-send gate: a recorded Fendi terms override clears paid terms and nothing else", () => {
   const paid = evaluatePreSendGate(input((row) => {
     row.target!.submission_cost = "paid";
@@ -596,7 +638,6 @@ Deno.test("pre-send gate: audit shape (review record, unnamed approval, unknown 
   assertEquals(decision.blockers, [
     "record_not_approved_for_send",
     "record_approval_unnamed",
-    "terms_unknown",
   ]);
   assertEquals(decision.sendable, false);
   assertEquals(decision.dispatch, null);
@@ -734,7 +775,6 @@ Deno.test("gateEmailDispatch: the 2026-10-26 audit shape is refused with no copy
   assertEquals(decision.blockers, [
     "record_not_approved_for_send",
     "record_approval_unnamed",
-    "terms_unknown",
   ]);
   assertEquals(decision.sendable, false);
   assertEquals(decision.dispatch, null);
@@ -835,14 +875,30 @@ Deno.test("WIRING: execute-pitch and send-pitch-email call the gate before any R
   const sentBlock = exec.slice(sentAt, exec.indexOf("}));", sentAt));
   assert(sentBlock.includes("sent_by: approvedBy"));
   assert(sentBlock.includes("audit_result: identity.auditResult"));
+  assert(sentBlock.includes("terms_status_at_send: termsStatusAtSend(row.submission_cost)"));
+  assert(send.includes("terms_status_at_send: termsStatus"));
   let errorAt = 0;
   let errorCount = 0;
   while ((errorAt = exec.indexOf('method, "error"', errorAt)) !== -1) {
     const errorBlock = exec.slice(errorAt, exec.indexOf("}));", errorAt));
     assert(!errorBlock.includes("sent_by"));
     assert(!errorBlock.includes("audit_result"));
+    assert(!errorBlock.includes("terms_status_at_send"));
     errorCount += 1;
     errorAt += 1;
   }
   assertEquals(errorCount, 2);
+});
+
+Deno.test("migration records free or unknown at send time and does not hold unknown cost", async () => {
+  const sql = await Deno.readTextFile(
+    new URL("../../migrations/20261101183000_unknown_terms_not_a_hold.sql", import.meta.url),
+  );
+  assert(sql.includes("add column if not exists terms_status_at_send text"));
+  assert(sql.includes("terms_status_at_send in ('free', 'unknown')"));
+  assert(sql.includes("public.agh_terms_status_at_send(t.submission_cost)"));
+  assert(sql.includes("public.agh_positive_submission_fee("));
+  assert(sql.includes("when '' then 'unknown'"));
+  assert(!sql.includes("terms_unknown"));
+  assert(!/submission_cost\s*=\s*'unknown'/.test(sql));
 });

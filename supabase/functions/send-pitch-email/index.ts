@@ -8,7 +8,7 @@ import {
   verifyApprovedContentHash,
   verifyDraftPitchIntegrity,
 } from "../_shared/pitch-copy-integrity.ts";
-import { gateEmailDispatch } from "../_shared/pre-send-gate.ts";
+import { gateEmailDispatch, termsStatusAtSend } from "../_shared/pre-send-gate.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -185,6 +185,11 @@ Deno.serve(async (req) => {
     }
 
     const sentAt = new Date().toISOString();
+    const { data: costRow } = await supabase.from("playlist_targets")
+      .select("submission_cost")
+      .eq("playlist_id", playlistId)
+      .maybeSingle();
+    const termsStatus = termsStatusAtSend(costRow?.submission_cost);
     const { data: logRow, error: logErr } = await supabase.from("pitch_log").insert({
       playlist_id: playlistId,
       track_name: resolvedTrackName,
@@ -203,6 +208,7 @@ Deno.serve(async (req) => {
       pitch_copy_source: integrity.source,
       pitch_copy_hash: integrity.hash,
       dispatched_via: "send-pitch-email",
+      ...(termsStatus ? { terms_status_at_send: termsStatus } : {}),
     }).select("id").maybeSingle();
     if (logErr) console.error("pitch_log insert after send:", logErr.message, { draftId, playlistId });
 

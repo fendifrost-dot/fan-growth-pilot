@@ -4,6 +4,7 @@ import {
   PRE_SEND_ROUTE_FRESHNESS_MS,
   evaluatePreSendGate,
   gateEmailDispatch,
+  paidPlatformSignal,
   termsStatusAtSend,
   type PreSendInput,
 } from "./pre-send-gate.ts";
@@ -579,7 +580,8 @@ Deno.test("pre-send gate: paid platforms and other positive fees still block unk
     { name: "submithub url", patch: { form_url: "https://www.submithub.com/blog/list" }, blocker: "terms_paid" },
     { name: "groover host", patch: { curator_website: "https://groover.co/playlist" }, blocker: "terms_paid" },
     { name: "playlist push method", patch: { submission_method: "playlist_push" }, blocker: "terms_paid" },
-    { name: "submitlink evidence", patch: { form_source_evidence: "submitlink host named in the agent note" }, blocker: "terms_paid" },
+    { name: "groover email", patch: { curator_email: "pitches@groover.co" }, blocker: "terms_paid" },
+    { name: "fee phrase", patch: { ig_source_evidence: "IG bio says DM for playlist submissions. Premium submission, $12 per submission." }, blocker: "terms_paid" },
     { name: "priced form", patch: { form_cost: "$15 per review" }, blocker: "terms_paid" },
     { name: "pay-to-play verdict", patch: { fraud_verdict: "pay_to_play" }, blocker: "terms_paid" },
     { name: "tip", patch: { submission_cost: "tip_appreciated" }, blocker: "terms_not_free" },
@@ -604,6 +606,39 @@ Deno.test("pre-send gate: paid platforms and other positive fees still block unk
   }));
   assertEquals(waived.blockers, [], JSON.stringify(waived.blockers));
   assertEquals(waived.sendable, true);
+});
+
+const NEGATED_PLATFORM_NOTE =
+  "SubmitLink 'goodmusiconly' is a different curator; no SubmitHub/Groover/Playlist Push listing found";
+
+Deno.test("pre-send gate: a verify note that names paid platforms without a fee does not block", () => {
+  assertEquals(paidPlatformSignal({
+    ig_source_evidence: NEGATED_PLATFORM_NOTE,
+    research_context: { verify_note: NEGATED_PLATFORM_NOTE, identity_resolved: true },
+    submission_cost: "unknown",
+  }), false);
+  assertEquals(paidPlatformSignal({
+    ig_source_evidence: "IG bio says DM for playlist submissions. No submission fee and not a paid review.",
+    submission_cost: "unknown",
+  }), false);
+  const decision = evaluatePreSendGate(input((row) => {
+    row.target!.submission_cost = "unknown";
+    row.target!.ig_source_evidence =
+      `IG bio says DM for playlist submissions. ${NEGATED_PLATFORM_NOTE}`;
+    row.target!.research_context = {
+      identity_resolved: true,
+      verify_note: NEGATED_PLATFORM_NOTE,
+    };
+  }));
+  assertEquals(decision.blockers, [], JSON.stringify(decision.blockers));
+  assertEquals(decision.sendable, true);
+
+  assertEquals(paidPlatformSignal({
+    ig_source_evidence: "Listed at https://www.submitlink.io/wall for this curator.",
+  }), true);
+  assertEquals(paidPlatformSignal({
+    notes: "Costs 3 credits to submit.",
+  }), true);
 });
 
 Deno.test("pre-send gate: a recorded Fendi terms override clears paid terms and nothing else", () => {
@@ -901,4 +936,18 @@ Deno.test("migration records free or unknown at send time and does not hold unkn
   assert(sql.includes("when '' then 'unknown'"));
   assert(!sql.includes("terms_unknown"));
   assert(!/submission_cost\s*=\s*'unknown'/.test(sql));
+});
+
+Deno.test("paid-platform migration matches hosts and fees, and stamps manual sends", async () => {
+  const sql = await Deno.readTextFile(
+    new URL("../../migrations/20261101194500_paid_signal_and_manual_sent_by.sql", import.meta.url),
+  );
+  assert(sql.includes("public.agh_host_is_paid_platform(public.agh_url_host(p_form_url))"));
+  assert(sql.includes("public.agh_evidence_has_paid_signal(p_evidence)"));
+  assert(!sql.includes("(^|[^a-z0-9])(submithub"));
+  assert(sql.includes("sent_by, audit_result"));
+  assert(sql.includes("v_sent_by, 'PASS'"));
+  assert(sql.includes("id::text like '1a924810%'"));
+  assert(sql.includes("sent_by is null or audit_result is null"));
+  assert(sql.includes("coalesce(sent_by, 'grok_playlist_control')"));
 });

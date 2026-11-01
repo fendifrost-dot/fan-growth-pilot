@@ -16,8 +16,10 @@
  * route-only. Unknown or blank submission_cost does not block a send.
  * Positive fee evidence still does: submission_cost paid or any other
  * recorded non-free value, a fee in form_cost, a pay-to-play pitch or
- * fraud verdict, or a known paid platform (SubmitHub, Groover, Playlist
- * Push, SubmitLink) on the method, URL, email, or route evidence.
+ * fraud verdict, a SubmitHub / Groover / Playlist Push / SubmitLink host
+ * on the submission URL, method, or curator email, or an explicit fee
+ * phrase. Platform names in free text, including a note that says none
+ * were found, are not fee evidence.
  * A recorded owner override still clears that terms block and nothing else:
  *   { by: "fendi", at: <iso time>, reason: <non-empty> }
  * on the handoff packet or the target research_context, as owner_terms_override.
@@ -28,7 +30,7 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import { loadBlockedOperatorIndex, matchBlockedOperator } from "./blocked-operator.ts";
 import { decideLaneFit } from "./song-fit.ts";
-import { assessSubmissionRoute } from "./submission-route.ts";
+import { assessSubmissionRoute, hostOf } from "./submission-route.ts";
 
 /** Verified route proof older than this is not sendable. */
 export const PRE_SEND_ROUTE_FRESHNESS_MS = 7 * 24 * 60 * 60 * 1000;
@@ -196,6 +198,13 @@ export function ownerTermsOverrideValid(value: unknown): boolean {
 }
 
 const PAID_PLATFORM_METHODS = new Set(["submithub", "groover", "playlistpush", "playlist_push", "submitlink"]);
+const PAID_PLATFORM_HOSTS = ["submithub.com", "groover.co", "playlistpush.com", "submitlink.io", "submitlink.com"];
+
+const SUBMISSION_FEE_PHRASE =
+  /(?:[$€£]\s*[1-9]\d*(?:\.\d+)?|\b\d+(?:\.\d+)?\s*(?:usd|eur|gbp|credits)\b|\bbuy\s+credits\b|\bcredits\s+(?:required|to\s+submit|per\s+(?:submission|song|track))\b|\bpremium\s+submission\b|\bpaid\s+(?:review|submission|placement|promo|package)\b|\bper\s+(?:submission|review|song|track)\b|\b(?:submission|placement|review)\s+fee\b|\bpay\s+to\s+(?:submit|play)\b)/i;
+
+const FEE_NEGATION =
+  /\b(?:no|not|none|without|never|isn'?t|aren'?t|wasn'?t|weren'?t|don'?t|doesn'?t|didn'?t)\b|different\s+curator|none\s+found|not\s+found|no\s+listing/i;
 
 /**
  * What a successful send should record. Paid and tip rows are not sends, so
@@ -215,21 +224,72 @@ function formCostIsFee(value: unknown): boolean {
   return /[$€£]|\d/.test(cost);
 }
 
-/** SubmitHub, Groover, Playlist Push, and SubmitLink are fee evidence even when submission_cost is unknown. */
+function hostIsPaidPlatform(host: string): boolean {
+  const name = host.trim().toLowerCase().replace(/^www\./, "");
+  if (!name) return false;
+  return PAID_PLATFORM_HOSTS.some((domain) => name === domain || name.endsWith(`.${domain}`));
+}
+
+function urlHostIsPaid(raw: string): boolean {
+  const text = raw.trim();
+  if (!text || /\s/.test(text)) return false;
+  const host = hostOf(text) || hostOf(/^https?:\/\//i.test(text) ? text : `https://${text}`);
+  return !!host && hostIsPaidPlatform(host);
+}
+
+function emailDomainIsPaid(email: string): boolean {
+  const at = email.lastIndexOf("@");
+  if (at <= 0 || at === email.length - 1) return false;
+  return hostIsPaidPlatform(email.slice(at + 1));
+}
+
+/** A clause that names a fee only to deny it is not evidence. */
+export function textHasSubmissionFee(value: string): boolean {
+  for (const clause of value.split(/[.;\n]+/)) {
+    if (!SUBMISSION_FEE_PHRASE.test(clause)) continue;
+    if (FEE_NEGATION.test(clause)) continue;
+    return true;
+  }
+  return false;
+}
+
+function collectText(value: unknown, out: string[]): void {
+  if (typeof value === "string") {
+    out.push(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectText(item, out);
+    return;
+  }
+  const row = objectOf(value);
+  if (!row) return;
+  for (const item of Object.values(row)) collectText(item, out);
+}
+
+/**
+ * Positive paid-platform evidence. A host on the submission URL, the method,
+ * or the curator email counts. So does an explicit fee phrase. A bare
+ * SubmitHub / Groover / Playlist Push / SubmitLink mention in a verify note
+ * does not, including "no listing found" and "different curator".
+ */
 export function paidPlatformSignal(target: Row): boolean {
-  const method = str(target.submission_method).toLowerCase();
-  if (PAID_PLATFORM_METHODS.has(method)) return true;
-  const text = [
-    target.form_url,
-    target.submission_url,
-    target.curator_website,
-    target.curator_submission_url,
-    target.curator_email,
-    target.form_source_evidence,
-    target.ig_source_evidence,
-  ].map((value) => str(value).toLowerCase()).join(" ");
-  if (!text.trim()) return false;
-  return /(submithub\.com|groover\.co|playlistpush\.com|submitlink\.(io|com))|(^|[^a-z0-9])(submithub|playlistpush|playlist push|submitlink)([^a-z0-9]|$)/.test(text);
+  if (PAID_PLATFORM_METHODS.has(str(target.submission_method).toLowerCase())) return true;
+  for (const field of [target.form_url, target.submission_url, target.curator_website, target.curator_submission_url]) {
+    if (urlHostIsPaid(str(field))) return true;
+  }
+  if (emailDomainIsPaid(str(target.curator_email))) return true;
+  const texts: string[] = [];
+  collectText(target.form_source_evidence, texts);
+  collectText(target.ig_source_evidence, texts);
+  collectText(target.path_verification_notes, texts);
+  collectText(target.notes, texts);
+  collectText(target.research_context, texts);
+  const blob = texts.join("\n");
+  if (!blob.trim()) return false;
+  if (textHasSubmissionFee(blob)) return true;
+  const urls = blob.match(/https?:\/\/[^\s)>\]]+/gi) ?? [];
+  return urls.some((url) => urlHostIsPaid(url));
 }
 
 /** Positive fee evidence only. Unknown and blank cost return null. */

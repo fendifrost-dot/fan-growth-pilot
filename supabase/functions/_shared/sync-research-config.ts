@@ -85,6 +85,11 @@ export function inDiscoveryScope(config: SyncResearchConfig, trackId: string): b
   return isActiveResearchTrack(config, trackId) && isInOperatingScope(config, trackId);
 }
 
+/** No campaign rows and no operating-scope key. Allowlist is then the only song gate. */
+export function syncResearchConfigVacant(config: SyncResearchConfig): boolean {
+  return Object.keys(config.tracks).length === 0 && config.operating_scope_track_ids === undefined;
+}
+
 export async function loadSyncResearchConfig(
   sb: SupabaseClient,
 ): Promise<SyncResearchConfig> {

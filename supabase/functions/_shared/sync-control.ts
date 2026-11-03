@@ -22,6 +22,12 @@ import { resolveCurrentApprovedDna } from "./track-dna-envelope.ts";
 import { outreachIdempotencyKey, providerFromHeader, sendProviderEmail } from "./provider-transport.ts";
 import { htmlToPlainText } from "./resend-pitch.ts";
 import { insertHubLicensingPitchLog } from "./sync-registers.ts";
+import {
+  enforceSyncSongAllowlist,
+  fendiAuthoredRefusal,
+  fendiAuthoredRow,
+} from "./sync-song-allowlist.ts";
+import { SYNC_FEE_CLEAR, syncPositiveFee, syncTermsStatusAtSend } from "./sync-fee.ts";
 
 function syncPitchSubject(trackName: string, companyName?: string): string {
   const track = trackName.trim();
@@ -64,6 +70,9 @@ async function ensureLicensingPitchLogForHubSend(
     sentBy: string;
     sentByLabel: string;
     sentAt: string;
+    termsStatusAtSend: "free" | "unknown";
+    feeStatusAtSend: typeof SYNC_FEE_CLEAR;
+    auditResult: "PASS";
   },
 ): Promise<Record<string, unknown> | null> {
   const logged = await insertHubLicensingPitchLog(sb, {
@@ -89,6 +98,9 @@ async function ensureLicensingPitchLogForHubSend(
     song_dna_version_id: args.draft.song_dna_version_id
       ? String(args.draft.song_dna_version_id)
       : null,
+    terms_status_at_send: args.termsStatusAtSend,
+    fee_status_at_send: args.feeStatusAtSend,
+    audit_result: args.auditResult,
   });
   if (!logged.ok) {
     console.error("licensing_pitch_log insert failed:", logged.error);
@@ -123,7 +135,7 @@ export async function listSyncPendingDrafts(
 ): Promise<RunResult> {
   const denied = await requireCap(ops, "review_sync_outreach");
   if (denied) return denied;
-  const status = String(body.status ?? "draft").trim();
+  const status = String(body.status ?? "pending").trim();
   const limit = Math.min(Number(body.limit) || 50, 200);
   let q = sb
     .from("sync_research_pitch_drafts")
@@ -131,7 +143,7 @@ export async function listSyncPendingDrafts(
     .order("created_at", { ascending: false })
     .limit(limit);
   if (status === "pending") {
-    q = q.in("status", ["draft", "approved"]);
+    q = q.in("status", ["pending", "draft", "approved"]);
   } else {
     q = q.eq("status", status);
   }
@@ -242,6 +254,9 @@ export async function approveSyncOutreach(
     .maybeSingle();
   if (error) return { status: 500, data: { error: error.message } };
   if (!draft) return { status: 404, data: { error: "draft not found" } };
+  if (fendiAuthoredRow(draft)) return fendiAuthoredRefusal();
+  const song = await enforceSyncSongAllowlist(sb, String(draft.track_id));
+  if (song) return song;
 
   const decision = await computeTrackSyncEligibility(sb, String(draft.track_id));
   if ("error" in decision) return { status: 500, data: { error: decision.error } };
@@ -311,6 +326,12 @@ export async function rejectSyncOutreach(
   const clean = stripSpoofedAttribution(body);
   const draftId = String(clean.draft_id ?? clean.id ?? "").trim();
   if (!draftId) return { status: 400, data: { error: "draft_id required" } };
+  const { data: existingDraft } = await sb
+    .from("sync_research_pitch_drafts")
+    .select("id, generated_by")
+    .eq("id", draftId)
+    .maybeSingle();
+  if (existingDraft && fendiAuthoredRow(existingDraft)) return fendiAuthoredRefusal();
   const reason = String(clean.rejection_reason ?? clean.reason ?? "").trim() || "rejected_by_grok";
   const attr = attributionFrom(ops);
   const now = new Date().toISOString();
@@ -403,6 +424,7 @@ export async function submitSyncOutreach(
     .maybeSingle();
   if (error) return { status: 500, data: { error: error.message } };
   if (!draft) return { status: 404, data: { error: "draft not found" } };
+  if (fendiAuthoredRow(draft)) return fendiAuthoredRefusal();
   if (draft.status === "submitted" && draft.submission_message_id) {
     const replayFrom = providerFromHeader({ useSyncFrom: true });
     const { data: replayTrack } = await sb
@@ -423,6 +445,9 @@ export async function submitSyncOutreach(
       sentBy: String(draft.submitted_by ?? "unknown"),
       sentByLabel: String(draft.submitted_by_label ?? "unknown"),
       sentAt: String(draft.submitted_at ?? new Date().toISOString()),
+      termsStatusAtSend: syncTermsStatusAtSend(null),
+      feeStatusAtSend: SYNC_FEE_CLEAR,
+      auditResult: "PASS",
     });
     return {
       status: 200,
@@ -443,6 +468,8 @@ export async function submitSyncOutreach(
       data: { error: "draft must be approved before submit", code: "not_approved", status: draft.status },
     };
   }
+  const song = await enforceSyncSongAllowlist(sb, String(draft.track_id));
+  if (song) return song;
 
   const { data: opportunity } = await sb
     .from("sync_research_opportunities")
@@ -460,6 +487,20 @@ export async function submitSyncOutreach(
       .maybeSingle();
     target = targetRow;
   }
+  if (target) {
+    const fee = syncPositiveFee(target);
+    if (fee.blocked) {
+      return {
+        status: 422,
+        data: {
+          error: "Positive submission-fee evidence",
+          code: "sync_positive_fee",
+          detail: fee.detail,
+        },
+      };
+    }
+  }
+  const termsStatusAtSend = syncTermsStatusAtSend(target);
   const targetVerified =
     target != null &&
     (String(target.status ?? "") === "verified" ||
@@ -538,6 +579,9 @@ export async function submitSyncOutreach(
         submission_channel: channel,
         binding,
         eligibility: decision,
+        terms_status_at_send: termsStatusAtSend,
+        fee_status_at_send: SYNC_FEE_CLEAR,
+        audit_result: "PASS",
         contractual_commitment: false,
         monetary_authority: false,
       },
@@ -697,6 +741,9 @@ export async function submitSyncOutreach(
     sentBy: attr.actor_kind,
     sentByLabel: attr.actor_label,
     sentAt: now,
+    termsStatusAtSend,
+    feeStatusAtSend: SYNC_FEE_CLEAR,
+    auditResult: "PASS",
   });
 
   return {
@@ -710,6 +757,9 @@ export async function submitSyncOutreach(
       provider_message_id: send.id,
       from_address: fromAddress,
       licensing_pitch_log: licensingLog,
+      terms_status_at_send: termsStatusAtSend,
+      fee_status_at_send: SYNC_FEE_CLEAR,
+      audit_result: "PASS",
       binding,
       contractual_commitment: false,
       monetary_authority: false,
@@ -740,6 +790,9 @@ export async function recordManualSyncOutreachSubmission(
     .eq("id", draftId)
     .maybeSingle();
   if (!draft) return { status: 404, data: { error: "draft not found" } };
+  if (fendiAuthoredRow(draft)) return fendiAuthoredRefusal();
+  const manualSong = await enforceSyncSongAllowlist(sb, String(draft.track_id));
+  if (manualSong) return manualSong;
   if (draft.status !== "awaiting_manual_submission") {
     return {
       status: 409,
@@ -775,6 +828,12 @@ export async function trackSyncResponses(
   const clean = stripSpoofedAttribution(body);
   const draftId = String(clean.draft_id ?? clean.id ?? "").trim();
   if (!draftId) return { status: 400, data: { error: "draft_id required" } };
+  const { data: responseDraft } = await sb
+    .from("sync_research_pitch_drafts")
+    .select("id, generated_by")
+    .eq("id", draftId)
+    .maybeSingle();
+  if (responseDraft && fendiAuthoredRow(responseDraft)) return fendiAuthoredRefusal();
   const responseStatus = String(clean.response_status ?? "").trim();
   if (!responseStatus) {
     return { status: 400, data: { error: "response_status required" } };
@@ -827,6 +886,12 @@ export async function escalateSyncToFendi(
   const clean = stripSpoofedAttribution(body);
   const draftId = String(clean.draft_id ?? clean.id ?? "").trim();
   if (!draftId) return { status: 400, data: { error: "draft_id required" } };
+  const { data: escalateDraft } = await sb
+    .from("sync_research_pitch_drafts")
+    .select("id, generated_by")
+    .eq("id", draftId)
+    .maybeSingle();
+  if (escalateDraft && fendiAuthoredRow(escalateDraft)) return fendiAuthoredRefusal();
   const reason = String(clean.escalation_reason ?? clean.reason ?? "").trim();
   if (!reason) {
     return {

@@ -383,6 +383,15 @@ const AdminLicensing: React.FC = () => {
             <div><span className="text-muted-foreground">To:</span> {String(lastPreview.to ?? "—")}</div>
             <div><span className="text-muted-foreground">Subject:</span> {String(lastPreview.subject ?? "—")}</div>
             <div><span className="text-muted-foreground">Would send:</span> {String(lastPreview.would_send)}</div>
+            {lastPreview.audit_result != null && (
+              <div><span className="text-muted-foreground">Audit:</span> {String(lastPreview.audit_result)}</div>
+            )}
+            {lastPreview.terms_status_at_send != null && (
+              <div><span className="text-muted-foreground">Terms:</span> {String(lastPreview.terms_status_at_send)}</div>
+            )}
+            {lastPreview.fee_status_at_send != null && (
+              <div><span className="text-muted-foreground">Fee:</span> {String(lastPreview.fee_status_at_send)}</div>
+            )}
           </div>
         )}
       </Card>

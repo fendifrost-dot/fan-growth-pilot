@@ -37,7 +37,7 @@ import {
   getSyncDiscoveryWork,
   setSyncOperatingScope,
 } from "./sync-research.ts";
-import { SYNC_CONTROL_ACTIONS, isSyncControlAction, submitSyncOutreach, recordManualSyncOutreachSubmission, runSyncControlAction } from "./sync-control.ts";
+import { SYNC_CONTROL_ACTIONS, approveSyncOutreach, isSyncControlAction, submitSyncOutreach, recordManualSyncOutreachSubmission, runSyncControlAction } from "./sync-control.ts";
 import { upsertOpsSetting, FENDI_LOCKED_OPS_SETTING_KEYS } from "./daily-ops.ts";
 import {
   SYNC_GATE_ACTIONS,
@@ -709,7 +709,7 @@ Deno.test("inactive / blocked configured tracks reject research association", as
     ops,
   );
   assertEquals(res.status, 422);
-  assertEquals(res.data.code, "sync_research_track_inactive");
+  assertEquals(res.data.code, "sync_song_not_allowlisted");
 });
 
 Deno.test("attributionFrom never uses caller input", () => {
@@ -832,7 +832,7 @@ Deno.test("operating scope: in-scope track can be researched; out-of-scope activ
   };
   const sb = mockSb({
     settings: { sync_research_config: bothActive },
-    tracks: [eligibleTrack(MEDITATE_ID, "in-scope"), eligibleTrack(DFM_ID, "out-of-scope")],
+    tracks: [eligibleTrack(MEDITATE_ID, "Meditate"), eligibleTrack(DFM_ID, "out-of-scope")],
     dna: [approvedDna(MEDITATE_ID), { ...approvedDna(DFM_ID), id: "dna-2", track_id: DFM_ID }],
   });
   const ops = { kind: "claude_sync_discovery" as const, userId: null, label: "claude_sync_discovery" };
@@ -856,7 +856,7 @@ Deno.test("operating scope: in-scope track can be researched; out-of-scope activ
     associated_track_id: DFM_ID,
   }, ops);
   assertEquals(blocked.status, 422);
-  assertEquals(blocked.data.code, "sync_research_track_inactive");
+  assertEquals(blocked.data.code, "sync_song_not_allowlisted");
 });
 
 Deno.test("operating scope: pausing a campaign removes it from discovery immediately", async () => {
@@ -868,7 +868,7 @@ Deno.test("operating scope: pausing a campaign removes it from discovery immedia
   };
   const sb = mockSb({
     settings: { sync_research_config: paused },
-    tracks: [eligibleTrack(MEDITATE_ID, "paused")],
+    tracks: [eligibleTrack(MEDITATE_ID, "Meditate")],
     dna: [approvedDna(MEDITATE_ID)],
   });
   const ops = { kind: "claude_sync_discovery" as const, userId: null, label: "claude_sync_discovery" };
@@ -910,6 +910,7 @@ Deno.test("operating scope: only Fendi may change it; Claude and Grok cannot", a
     );
     assertEquals(upsertDenied.status, 403);
     assert(FENDI_LOCKED_OPS_SETTING_KEYS.has("sync_research_config"));
+    assert(FENDI_LOCKED_OPS_SETTING_KEYS.has("sync_song_allowlist"));
   });
 });
 
@@ -924,7 +925,7 @@ Deno.test("sync email submit: test-mode provider accept marks submitted; caller 
     const targetId = crypto.randomUUID();
     const sb = mockSb({
       settings: { sync_research_config: scopedConfig },
-      tracks: [eligibleTrack(MEDITATE_ID, "in-scope")],
+      tracks: [eligibleTrack(MEDITATE_ID, "Meditate")],
       dna: [approvedDna(MEDITATE_ID)],
       targets: [{
         id: targetId,
@@ -968,6 +969,10 @@ Deno.test("sync email submit: test-mode provider accept marks submitted; caller 
       from_address?: string;
       dispatched_via?: string;
       draft_id?: string;
+      resend_message_id?: string;
+      terms_status_at_send?: string;
+      fee_status_at_send?: string;
+      audit_result?: string;
     } | null;
     assert(log);
     assertEquals(log.approved_by, "grok_playlist_control");
@@ -976,6 +981,10 @@ Deno.test("sync email submit: test-mode provider accept marks submitted; caller 
     assert(log.resend_message_id ? String(log.resend_message_id).startsWith("test_") : true);
     assertEquals(log.draft_id, draftId);
     assertStringIncludes(String(log.from_address ?? ""), "fendifrost.com");
+    assertEquals(log.terms_status_at_send, "unknown");
+    assertEquals(log.fee_status_at_send, "no_positive_fee");
+    assertEquals(log.audit_result, "PASS");
+    assert(log.resend_message_id);
     const replay = await submitSyncOutreach(sb as never, { draft_id: draftId, submission_channel: "email" }, grok);
     assertEquals(replay.data.idempotent_replay, true);
   });
@@ -991,7 +1000,7 @@ Deno.test("sync email submit: forced provider failure stays send_failed and retr
     const oppId = crypto.randomUUID();
     const targetId = crypto.randomUUID();
     const sb = mockSb({
-      tracks: [eligibleTrack(MEDITATE_ID, "in-scope")],
+      tracks: [eligibleTrack(MEDITATE_ID, "Meditate")],
       dna: [approvedDna(MEDITATE_ID)],
       targets: [{
         id: targetId,
@@ -1026,7 +1035,7 @@ Deno.test("sync email dry_run previews From address and does not mark submitted"
     const oppId = crypto.randomUUID();
     const targetId = crypto.randomUUID();
     const sb = mockSb({
-      tracks: [eligibleTrack(MEDITATE_ID, "in-scope")],
+      tracks: [eligibleTrack(MEDITATE_ID, "Meditate")],
       dna: [approvedDna(MEDITATE_ID)],
       targets: [{
         id: targetId,
@@ -1057,6 +1066,9 @@ Deno.test("sync email dry_run previews From address and does not mark submitted"
     assertEquals(preview.data.would_send, true);
     assertEquals(preview.data.from_address, "Fendi Frost <pitches@fendifrost.com>");
     assertEquals(preview.data.to, "supervisor@example.com");
+    assertEquals(preview.data.audit_result, "PASS");
+    assertEquals(preview.data.terms_status_at_send, "unknown");
+    assertEquals(preview.data.fee_status_at_send, "no_positive_fee");
     assertEquals((sb as { _state: { drafts: { status: string }[] } })._state.drafts[0].status, "approved");
     assertEquals((sb as { _state: { licensingPitches: unknown[] } })._state.licensingPitches.length, 0);
   });
@@ -1071,7 +1083,7 @@ Deno.test("submit_sync_outreach test_mode + SYNC_FROM_EMAIL; Gmail From is rejec
     const oppId = crypto.randomUUID();
     const targetId = crypto.randomUUID();
     const sb = mockSb({
-      tracks: [eligibleTrack(MEDITATE_ID, "in-scope")],
+      tracks: [eligibleTrack(MEDITATE_ID, "Meditate")],
       dna: [approvedDna(MEDITATE_ID)],
       targets: [{
         id: targetId,
@@ -1124,7 +1136,7 @@ Deno.test("submit_sync_outreach test_mode + SYNC_FROM_EMAIL; Gmail From is rejec
     const oppId = crypto.randomUUID();
     const targetId = crypto.randomUUID();
     const sb = mockSb({
-      tracks: [eligibleTrack(MEDITATE_ID, "in-scope")],
+      tracks: [eligibleTrack(MEDITATE_ID, "Meditate")],
       dna: [approvedDna(MEDITATE_ID)],
       targets: [{
         id: targetId,
@@ -1158,7 +1170,7 @@ Deno.test("sync web_form submit is awaiting_manual_submission until Grok records
     const oppId = crypto.randomUUID();
     const targetId = crypto.randomUUID();
     const sb = mockSb({
-      tracks: [eligibleTrack(MEDITATE_ID, "in-scope")],
+      tracks: [eligibleTrack(MEDITATE_ID, "Meditate")],
       dna: [approvedDna(MEDITATE_ID)],
       targets: [{ id: targetId, status: "verified", verified_contact_path: "https://form.example" }],
       opportunities: [{ id: oppId, sync_target_id: targetId }],
@@ -1202,6 +1214,213 @@ Deno.test("sync gate parsers: sample_declaration and YES/NO decision; caller has
   assertEquals(rejectCallerSyncIdentity({ decision: "no" }), null);
   assertEquals(isSyncGateAction("get_sync_eligibility"), true);
   assertEquals(ACTION_SPEC.get_sync_eligibility.cls, "authenticated-read");
+});
+
+Deno.test("allowlist is one setting: an explicit list replaces the Meditate seed", async () => {
+  const auraId = DFM_ID;
+  const sb = mockSb({
+    settings: { sync_song_allowlist: ["Aura"] },
+    tracks: [
+      { id: MEDITATE_ID, name: "Meditate" },
+      { id: auraId, name: "Aura" },
+    ],
+  });
+  const ops = { kind: "claude_sync_discovery" as const, userId: null, label: "claude_sync_discovery" };
+  const denied = await createSyncTarget(sb as never, {
+    person_name: "A",
+    company_name: "House",
+    role_category: "music_supervisor",
+    official_url: "https://example.com/a",
+    verified_contact_path: "a@example.com",
+    source_evidence: "contact page, no fee stated",
+    associated_track_id: MEDITATE_ID,
+  }, ops);
+  assertEquals(denied.status, 422);
+  assertEquals(denied.data.code, "sync_song_not_allowlisted");
+  const allowed = await createSyncTarget(sb as never, {
+    person_name: "B",
+    company_name: "House",
+    role_category: "music_supervisor",
+    official_url: "https://example.com/b",
+    verified_contact_path: "b@example.com",
+    source_evidence: "contact page, terms unknown",
+    associated_track_id: auraId,
+  }, ops);
+  assertEquals(allowed.status, 200);
+  assertEquals((sb as { _state: { supervisors: { email?: string }[] } })._state.supervisors[0]?.email, "b@example.com");
+});
+
+Deno.test("sync discovery blocks positive fees and still accepts unknown terms", async () => {
+  const sb = mockSb({
+    settings: {},
+    tracks: [{ id: MEDITATE_ID, name: "Meditate" }],
+  });
+  const ops = { kind: "claude_sync_discovery" as const, userId: null, label: "claude_sync_discovery" };
+  const taxi = await createSyncTarget(sb as never, {
+    company_name: "Taxi",
+    role_category: "sync_agent",
+    official_url: "https://www.taxi.com/join",
+    verified_contact_path: "https://www.taxi.com/join",
+    source_evidence: "Paid membership required to submit",
+    associated_track_id: MEDITATE_ID,
+  }, ops);
+  assertEquals(taxi.status, 422);
+  assertEquals(taxi.data.code, "sync_positive_fee");
+  const submithub = await createSyncTarget(sb as never, {
+    company_name: "Hub",
+    role_category: "sync_agent",
+    official_url: "https://www.submithub.com/submit",
+    verified_contact_path: "pitches@example.com",
+    source_evidence: "per submission credits",
+    associated_track_id: MEDITATE_ID,
+  }, ops);
+  assertEquals(submithub.status, 422);
+  assertEquals(submithub.data.code, "sync_positive_fee");
+  const songtradrFree = await createSyncTarget(sb as never, {
+    company_name: "Songtradr",
+    role_category: "licensing_agency",
+    official_url: "https://www.songtradr.com/",
+    verified_contact_path: "hello@songtradr.example",
+    source_evidence: "Open catalogue submission. No fee stated.",
+    associated_track_id: MEDITATE_ID,
+  }, ops);
+  assertEquals(songtradrFree.status, 200);
+  const songtradrPaid = await createSyncTarget(sb as never, {
+    company_name: "Songtradr Premium",
+    role_category: "licensing_agency",
+    official_url: "https://www.songtradr.com/pricing",
+    verified_contact_path: "premium@songtradr.example",
+    source_evidence: "Premium tier. Credits required to submit.",
+    associated_track_id: MEDITATE_ID,
+  }, ops);
+  assertEquals(songtradrPaid.status, 422);
+  assertEquals(songtradrPaid.data.code, "sync_positive_fee");
+  const patreon = await createSyncTarget(sb as never, {
+    company_name: "Resonant",
+    role_category: "sync_agent",
+    official_url: "https://resonant.example/submissions",
+    source_evidence: "Free submissions paused. Only open route is paid Patreon = pay-to-play.",
+    associated_track_id: MEDITATE_ID,
+  }, ops);
+  assertEquals(patreon.status, 422);
+  assertEquals(patreon.data.code, "sync_positive_fee");
+});
+
+Deno.test("new sync drafts are pending and fendi-authored rows are not sent", async () => {
+  await withEnv({
+    GROK_PLAYLIST_CONTROL_SECRET: "grok-secret",
+    AGH_PROVIDER_TEST_MODE: "1",
+  }, async () => {
+    const oppId = crypto.randomUUID();
+    const targetId = crypto.randomUUID();
+    const sb = mockSb({
+      settings: { sync_research_config: defaultConfig },
+      tracks: [eligibleTrack(MEDITATE_ID, "Meditate")],
+      dna: [approvedDna(MEDITATE_ID)],
+      targets: [{
+        id: targetId,
+        status: "verified",
+        date_verified: "2026-11-01T00:00:00Z",
+        verified_contact_path: "supervisor@example.com",
+        company_name: "Fixture Co",
+        submission_policy: "free_unsolicited",
+        source_evidence: "no fee stated",
+      }],
+      opportunities: [{
+        id: oppId,
+        sync_target_id: targetId,
+        source_url: "https://example.com/policy",
+        source_evidence: "submission policy, no fee stated",
+        status: "open",
+      }],
+    });
+    const claude = { kind: "claude_sync_discovery" as const, userId: null, label: "claude_sync_discovery" };
+    const drafted = await draftSyncPitch(sb as never, {
+      opportunity_id: oppId,
+      track_id: MEDITATE_ID,
+      body: "Server composed pitch.",
+      subject: "Meditate for licensing",
+    }, claude);
+    assertEquals(drafted.status, 200);
+    const draft = drafted.data.draft as { status: string; generated_by: string };
+    assertEquals(draft.status, "pending");
+    assertEquals(draft.generated_by, "claude_sync_discovery");
+    assertEquals(drafted.data.approved, false);
+    assertEquals(drafted.data.sent, false);
+
+    const grok = resolveOpsActor(null, req({ "x-grok-playlist-control-secret": "grok-secret" }));
+    const approved = await approveSyncOutreach(sb as never, { draft_id: (drafted.data.draft as { id: string }).id }, grok);
+    assertEquals(approved.status, 200);
+    assertEquals((approved.data.draft as { status: string }).status, "approved");
+    const preview = await submitSyncOutreach(sb as never, {
+      draft_id: (drafted.data.draft as { id: string }).id,
+      submission_channel: "email",
+      dry_run: true,
+    }, grok);
+    assertEquals(preview.status, 200);
+    assertEquals(preview.data.dry_run, true);
+    assertEquals(preview.data.submitted, false);
+    assertEquals(preview.data.would_send, true);
+    assertEquals(preview.data.audit_result, "PASS");
+    assertEquals(preview.data.terms_status_at_send, "free");
+    assertEquals(preview.data.fee_status_at_send, "no_positive_fee");
+    assertEquals(preview.data.from_address, "Fendi Frost <pitches@fendifrost.com>");
+    assertEquals((sb as { _state: { licensingPitches: unknown[] } })._state.licensingPitches.length, 0);
+    assertEquals(
+      (sb as { _state: { drafts: { id?: string; status?: string }[] } })._state.drafts
+        .find((row) => row.id === (drafted.data.draft as { id: string }).id)?.status,
+      "approved",
+    );
+
+    const fendiDraftId = crypto.randomUUID();
+    const state = (sb as { _state: { drafts: Record<string, unknown>[] } })._state;
+    state.drafts.push({
+      id: fendiDraftId,
+      opportunity_id: oppId,
+      track_id: MEDITATE_ID,
+      status: "approved",
+      subject: "handwritten",
+      body: "handwritten",
+      generated_by: "fendi",
+    });
+    const refused = await submitSyncOutreach(sb as never, {
+      draft_id: fendiDraftId,
+      submission_channel: "email",
+      dry_run: true,
+    }, grok);
+    assertEquals(refused.status, 409);
+    assertEquals(refused.data.code, "fendi_authored_immutable");
+    assertEquals(state.drafts.find((row) => row.id === fendiDraftId)?.status, "approved");
+  });
+});
+
+Deno.test("submit rejects a song that is not on the allowlist before any provider call", async () => {
+  await withEnv({ GROK_PLAYLIST_CONTROL_SECRET: "grok-secret", AGH_PROVIDER_TEST_MODE: "1" }, async () => {
+    const draftId = crypto.randomUUID();
+    const oppId = crypto.randomUUID();
+    const sb = mockSb({
+      tracks: [{ id: DFM_ID, name: "Designed For Me (Control)" }],
+      opportunities: [{ id: oppId, sync_target_id: null }],
+      drafts: [{
+        id: draftId,
+        opportunity_id: oppId,
+        track_id: DFM_ID,
+        status: "approved",
+        subject: "s",
+        body: "b",
+      }],
+    });
+    const grok = resolveOpsActor(null, req({ "x-grok-playlist-control-secret": "grok-secret" }));
+    const denied = await submitSyncOutreach(sb as never, {
+      draft_id: draftId,
+      submission_channel: "email",
+      dry_run: true,
+    }, grok);
+    assertEquals(denied.status, 422);
+    assertEquals(denied.data.code, "sync_song_not_allowlisted");
+    assertEquals((sb as { _state: { drafts: { status: string }[] } })._state.drafts[0].status, "approved");
+    assertEquals((sb as { _state: { licensingPitches: unknown[] } })._state.licensingPitches.length, 0);
+  });
 });
 
 Deno.test("DNA sync_recommendation vs computed eligibility is surfaced, never silently merged", () => {

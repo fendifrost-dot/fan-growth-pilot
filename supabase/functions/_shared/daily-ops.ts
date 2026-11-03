@@ -613,6 +613,7 @@ export async function listOpsSettings(sb: SupabaseClient): Promise<RunResult> {
 /** Fendi-only ops_settings keys. Claude/Grok/admin cannot expand sync scope or delivery policy here. */
 export const FENDI_LOCKED_OPS_SETTING_KEYS = new Set([
   "sync_research_config",
+  "sync_song_allowlist",
   "split_sheet_delivery_policy",
 ]);
 

@@ -66,13 +66,13 @@ function pathOf(req: Request): string {
 function toolDescription(name: string): string {
   switch (name) {
     case "get_sync_discovery_work":
-      return "Read active sync-research tracks from AGH config + approved Song DNA + server eligibility. Never invent eligibility.";
+      return "Read sync tracks from ops_settings.sync_song_allowlist (and the research config when one is set) plus approved Song DNA and server eligibility. Songs off the allowlist are sync_song_not_allowlisted. Never invent eligibility.";
     case "submit_sync_targets":
-      return "Persist researched sync targets (agency contacts). Idempotent dedupe. Attribution from auth identity only.";
+      return "Persist researched sync targets and email contacts on the supervisor roster. Idempotent dedupe. Positive submission fees (Taxi, Songtradr paid tiers, SubmitHub-style hosts) return sync_positive_fee. Unknown terms are not a hold. Attribution from auth identity only.";
     case "submit_sync_opportunities":
-      return "Persist active_brief (requires deadline) or agency_introduction records with provenance.";
+      return "Persist active_brief (requires deadline) or agency_introduction records with provenance, scoped to the sync song allowlist.";
     case "create_sync_drafts":
-      return "Create pending catered sync drafts only when server eligibility passes. Returns precise blockers otherwise.";
+      return "Create pending sync drafts only when the song is allowlisted and server eligibility passes. New drafts are pending, not approved and not sent. generated_by=fendi rows are never modified.";
     case "verify_sync_contacts":
       return "Verify contact routes + evidence for own sync targets.";
     case "advance_sync_batch":

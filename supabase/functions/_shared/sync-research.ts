@@ -27,8 +27,16 @@ import {
   loadSyncResearchConfig,
   rejectCallerSyncIdentity,
   SYNC_RESEARCH_SETTING_KEY,
-  trackResearchStatus,
+  syncResearchConfigVacant,
 } from "./sync-research-config.ts";
+import {
+  allowlistedTrackIds,
+  fendiAuthoredRow,
+  guardSyncResearchTrack,
+  stampSyncGeneratedBy,
+  SYNC_SONG_ALLOWLIST_KEY,
+} from "./sync-song-allowlist.ts";
+import { syncPositiveFee } from "./sync-fee.ts";
 import { chicagoBusinessDate } from "./chicago-time.ts";
 
 export type RunResult = { status: number; data: Record<string, unknown> };
@@ -141,6 +149,49 @@ function unscopedSyncReader(ops: OpsActor): boolean {
   );
 }
 
+function feeRefusal(input: Record<string, unknown>): RunResult | null {
+  const fee = syncPositiveFee(input);
+  if (!fee.blocked) return null;
+  return {
+    status: 422,
+    data: {
+      error: "Positive submission-fee evidence",
+      code: "sync_positive_fee",
+      detail: fee.detail,
+    },
+  };
+}
+
+function contactEmail(path: unknown): string | null {
+  const value = String(path ?? "").trim().toLowerCase();
+  if (!value.includes("@") || value.startsWith("http")) return null;
+  return value;
+}
+
+/** Email contacts also land on the supervisor roster. Research insert still wins if this fails. */
+async function rememberMusicSupervisor(
+  sb: SupabaseClient,
+  row: { person_name?: unknown; company_name?: unknown; verified_contact_path?: unknown },
+): Promise<void> {
+  const email = contactEmail(row.verified_contact_path);
+  if (!email) return;
+  const { data: existing } = await sb
+    .from("music_supervisors")
+    .select("id")
+    .eq("email", email)
+    .maybeSingle();
+  if (existing) return;
+  const name = String(row.person_name ?? "").trim() || String(row.company_name ?? "").trim() || email;
+  const { error } = await sb.from("music_supervisors").insert({
+    name,
+    company: row.company_name != null ? String(row.company_name).trim() || null : null,
+    email,
+    source: "sync_research",
+    notes: null,
+  });
+  if (error) console.error("music_supervisors insert failed:", error.message);
+}
+
 export async function createSyncTarget(
   sb: SupabaseClient,
   body: Record<string, unknown>,
@@ -172,19 +223,11 @@ export async function createSyncTarget(
     ? String(clean.track_id).trim()
     : "";
   if (associatedTrackId) {
-    const config = await loadSyncResearchConfig(sb);
-    if (!inDiscoveryScope(config, associatedTrackId)) {
-      return {
-        status: 422,
-        data: {
-          error: "track not in Fendi operating scope for sync research",
-          code: "sync_research_track_inactive",
-          track_id: associatedTrackId,
-          status: trackResearchStatus(config, associatedTrackId),
-        },
-      };
-    }
+    const blocked = await guardSyncResearchTrack(sb, associatedTrackId);
+    if (blocked) return blocked;
   }
+  const paid = feeRefusal(clean);
+  if (paid) return paid;
 
   const attr = attributionFrom(ops);
   const primarySource =
@@ -263,6 +306,7 @@ export async function createSyncTarget(
     .eq("dedupe_key", dedupe)
     .maybeSingle();
   if (existing) {
+    await rememberMusicSupervisor(sb, existing as Record<string, unknown>);
     return { status: 200, data: { ok: true, collapsed: true, row: existing } };
   }
 
@@ -278,6 +322,7 @@ export async function createSyncTarget(
     }
     return { status: 500, data: { error: error.message } };
   }
+  await rememberMusicSupervisor(sb, data as Record<string, unknown>);
   return { status: 200, data: { ok: true, created: true, row: data } };
 }
 
@@ -314,6 +359,10 @@ export async function verifySyncTargets(
     const path = String(row.verified_contact_path ?? "").trim();
     const evidence = String(row.source_evidence ?? "").trim();
     const url = String(row.primary_source_url ?? row.official_url ?? "").trim();
+    if (syncPositiveFee(row as Record<string, unknown>).blocked) {
+      rejected.push({ id: String(row.id), reason: "sync_positive_fee" });
+      continue;
+    }
     if (!path) {
       rejected.push({ id: String(row.id), reason: "missing_verified_contact_path" });
       continue;
@@ -417,28 +466,25 @@ export async function createSyncOpportunity(
     : clean.track_id
     ? String(clean.track_id).trim()
     : "";
-  if (associatedTrackId) {
-    const config = await loadSyncResearchConfig(sb);
-    if (!inDiscoveryScope(config, associatedTrackId)) {
-      return {
-        status: 422,
-        data: {
-          error: "track not in Fendi operating scope for sync research",
-          code: "sync_research_track_inactive",
-          track_id: associatedTrackId,
-          status: trackResearchStatus(config, associatedTrackId),
-        },
-      };
-    }
-  }
-
-  const attr = attributionFrom(ops);
-  const eligible = await loadSyncEligibleTrackIds(sb);
-  const requested = Array.isArray(clean.recommended_track_ids)
+  const requestedIds = Array.isArray(clean.recommended_track_ids)
     ? clean.recommended_track_ids.map(String)
     : associatedTrackId
     ? [associatedTrackId]
     : [];
+  for (const id of new Set([associatedTrackId, ...requestedIds].filter(Boolean))) {
+    const blocked = await guardSyncResearchTrack(sb, id);
+    if (blocked) return blocked;
+  }
+  const paidOpp = feeRefusal({
+    compensation_known: clean.compensation_known ?? clean.compensation_public,
+    source_evidence: sourceEvidence,
+    official_url: sourceUrl,
+    submission_policy: clean.acceptance_policy_status,
+  });
+  if (paidOpp) return paidOpp;
+  const attr = attributionFrom(ops);
+  const eligible = await loadSyncEligibleTrackIds(sb);
+  const requested = requestedIds;
   // Never invent eligibility — only keep ids already sync_eligible server-side.
   const recommended = requested.filter((id) => eligible.includes(id));
   const noEligible = recommended.length === 0;
@@ -569,19 +615,9 @@ export async function draftSyncPitch(
     return { status: 400, data: { error: "opportunity_id, track_id, and body required" } };
   }
 
-  // Config: drafting requires active research track AND sync eligibility.
-  const config = await loadSyncResearchConfig(sb);
-  if (!inDiscoveryScope(config, trackId)) {
-    return {
-      status: 422,
-      data: {
-        error: "track not in Fendi operating scope for sync research",
-        code: "sync_research_track_inactive",
-        track_id: trackId,
-        status: trackResearchStatus(config, trackId),
-        drafted: false,
-      },
-    };
+  const blockedTrack = await guardSyncResearchTrack(sb, trackId);
+  if (blockedTrack) {
+    return { status: blockedTrack.status, data: { ...blockedTrack.data, drafted: false } };
   }
 
   const decision = await computeTrackSyncEligibility(sb, trackId);
@@ -605,10 +641,21 @@ export async function draftSyncPitch(
 
   const { data: opp } = await sb
     .from("sync_research_opportunities")
-    .select("id, source_url, primary_source_url, source_evidence, status, opportunity_type")
+    .select("id, source_url, primary_source_url, source_evidence, status, opportunity_type, sync_target_id")
     .eq("id", opportunityId)
     .maybeSingle();
   if (!opp) return { status: 404, data: { error: "opportunity not found" } };
+  if (opp.sync_target_id) {
+    const { data: target } = await sb
+      .from("sync_research_targets")
+      .select("*")
+      .eq("id", opp.sync_target_id)
+      .maybeSingle();
+    if (target) {
+      const paid = feeRefusal(target as Record<string, unknown>);
+      if (paid) return { status: paid.status, data: { ...paid.data, drafted: false } };
+    }
+  }
   const hasProvenance =
     String(opp.primary_source_url ?? opp.source_url ?? "").trim() !== "" ||
     String(opp.source_evidence ?? "").trim() !== "";
@@ -639,7 +686,8 @@ export async function draftSyncPitch(
     song_dna_version_id: dna.songDnaVersionId,
     subject: clean.subject != null ? String(clean.subject) : null,
     body: bodyText,
-    status: "draft",
+    status: "pending",
+    generated_by: stampSyncGeneratedBy(ops.kind),
     drafted_by: attr.actor_kind,
     drafted_by_label: attr.actor_label,
     batch_id: clean.batch_id ? String(clean.batch_id) : null,
@@ -719,7 +767,11 @@ export async function getSyncDiscoveryWork(
   if (denied) return denied;
 
   const config = await loadSyncResearchConfig(sb);
-  const activeIds = activeResearchTrackIds(config).filter((id) => inDiscoveryScope(config, id));
+  const allowIds = await allowlistedTrackIds(sb);
+  const allowSet = new Set(allowIds);
+  const configuredIds = activeResearchTrackIds(config).filter((id) => inDiscoveryScope(config, id));
+  const activeIds = (syncResearchConfigVacant(config) ? allowIds : configuredIds)
+    .filter((id) => allowSet.has(id));
   const tracks: Record<string, unknown>[] = [];
 
   for (const trackId of activeIds) {
@@ -789,7 +841,11 @@ export async function getSyncDiscoveryWork(
       ok: true,
       actor: ops.label,
       business_date_ct: chicagoBusinessDate(),
-      config_source: "ops_settings.sync_research_config",
+      config_source: syncResearchConfigVacant(config)
+        ? `ops_settings.${SYNC_SONG_ALLOWLIST_KEY}`
+        : "ops_settings.sync_research_config",
+      allowlist_key: SYNC_SONG_ALLOWLIST_KEY,
+      allowlisted_track_ids: allowIds,
       default_status: config.default_status,
       active_research_track_ids: activeIds,
       tracks,
@@ -880,11 +936,12 @@ export async function advanceSyncBatch(
   const clean = stripSpoofedAttribution(body);
   const attr = attributionFrom(ops);
   const config = await loadSyncResearchConfig(sb);
-  const activeIds = activeResearchTrackIds(config);
+  const allowIds = await allowlistedTrackIds(sb);
+  const activeIds = activeResearchTrackIds(config).filter((id) => inDiscoveryScope(config, id));
   const trackId = clean.track_id
     ? String(clean.track_id).trim()
-    : activeIds[0] ?? "";
-  if (!trackId || !inDiscoveryScope(config, trackId)) {
+    : (syncResearchConfigVacant(config) ? allowIds[0] : activeIds[0]) ?? "";
+  if (!trackId) {
     return {
       status: 422,
       data: {
@@ -893,6 +950,8 @@ export async function advanceSyncBatch(
       },
     };
   }
+  const blockedTrack = await guardSyncResearchTrack(sb, trackId);
+  if (blockedTrack) return blockedTrack;
 
   const businessDate = String(clean.business_date_ct ?? chicagoBusinessDate());
   const targetIds = Array.isArray(clean.target_ids) ? clean.target_ids.map(String) : [];
@@ -1003,10 +1062,19 @@ export async function advanceSyncBatch(
       .in("id", opportunityIds);
   }
   if (draftIds.length) {
-    await sb
+    const { data: draftRows } = await sb
       .from("sync_research_pitch_drafts")
-      .update({ batch_id: batch.id })
+      .select("id, generated_by")
       .in("id", draftIds);
+    const editable = (draftRows ?? [])
+      .filter((row) => !fendiAuthoredRow(row as { generated_by?: unknown }))
+      .map((row) => String((row as { id: unknown }).id));
+    if (editable.length) {
+      await sb
+        .from("sync_research_pitch_drafts")
+        .update({ batch_id: batch.id })
+        .in("id", editable);
+    }
   }
 
   return {

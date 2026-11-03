@@ -5,6 +5,11 @@
 // (submit_sync_outreach). Genre stamps are never gated by display-title literals.
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import {
+  enforceSyncSongAllowlist,
+  loadSyncSongAllowlist,
+  songOnAllowlist,
+} from "./sync-song-allowlist.ts";
 
 export type RunResult = { status: number; data: Record<string, unknown> };
 
@@ -208,6 +213,22 @@ export async function runSyncRegisterAction(
       }
     }
     if (!trackName) return { status: 400, data: { error: "track_name or track_id required" } };
+    if (trackId) {
+      const blocked = await enforceSyncSongAllowlist(sb, trackId);
+      if (blocked) return blocked;
+    } else {
+      const allow = await loadSyncSongAllowlist(sb);
+      if (!songOnAllowlist(allow, { name: trackName })) {
+        return {
+          status: 422,
+          data: {
+            error: "Song is not on the sync allowlist",
+            code: "sync_song_not_allowlisted",
+            track_name: trackName,
+          },
+        };
+      }
+    }
 
     const response = parseLicensingResponse(body.response_status);
     const flags = patchForLicensingResponse(response);
@@ -278,6 +299,9 @@ export async function insertHubLicensingPitchLog(
     from_address?: string | null;
     dispatched_via?: string | null;
     song_dna_version_id?: string | null;
+    terms_status_at_send?: "free" | "unknown" | null;
+    fee_status_at_send?: "no_positive_fee" | null;
+    audit_result?: string | null;
   },
 ): Promise<{ ok: true; row: Record<string, unknown> } | { ok: false; error: string }> {
   const trackName = String(row.track_name ?? "").trim();
@@ -321,6 +345,9 @@ export async function insertHubLicensingPitchLog(
     from_address: row.from_address ?? null,
     dispatched_via: row.dispatched_via ?? "submit_sync_outreach",
     song_dna_version_id: row.song_dna_version_id ?? null,
+    terms_status_at_send: row.terms_status_at_send ?? null,
+    fee_status_at_send: row.fee_status_at_send ?? null,
+    audit_result: row.audit_result ?? null,
   }).select().single();
   if (error) return { ok: false, error: error.message };
   return { ok: true, row: data as Record<string, unknown> };

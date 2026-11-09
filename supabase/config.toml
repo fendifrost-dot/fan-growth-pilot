@@ -83,6 +83,11 @@ verify_jwt = false
 [functions.mcp-playlist-discovery]
 verify_jwt = false
 
+# Claude calls /oauth/token and /mcp with the connector bearer, not a Supabase JWT.
+# The gateway must not reject those requests before the function's own auth runs.
+[functions.mcp-sync-discovery]
+verify_jwt = false
+
 [functions.playlist-research]
 verify_jwt = false
 

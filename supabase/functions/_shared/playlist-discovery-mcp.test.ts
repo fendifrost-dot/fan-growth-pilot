@@ -61,9 +61,11 @@ import {
   issueAuthCode,
   exchangeToken,
   revokeToken,
+  resolveBearerActorKind,
   renderConsentPage,
   aghConsentUrl,
   REFRESH_TOKEN_MAX_LIFETIME_MS,
+  SYNC_DISCOVERY_SCOPE,
 } from "./mcp-oauth.ts";
 
 const DISCOVERY = "pd-secret-narrow-only";
@@ -220,14 +222,23 @@ function stubSb(
         String(row.code_challenge) !== String(args.p_expected_challenge)) {
         return { data: { ok: false, code: "invalid_grant", error: "pkce_failed" }, error: null };
       }
+      const scope = String(row.scope ?? "").trim() || "playlist_discovery";
+      const actor = scope === "sync_discovery"
+        ? "claude_sync_discovery"
+        : scope === "playlist_discovery"
+          ? "claude_playlist_discovery"
+          : null;
+      if (!actor) {
+        return { data: { ok: false, code: "invalid_scope", error: "unsupported scope" }, error: null };
+      }
       codes.splice(idx, 1);
       if (!tables.agh_mcp_oauth_tokens) tables.agh_mcp_oauth_tokens = [];
       tables.agh_mcp_oauth_tokens.push({
         token_hash: args.p_access_token_hash,
         refresh_token_hash: args.p_refresh_token_hash,
         client_id: args.p_client_id,
-        scope: "playlist_discovery",
-        actor_kind: "claude_playlist_discovery",
+        scope,
+        actor_kind: actor,
         authorized_by_user_id: row.authorized_by_user_id ?? null,
         expires_at: args.p_access_expires_at,
         refresh_expires_at: args.p_refresh_expires_at,
@@ -237,8 +248,8 @@ function stubSb(
         data: {
           ok: true,
           authorized_by_user_id: row.authorized_by_user_id ?? null,
-          scope: "playlist_discovery",
-          actor_kind: "claude_playlist_discovery",
+          scope,
+          actor_kind: actor,
         },
         error: null,
       };
@@ -265,7 +276,7 @@ function stubSb(
         refresh_token_hash: args.p_new_refresh_token_hash,
         client_id: args.p_client_id,
         scope: tok.scope,
-        actor_kind: "claude_playlist_discovery",
+        actor_kind: tok.actor_kind,
         authorized_by_user_id: tok.authorized_by_user_id ?? null,
         expires_at: args.p_access_expires_at,
         refresh_expires_at: preserved,
@@ -277,6 +288,7 @@ function stubSb(
           authorized_by_user_id: tok.authorized_by_user_id ?? null,
           refresh_expires_at: preserved,
           scope: tok.scope,
+          actor_kind: tok.actor_kind,
         },
         error: null,
       };
@@ -1290,6 +1302,7 @@ Deno.test("full OAuth authorization-code + PKCE + refresh rotation + revocation"
       code_verifier: verifier,
     });
     assertEquals(tok.status, 200, JSON.stringify(tok.data));
+    assertEquals(tok.data.scope, PLAYLIST_DISCOVERY_SCOPE);
     const access = String(tok.data.access_token);
     const refresh = String(tok.data.refresh_token);
     assert(Number(tok.data.refresh_expires_in) > 0);
@@ -1327,6 +1340,67 @@ Deno.test("full OAuth authorization-code + PKCE + refresh rotation + revocation"
     );
     void access;
     void sha256Hex;
+  });
+});
+
+Deno.test("sync OAuth code mints claude_sync_discovery and refresh keeps that actor", async () => {
+  await withEnv({ ARTIST_USER_ID: FENDI_ID, SUPABASE_URL: "https://vsemrziqxrrfcquxfnwd.supabase.co" }, async () => {
+    const tables: Record<string, Row[]> = {
+      agh_mcp_oauth_clients: [],
+      agh_mcp_oauth_codes: [],
+      agh_mcp_oauth_tokens: [],
+    };
+    const sb = stubSb(tables, { authUser: { id: FENDI_ID } });
+    const reg = await registerClient(sb, {
+      client_name: "Claude Sync Discovery",
+      redirect_uris: ["https://claude.ai/api/mcp/auth_callback"],
+    });
+    assertEquals(reg.status, 201);
+    const clientId = String(reg.data.client_id);
+    const clientSecret = String(reg.data.client_secret);
+    const verifier = "sync-pkce-verifier-value-1234567890";
+    const challenge = await pkceS256Challenge(verifier);
+    const issued = await issueAuthCode(sb, {
+      clientId,
+      redirectUri: "https://claude.ai/api/mcp/auth_callback",
+      codeChallenge: challenge,
+      codeChallengeMethod: "S256",
+      scope: SYNC_DISCOVERY_SCOPE,
+      authorizedByUserId: FENDI_ID,
+    });
+    assertEquals(issued.status, 200);
+    const tok = await exchangeToken(sb, {
+      grant_type: "authorization_code",
+      client_id: clientId,
+      client_secret: clientSecret,
+      code: String(issued.data.code),
+      redirect_uri: "https://claude.ai/api/mcp/auth_callback",
+      code_verifier: verifier,
+    });
+    assertEquals(tok.status, 200, JSON.stringify(tok.data));
+    assertEquals(tok.data.scope, "sync_discovery");
+    const access = String(tok.data.access_token);
+    const syncBearer = await resolveBearerActorKind(sb, `Bearer ${access}`, "claude_sync_discovery");
+    assertEquals(syncBearer.ok, true);
+    if (syncBearer.ok) assertEquals(syncBearer.scope, "sync_discovery");
+    const wrong = await resolveBearerActorKind(sb, `Bearer ${access}`, "claude_playlist_discovery");
+    assertEquals(wrong.ok, false);
+    if (!wrong.ok) assertEquals(wrong.error, "invalid_actor");
+
+    const refreshed = await exchangeToken(sb, {
+      grant_type: "refresh_token",
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: String(tok.data.refresh_token),
+    });
+    assertEquals(refreshed.status, 200, JSON.stringify(refreshed.data));
+    assertEquals(refreshed.data.scope, "sync_discovery");
+    const afterRefresh = await resolveBearerActorKind(
+      sb,
+      `Bearer ${String(refreshed.data.access_token)}`,
+      "claude_sync_discovery",
+    );
+    assertEquals(afterRefresh.ok, true);
   });
 });
 

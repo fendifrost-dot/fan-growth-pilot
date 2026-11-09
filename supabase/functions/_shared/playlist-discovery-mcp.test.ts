@@ -3794,3 +3794,177 @@ Deno.test("igHandleForDraft prefers the composed recipient, then the target, alw
   assertEquals(igHandleForDraft("https://instagram.com/x", { ig_curator_account: "" }), null);
   assertEquals(igHandleForDraft(undefined, {}), null);
 });
+
+// ---------------------------------------------------------------------------
+// Pair cooldown: a lapsed cooldown frees the pair; key shapes alias; verify-time
+// contact policy (2026-11-04 run log §6a/§6b/§8).
+// ---------------------------------------------------------------------------
+
+function pairFixture(opts: {
+  playlistId: string;
+  pitchLog: Row[];
+  trackName?: string;
+}) {
+  const trackId = "11111111-1111-1111-1111-111111111111";
+  const dnaId = "22222222-2222-2222-2222-222222222222";
+  const trackName = opts.trackName ?? "Song";
+  const sb = stubSb({
+    tracks: [{ id: trackId, name: trackName, approved_song_dna_version_id: dnaId }],
+    song_dna_versions: [{
+      id: dnaId,
+      track_id: trackId,
+      approval_state: "approved",
+      approved_lanes: ["rap_general"],
+      excluded_lanes: [],
+      short_pitch: "pitch",
+      primary_genre: "rap",
+    }],
+    playlist_targets: [{
+      playlist_id: opts.playlistId,
+      contact_method: "email",
+      submission_method: "email",
+      path_verified: true,
+      verification_status: "auto_verified",
+      curator_email: "ok@curator.test",
+      lane: "rap_general",
+    }],
+    outreach_drafts: [],
+    agh_handoff_records: [],
+    pitch_log: opts.pitchLog,
+  });
+  return { sb, trackId, dnaId, trackName };
+}
+
+const PAIR_CANDIDATE = (playlistId: string) => ({
+  playlist_id: playlistId,
+  lane: "rap_general",
+  source_evidence: "https://example.com/evidence",
+  submission_channel: "email",
+  curator_email: "ok@curator.test",
+});
+
+Deno.test("submit frees a pair whose pitch cooldown lapsed instead of stranding it as already pitched", async () => {
+  const playlistId = "0DAtAjCytSoXd6T42mP0E1";
+  const sentAt = new Date(Date.now() - 120 * 86_400_000).toISOString();
+  const lapsed = new Date(Date.now() - 30 * 86_400_000).toISOString();
+  const { sb, trackId } = pairFixture({
+    playlistId,
+    pitchLog: [{ id: "pl-lapsed", playlist_id: playlistId, track_name: "Song", status: "sent", sent_at: sentAt, pitched_at: sentAt, cooldown_until: lapsed }],
+  });
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: trackId,
+    candidates: [PAIR_CANDIDATE(playlistId)],
+  });
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals(res.data.duplicate_count, 0, JSON.stringify(res.data.duplicates));
+  assertEquals(res.data.verified_eligible_count, 1);
+  assertEquals(res.data.eligible_existing_playlist_ids, [playlistId]);
+  const accepted = (res.data.verified_eligible as Row[])[0];
+  assertEquals(accepted.classification, "existing_verified_eligible");
+  const prior = accepted.prior_pitch as Row;
+  assertEquals(prior.pitch_log_id, "pl-lapsed");
+  assertEquals(prior.cooldown_lapsed_at, new Date(lapsed).toISOString());
+});
+
+Deno.test("submit defers a pair while its cooldown is still running, computing expiry from sent_at like agh_contact_policy", async () => {
+  const playlistId = "0DAtAjCytSoXd6T42mP0E2";
+  // cooldown_until was stamped short/stale, but the send itself is only 10 days old:
+  // sent_at + 90d is still in the future, so the pair is cooling.
+  const sentAt = new Date(Date.now() - 10 * 86_400_000).toISOString();
+  const staleUntil = new Date(Date.now() - 1 * 86_400_000).toISOString();
+  const { sb, trackId } = pairFixture({
+    playlistId,
+    pitchLog: [{ id: "pl-cooling", playlist_id: playlistId, track_name: "Song", status: "sent", sent_at: sentAt, pitched_at: sentAt, cooldown_until: staleUntil }],
+  });
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: trackId,
+    candidates: [PAIR_CANDIDATE(playlistId)],
+  });
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals(res.data.verified_eligible_count, 0);
+  assertEquals(res.data.duplicate_count, 0);
+  const deferred = res.data.deferred as Row[];
+  assertEquals(deferred.length, 1);
+  assertEquals(deferred[0].code, "pair_cooldown");
+  const expected = new Date(new Date(sentAt).getTime() + 90 * 86_400_000).toISOString();
+  assertEquals(deferred[0].retry_after, expected);
+});
+
+Deno.test("submit finds a pitch logged under spotify:ID when the catalog key is bare (and vice versa)", async () => {
+  const bare = "0DAtAjCytSoXd6T42mP0E3";
+  const sentAt = new Date(Date.now() - 5 * 86_400_000).toISOString();
+  const until = new Date(Date.now() + 85 * 86_400_000).toISOString();
+  const { sb, trackId } = pairFixture({
+    playlistId: bare,
+    pitchLog: [{ id: "pl-prefixed", playlist_id: `spotify:${bare}`, track_name: "Song", status: "sent", sent_at: sentAt, pitched_at: sentAt, cooldown_until: until }],
+  });
+  // Caller may hand in any shape; the server resolves to the stored catalog key.
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: trackId,
+    candidates: [PAIR_CANDIDATE(`spotify:playlist:${bare}`)],
+  });
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals(res.data.verified_eligible_count, 0, "a cooling pair must not be reported eligible just because the log key shape differs");
+  const deferred = res.data.deferred as Row[];
+  assertEquals(deferred.length, 1, JSON.stringify(res.data));
+  assertEquals(deferred[0].code, "pair_cooldown");
+  assertEquals(deferred[0].playlist_id, bare);
+});
+
+Deno.test("submit fails closed on a sent pitch with no usable date", async () => {
+  const playlistId = "0DAtAjCytSoXd6T42mP0E4";
+  const { sb, trackId } = pairFixture({
+    playlistId,
+    pitchLog: [{ id: "pl-undated", playlist_id: playlistId, track_name: "Song", status: "sent", sent_at: null, pitched_at: null, cooldown_until: null }],
+  });
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: trackId,
+    candidates: [PAIR_CANDIDATE(playlistId)],
+  });
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals(res.data.verified_eligible_count, 0);
+  assertEquals(res.data.duplicate_count, 1);
+  const dup = (res.data.duplicates as Row[])[0];
+  assertEquals(dup.classification, "existing_pair_already_pitched");
+  assertEquals(dup.pitch_log_id, "pl-undated");
+});
+
+Deno.test("submit applies the draft-time contact policy at verify time: a refused curator is deferred, not verified_eligible", async () => {
+  const playlistId = "0DAtAjCytSoXd6T42mP0E5";
+  const { sb, trackId } = pairFixture({ playlistId, pitchLog: [] });
+  const until = new Date(Date.now() + 18 * 86_400_000).toISOString();
+  const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: trackId,
+    candidates: [PAIR_CANDIDATE(playlistId)],
+  }, {
+    contactPolicy: async (_sb, args) => {
+      assertEquals(args.playlist_id, playlistId);
+      assertEquals(args.channel, "email");
+      return { data: { ok: false, code: "cooldown_conflict", pitch_log_id: "pl-operator", cooldown_until: until }, error: null };
+    },
+  });
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  assertEquals(res.data.verified_eligible_count, 0);
+  assertEquals((res.data.eligible_existing_playlist_ids as string[]).length, 0);
+  const deferred = res.data.deferred as Row[];
+  assertEquals(deferred.length, 1);
+  assertEquals(deferred[0].code, "cooldown_conflict");
+  assertEquals(deferred[0].classification, "existing_policy_deferred");
+  assertEquals(deferred[0].retry_after, until);
+  assertEquals(deferred[0].pitch_log_id, "pl-operator");
+});
+
+Deno.test("submit keeps an eligible existing target eligible when the contact policy passes or cannot be read", async () => {
+  const playlistId = "0DAtAjCytSoXd6T42mP0E6";
+  const { sb, trackId } = pairFixture({ playlistId, pitchLog: [] });
+  const passing = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: trackId,
+    candidates: [PAIR_CANDIDATE(playlistId)],
+  }, { contactPolicy: async () => ({ data: { ok: true, code: "eligible" }, error: null }) });
+  assertEquals(passing.data.verified_eligible_count, 1, JSON.stringify(passing.data));
+  const unreadable = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
+    track_id: trackId,
+    candidates: [PAIR_CANDIDATE(playlistId)],
+  }, { contactPolicy: async () => ({ data: null, error: { message: "rpc unavailable" } }) });
+  assertEquals(unreadable.data.verified_eligible_count, 1, JSON.stringify(unreadable.data));
+});

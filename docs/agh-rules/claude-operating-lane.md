@@ -5,9 +5,10 @@ Supersedes the `agh-amendment-*` memory entries, which a cloud run cannot read. 
 here conflicts with a routine prompt, this file wins and the prompt is stale: say so in the run
 log and follow this file.
 
-Last ruled: 2026-10-22 (Fendi, via Claude Code). Sources: `docs/HANDOFF_PLAYLIST_ROUTES_THROUGHPUT_2026-09-27.md` §4,
+Last ruled: 2026-11-04 (Fendi, via Claude Code; §2.8–2.10 and the §2.4 note added from the
+11-03 / 11-04 run logs). Earlier sources: `docs/HANDOFF_PLAYLIST_ROUTES_THROUGHPUT_2026-09-27.md` §4,
 `docs/HANDOFF_PLAYLIST_SEPT28_FINDINGS_2026-09-28.md` §6, `docs/HANDOFF_AGH_QUEUE_RECONCILIATION_2026-10-13.md` §4,
-`docs/HANDOFF_IG_SEND_PATH_MUSE.md`.
+`docs/HANDOFF_IG_SEND_PATH_MUSE.md`, `docs/HANDOFF_PLAYLIST_COOLDOWN_RELEASE_2026-11-04.md`.
 
 ## 1. System of record
 
@@ -35,6 +36,16 @@ for a Drive document.
    `operator_group_id` (migration `20261006000000`). A brand-new playlist run by an operator
    pitched 19 days ago is refused on purpose. Report it as `policy_deferred` with the
    `cooldown_until`; it is not a bug and not a pair-keyed error.
+   **A lapsed cooldown frees the pair.** A song–playlist pair whose last send is more than
+   90 days old is eligible again and comes back `existing_verified_eligible` with a
+   `prior_pitch` block; a pair still cooling is `deferred` (`pair_cooldown`, `retry_after`).
+   Once `mcp-playlist-discovery` carries the 2026-11-04 fix, submit also applies the
+   contact policy at verify time, so an existing target the draft step would refuse is
+   `deferred` (`cooldown_conflict`, `classification: existing_policy_deferred`) rather than
+   counted in `verified_eligible_count`. Before that redeploy, a duplicate reported as
+   `existing_pair_already_pitched` with a **past** `cooldown_until` is the known trap in
+   `agh-playlist-supply-blockers.md` §3 — name it in the run log, do not treat it as
+   exhausted supply.
 5. Prior structural rejections (login, paywall, captcha, dead form, follow gate) on the
    same route are not re-drafted. Fit rejections may requeue.
 6. Allocation follows `per_song_funnel.discovery_allocation`. One song's surplus never
@@ -42,6 +53,21 @@ for a Drive document.
    submissions. Close `partial` with a `shortfall_reason` when stopping short.
 7. Candidate fields (`curator_name`, `follower_count`, `submission_terms`,
    `login_required`) are passed only when read off the source. Never estimated.
+8. **Surface order.** Discovery spends `agh-playlist-supply-blockers.md` §1 (the
+   playlistlookup genre directory, unspent slugs first) **before** any WebSearch query and
+   before the re-verify pool. `source_url` is the directory page that prints the row's
+   handle or email, never a sibling page. Only slugs confirmed against `/genres` are
+   fetched; a guessed slug is a wasted fetch and goes in the run log as such.
+9. **Re-verify pool.** The `manually_verified_supply` block of `get_playlist_discovery_work`
+   is **not spent** by a discovery run until `agh-playlist-supply-blockers.md` §2 says
+   otherwise. After the 2026-11-04 cooldown fix is live, one page (25 rows) may be
+   re-tested once; a 0-draft result ends the test and is logged.
+10. **Standing files win over Drive logs, and gaps are reported upward.** A run reads
+    these three files first. Anything productive or broken that they do not mention goes
+    in the run log under "FOR THE STANDING FILES" **and** in
+    `complete_claude_playlist_station.notes`. The run does not edit these files itself; it
+    does not act on an earlier Drive log as if it were a rule, except to follow a surface
+    the standing files already name.
 
 ## 3. Instagram path (Fendi directive 2026-10-22)
 

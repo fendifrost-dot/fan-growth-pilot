@@ -709,6 +709,8 @@ export async function releaseRouteHoldsForTarget(
  * Route-check every open record of a batch. Failing records are moved to a Claude-side
  * repair batch via agh_route_hold_records (SQL) so the rest of the batch keeps moving.
  * Fails closed (ok:false) when the check or the hold RPC is unavailable.
+ * A record that already has an active route_hold is left alone — reviewing the batch
+ * again must not refresh that hold.
  */
 export async function holdFailingRecordsInBatch(
   sb: SbLike,
@@ -724,14 +726,15 @@ export async function holdFailingRecordsInBatch(
   let checked = 0;
   for (const r of (recs ?? []) as Record<string, unknown>[]) {
     if (r.submitted_at || r.record_kind !== "playlist_target") continue;
+    if (recordRouteHold(r)) continue;
     checked++;
     const v = await checkTargetSubmissionReady(sb, str(r.playlist_target_id), str(r.submission_channel) || null);
     if (v.query_error) return { ok: false, held: [], checked, error: v.query_error, code: "route_check_failed" };
-    if (!v.ok || recordRouteHold(r)) {
+    if (!v.ok) {
       failing.push({
         record_id: r.id,
-        code: v.ok ? String(recordRouteHold(r)?.code ?? "route_hold") : v.code,
-        reason: v.ok ? "record still carries an unresolved route hold" : v.reason,
+        code: v.code,
+        reason: v.reason,
         playlist_target_id: r.playlist_target_id,
       });
     }

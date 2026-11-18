@@ -297,6 +297,8 @@ Deno.test("muse_ig_receipt may only record an approved Instagram DM receipt", as
       "review_queue",
       "approve_handoff_records",
       "review_handoff_records",
+      "flag_paid_for_fendi",
+      "clear_paid_for_fendi",
       "mark_manual_form_submitted",
       "promote_stranded_claude_batches",
       "playlist_pipeline_report",

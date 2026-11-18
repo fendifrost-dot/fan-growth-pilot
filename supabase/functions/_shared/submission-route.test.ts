@@ -8,6 +8,7 @@ import {
   assessSubmissionRoute,
   checkTargetSubmissionReady,
   evidenceNegatesRoute,
+  holdFailingRecordsInBatch,
   releaseRouteHoldsForTarget,
   routeActionability,
   submissionTerms,
@@ -20,6 +21,7 @@ import {
   markManualFormSubmitted,
   reviewHandoffBatch,
   reviewHandoffRecords,
+  runHandoffAction,
 } from "./handoff-queues.ts";
 import { resolveOpsActor } from "./ops-actors.ts";
 import { playlistDiscoveryActor } from "./playlist-discovery-mcp.ts";
@@ -604,4 +606,234 @@ Deno.test("batch reject: fit reason blocked when a record's lane is approved; ot
     "AWAITING_GROK_REVIEW->GROK_REVIEWED",
     "GROK_REVIEWED->REJECTED_BY_GROK",
   ]);
+});
+
+Deno.test("live migration records record-level review and the confirmed-free host exception", async () => {
+  const sql = await Deno.readTextFile(
+    new URL("../../migrations/20261118190000_live_record_review_and_confirmed_free_fee.sql", import.meta.url),
+  );
+  assert(sql.includes("CREATE OR REPLACE FUNCTION public.agh_review_handoff_records"));
+  assert(sql.includes("duplicate_open_record"));
+  assert(sql.includes("record_review_source_batch"));
+  assert(sql.includes("fendi_draft_protected"));
+  assert(sql.includes("soundplate_frozen"));
+  assert(sql.includes("paid_for_fendi"));
+  assert(sql.includes("create or replace function public.agh_positive_submission_fee"));
+  assert(sql.includes("p_submission_cost, ''))) = 'free'"));
+  assert(sql.includes("p_form_cost, ''))) = 'free'"));
+  assert(sql.includes("public.agh_host_is_paid_platform(public.agh_url_host(p_form_url))"));
+});
+
+Deno.test("approve checks readiness on the record channel (instagram DM is not an email route)", async () => {
+  const tables = fitTables();
+  tables.playlist_targets.push(
+    {
+      playlist_id: "p-ig",
+      lane: "rap_trap_hype",
+      verification_status: "auto_verified",
+      path_verified: false,
+      is_active: true,
+      contact_method: "email",
+      submission_method: "email",
+      curator_email: null,
+      ig_curator_account: "@playlist.curator",
+      ig_source_evidence: "IG bio says DM for playlist submissions",
+    },
+    {
+      playlist_id: "p-mail",
+      lane: "rap_trap_hype",
+      verification_status: "auto_verified",
+      path_verified: false,
+      is_active: true,
+      contact_method: "email",
+      submission_method: "email",
+      curator_email: null,
+    },
+  );
+  tables.agh_handoff_records.push(
+    {
+      id: "aa0ab6e5",
+      batch_id: "b-m",
+      track_id: "meditate",
+      playlist_target_id: "p-ig",
+      queue_state: "AWAITING_GROK_REVIEW",
+      submission_channel: "instagram_dm",
+      packet: {},
+    },
+    {
+      id: "r-mail",
+      batch_id: "b-m",
+      track_id: "meditate",
+      playlist_target_id: "p-mail",
+      queue_state: "AWAITING_GROK_REVIEW",
+      submission_channel: "email",
+      packet: {},
+    },
+  );
+  const calls: Row[] = [];
+  const sb = stubSb(tables, {
+    agh_review_handoff_records: (args) => (calls.push(args), { data: { ok: true, applied_count: 1 }, error: null }),
+  });
+  const res = await reviewHandoffRecords(sb, {
+    batch_id: "b-m",
+    decisions: [
+      { record_id: "aa0ab6e5", decision: "approve", verdict: "PASS", reason: "IG handle is the route" },
+      { record_id: "r-mail", decision: "approve", verdict: "PASS", reason: "email still needs an address" },
+    ],
+  }, grokActor());
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  const conflicts = res.data.conflicts as Row[];
+  assertEquals(conflicts.map((c) => c.record_id), ["r-mail"]);
+  assertEquals(conflicts[0].code, "missing_curator_email");
+  assertEquals(calls.length, 1);
+  assertEquals((calls[0].p_decisions as Row[]).map((d) => d.record_id), ["aa0ab6e5"]);
+});
+
+Deno.test("holdFailingRecordsInBatch skips records that already have an active hold", async () => {
+  const heldAt = "2026-11-01T00:00:00.000Z";
+  const heldPacket = { route_hold: { code: "missing_form_url", reason: "no form", at: heldAt } };
+  const tables: Record<string, Row[]> = {
+    agh_handoff_records: [
+      { id: "r-new", batch_id: "b", record_kind: "playlist_target", playlist_target_id: "t-bad", submission_channel: "web_form", packet: {}, submitted_at: null },
+      { id: "r-held", batch_id: "b", record_kind: "playlist_target", playlist_target_id: "t-bad", submission_channel: "web_form", packet: { ...heldPacket, route_hold: { ...heldPacket.route_hold } }, submitted_at: null },
+      { id: "r-held-ok", batch_id: "b", record_kind: "playlist_target", playlist_target_id: "t-ok", submission_channel: "web_form", packet: { route_hold: { code: "missing_form_url", reason: "no form", at: heldAt } }, submitted_at: null },
+    ],
+    playlist_targets: [
+      webFormTarget({ playlist_id: "t-bad", form_url: null, form_source_evidence: NO_ROUTE_EVIDENCE }),
+      webFormTarget({ playlist_id: "t-ok" }),
+    ],
+  };
+  const calls: Row[] = [];
+  const sb = stubSb(tables, {
+    agh_route_hold_records: (args) => {
+      calls.push(args);
+      return { data: { ok: true, held: (args.p_items as Row[]).map((i) => ({ record_id: i.record_id })) }, error: null };
+    },
+  });
+  const first = await holdFailingRecordsInBatch(sb, "b", "grok_playlist_control");
+  assertEquals(first.ok, true);
+  assertEquals(calls.length, 1);
+  assertEquals((calls[0].p_items as Row[]).map((i) => i.record_id), ["r-new"]);
+  assertEquals((tables.agh_handoff_records[1].packet as Row).route_hold, heldPacket.route_hold);
+  assertEquals(((tables.agh_handoff_records[2].packet as Row).route_hold as Row).at, heldAt);
+
+  tables.agh_handoff_records[0].packet = { route_hold: { code: "missing_form_url", at: "stamped-once" } };
+  const again = await holdFailingRecordsInBatch(sb, "b", "grok_playlist_control");
+  assertEquals(again.ok, true);
+  assertEquals(again.held, []);
+  assertEquals(calls.length, 1);
+  assertEquals(((tables.agh_handoff_records[0].packet as Row).route_hold as Row).at, "stamped-once");
+});
+
+function grokRequest(): Request {
+  Deno.env.set("GROK_PLAYLIST_CONTROL_SECRET", "grok-secret");
+  return new Request("https://example.test/", {
+    method: "POST",
+    headers: { "x-grok-playlist-control-secret": "grok-secret" },
+  });
+}
+
+Deno.test("flag_paid_for_fendi stamps the queue key and form_cost, and clear keeps an audit trail", async () => {
+  const draft = { id: "draft-fendi", generated_by: "fendi", subject: "leave this draft alone" };
+  const tables: Record<string, Row[]> = {
+    agh_handoff_records: [{
+      id: "rec-paid",
+      playlist_target_id: "p-paid",
+      queue_state: "AWAITING_GROK_REVIEW",
+      submitted_at: null,
+      outreach_draft_id: "draft-fendi",
+      packet: { curator_note: "keep" },
+    }],
+    playlist_targets: [{ playlist_id: "p-paid", form_cost: "free", curator_email: "curator@label.example", is_active: true }],
+    outreach_drafts: [{ ...draft }],
+    pitch_log: [],
+  };
+  const draftBefore = JSON.stringify(tables.outreach_drafts);
+  const rpcs: string[] = [];
+  const sb = stubSb(tables, {});
+  const origRpc = sb.rpc;
+  sb.rpc = (name: string, args: Row = {}) => {
+    rpcs.push(name);
+    return origRpc(name, args);
+  };
+
+  const denied = await runHandoffAction(
+    "flag_paid_for_fendi",
+    { record_id: "rec-paid", price: "$12", notes: "curator charges" },
+    sb,
+    { kind: "claude_playlist_discovery" },
+    null,
+  );
+  assertEquals(denied.status, 403);
+  assertEquals(sb._writes.length, 0);
+
+  const missing = await runHandoffAction("flag_paid_for_fendi", { record_id: "rec-paid" }, sb, null, grokRequest());
+  assertEquals(missing.status, 400);
+  assertEquals(missing.data.code, "bad_request");
+
+  const notFlagged = await runHandoffAction("clear_paid_for_fendi", { record_id: "rec-paid", notes: "nothing to clear" }, sb, null, grokRequest());
+  assertEquals(notFlagged.status, 409);
+  assertEquals(notFlagged.data.code, "not_flagged");
+
+  const flagged = await runHandoffAction(
+    "flag_paid_for_fendi",
+    { record_id: "rec-paid", price: "$12", notes: "curator charges $12" },
+    sb,
+    null,
+    grokRequest(),
+  );
+  assertEquals(flagged.status, 200, JSON.stringify(flagged.data));
+  assertEquals(flagged.data.sent, false);
+  assertEquals(flagged.data.submitted, false);
+  assertEquals(flagged.data.paid, false);
+  const packet = tables.agh_handoff_records[0].packet as Row;
+  const hold = packet.paid_for_fendi as Row;
+  assertEquals(hold.status, "awaiting_fendi_decision");
+  assertEquals(hold.by, "grok_playlist_control");
+  assertEquals(hold.reason, "curator charges $12");
+  assertEquals(hold.price, "$12");
+  assertEquals(hold.prior_form_cost, "free");
+  assertEquals(packet.curator_note, "keep");
+  assertEquals(tables.playlist_targets[0].form_cost, "$12");
+  assertEquals(tables.playlist_targets[0].curator_email, "curator@label.example");
+  assertEquals(tables.agh_handoff_records[0].queue_state, "AWAITING_GROK_REVIEW");
+  assertEquals(tables.agh_handoff_records[0].submitted_at, null);
+  assert(("paid_for_fendi" in packet), "queue view selects packet ? paid_for_fendi");
+
+  const cleared = await runHandoffAction(
+    "clear_paid_for_fendi",
+    { record_id: "rec-paid", notes: "Fendi said no" },
+    sb,
+    null,
+    grokRequest(),
+  );
+  assertEquals(cleared.status, 200, JSON.stringify(cleared.data));
+  assertEquals(cleared.data.sent, false);
+  assertEquals(cleared.data.submitted, false);
+  assertEquals(cleared.data.paid, false);
+  assertEquals(cleared.data.form_cost_restored, true);
+  const after = tables.agh_handoff_records[0].packet as Row;
+  assertEquals("paid_for_fendi" in after, false);
+  const trail = after.paid_for_fendi_cleared as Row[];
+  assertEquals(trail.length, 1);
+  assertEquals((trail[0].prior as Row).status, "awaiting_fendi_decision");
+  assertEquals((trail[0].prior as Row).price, "$12");
+  assertEquals(trail[0].notes, "Fendi said no");
+  assertEquals(trail[0].by, "grok_playlist_control");
+  const decisions = (after.review_history as Row[]).map((h) => h.decision);
+  assertEquals(decisions, ["flag_paid_for_fendi", "clear_paid_for_fendi"]);
+  assertEquals(tables.playlist_targets[0].form_cost, "free");
+  assertEquals(tables.agh_handoff_records[0].queue_state, "AWAITING_GROK_REVIEW");
+  assertEquals(tables.agh_handoff_records[0].submitted_at, null);
+  assertEquals(JSON.stringify(tables.outreach_drafts), draftBefore);
+  assertEquals(tables.pitch_log.length, 0);
+  assertEquals(rpcs, []);
+  const recordWrites = (sb._writes as Row[]).filter((w) => w.table === "agh_handoff_records");
+  assert(recordWrites.length > 0);
+  for (const w of recordWrites) {
+    const row = w.row as Row;
+    assertEquals(row.queue_state, undefined);
+    assertEquals(row.submitted_at, undefined);
+  }
+  assertEquals((sb._writes as Row[]).some((w) => w.table === "outreach_drafts" || w.table === "pitch_log"), false);
 });

@@ -402,6 +402,13 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "agh_manual_submission_receipts_handoff_record_id_fkey"
+            columns: ["handoff_record_id"]
+            isOneToOne: true
+            referencedRelation: "agh_paid_for_fendi_queue"
+            referencedColumns: ["handoff_record_id"]
+          },
+          {
             foreignKeyName: "agh_manual_submission_receipts_pitch_log_id_fkey"
             columns: ["pitch_log_id"]
             isOneToOne: true
@@ -6921,6 +6928,49 @@ export type Database = {
       }
     }
     Views: {
+      agh_paid_for_fendi_queue: {
+        Row: {
+          batch_id: string | null
+          curator_email: string | null
+          curator_name: string | null
+          follower_count: number | null
+          form_cost: string | null
+          form_url: string | null
+          handoff_record_id: string | null
+          hold: Json | null
+          lane: string | null
+          playlist_name: string | null
+          playlist_target_id: string | null
+          queue_state: string | null
+          submission_channel: string | null
+          submission_cost: string | null
+          submission_url: string | null
+          track_id: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agh_handoff_records_batch_id_fkey"
+            columns: ["batch_id"]
+            isOneToOne: false
+            referencedRelation: "agh_handoff_batches"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agh_handoff_records_playlist_target_fkey"
+            columns: ["playlist_target_id"]
+            isOneToOne: false
+            referencedRelation: "playlist_targets"
+            referencedColumns: ["playlist_id"]
+          },
+          {
+            foreignKeyName: "agh_handoff_records_track_fkey"
+            columns: ["track_id"]
+            isOneToOne: false
+            referencedRelation: "tracks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       email_campaign_stats: {
         Row: {
           completed_at: string | null

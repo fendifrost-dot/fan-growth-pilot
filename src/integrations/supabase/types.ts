@@ -60,6 +60,7 @@ export type Database = {
         Row: {
           approved_by: string | null
           approved_by_label: string | null
+          approved_count: number
           batch_kind: string
           business_date_ct: string | null
           created_at: string
@@ -68,32 +69,41 @@ export type Database = {
           discovery_profile_ids: string[]
           drafted_by: string | null
           drafted_by_label: string | null
+          drafted_count: number
           id: string
           notes: string | null
+          opportunity_count: number
           payload: Json
           placement_checked_by: string | null
           placement_checked_by_label: string | null
           queue_state: string
+          raw_count: number
           record_count: number
           rejected_by: string | null
           rejected_by_label: string | null
+          rejected_count: number
           response_checked_by: string | null
           response_checked_by_label: string | null
+          response_count: number
           reviewed_by: string | null
           reviewed_by_label: string | null
           sent_by: string | null
           sent_by_label: string | null
           song_dna_version_id: string | null
+          source_evidence_summary: string | null
           station_run_id: string | null
+          submitted_count: number
           track_id: string | null
           updated_at: string
           upstream_batch_id: string | null
           verified_by: string | null
           verified_by_label: string | null
+          verified_count: number
         }
         Insert: {
           approved_by?: string | null
           approved_by_label?: string | null
+          approved_count?: number
           batch_kind?: string
           business_date_ct?: string | null
           created_at?: string
@@ -102,32 +112,41 @@ export type Database = {
           discovery_profile_ids?: string[]
           drafted_by?: string | null
           drafted_by_label?: string | null
+          drafted_count?: number
           id?: string
           notes?: string | null
+          opportunity_count?: number
           payload?: Json
           placement_checked_by?: string | null
           placement_checked_by_label?: string | null
           queue_state?: string
+          raw_count?: number
           record_count?: number
           rejected_by?: string | null
           rejected_by_label?: string | null
+          rejected_count?: number
           response_checked_by?: string | null
           response_checked_by_label?: string | null
+          response_count?: number
           reviewed_by?: string | null
           reviewed_by_label?: string | null
           sent_by?: string | null
           sent_by_label?: string | null
           song_dna_version_id?: string | null
+          source_evidence_summary?: string | null
           station_run_id?: string | null
+          submitted_count?: number
           track_id?: string | null
           updated_at?: string
           upstream_batch_id?: string | null
           verified_by?: string | null
           verified_by_label?: string | null
+          verified_count?: number
         }
         Update: {
           approved_by?: string | null
           approved_by_label?: string | null
+          approved_count?: number
           batch_kind?: string
           business_date_ct?: string | null
           created_at?: string
@@ -136,28 +155,36 @@ export type Database = {
           discovery_profile_ids?: string[]
           drafted_by?: string | null
           drafted_by_label?: string | null
+          drafted_count?: number
           id?: string
           notes?: string | null
+          opportunity_count?: number
           payload?: Json
           placement_checked_by?: string | null
           placement_checked_by_label?: string | null
           queue_state?: string
+          raw_count?: number
           record_count?: number
           rejected_by?: string | null
           rejected_by_label?: string | null
+          rejected_count?: number
           response_checked_by?: string | null
           response_checked_by_label?: string | null
+          response_count?: number
           reviewed_by?: string | null
           reviewed_by_label?: string | null
           sent_by?: string | null
           sent_by_label?: string | null
           song_dna_version_id?: string | null
+          source_evidence_summary?: string | null
           station_run_id?: string | null
+          submitted_count?: number
           track_id?: string | null
           updated_at?: string
           upstream_batch_id?: string | null
           verified_by?: string | null
           verified_by_label?: string | null
+          verified_count?: number
         }
         Relationships: [
           {

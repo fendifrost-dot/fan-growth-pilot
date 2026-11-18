@@ -515,6 +515,9 @@ export const ACTION_SPEC: Record<string, ActionSpec> = {
   review_handoff_records: { cls: 'capability', capability: 'review_handoff_batch', surface: 'outreach-write' },
   approve_handoff_records: { cls: 'capability', capability: 'approve_playlist_drafts', surface: 'outreach-write' },
   reject_handoff_records: { cls: 'capability', capability: 'reject_playlist_drafts', surface: 'outreach-write' },
+  // Flag only. Same review capability as review_handoff_records. Never sends, submits, or pays.
+  flag_paid_for_fendi: { cls: 'capability', capability: 'review_handoff_batch', surface: 'outreach-write' },
+  clear_paid_for_fendi: { cls: 'capability', capability: 'review_handoff_batch', surface: 'outreach-write' },
   get_quota: { cls: 'capability', capability: 'read_ops_metrics', surface: 'outreach-write' },
   list_pitch_logs: { cls: 'capability', capability: 'read_playlist_ops', surface: 'outreach-write' },
   pipeline_health: { cls: 'capability', capability: 'read_playlist_ops', surface: 'outreach-write' },

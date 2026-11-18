@@ -68,6 +68,8 @@ export const HANDOFF_ACTIONS = [
   "review_handoff_records",
   "approve_handoff_records",
   "reject_handoff_records",
+  "flag_paid_for_fendi",
+  "clear_paid_for_fendi",
   "list_web_form_handoffs",
 ] as const;
 
@@ -1993,7 +1995,7 @@ export async function reviewHandoffRecords(
 
   const { data: recs, error: rErr } = await sb
     .from("agh_handoff_records")
-    .select("id, batch_id, track_id, playlist_target_id, queue_state")
+    .select("id, batch_id, track_id, playlist_target_id, queue_state, submission_channel")
     .eq("batch_id", batchId);
   if (rErr) return { status: 500, data: { error: rErr.message, code: "db_error" } };
   const recRows = (recs ?? []) as Record<string, unknown>[];
@@ -2014,7 +2016,12 @@ export async function reviewHandoffRecords(
         conflicts.push({ record_id: recordId, code: "pass_review_required" }); continue;
       }
       const record = recRows.find(r => String(r.id) === recordId);
-      const ready = await checkTargetSubmissionReady(sb, String(record?.playlist_target_id ?? ""));
+      // Readiness follows the record's channel. Falling through to the target's
+      // contact_method treats an Instagram DM as email and returns missing_curator_email.
+      const channel = record?.submission_channel != null && String(record.submission_channel).trim() !== ""
+        ? String(record.submission_channel)
+        : null;
+      const ready = await checkTargetSubmissionReady(sb, String(record?.playlist_target_id ?? ""), channel);
       if (!ready.ok) { conflicts.push({ record_id: recordId, code: ready.code, reason: ready.reason }); continue; }
     }
     if (decision === "reject") {
@@ -2311,6 +2318,217 @@ export async function promoteStrandedClaudeBatches(
   };
 }
 
+function trimmedText(value: unknown, max: number): string | null {
+  if (value == null) return null;
+  const text = String(value).trim();
+  return text ? text.slice(0, max) : null;
+}
+
+/**
+ * Playlist Control flags a record as paid so Fendi can decide.
+ * Stamps packet.paid_for_fendi the same way review does (that key is what
+ * agh_paid_for_fendi_queue selects) and writes the price onto the target's
+ * form_cost. Does not approve, send, submit, pay, or touch outreach_drafts.
+ */
+async function flagPaidForFendi(
+  sb: SupabaseClient,
+  body: Record<string, unknown>,
+  ops: OpsActor,
+): Promise<RunResult> {
+  const denied = denyNonFinalAuthority(ops);
+  if (denied) return denied;
+  const clean = stripSpoofedAttribution(body);
+  const recordId = String(clean.record_id ?? "").trim();
+  if (!recordId) return { status: 400, data: { error: "record_id required", code: "bad_request" } };
+  if (typeof clean.price !== "string" && typeof clean.price !== "number") {
+    return { status: 400, data: { error: "price required", code: "bad_request" } };
+  }
+  const price = String(clean.price).trim().slice(0, 200);
+  if (!price) return { status: 400, data: { error: "price required", code: "bad_request" } };
+  const notes = trimmedText(clean.notes, 2000);
+
+  const { data: rec, error } = await sb
+    .from("agh_handoff_records")
+    .select("id, playlist_target_id, packet, submitted_at, queue_state, updated_at")
+    .eq("id", recordId)
+    .maybeSingle();
+  if (error) return { status: 500, data: { error: error.message, code: "db_error" } };
+  if (!rec) return { status: 404, data: { error: "record not found", code: "not_found" } };
+  if (rec.submitted_at) {
+    return { status: 409, data: { error: "record already submitted", code: "already_submitted" } };
+  }
+  const playlistId = String(rec.playlist_target_id ?? "").trim();
+  if (!playlistId) {
+    return { status: 422, data: { error: "record has no playlist target", code: "missing_playlist_id" } };
+  }
+  const { data: target, error: tErr } = await sb
+    .from("playlist_targets")
+    .select("playlist_id, form_cost")
+    .eq("playlist_id", playlistId)
+    .maybeSingle();
+  if (tErr) return { status: 500, data: { error: tErr.message, code: "db_error" } };
+  if (!target) return { status: 422, data: { error: "playlist target not found", code: "target_missing" } };
+
+  const attr = attributionFrom(ops);
+  const at = new Date().toISOString();
+  const priorPacket = rec.packet ?? {};
+  const packet = { ...packetObject(rec.packet) };
+  const previous = packetObject(packet.paid_for_fendi);
+  if (Object.keys(previous).length) {
+    const history = Array.isArray(packet.paid_for_fendi_history) ? [...packet.paid_for_fendi_history] : [];
+    history.push(previous);
+    packet.paid_for_fendi_history = history;
+  }
+  const stamp = {
+    at,
+    by: attr.actor_kind,
+    reason: notes,
+    status: "awaiting_fendi_decision",
+    price,
+    prior_form_cost: target.form_cost ?? null,
+  };
+  const reviewHistory = Array.isArray(packet.review_history) ? [...packet.review_history] : [];
+  reviewHistory.push({
+    decision: "flag_paid_for_fendi",
+    reason: notes,
+    by: attr.actor_kind,
+    by_label: attr.actor_label,
+    at,
+    from_state: rec.queue_state ?? null,
+    price,
+  });
+  packet.paid_for_fendi = stamp;
+  packet.review_history = reviewHistory;
+
+  const { error: recErr } = await sb
+    .from("agh_handoff_records")
+    .update({ packet, updated_at: at })
+    .eq("id", recordId);
+  if (recErr) return { status: 500, data: { error: recErr.message, code: "db_error" } };
+
+  const { error: costErr } = await sb
+    .from("playlist_targets")
+    .update({ form_cost: price })
+    .eq("playlist_id", playlistId);
+  if (costErr) {
+    await sb.from("agh_handoff_records").update({
+      packet: priorPacket,
+      updated_at: rec.updated_at ?? at,
+    }).eq("id", recordId);
+    return { status: 500, data: { error: costErr.message, code: "db_error" } };
+  }
+
+  return {
+    status: 200,
+    data: {
+      ok: true,
+      record_id: recordId,
+      playlist_target_id: playlistId,
+      paid_for_fendi: stamp,
+      form_cost: price,
+      sent: false,
+      submitted: false,
+      paid: false,
+    },
+  };
+}
+
+/**
+ * Removes packet.paid_for_fendi so the record leaves agh_paid_for_fendi_queue,
+ * keeps the stamp on packet.paid_for_fendi_cleared, and restores form_cost when
+ * this flag wrote it. Does not send, submit, pay, or touch outreach_drafts.
+ */
+async function clearPaidForFendi(
+  sb: SupabaseClient,
+  body: Record<string, unknown>,
+  ops: OpsActor,
+): Promise<RunResult> {
+  const denied = denyNonFinalAuthority(ops);
+  if (denied) return denied;
+  const clean = stripSpoofedAttribution(body);
+  const recordId = String(clean.record_id ?? "").trim();
+  if (!recordId) return { status: 400, data: { error: "record_id required", code: "bad_request" } };
+  const notes = trimmedText(clean.notes, 2000);
+
+  const { data: rec, error } = await sb
+    .from("agh_handoff_records")
+    .select("id, playlist_target_id, packet, queue_state, updated_at")
+    .eq("id", recordId)
+    .maybeSingle();
+  if (error) return { status: 500, data: { error: error.message, code: "db_error" } };
+  if (!rec) return { status: 404, data: { error: "record not found", code: "not_found" } };
+  const priorPacket = rec.packet ?? {};
+  const packet = { ...packetObject(rec.packet) };
+  const prior = packet.paid_for_fendi;
+  if (!prior || typeof prior !== "object" || Array.isArray(prior)) {
+    return { status: 409, data: { error: "record is not flagged paid_for_fendi", code: "not_flagged" } };
+  }
+  delete packet.paid_for_fendi;
+  const at = new Date().toISOString();
+  const attr = attributionFrom(ops);
+  const entry = {
+    at,
+    by: attr.actor_kind,
+    by_label: attr.actor_label,
+    notes,
+    prior,
+  };
+  const existing = packet.paid_for_fendi_cleared;
+  const trail = Array.isArray(existing) ? [...existing] : existing ? [existing] : [];
+  trail.push(entry);
+  packet.paid_for_fendi_cleared = trail;
+  const reviewHistory = Array.isArray(packet.review_history) ? [...packet.review_history] : [];
+  reviewHistory.push({
+    decision: "clear_paid_for_fendi",
+    reason: notes,
+    by: attr.actor_kind,
+    by_label: attr.actor_label,
+    at,
+    from_state: rec.queue_state ?? null,
+  });
+  packet.review_history = reviewHistory;
+
+  const { error: recErr } = await sb
+    .from("agh_handoff_records")
+    .update({ packet, updated_at: at })
+    .eq("id", recordId);
+  if (recErr) return { status: 500, data: { error: recErr.message, code: "db_error" } };
+
+  let formCostRestored = false;
+  let formCost: unknown = undefined;
+  const stamp = prior as Record<string, unknown>;
+  const playlistId = String(rec.playlist_target_id ?? "").trim();
+  if (playlistId && Object.prototype.hasOwnProperty.call(stamp, "prior_form_cost")) {
+    formCost = stamp.prior_form_cost ?? null;
+    const { error: costErr } = await sb
+      .from("playlist_targets")
+      .update({ form_cost: formCost })
+      .eq("playlist_id", playlistId);
+    if (costErr) {
+      await sb.from("agh_handoff_records").update({
+        packet: priorPacket,
+        updated_at: rec.updated_at ?? at,
+      }).eq("id", recordId);
+      return { status: 500, data: { error: costErr.message, code: "db_error" } };
+    }
+    formCostRestored = true;
+  }
+
+  return {
+    status: 200,
+    data: {
+      ok: true,
+      record_id: recordId,
+      cleared: true,
+      form_cost_restored: formCostRestored,
+      form_cost: formCostRestored ? formCost : null,
+      sent: false,
+      submitted: false,
+      paid: false,
+    },
+  };
+}
+
 export async function runHandoffAction(
   action: string,
   body: Record<string, unknown>,
@@ -2384,6 +2602,10 @@ export async function runHandoffAction(
         .map((d: Record<string, unknown>) => ({ ...d, decision: action === "approve_handoff_records" ? "approve" : "reject" })) }, ops);
     case "review_handoff_records":
       return reviewHandoffRecords(sb, body, ops);
+    case "flag_paid_for_fendi":
+      return flagPaidForFendi(sb, body, ops);
+    case "clear_paid_for_fendi":
+      return clearPaidForFendi(sb, body, ops);
     case "list_web_form_handoffs":
       return listWebFormHandoffs(sb, body, ops);
     case "mark_manual_form_submitted":

@@ -212,7 +212,7 @@ Deno.test("Claude can research / verify / categorize / draft; cannot approve or 
       assert(d.ok && d.opsActor.kind === "claude");
     }
 
-    for (const action of ["approve_draft", "send_campaign", "activate_campaign", "approve_song_dna"]) {
+    for (const action of ["approve_draft", "send_campaign", "activate_campaign", "approve_song_dna", "flag_paid_for_fendi", "clear_paid_for_fendi"]) {
       const d = await authorizeAction(action, req(headers), stubSb(null, false));
       assertEquals(d.ok, false, `Claude must be denied ${action}`);
     }
@@ -222,11 +222,13 @@ Deno.test("Claude can research / verify / categorize / draft; cannot approve or 
 Deno.test("Grok can review/approve/send; cannot approve Song DNA / campaigns / spending surfaces", async () => {
   await withEnv({ GROK_PLAYLIST_CONTROL_SECRET: GROK }, async () => {
     const headers = { "x-grok-playlist-control-secret": GROK };
-    for (const action of ["approve_draft", "send_campaign", "mark_pitch_response"]) {
+    for (const action of ["approve_draft", "send_campaign", "mark_pitch_response", "flag_paid_for_fendi", "clear_paid_for_fendi"]) {
       const d = await authorizeAction(action, req(headers), stubSb(null, false));
       assert(d.ok, `Grok should be allowed ${action}: ${JSON.stringify(d)}`);
       assert(d.ok && d.opsActor.kind === "grok_playlist_control");
     }
+    assertEquals(requiredCapabilityForAction("flag_paid_for_fendi"), requiredCapabilityForAction("review_handoff_records"));
+    assertEquals(requiredCapabilityForAction("clear_paid_for_fendi"), "review_handoff_batch");
     for (const action of [
       "approve_song_dna",
       "activate_campaign",

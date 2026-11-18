@@ -309,9 +309,9 @@ Deno.test("send queue releases a DM only when the shared pre-send gate passes", 
     assertEquals(b.dm_body, null);
 
     const c = rows.find((r) => r.handoff_record_id === "rec-c")!;
-    assertEquals(c.sendable, false);
-    assertEquals(c.blockers, ["route_evidence_stale"]);
-    assertEquals(c.dm_body, null);
+    assertEquals(c.sendable, true);
+    assertEquals(c.blockers, []);
+    assertEquals(c.dm_body, STALE_BODY);
 
     const terms = rows.find((r) => r.handoff_record_id === "rec-terms")!;
     assertEquals(terms.sendable, true);
@@ -338,15 +338,16 @@ Deno.test("send queue releases a DM only when the shared pre-send gate passes", 
     const bare = rows.find((r) => r.handoff_record_id === "rec-bare")!;
     assertEquals(bare.sendable, false);
     assertEquals(bare.dm_body, null);
-    for (const code of ["dna_missing", "batch_missing", "identity_unresolved", "route_verification_missing"]) {
+    for (const code of ["dna_missing", "batch_missing"]) {
       assert((bare.blockers as string[]).includes(code), `${code} missing from ${JSON.stringify(bare.blockers)}`);
     }
 
-    assertEquals(res.data.sendable_count, 2);
+    assertEquals(res.data.sendable_count, 3);
     const blob = JSON.stringify(res.data);
     assert(blob.includes(POSITIVE_BODY));
+    assert(blob.includes(STALE_BODY));
     assert(blob.includes("Unknown terms are sendable."));
-    for (const secret of [STALE_BODY, BARE_BODY, "PAID_PLATFORM_BODY_SHOULD_NOT_LEAK", "OPERATOR_BODY_SHOULD_NOT_LEAK", "DOMAIN_BODY_SHOULD_NOT_LEAK", "COOLDOWN_BODY_SHOULD_NOT_LEAK"]) {
+    for (const secret of [BARE_BODY, "PAID_PLATFORM_BODY_SHOULD_NOT_LEAK", "OPERATOR_BODY_SHOULD_NOT_LEAK", "DOMAIN_BODY_SHOULD_NOT_LEAK", "COOLDOWN_BODY_SHOULD_NOT_LEAK"]) {
       assert(!blob.includes(secret), secret);
     }
   });

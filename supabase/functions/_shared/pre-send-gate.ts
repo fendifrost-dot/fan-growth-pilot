@@ -6,14 +6,16 @@
  * `sendable` is true — a refusal never echoes a body, subject, or recipient.
  *
  * Route freshness is PRE_SEND_ROUTE_FRESHNESS_MS (7 days), the same window as
- * playlist discovery's ROUTE_PROOF_MAX_AGE_MS. A stamp exactly that old is
- * still fresh; one millisecond older is stale.
+ * playlist discovery's ROUTE_PROOF_MAX_AGE_MS, and applies to email and
+ * web_form only. A stamp exactly that old is still fresh; one millisecond
+ * older is stale. instagram_dm has no route-aging gate (Fendi, 2026-11-18);
+ * its identity_unresolved check applies only when no real IG handle is stored.
  *
  * Fit is explicit lane membership in the current owner-approved Song DNA.
  * An empty approved_lanes list is not a pass (stricter than decideLaneFit,
- * matching agh_record_can_approve). Identity is explicit only when
- * research_context.identity_resolved is boolean true and the row is not
- * route-only. Unknown or blank submission_cost does not block a send.
+ * matching agh_record_can_approve). For email and web_form, identity is
+ * explicit only when research_context.identity_resolved is boolean true and
+ * the row is not route-only. Unknown or blank submission_cost does not block a send.
  * Positive fee evidence still does: submission_cost paid or any other
  * recorded non-free value, a fee in form_cost, a pay-to-play pitch or
  * fraud verdict, a SubmitHub / Groover / Playlist Push / SubmitLink host
@@ -323,6 +325,15 @@ function identityExplicit(target: Row): boolean {
   return true;
 }
 
+/** True when the target stores a syntactically real Instagram handle. */
+function igHandleResolved(target: Row): boolean {
+  for (const raw of [target.ig_curator_account, target.curator_instagram]) {
+    const handle = str(raw).replace(/^@+/, "");
+    if (/^[A-Za-z0-9._]{2,30}$/.test(handle)) return true;
+  }
+  return false;
+}
+
 function currentOwnerDna(track: Row | null, dna: Row | null): boolean {
   if (!track || !dna) return false;
   return str(dna.id) === str(track.approved_song_dna_version_id) &&
@@ -400,7 +411,10 @@ export function evaluatePreSendGate(input: PreSendInput): PreSendDecision {
   else if (input.targetStatus === "missing" || !input.target) blockers.push("target_missing");
   else {
     const target = input.target;
-    if (!identityExplicit(target)) blockers.push("identity_unresolved");
+    // Instagram DMs: identity is unresolved only when no real IG handle is stored.
+    if (channel === "instagram_dm" ? !igHandleResolved(target) : !identityExplicit(target)) {
+      blockers.push("identity_unresolved");
+    }
 
     if (target.is_active === true) {
       /* active */
@@ -417,11 +431,13 @@ export function evaluatePreSendGate(input: PreSendInput): PreSendDecision {
       blockers.push("route_unverified");
     }
 
-    const verified = stampState(target.last_verified_at, input.now);
-    if (verified === "missing") blockers.push("route_verification_missing");
-    else if (verified === "stale") blockers.push("route_stale");
+    if (channel !== "instagram_dm") {
+      const verified = stampState(target.last_verified_at, input.now);
+      if (verified === "missing") blockers.push("route_verification_missing");
+      else if (verified === "stale") blockers.push("route_stale");
+    }
 
-    if (channel !== "email") {
+    if (channel === "web_form") {
       const evidence = stampState(evidenceStamp(target, channel), input.now);
       if (evidence === "missing") blockers.push("route_evidence_missing");
       else if (evidence === "stale") blockers.push("route_evidence_stale");

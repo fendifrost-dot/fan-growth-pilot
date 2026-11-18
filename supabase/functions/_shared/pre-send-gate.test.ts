@@ -164,32 +164,18 @@ const specs: Spec[] = [
     }),
   },
   {
-    name: "identity flag false",
-    blockers: ["identity_unresolved"],
+    name: "instagram identity requires a real handle",
+    blockers: ["identity_unresolved", "route_unverified"],
     build: () => input((row) => {
-      row.target!.research_context = { identity_resolved: false };
+      row.target!.ig_curator_account = null;
+      row.target!.curator_instagram = null;
     }),
   },
   {
-    name: "identity flag missing",
-    blockers: ["identity_unresolved"],
+    name: "instagram duplicate-contact clearance",
+    blockers: ["clearance_duplicate"],
     build: () => input((row) => {
-      row.target!.research_context = {};
-    }),
-  },
-  {
-    name: "identity flag string is not boolean true",
-    blockers: ["identity_unresolved"],
-    build: () => input((row) => {
-      row.target!.research_context = { identity_resolved: "true" };
-    }),
-  },
-  {
-    name: "route-only identity",
-    blockers: ["identity_unresolved"],
-    build: () => input((row) => {
-      row.target!.playlist_id = "route-abc";
-      row.target!.research_context = { identity_resolved: true, identity_kind: "route_only" };
+      row.clearance = { ok: false, code: "duplicate_contact" };
     }),
   },
   {
@@ -207,31 +193,37 @@ const specs: Spec[] = [
     }),
   },
   {
-    name: "verification time missing",
+    name: "email verification time missing",
     blockers: ["route_verification_missing"],
     build: () => input((row) => {
+      row.channel = "email";
+      row.record!.submission_channel = "email";
+      row.target!.contact_method = "email";
+      row.target!.curator_email = "curator@example.com";
       row.target!.last_verified_at = null;
     }),
   },
   {
-    name: "verification time stale",
+    name: "email verification time stale",
     blockers: ["route_stale"],
     build: () => input((row) => {
+      row.channel = "email";
+      row.record!.submission_channel = "email";
+      row.target!.contact_method = "email";
+      row.target!.curator_email = "curator@example.com";
       row.target!.last_verified_at = STALE;
     }),
   },
   {
-    name: "channel route evidence missing",
+    name: "web form route evidence missing",
     blockers: ["route_evidence_missing"],
     build: () => input((row) => {
-      row.target!.ig_verified_at = null;
-    }),
-  },
-  {
-    name: "channel route evidence stale",
-    blockers: ["route_evidence_stale"],
-    build: () => input((row) => {
-      row.target!.ig_verified_at = STALE;
+      row.channel = "web_form";
+      row.record!.submission_channel = "web_form";
+      row.target!.contact_method = "web_form";
+      row.target!.form_url = "https://curator.example/submit";
+      row.target!.form_source_evidence = "submit on curator.example";
+      row.target!.form_verified_at = null;
     }),
   },
   {
@@ -258,6 +250,13 @@ const specs: Spec[] = [
     blockers: ["terms_not_free"],
     build: () => input((row) => {
       row.target!.submission_cost = "tip_appreciated";
+    }),
+  },
+  {
+    name: "instagram pay-to-play remains blocked",
+    blockers: ["terms_paid", "target_blocked"],
+    build: () => input((row) => {
+      row.target!.pitch_status = "pay_to_play";
     }),
   },
   {
@@ -292,7 +291,7 @@ const specs: Spec[] = [
     }),
   },
   {
-    name: "target inactive",
+    name: "instagram target inactive",
     blockers: ["target_inactive"],
     build: () => input((row) => {
       row.target!.is_active = false;
@@ -520,6 +519,27 @@ Deno.test("pre-send gate: a fully evidenced instagram row is sendable and return
   assertEquals(decision.dispatch, { body: SECRET, subject: SECRET_SUBJECT, recipient: "@curator" });
 });
 
+Deno.test("pre-send gate: instagram route verification and evidence stamps may be stale or missing", () => {
+  for (const stamp of [STALE, null]) {
+    const decision = evaluatePreSendGate(input((row) => {
+      row.target!.last_verified_at = stamp;
+      row.target!.ig_verified_at = stamp;
+    }));
+    assertEquals(decision.sendable, true, JSON.stringify({ stamp, blockers: decision.blockers }));
+    assertEquals(decision.blockers, []);
+    assertEquals(decision.dispatch?.body, SECRET);
+  }
+});
+
+Deno.test("pre-send gate: instagram identity flag may be unset when a real handle is stored", () => {
+  const decision = evaluatePreSendGate(input((row) => {
+    row.target!.research_context = {};
+  }));
+  assertEquals(decision.sendable, true, JSON.stringify(decision.blockers));
+  assertEquals(decision.blockers, []);
+  assertEquals(decision.dispatch?.body, SECRET);
+});
+
 Deno.test("pre-send gate: email does not require an Instagram evidence stamp", () => {
   const decision = evaluatePreSendGate(input((row) => {
     row.channel = "email";
@@ -546,6 +566,10 @@ Deno.test("pre-send gate: a stamp exactly 7 days old is fresh and one millisecon
 
   const older = new Date(NOW - PRE_SEND_ROUTE_FRESHNESS_MS - 1).toISOString();
   const stale = evaluatePreSendGate(input((row) => {
+    row.channel = "email";
+    row.record!.submission_channel = "email";
+    row.target!.contact_method = "email";
+    row.target!.curator_email = "curator@example.com";
     row.target!.last_verified_at = older;
   }));
   assertEquals(stale.blockers, ["route_stale"]);

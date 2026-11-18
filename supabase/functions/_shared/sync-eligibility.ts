@@ -169,12 +169,19 @@ export async function loadPrivateLicenseVerified(
   sb: SupabaseClient,
   trackId: string,
 ): Promise<boolean> {
-  const { data } = await sb
+  // private_license_evidence has no verified_at column (id, track_id, label,
+  // storage_path, notes, uploaded_by, created_at). The old query errored and was
+  // silently treated as "no license". Evidence counts once a file is stored.
+  const { data, error } = await sb
     .from("private_license_evidence")
-    .select("id, verified_at")
+    .select("id, storage_path")
     .eq("track_id", trackId)
-    .not("verified_at", "is", null)
+    .not("storage_path", "is", null)
     .limit(1);
+  if (error) {
+    console.error("loadPrivateLicenseVerified failed", error.message);
+    return false;
+  }
   return (data ?? []).length > 0;
 }
 

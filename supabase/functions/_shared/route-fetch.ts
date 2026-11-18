@@ -407,12 +407,14 @@ export function classifyRoutePage(
   return signals;
 }
 
+/**
+ * Only a dead or closed page rejects a route at intake. Captcha, login and follow
+ * gates are submitted by hand; a paywall is kept on the target (signals stay on
+ * research_context.route_fetch) and held for Fendi as paid_for_fendi, never sent
+ * or paid automatically (Fendi, 2026-11-18).
+ */
 export function blockingSignal(signals: RoutePageSignals): string | null {
   if (signals.dead) return "dead";
-  if (signals.captcha) return "captcha";
-  if (signals.login_required) return "login_required";
-  if (signals.paywall_or_pay_to_play) return "paywall_or_pay_to_play";
-  if (signals.follow_gate) return "follow_gate";
   if (signals.submissions_closed) return "submissions_closed";
   return null;
 }

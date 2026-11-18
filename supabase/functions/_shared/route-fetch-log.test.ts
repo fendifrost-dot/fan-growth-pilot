@@ -84,7 +84,7 @@ function countingDeps(html: string, status = 200, now = new Date("2026-10-14T12:
 }
 
 const LOGIN_HTML =
-  "<html><head><title>Sign in hidden.user@example.com</title></head><body>Please log in. BODYONLY_SECRET_9f3a</body></html>";
+  "<html><head><title>Sign in hidden.user@example.com</title></head><body>Submissions are closed. BODYONLY_SECRET_9f3a</body></html>";
 
 Deno.test("route URL key drops userinfo, tracking, email queries, and fragments", () => {
   assertEquals(
@@ -105,13 +105,13 @@ Deno.test("evidence summary redacts emails and omits the page body", () => {
     title: "Login hidden.user@example.com",
     text_excerpt: "BODYONLY_SECRET_9f3a bob@other.test",
     links: [],
-    signals: { ...emptySignals(), login_required: true },
+    signals: { ...emptySignals(), submissions_closed: true },
     fetched_at: "2026-10-14T12:00:00.000Z",
     error: null,
     error_class: null,
   };
-  const summary = routeEvidenceSummary(page, "login_required");
-  assert(summary.includes("login_required"));
+  const summary = routeEvidenceSummary(page, "submissions_closed");
+  assert(summary.includes("submissions_closed"));
   assert(summary.includes("http 200"));
   assert(summary.includes("[redacted]"));
   assert(!summary.includes("hidden.user@example.com"));
@@ -130,7 +130,7 @@ Deno.test("skip windows expire at the boundary", () => {
   assertEquals(routeFetchOutcomeStillSkips({ disposition: "other", fetched_at: at(0) }, now), false);
 });
 
-Deno.test("a login wall is logged, then reused without another fetch", async () => {
+Deno.test("a closed form is logged, then reused without another fetch", async () => {
   const { sb, tables } = memDb();
   const now = new Date("2026-10-14T12:00:00.000Z");
   const { deps, fetches } = countingDeps(LOGIN_HTML, 200, now);
@@ -142,19 +142,19 @@ Deno.test("a login wall is logged, then reused without another fetch", async () 
   };
   const first = await evaluateSubmissionPath(input, { sb: sb as never, routeFetch: deps });
   assertEquals(first.block_insert, true);
-  assertEquals(first.code, "login_required");
+  assertEquals(first.code, "submissions_closed");
   assert(fetches() >= 1);
   const seen = fetches();
   const logs = tables[ROUTE_FETCH_OUTCOMES_TABLE];
   assertEquals(logs.length, 1);
-  assertEquals(logs[0].failure_code, "login_required");
+  assertEquals(logs[0].failure_code, "submissions_closed");
   assertEquals(logs[0].disposition, "rejected");
   assertEquals(logs[0].playlist_id, "0DAtAjCytSoXd6T42mP0AA");
   assert(!JSON.stringify(logs[0]).includes("BODYONLY_SECRET_9f3a"));
   assert(!JSON.stringify(logs[0]).includes("hidden.user@example.com"));
 
   const second = await evaluateSubmissionPath(input, { sb: sb as never, routeFetch: deps });
-  assertEquals(second.code, "login_required");
+  assertEquals(second.code, "submissions_closed");
   assertEquals(second.block_insert, true);
   assertEquals(fetches(), seen);
   assertEquals(logs.length, 1);
@@ -167,10 +167,10 @@ Deno.test("a stale rejection is fetched again and appended", async () => {
       playlist_id: "old",
       route_url: "https://submitlink.io/wall",
       disposition: "rejected",
-      failure_code: "login_required",
+      failure_code: "submissions_closed",
       http_status: 200,
       fetched_at: new Date(now.getTime() - ROUTE_REJECTION_SKIP_MS - 1000).toISOString(),
-      evidence_summary: "login_required; http 200",
+      evidence_summary: "submissions_closed; http 200",
     }],
   });
   const { deps, fetches } = countingDeps(LOGIN_HTML, 200, now);
@@ -180,7 +180,7 @@ Deno.test("a stale rejection is fetched again and appended", async () => {
     form_source_evidence: "submitlink",
     playlist_id: "0DAtAjCytSoXd6T42mP0AA",
   }, { sb: sb as never, routeFetch: deps });
-  assertEquals(path.code, "login_required");
+  assertEquals(path.code, "submissions_closed");
   assert(fetches() >= 1);
   assertEquals(tables[ROUTE_FETCH_OUTCOMES_TABLE].length, 2);
 });
@@ -310,7 +310,7 @@ Deno.test("a dead form is logged with its HTTP status", async () => {
   assertEquals(tables[ROUTE_FETCH_OUTCOMES_TABLE][0].failure_code, "dead");
 });
 
-Deno.test("a rendered login wall is logged and the next check does not render again", async () => {
+Deno.test("a rendered closed form is logged and the next check does not render again", async () => {
   const shell = "<html><div id=\"root\"></div><script src=\"/app.js\"></script></html>";
   const setting = { enabled: true, daily_cap: 25, used_date: null as string | null, used_count: 0 };
   const { sb, tables } = memDb({
@@ -320,7 +320,7 @@ Deno.test("a rendered login wall is logged and the next check does not render ag
   const { deps, fetches } = countingDeps(shell);
   deps.firecrawlRender = () => {
     renders++;
-    return Promise.resolve({ html: LOGIN_HTML, markdown: "Please log in hidden.user@example.com" });
+    return Promise.resolve({ html: LOGIN_HTML, markdown: "Submissions are closed hidden.user@example.com" });
   };
   const input = {
     submission_channel: "web_form",
@@ -329,15 +329,15 @@ Deno.test("a rendered login wall is logged and the next check does not render ag
     playlist_id: "pl-js",
   };
   const first = await evaluateSubmissionPath(input, { sb: sb as never, routeFetch: deps });
-  assertEquals(first.code, "login_required");
+  assertEquals(first.code, "submissions_closed");
   assertEquals(first.block_insert, true);
   assertEquals(renders, 1);
   assertEquals(tables[ROUTE_FETCH_OUTCOMES_TABLE].length, 1);
-  assertEquals(tables[ROUTE_FETCH_OUTCOMES_TABLE][0].failure_code, "login_required");
+  assertEquals(tables[ROUTE_FETCH_OUTCOMES_TABLE][0].failure_code, "submissions_closed");
   assert(!JSON.stringify(tables[ROUTE_FETCH_OUTCOMES_TABLE][0]).includes("hidden.user@example.com"));
   const seen = fetches();
   const second = await evaluateSubmissionPath(input, { sb: sb as never, routeFetch: deps });
-  assertEquals(second.code, "login_required");
+  assertEquals(second.code, "submissions_closed");
   assertEquals(renders, 1);
   assertEquals(fetches(), seen);
   assertEquals(tables[ROUTE_FETCH_OUTCOMES_TABLE].length, 1);
@@ -365,6 +365,6 @@ Deno.test("a log write failure still rejects the route", async () => {
     form_source_evidence: "submitlink",
     playlist_id: "pl-fail",
   }, { sb: sb as never, routeFetch: deps });
-  assertEquals(path.code, "login_required");
+  assertEquals(path.code, "submissions_closed");
   assertEquals(path.block_insert, true);
 });

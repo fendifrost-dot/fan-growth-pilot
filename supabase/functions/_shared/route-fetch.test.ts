@@ -264,22 +264,25 @@ Deno.test("each rejection class and the form signals classify on their own", () 
 
   const login = page({ text: "Please log in to continue", html: "<html><p>Please log in to continue</p></html>" });
   assertEquals(login.login_required, true);
-  assertEquals(blockingSignal(login), "login_required");
+  assertEquals(blockingSignal(login), null);
 
   const pay = page({ text: "Submit your song for $15 credits" });
   assertEquals(pay.paywall_or_pay_to_play, true);
+  assertEquals(blockingSignal(pay), null);
   const free = page({ text: "Submit your song for $0" });
   assertEquals(free.paywall_or_pay_to_play, false);
 
   const captcha = page({ html: "<div class=\"g-recaptcha\" data-sitekey=\"x\"></div><form></form>" });
   assertEquals(captcha.captcha, true);
   assertEquals(captcha.has_form, true);
-  assertEquals(blockingSignal(captcha), "captcha");
+  assertEquals(blockingSignal(captcha), null);
 
   const follow = page({ text: "Follow to unlock the submit button" });
   assertEquals(follow.follow_gate, true);
+  assertEquals(blockingSignal(follow), null);
   const closed = page({ text: "Submissions are closed for this month" });
   assertEquals(closed.submissions_closed, true);
+  assertEquals(blockingSignal(closed), "submissions_closed");
 
   const form = page({ html: DEFAULT_FORM_PAGE_HTML, text: "Submit your track" });
   assertEquals(form.has_form, true);
@@ -357,13 +360,9 @@ Deno.test("web form passes only on a fetched form, a linking source, or a form b
   assertEquals(builder.path_verified, true);
 });
 
-Deno.test("login, paywall, captcha, dead, follow gate, and closed submissions insert nothing", async () => {
+Deno.test("dead pages and closed submissions insert nothing", async () => {
   const cases: Array<{ html: string; status?: number; code: string }> = [
-    { html: "<html><p>Please log in to continue</p></html>", code: "login_required" },
-    { html: "<html><p>Pay to play. Submit for $15.</p></html>", code: "paywall_or_pay_to_play" },
-    { html: "<html><form></form><div class=\"g-recaptcha\"></div></html>", code: "captcha" },
     { html: "<html><p>Page not found</p></html>", status: 404, code: "dead" },
-    { html: "<html><p>Follow to unlock this download</p></html>", code: "follow_gate" },
     { html: "<html><form></form><p>Submissions are closed</p></html>", code: "submissions_closed" },
   ];
   for (const c of cases) {
@@ -375,6 +374,23 @@ Deno.test("login, paywall, captcha, dead, follow gate, and closed submissions in
     assertEquals(path.block_insert, true, c.code);
     assertEquals(path.code, c.code);
     assertEquals(path.path_verified, false);
+  }
+});
+
+Deno.test("login, pay-to-play, captcha and follow gates do not block intake (cut 2026-11-18)", async () => {
+  const pages = [
+    "<html><form></form><p>Please log in to continue</p></html>",
+    "<html><form></form><p>Pay to play. Submit for $15.</p></html>",
+    "<html><form></form><div class=\"g-recaptcha\"></div></html>",
+    "<html><form></form><p>Follow to unlock this download</p></html>",
+  ];
+  for (const html of pages) {
+    const path = await evaluateSubmissionPath({
+      submission_channel: "web_form",
+      form_url: "https://curator.example/submit",
+      form_source_evidence: "curator.example submit page",
+    }, { routeFetch: routeFetchDepsReturning(html) });
+    assert(path.block_insert !== true, `${html}: ${JSON.stringify(path)}`);
   }
 });
 
@@ -510,12 +526,10 @@ Deno.test("manual re-verify stores the server fetch and does not trust agent tex
 });
 
 Deno.test("structural Grok codes block the same route and fit codes do not", () => {
-  assert(isStructuralRouteRejection("LOGIN_REQUIRED/PAYWALL_POOL"));
-  assert(isStructuralRouteRejection("login_only"));
-  assert(isStructuralRouteRejection("PAY_TO_PLAY"));
-  assert(isStructuralRouteRejection("CAPTCHA_BLOCK"));
+  for (const code of ["LOGIN_REQUIRED/PAYWALL_POOL", "login_only", "PAY_TO_PLAY", "CAPTCHA_BLOCK", "FOLLOW_GATE"]) {
+    assert(!isStructuralRouteRejection(code), code);
+  }
   assert(isStructuralRouteRejection("DEAD_FORM_URL"));
-  assert(isStructuralRouteRejection("FOLLOW_GATE"));
   assert(!isStructuralRouteRejection("DNA_LANE_MISMATCH"));
   assertEquals(emptySignals().dead, false);
 
@@ -523,7 +537,7 @@ Deno.test("structural Grok codes block the same route and fit codes do not", () 
     {
       id: "r1",
       submission_channel: "web_form",
-      rejection_reason: "LOGIN_REQUIRED/PAYWALL_POOL",
+      rejection_reason: "DEAD_FORM_URL",
       packet: { form_url: "https://submitlink.io/form" },
     },
   ], { channel: "web_form", form_url: "https://www.submitlink.io/other" });

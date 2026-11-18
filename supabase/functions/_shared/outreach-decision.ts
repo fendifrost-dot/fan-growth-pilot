@@ -265,18 +265,9 @@ export async function evaluateOutreachDecision(
 
   const lane = trim(input.lane) || trim(playlistRow?.lane);
 
-  // Fail closed: null / empty lane cannot enter automated drafting.
-  if (!lane) {
-    compatible = false;
-    contradictionExplanation =
-      "Target lane/classification is null — unclassified targets cannot enter automated drafting.";
-    errors.push("target_lane_null");
-  } else if (!targetVerificationStatus || !VERIFIED_STATUSES.has(lower(targetVerificationStatus))) {
-    compatible = false;
-    contradictionExplanation =
-      `Target classification is unverified (verification_status=${targetVerificationStatus ?? "null"}).`;
-    errors.push("target_classification_unverified");
-  } else {
+  // Default is send (Fendi, 2026-11-18): a blank lane or an unverified classification
+  // no longer blocks drafting. Only an excluded Song DNA lane does.
+  if (lane && targetVerificationStatus && VERIFIED_STATUSES.has(lower(targetVerificationStatus))) {
     targetClassificationVerified = true;
   }
 
@@ -291,11 +282,8 @@ export async function evaluateOutreachDecision(
       compatible = false;
       contradictionExplanation = songFit.reason;
       errors.push("dna_excluded_lane");
-    } else if (songFit.code === "lane_not_in_approved_dna") {
-      compatible = false;
-      contradictionExplanation = songFit.reason;
-      errors.push("dna_lane_not_approved");
     }
+    // A lane on neither list is allowed (default-deny on unlisted lanes cut 2026-11-18).
   }
 
   // Intentionally NO legacy categoryGate / trackGenre authorization path.

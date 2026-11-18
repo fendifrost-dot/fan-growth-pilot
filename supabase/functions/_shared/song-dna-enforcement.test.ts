@@ -142,7 +142,7 @@ Deno.test("1 excluded lane is blocked", async () => {
   assert(d.errors.includes("dna_excluded_lane"));
 });
 
-Deno.test("2 unapproved lane (not in approved_lanes) is blocked", async () => {
+Deno.test("2 unlisted lane (not in approved_lanes, not excluded) is allowed", async () => {
   const d = await evaluateOutreachDecision(stubSb(tables()) as never, {
     route: "test",
     trackId: TRACK.id,
@@ -162,12 +162,12 @@ Deno.test("2 unapproved lane (not in approved_lanes) is blocked", async () => {
     trackId: TRACK.id,
     playlistId: "pl-afro",
   });
-  assertEquals(d2.allow, false);
-  assert(d2.errors.includes("dna_lane_not_approved"));
+  assertEquals(d2.allow, true, JSON.stringify(d2.errors));
+  assert(!d2.errors.includes("dna_lane_not_approved"));
   assertEquals(d.allow, false);
 });
 
-Deno.test("3 null lane is blocked", async () => {
+Deno.test("3 null lane is allowed", async () => {
   const t = tables({
     playlist_targets: [{ ...PLAYLIST_RAP, lane: null }],
   });
@@ -176,11 +176,11 @@ Deno.test("3 null lane is blocked", async () => {
     trackId: TRACK.id,
     playlistId: PLAYLIST_RAP.playlist_id,
   });
-  assertEquals(d.allow, false);
-  assert(d.errors.includes("target_lane_null"));
+  assertEquals(d.allow, true, JSON.stringify(d.errors));
+  assert(!d.errors.includes("target_lane_null"));
 });
 
-Deno.test("4 unverified target is blocked", async () => {
+Deno.test("4 unverified target classification is allowed", async () => {
   const t = tables({
     playlist_targets: [{ ...PLAYLIST_RAP, verification_status: "unverified" }],
   });
@@ -189,8 +189,8 @@ Deno.test("4 unverified target is blocked", async () => {
     trackId: TRACK.id,
     playlistId: PLAYLIST_RAP.playlist_id,
   });
-  assertEquals(d.allow, false);
-  assert(d.errors.includes("target_classification_unverified"));
+  assertEquals(d.allow, true, JSON.stringify(d.errors));
+  assert(!d.errors.includes("target_classification_unverified"));
 });
 
 Deno.test("5 missing DNA is blocked", async () => {

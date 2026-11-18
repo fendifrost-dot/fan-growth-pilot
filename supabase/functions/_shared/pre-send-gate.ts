@@ -5,18 +5,22 @@
  * evidence are named blockers. Pitch copy is returned on `dispatch` only when
  * `sendable` is true — a refusal never echoes a body, subject, or recipient.
  *
- * Route freshness is PRE_SEND_ROUTE_FRESHNESS_MS (7 days), the same window as
- * playlist discovery's ROUTE_PROOF_MAX_AGE_MS, and applies to email and
- * web_form only. A stamp exactly that old is still fresh; one millisecond
- * older is stale. instagram_dm has no route-aging gate (Fendi, 2026-11-18);
- * its identity_unresolved check applies only when no real IG handle is stored.
+ * Default is send (Fendi, 2026-11-18: "a business, not a regulatory agency").
+ * No route-aging, route-verification stamp, identity-proof, batch-approval,
+ * activity-unknown, unlisted-lane or review-defer gate applies on any channel.
+ * The record approval is enough. What still stops a send:
+ *   - dedupe / cooldown / bounce suppression / blocked domain (contact policy)
+ *   - an excluded Song DNA lane, or no current owner-approved Song DNA
+ *   - no usable contact for the channel (no email, form URL or IG handle)
+ *   - an inactive or blocked target, a blocked operator group
+ *   - a Soundplate-freeze route hold (packet.route_hold)
+ *   - positive fee evidence, which is never sent: it becomes paid_for_fendi,
+ *     a hold for Fendi's yes/no, never an automatic send or payment.
+ * PRE_SEND_ROUTE_FRESHNESS_MS is kept as an exported constant for callers
+ * that still display route age; it no longer blocks anything.
  *
- * Fit is explicit lane membership in the current owner-approved Song DNA.
- * An empty approved_lanes list is not a pass (stricter than decideLaneFit,
- * matching agh_record_can_approve). For email and web_form, identity is
- * explicit only when research_context.identity_resolved is boolean true and
- * the row is not route-only. Unknown or blank submission_cost does not block a send.
- * Positive fee evidence still does: submission_cost paid or any other
+ * Unknown or blank submission_cost does not block a send.
+ * Positive fee evidence holds it for Fendi: submission_cost paid or any other
  * recorded non-free value, a fee in form_cost, a pay-to-play pitch or
  * fraud verdict, a SubmitHub / Groover / Playlist Push / SubmitLink host
  * on the submission URL, method, or curator email, or an explicit fee
@@ -32,9 +36,9 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import { loadBlockedOperatorIndex, matchBlockedOperator } from "./blocked-operator.ts";
 import { decideLaneFit } from "./song-fit.ts";
-import { assessSubmissionRoute, hostOf } from "./submission-route.ts";
+import { hostOf } from "./submission-route.ts";
 
-/** Verified route proof older than this is not sendable. */
+/** Display-only route age window. It no longer blocks a send (Fendi, 2026-11-18). */
 export const PRE_SEND_ROUTE_FRESHNESS_MS = 7 * 24 * 60 * 60 * 1000;
 
 export const PRE_SEND_BLOCKERS = [
@@ -47,18 +51,11 @@ export const PRE_SEND_BLOCKERS = [
   "fit_not_explicit",
   "fit_lane_excluded",
   "identity_unresolved",
-  "route_unverified",
-  "route_verification_missing",
-  "route_stale",
-  "route_evidence_missing",
-  "route_evidence_stale",
   "route_held",
-  "terms_not_free",
-  "terms_paid",
+  "paid_for_fendi",
   "terms_override_invalid",
   "target_missing",
   "target_inactive",
-  "target_activity_unknown",
   "target_blocked",
   "target_lookup_failed",
   "blocked_operator",
@@ -68,7 +65,6 @@ export const PRE_SEND_BLOCKERS = [
   "clearance_unknown",
   "clearance_identity_required",
   "clearance_inactive_target",
-  "clearance_paid_curator",
   "clearance_blocked_domain",
   "clearance_suppressed_curator",
   "clearance_cooldown_conflict",
@@ -81,16 +77,32 @@ export const PRE_SEND_BLOCKERS = [
   "record_channel_mismatch",
   "record_not_approved_for_send",
   "record_approval_unnamed",
-  "record_held",
   "record_target_mismatch",
   "record_track_mismatch",
+] as const;
+
+export type PreSendBlocker = typeof PRE_SEND_BLOCKERS[number];
+
+/**
+ * Gates cut on 2026-11-18 (Fendi: default is send). Kept as names so old
+ * logs and dashboards still parse; the gate never emits them.
+ */
+export const RETIRED_PRE_SEND_BLOCKERS = [
+  "route_unverified",
+  "route_verification_missing",
+  "route_stale",
+  "route_evidence_missing",
+  "route_evidence_stale",
+  "record_held",
+  "terms_not_free",
+  "terms_paid",
+  "target_activity_unknown",
+  "clearance_paid_curator",
   "batch_missing",
   "batch_lookup_failed",
   "batch_not_approved",
   "batch_approval_unnamed",
 ] as const;
-
-export type PreSendBlocker = typeof PRE_SEND_BLOCKERS[number];
 
 export type PreSendChannel = "email" | "instagram_dm" | "web_form";
 
@@ -138,7 +150,8 @@ export type PreSendInput = {
 const CLEARANCE_CODES: Record<string, PreSendBlocker> = {
   identity_required: "clearance_identity_required",
   inactive_target: "clearance_inactive_target",
-  paid_curator: "clearance_paid_curator",
+  paid_curator: "paid_for_fendi",
+  paid_for_fendi: "paid_for_fendi",
   blocked_domain: "clearance_blocked_domain",
   suppressed_curator: "clearance_suppressed_curator",
   cooldown_conflict: "clearance_cooldown_conflict",
@@ -146,8 +159,8 @@ const CLEARANCE_CODES: Record<string, PreSendBlocker> = {
   duplicate_contact: "clearance_duplicate",
 };
 
-const VERIFIED = new Set(["auto_verified", "manually_verified"]);
-const BLOCKED_PITCH = new Set(["blocked", "do_not_contact", "suppressed", "pay_to_play"]);
+// pay_to_play is not here: positive fee evidence routes to paid_for_fendi instead.
+const BLOCKED_PITCH = new Set(["blocked", "do_not_contact", "suppressed"]);
 const BLOCKED_VERIFICATION = new Set(["blocked", "invalid", "bounced", "spam_flagged"]);
 
 const RECORD_COLUMNS =
@@ -172,21 +185,6 @@ function finish(blockers: PreSendBlocker[], copy: PreSendCopy): PreSendDecision 
     blockers: [],
     dispatch: { body: copy.body, subject: copy.subject, recipient: copy.recipient },
   };
-}
-
-function stampState(raw: unknown, now: number): "missing" | "stale" | "fresh" {
-  const text = str(raw);
-  if (!text) return "missing";
-  const parsed = Date.parse(text);
-  if (!Number.isFinite(parsed)) return "missing";
-  if (now - parsed > PRE_SEND_ROUTE_FRESHNESS_MS) return "stale";
-  return "fresh";
-}
-
-function evidenceStamp(target: Row, channel: PreSendChannel): unknown {
-  if (channel === "instagram_dm") return target.ig_verified_at;
-  if (channel === "web_form") return target.form_verified_at;
-  return null;
 }
 
 /** Owner override is a recorded Fendi decision, not an inferred flag. */
@@ -281,6 +279,9 @@ export function paidPlatformSignal(target: Row): boolean {
     if (urlHostIsPaid(str(field))) return true;
   }
   if (emailDomainIsPaid(str(target.curator_email))) return true;
+  // A server fetch that saw a paywall on the route page is fee evidence (held for Fendi).
+  const routeFetch = objectOf(objectOf(target.research_context)?.route_fetch);
+  if (objectOf(routeFetch?.signals)?.paywall_or_pay_to_play === true) return true;
   const texts: string[] = [];
   collectText(target.form_source_evidence, texts);
   collectText(target.ig_source_evidence, texts);
@@ -316,15 +317,6 @@ function overrideCandidates(record: Row | null, target: Row | null): unknown[] {
   return [packet.owner_terms_override, research.owner_terms_override].filter((value) => objectOf(value) != null);
 }
 
-function identityExplicit(target: Row): boolean {
-  if (str(target.playlist_id).startsWith("route-")) return false;
-  const research = objectOf(target.research_context);
-  if (!research) return false;
-  if (research.identity_resolved !== true) return false;
-  if (str(research.identity_kind).toLowerCase() === "route_only") return false;
-  return true;
-}
-
 /** True when the target stores a syntactically real Instagram handle. */
 function igHandleResolved(target: Row): boolean {
   for (const raw of [target.ig_curator_account, target.curator_instagram]) {
@@ -332,6 +324,16 @@ function igHandleResolved(target: Row): boolean {
     if (/^[A-Za-z0-9._]{2,30}$/.test(handle)) return true;
   }
   return false;
+}
+
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** A usable contact exists for the channel. This is identity enough (Fendi, 2026-11-18). */
+function contactPresent(target: Row, channel: PreSendChannel): boolean {
+  if (channel === "instagram_dm") return igHandleResolved(target);
+  if (channel === "email") return EMAIL_SHAPE.test(str(target.curator_email));
+  const url = str(target.form_url) || str(target.submission_url);
+  return /^https?:\/\/\S+/i.test(url) && !!hostOf(url);
 }
 
 function currentOwnerDna(track: Row | null, dna: Row | null): boolean {
@@ -361,8 +363,9 @@ export function evaluatePreSendGate(input: PreSendInput): PreSendDecision {
     if (str(record.queue_state) !== "APPROVED_FOR_SEND") blockers.push("record_not_approved_for_send");
     if (!str(record.approved_by)) blockers.push("record_approval_unnamed");
     const packet = objectOf(record.packet) ?? {};
+    // route_hold now only remains on Soundplate-freeze rows; nothing new is route-held.
     if (packet.route_hold != null) blockers.push("route_held");
-    if (packet.review_defer != null) blockers.push("record_held");
+    if (packet.paid_for_fendi != null) blockers.push("paid_for_fendi");
     if (str(record.playlist_target_id) && input.sendPlaylistId && str(record.playlist_target_id) !== input.sendPlaylistId) {
       blockers.push("record_target_mismatch");
     }
@@ -371,12 +374,7 @@ export function evaluatePreSendGate(input: PreSendInput): PreSendDecision {
     }
   }
 
-  if (input.batchStatus === "lookup_failed") blockers.push("batch_lookup_failed");
-  else if (input.batchStatus === "missing" || !input.batch) blockers.push("batch_missing");
-  else {
-    if (str(input.batch.queue_state) !== "APPROVED_FOR_SEND") blockers.push("batch_not_approved");
-    if (!str(input.batch.approved_by)) blockers.push("batch_approval_unnamed");
-  }
+  // Record approval is enough; the batch state no longer gates a send (Fendi, 2026-11-18).
 
   const pointer = str(input.track?.approved_song_dna_version_id);
   if (input.dnaStatus === "lookup_failed") blockers.push("dna_lookup_failed");
@@ -403,45 +401,22 @@ export function evaluatePreSendGate(input: PreSendInput): PreSendDecision {
       },
       input.target?.lane,
     );
+    // Send unless the lane is excluded. Blank or unlisted lanes are not a block.
     if (fit.code === "lane_excluded") blockers.push("fit_lane_excluded");
-    else if (fit.code !== "lane_approved") blockers.push("fit_not_explicit");
   }
 
   if (input.targetStatus === "lookup_failed") blockers.push("target_lookup_failed");
   else if (input.targetStatus === "missing" || !input.target) blockers.push("target_missing");
   else {
     const target = input.target;
-    // Instagram DMs: identity is unresolved only when no real IG handle is stored.
-    if (channel === "instagram_dm" ? !igHandleResolved(target) : !identityExplicit(target)) {
-      blockers.push("identity_unresolved");
-    }
+    // A working email, form URL or IG handle is identity enough. No route
+    // verification stamp, evidence age or identity_resolved flag is required.
+    if (!contactPresent(target, channel)) blockers.push("identity_unresolved");
 
-    if (target.is_active === true) {
-      /* active */
-    } else if (target.is_active === false) blockers.push("target_inactive");
-    else blockers.push("target_activity_unknown");
+    // Blank is_active defaults to allow. Only an explicit false blocks.
+    if (target.is_active === false) blockers.push("target_inactive");
 
     const status = str(target.verification_status).toLowerCase();
-    const flagRequired = channel !== "email";
-    const statusVerified = VERIFIED.has(status);
-    const routeAssessed = statusVerified && (!flagRequired || target.path_verified === true)
-      ? assessSubmissionRoute(target, channel)
-      : null;
-    if (!statusVerified || (flagRequired && target.path_verified !== true) || (routeAssessed && !routeAssessed.ok)) {
-      blockers.push("route_unverified");
-    }
-
-    if (channel !== "instagram_dm") {
-      const verified = stampState(target.last_verified_at, input.now);
-      if (verified === "missing") blockers.push("route_verification_missing");
-      else if (verified === "stale") blockers.push("route_stale");
-    }
-
-    if (channel === "web_form") {
-      const evidence = stampState(evidenceStamp(target, channel), input.now);
-      if (evidence === "missing") blockers.push("route_evidence_missing");
-      else if (evidence === "stale") blockers.push("route_evidence_stale");
-    }
 
     const fee = submissionFeeBlocker(target);
     if (fee) {
@@ -449,7 +424,8 @@ export function evaluatePreSendGate(input: PreSendInput): PreSendDecision {
       const overrideOk = overrides.some((v) => ownerTermsOverrideValid(v));
       const overridePresent = overrides.length > 0;
       if (overridePresent && !overrideOk) blockers.push("terms_override_invalid");
-      if (!overrideOk) blockers.push(fee);
+      // Never sent or paid automatically: held for Fendi's yes/no.
+      if (!overrideOk) blockers.push("paid_for_fendi");
     }
 
     if (BLOCKED_PITCH.has(str(target.pitch_status).toLowerCase()) || BLOCKED_VERIFICATION.has(status)) {

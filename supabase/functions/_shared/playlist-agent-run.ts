@@ -3579,18 +3579,10 @@ export async function runCatalogueAdmin(
       const vStatus = String(r.verification_status ?? "").trim().toLowerCase();
       let dnaLaneOk = true;
       let dnaLaneReason = "ok";
-      if (!lane) {
-        dnaLaneOk = false;
-        dnaLaneReason = "target_lane_null";
-      } else if (!VERIFIED.has(vStatus)) {
-        dnaLaneOk = false;
-        dnaLaneReason = "target_classification_unverified";
-      } else if (dnaExcluded.has(lane)) {
+      // Only an excluded Song DNA lane blocks (blank, unverified or unlisted lanes cut 2026-11-18).
+      if (lane && dnaExcluded.has(lane)) {
         dnaLaneOk = false;
         dnaLaneReason = "dna_excluded_lane";
-      } else if (dnaApproved.size > 0 && !dnaApproved.has(lane)) {
-        dnaLaneOk = false;
-        dnaLaneReason = "dna_lane_not_approved";
       }
       const pm = placementMatch(r, trackName);
       return {

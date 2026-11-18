@@ -107,8 +107,9 @@ const DEAD_PAGE_EVIDENCE = [
 ];
 
 /** Grok structural rejection codes that must not be re-drafted on the same route. */
-const STRUCTURAL_REJECTION_RE =
-  /\b(login[_ -]*only|login[_ -]*required|paywall(?:[_ -]*pool)?|pay[_ -]*to[_ -]*play|captcha(?:[_ -]*block)?|dead[_ -]*form(?:[_ -]*url)?|follow[_ -]*gate)\b/i;
+// Login walls, captchas and follow gates are not structural anymore (Fendi, 2026-11-18:
+// one free account each, hand submission in the browser). Paid routes go to Fendi.
+const STRUCTURAL_REJECTION_RE = /\b(dead[_ -]*form(?:[_ -]*url)?)\b/i;
 
 function matchesAny(text: string, patterns: RegExp[]): boolean {
   return patterns.some((re) => re.test(text));
@@ -156,12 +157,10 @@ export function isFormBuilderHost(urlOrHost: string): boolean {
   return FORM_BUILDER_HOSTS.some((b) => h === b || h.endsWith(`.${b}`));
 }
 
+// Only a dead or closed page fails a route. Login, captcha and follow gates are
+// handled by hand; a paywall is kept and held for Fendi (paid_for_fendi).
 const ROUTE_FETCH_BLOCKING_SIGNALS = [
   "dead",
-  "login_required",
-  "paywall_or_pay_to_play",
-  "captcha",
-  "follow_gate",
   "submissions_closed",
 ] as const;
 
@@ -395,11 +394,10 @@ export function assessSubmissionRoute(
     if (serverFetchPassesRoute(input)) {
       return { ok: true, channel, code: "route_ok", reason: "server fetched the form page", route: formUrl };
     }
+    // Evidence text is a hint, not a gate (Fendi, 2026-11-18). Only evidence that says
+    // there is no route still fails; the form is checked when it is submitted.
     const evidence = str(input.form_source_evidence ?? input.source_evidence ?? input.evidence);
-    if (!evidence) {
-      return { ok: false, channel, code: "missing_form_evidence", reason: "web_form route has no source evidence", route: formUrl };
-    }
-    if (evidenceNegatesRoute(evidence)) {
+    if (evidence && evidenceNegatesRoute(evidence)) {
       return {
         ok: false,
         channel,
@@ -408,18 +406,7 @@ export function assessSubmissionRoute(
         route: formUrl,
       };
     }
-    const researchContext = (input.research_context ?? null) as Record<string, unknown> | null;
-    const sourceUrl = str(input.source_url) || str(researchContext?.source_url) || null;
-    if (!evidenceSupportsForm(formUrl, evidence, sourceUrl)) {
-      return {
-        ok: false,
-        channel,
-        code: "evidence_not_linked_to_form",
-        reason: `evidence does not tie this playlist to the form's site (${hostLabel(hostOf(formUrl) ?? "")})`,
-        route: formUrl,
-      };
-    }
-    return { ok: true, channel, code: "route_ok", reason: "web form URL with supporting evidence", route: formUrl };
+    return { ok: true, channel, code: "route_ok", reason: "web form URL present", route: formUrl };
   }
 
   // instagram_dm
@@ -440,13 +427,10 @@ export function assessSubmissionRoute(
     };
   }
   const evidence = str(input.ig_source_evidence ?? input.source_evidence ?? input.evidence);
-  if (!evidence) {
-    return { ok: false, channel, code: "missing_ig_evidence", reason: "instagram_dm route has no source evidence", route: handle };
-  }
-  if (evidenceNegatesRoute(evidence)) {
+  if (evidence && evidenceNegatesRoute(evidence)) {
     return { ok: false, channel, code: "evidence_negates_route", reason: "source evidence states no submission route was confirmed", route: handle };
   }
-  return { ok: true, channel, code: "route_ok", reason: "IG curator account with supporting evidence", route: handle.replace(/^@/, "").toLowerCase() };
+  return { ok: true, channel, code: "route_ok", reason: "IG curator account present", route: handle.replace(/^@/, "").toLowerCase() };
 }
 
 /**
@@ -471,19 +455,15 @@ export function assertSubmissionReady(
       route: null,
     };
   }
+  // path_verified / verification_status are no longer required (Fendi, 2026-11-18).
+  // A bounced or spam-flagged route stays suppressed (bounce suppression is kept).
   const status = str(target.verification_status).toLowerCase();
-  const effectiveChannel = normalizeChannel(channel) ??
-    normalizeChannel(target.contact_method) ?? normalizeChannel(target.submission_method);
-  // Email deliverability is established by verifyEmail → verification_status (legacy email
-  // targets predate path_verified). Form/IG routes have no such check, so the explicit
-  // path_verified flag is required for them.
-  const flagRequired = effectiveChannel !== "email";
-  if ((flagRequired && target.path_verified !== true) || !["auto_verified", "manually_verified"].includes(status)) {
+  if (status === "bounced" || status === "spam_flagged") {
     return {
       ok: false,
       channel: normalizeChannel(channel),
-      code: "route_not_verified",
-      reason: `target route is not verified (path_verified=${String(target.path_verified)}, verification_status=${status || "null"})`,
+      code: "route_suppressed",
+      reason: `target route is suppressed (verification_status=${status})`,
       route: null,
     };
   }

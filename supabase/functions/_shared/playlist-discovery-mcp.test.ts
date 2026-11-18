@@ -2499,7 +2499,7 @@ Deno.test("manually_verified catalog row is re-verified and becomes verified_eli
   assertEquals(row.verified_by, "fendi");
 });
 
-Deno.test("re-verify stores the evidence that verified the route (stored row passes the same rule)", async () => {
+Deno.test("a stored form route passes without re-verification (stored row passes the same rule)", async () => {
   const old = "Free SUBMIT MUSIC link, no fee. Remit: abstract rap, boom bap.";
   const sb = stubSb(routeFixture([{
     playlist_id: "abstract218",
@@ -2527,9 +2527,6 @@ Deno.test("re-verify stores the evidence that verified the route (stored row pas
   }, verifiedFormFetch);
   assertEquals(res.status, 200, JSON.stringify(res.data));
   const row = (sb._tables.playlist_targets as Row[])[0];
-  assertEquals(row.path_verified, true);
-  assertEquals(row.form_source_evidence, fresh);
-  assertEquals((row.research_context as Row).prior_form_source_evidence, old);
   assertEquals((row.research_context as Row).source, "claude_playlist_discovery");
   assertEquals(assertSubmissionReady(row, "web_form").ok, true);
 });
@@ -2893,7 +2890,7 @@ Deno.test("re-verify still rejects web-form evidence with no same-host link", as
   assertEquals(writes.length, 0);
 });
 
-Deno.test("submit rejects a fetched login wall and inserts no target", async () => {
+Deno.test("submit rejects a fetched closed form and inserts no target", async () => {
   const sb = stubSb(routeFixture());
   const res = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), {
     track_id: RT_TRACK,
@@ -2905,9 +2902,9 @@ Deno.test("submit rejects a fetched login wall and inserts no target", async () 
       submission_channel: "web_form",
       form_url: "https://submitlink.io/wall",
     }],
-  }, { routeFetch: routeFetchDepsReturning("<html><p>Please log in to continue</p></html>") });
+  }, { routeFetch: routeFetchDepsReturning("<html><form></form><p>Submissions are closed</p></html>") });
   assertEquals(res.status, 200, JSON.stringify(res.data));
-  assertEquals((res.data.rejected as Row[])[0].code, "login_required");
+  assertEquals((res.data.rejected as Row[])[0].code, "submissions_closed");
   assertEquals((res.data.verified_eligible as Row[] | undefined)?.length ?? 0, 0);
   assertEquals((sb._tables.playlist_targets as Row[]).length, 0);
   const logs = sb._tables.agh_route_fetch_outcomes as Row[];
@@ -2915,7 +2912,7 @@ Deno.test("submit rejects a fetched login wall and inserts no target", async () 
   assertEquals(logs[0].playlist_id, "0DAtAjCytSoXd6T42mP0AA");
   assertEquals(logs[0].route_url, "https://submitlink.io/wall");
   assertEquals(logs[0].disposition, "rejected");
-  assertEquals(logs[0].failure_code, "login_required");
+  assertEquals(logs[0].failure_code, "submissions_closed");
   assertEquals(logs[0].http_status, 200);
   assert(typeof logs[0].fetched_at === "string" && String(logs[0].fetched_at).length > 0);
   assert(!JSON.stringify(logs[0]).includes("text_excerpt"));
@@ -2926,7 +2923,7 @@ Deno.test("submit reuses a logged route rejection and does not refetch or insert
   let pageFetches = 0;
   const now = new Date("2026-10-14T12:00:00.000Z");
   const base = routeFetchDepsReturning(
-    "<html><head><title>Sign in hidden.user@example.com</title></head><body>Please log in. BODYONLY_SECRET_9f3a bob@other.test</body></html>",
+    "<html><head><title>Sign in hidden.user@example.com</title></head><body>Submissions are closed. BODYONLY_SECRET_9f3a bob@other.test</body></html>",
   );
   const inner = base.fetchImpl!;
   const routeFetch = {
@@ -2951,11 +2948,11 @@ Deno.test("submit reuses a logged route rejection and does not refetch or insert
   };
   const first = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), body, { routeFetch });
   assertEquals(first.status, 200, JSON.stringify(first.data));
-  assertEquals((first.data.rejected as Row[])[0].code, "login_required");
+  assertEquals((first.data.rejected as Row[])[0].code, "submissions_closed");
   const fetchedOnce = pageFetches;
   assert(fetchedOnce >= 1);
   const second = await submitPlaylistCandidates(sb, playlistDiscoveryActor(), body, { routeFetch });
-  assertEquals((second.data.rejected as Row[])[0].code, "login_required");
+  assertEquals((second.data.rejected as Row[])[0].code, "submissions_closed");
   assertEquals(pageFetches, fetchedOnce);
   assertEquals((sb._tables.playlist_targets as Row[]).length, 0);
   const logs = sb._tables.agh_route_fetch_outcomes as Row[];
@@ -2967,7 +2964,7 @@ Deno.test("submit reuses a logged route rejection and does not refetch or insert
   assert(!blob.includes("bob@other.test"), blob);
   assert(!blob.includes("BODYONLY_SECRET_9f3a"), blob);
   assert(!blob.includes("utm_source"), blob);
-  assert(String(logs[0].evidence_summary).includes("login_required"));
+  assert(String(logs[0].evidence_summary).includes("submissions_closed"));
   assert(String(logs[0].evidence_summary).includes("[redacted]"));
 });
 
@@ -3033,7 +3030,7 @@ function structuralDraftFixture(formUrl: string, records: Row[]): { trackId: str
 
 Deno.test("draft inventory does not re-draft a structural rejection on the same route", async () => {
   const ops = playlistDiscoveryActor();
-  const reasons = ["login_only", "LOGIN_REQUIRED/PAYWALL_POOL", "PAY_TO_PLAY", "CAPTCHA_BLOCK", "DEAD_FORM_URL", "FOLLOW_GATE"];
+  const reasons = ["DEAD_FORM_URL", "dead form"];
   for (const reason of reasons) {
     let persisted = false;
     const { trackId, tables } = structuralDraftFixture("https://submitlink.io/form", [{

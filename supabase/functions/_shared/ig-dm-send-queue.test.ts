@@ -320,7 +320,7 @@ Deno.test("send queue releases a DM only when the shared pre-send gate passes", 
 
     const hub = rows.find((r) => r.handoff_record_id === "rec-hub")!;
     assertEquals(hub.sendable, false);
-    assertEquals(hub.blockers, ["terms_paid"]);
+    assertEquals(hub.blockers, ["paid_for_fendi"]);
     assertEquals(hub.dm_body, null);
 
     const op = rows.find((r) => r.handoff_record_id === "rec-op")!;
@@ -338,7 +338,7 @@ Deno.test("send queue releases a DM only when the shared pre-send gate passes", 
     const bare = rows.find((r) => r.handoff_record_id === "rec-bare")!;
     assertEquals(bare.sendable, false);
     assertEquals(bare.dm_body, null);
-    for (const code of ["dna_missing", "batch_missing"]) {
+    for (const code of ["dna_missing"]) {
       assert((bare.blockers as string[]).includes(code), `${code} missing from ${JSON.stringify(bare.blockers)}`);
     }
 
@@ -391,7 +391,7 @@ Deno.test("send queue row: a Fendi-authored draft is attribution-held, a missing
 
 Deno.test("send queue row withholds the DM when the pre-send gate is closed or missing", () => {
   const secret = "SECRET_DM_BODY_do_not_leak";
-  const closed: PreSendDecision = { sendable: false, blockers: ["terms_paid"], dispatch: null };
+  const closed: PreSendDecision = { sendable: false, blockers: ["paid_for_fendi"], dispatch: null };
   const row = sendQueueRow(
     { id: "r", playlist_target_id: "p", track_id: "t", outreach_draft_id: "d", packet: {} },
     { id: "d", status: "approved", body: secret, recipient: "@handle", generated_by: "claude_playlist_discovery" },
@@ -401,7 +401,7 @@ Deno.test("send queue row withholds the DM when the pre-send gate is closed or m
   );
   assertEquals(row.sendable, false);
   assertEquals(row.dm_body, null);
-  assertEquals(row.blockers, ["terms_paid"]);
+  assertEquals(row.blockers, ["paid_for_fendi"]);
   assert(!JSON.stringify(row).includes(secret));
 
   const missing = sendQueueRow(

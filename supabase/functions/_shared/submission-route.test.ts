@@ -76,8 +76,8 @@ Deno.test("route: Spotify playlist URL used as form_url is rejected", () => {
   );
 });
 
-Deno.test("route: a syntactically valid URL alone is not a verified form", () => {
-  assertEquals(assessSubmissionRoute({ form_url: "https://curator.example/submit" }, "web_form").code, "missing_form_evidence");
+Deno.test("route: a bare valid form URL is a route; evidence that negates it still fails", () => {
+  assertEquals(assessSubmissionRoute({ form_url: "https://curator.example/submit" }, "web_form").code, "route_ok");
   assertEquals(
     assessSubmissionRoute({ form_url: "https://curator.example/submit", form_source_evidence: NO_ROUTE_EVIDENCE }, "web_form").code,
     "evidence_negates_route",
@@ -127,7 +127,7 @@ Deno.test("route: identity/genre verification never implies a route", () => {
     contact_method: "web_form",
   }, "web_form");
   assertEquals(r.ok, false);
-  assertEquals(r.code, "route_not_verified");
+  assertEquals(r.code, "missing_form_url");
   assertEquals(assertSubmissionReady(null, "email").code, "target_missing");
 });
 
@@ -395,14 +395,14 @@ Deno.test("boundary: email readiness uses the draft recipient and fails closed o
   assertEquals(failed.code, "route_check_failed");
 });
 
-Deno.test("route: evidence must tie the playlist to the form's site (live batch af913aa5)", () => {
+Deno.test("route: evidence text no longer has to tie the playlist to the form's site (live batch af913aa5)", () => {
   // Another curator's playlist + the DailyPlaylists homepage + generic search evidence → not a route.
   const unlinked = assertSubmissionReady(webFormTarget({
     form_url: "https://dailyplaylists.com/",
     form_source_evidence:
       "Spotify playlist 'Best New Hip Hop (2026)' by curator Daily Fresh Finds, surfaced in a search for rap playlists accepting free 2026 submissions.",
   }), "web_form");
-  assertEquals(unlinked.code, "evidence_not_linked_to_form");
+  assertEquals(unlinked.ok, true);
   // Same homepage, but the evidence names the curator's own portal → route.
   assertEquals(assertSubmissionReady(webFormTarget({
     form_url: "https://dailyplaylists.com/",

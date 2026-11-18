@@ -1,6 +1,7 @@
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
   PRE_SEND_BLOCKERS,
+  RETIRED_PRE_SEND_BLOCKERS,
   PRE_SEND_ROUTE_FRESHNESS_MS,
   evaluatePreSendGate,
   gateEmailDispatch,
@@ -136,27 +137,6 @@ const specs: Spec[] = [
     }),
   },
   {
-    name: "lane is not an explicit approved lane",
-    blockers: ["fit_not_explicit"],
-    build: () => input((row) => {
-      row.target!.lane = "ambient";
-    }),
-  },
-  {
-    name: "empty approved lanes are not an explicit fit",
-    blockers: ["fit_not_explicit"],
-    build: () => input((row) => {
-      row.dna!.approved_lanes = [];
-    }),
-  },
-  {
-    name: "missing lane is not an explicit fit",
-    blockers: ["fit_not_explicit"],
-    build: () => input((row) => {
-      row.target!.lane = null;
-    }),
-  },
-  {
     name: "lane excluded",
     blockers: ["fit_lane_excluded"],
     build: () => input((row) => {
@@ -165,7 +145,7 @@ const specs: Spec[] = [
   },
   {
     name: "instagram identity requires a real handle",
-    blockers: ["identity_unresolved", "route_unverified"],
+    blockers: ["identity_unresolved"],
     build: () => input((row) => {
       row.target!.ig_curator_account = null;
       row.target!.curator_instagram = null;
@@ -179,66 +159,6 @@ const specs: Spec[] = [
     }),
   },
   {
-    name: "route unverified",
-    blockers: ["route_unverified"],
-    build: () => input((row) => {
-      row.target!.path_verified = false;
-    }),
-  },
-  {
-    name: "route evidence text missing",
-    blockers: ["route_unverified"],
-    build: () => input((row) => {
-      row.target!.ig_source_evidence = "";
-    }),
-  },
-  {
-    name: "email verification time missing",
-    blockers: ["route_verification_missing"],
-    build: () => input((row) => {
-      row.channel = "email";
-      row.record!.submission_channel = "email";
-      row.target!.contact_method = "email";
-      row.target!.curator_email = "curator@example.com";
-      row.target!.last_verified_at = null;
-    }),
-  },
-  {
-    name: "email verification time stale",
-    blockers: ["route_stale"],
-    build: () => input((row) => {
-      row.channel = "email";
-      row.record!.submission_channel = "email";
-      row.target!.contact_method = "email";
-      row.target!.curator_email = "curator@example.com";
-      row.target!.last_verified_at = STALE;
-    }),
-  },
-  {
-    name: "web form route evidence missing",
-    blockers: ["route_evidence_missing"],
-    build: () => input((row) => {
-      row.channel = "web_form";
-      row.record!.submission_channel = "web_form";
-      row.target!.contact_method = "web_form";
-      row.target!.form_url = "https://curator.example/submit";
-      row.target!.form_source_evidence = "submit on curator.example";
-      row.target!.form_verified_at = null;
-    }),
-  },
-  {
-    name: "web form uses form_verified_at",
-    blockers: ["route_evidence_stale"],
-    build: () => input((row) => {
-      row.channel = "web_form";
-      row.record!.submission_channel = "web_form";
-      row.target!.contact_method = "web_form";
-      row.target!.form_url = "https://curator.example/submit";
-      row.target!.form_source_evidence = "submit on curator.example";
-      row.target!.form_verified_at = STALE;
-    }),
-  },
-  {
     name: "route hold",
     blockers: ["route_held"],
     build: () => input((row) => {
@@ -247,28 +167,28 @@ const specs: Spec[] = [
   },
   {
     name: "tip is not explicit free terms",
-    blockers: ["terms_not_free"],
+    blockers: ["paid_for_fendi"],
     build: () => input((row) => {
       row.target!.submission_cost = "tip_appreciated";
     }),
   },
   {
-    name: "instagram pay-to-play remains blocked",
-    blockers: ["terms_paid", "target_blocked"],
+    name: "instagram pay-to-play is held for Fendi",
+    blockers: ["paid_for_fendi"],
     build: () => input((row) => {
       row.target!.pitch_status = "pay_to_play";
     }),
   },
   {
-    name: "paid terms",
-    blockers: ["terms_paid"],
+    name: "paid terms are held for Fendi",
+    blockers: ["paid_for_fendi"],
     build: () => input((row) => {
       row.target!.submission_cost = "paid";
     }),
   },
   {
     name: "invalid owner override does not clear paid terms",
-    blockers: ["terms_override_invalid", "terms_paid"],
+    blockers: ["terms_override_invalid", "paid_for_fendi"],
     build: () => input((row) => {
       row.target!.submission_cost = "paid";
       row.record!.packet = { owner_terms_override: { by: "grok", at: FRESH, reason: "not the owner" } };
@@ -276,7 +196,7 @@ const specs: Spec[] = [
   },
   {
     name: "target missing",
-    blockers: ["fit_not_explicit", "target_missing"],
+    blockers: ["target_missing"],
     build: () => input((row) => {
       row.target = null;
       row.targetStatus = "missing";
@@ -284,7 +204,7 @@ const specs: Spec[] = [
   },
   {
     name: "target lookup failed",
-    blockers: ["fit_not_explicit", "target_lookup_failed"],
+    blockers: ["target_lookup_failed"],
     build: () => input((row) => {
       row.target = null;
       row.targetStatus = "lookup_failed";
@@ -295,13 +215,6 @@ const specs: Spec[] = [
     blockers: ["target_inactive"],
     build: () => input((row) => {
       row.target!.is_active = false;
-    }),
-  },
-  {
-    name: "target activity unknown",
-    blockers: ["target_activity_unknown"],
-    build: () => input((row) => {
-      row.target!.is_active = null;
     }),
   },
   {
@@ -349,7 +262,8 @@ const specs: Spec[] = [
   ...([
     ["identity_required", "clearance_identity_required"],
     ["inactive_target", "clearance_inactive_target"],
-    ["paid_curator", "clearance_paid_curator"],
+    ["paid_curator", "paid_for_fendi"],
+    ["paid_for_fendi", "paid_for_fendi"],
     ["blocked_domain", "clearance_blocked_domain"],
     ["suppressed_curator", "clearance_suppressed_curator"],
     ["cooldown_conflict", "clearance_cooldown_conflict"],
@@ -435,13 +349,6 @@ const specs: Spec[] = [
     }),
   },
   {
-    name: "record held",
-    blockers: ["record_held"],
-    build: () => input((row) => {
-      row.record!.packet = { review_defer: { reason: "wait" } };
-    }),
-  },
-  {
     name: "record target mismatch",
     blockers: ["record_target_mismatch"],
     build: () => input((row) => {
@@ -456,8 +363,116 @@ const specs: Spec[] = [
     }),
   },
   {
+    name: "packet paid_for_fendi hold",
+    blockers: ["paid_for_fendi"],
+    build: () => input((row) => {
+      row.record!.packet = { paid_for_fendi: { status: "awaiting_fendi_decision" } };
+    }),
+  },
+];
+
+type CutSpec = { name: string; retired: string; build: () => PreSendInput };
+
+// Gates cut 2026-11-18 (Fendi: default is send). Each old negative case is now sendable.
+const cutSpecs: CutSpec[] = [
+  {
+    name: "lane is not an explicit approved lane",
+    retired: "fit_not_explicit",
+    build: () => input((row) => {
+      row.target!.lane = "ambient";
+    }),
+  },
+  {
+    name: "empty approved lanes are not an explicit fit",
+    retired: "fit_not_explicit",
+    build: () => input((row) => {
+      row.dna!.approved_lanes = [];
+    }),
+  },
+  {
+    name: "missing lane is not an explicit fit",
+    retired: "fit_not_explicit",
+    build: () => input((row) => {
+      row.target!.lane = null;
+    }),
+  },
+  {
+    name: "route unverified",
+    retired: "route_unverified",
+    build: () => input((row) => {
+      row.target!.path_verified = false;
+    }),
+  },
+  {
+    name: "route evidence text missing",
+    retired: "route_unverified",
+    build: () => input((row) => {
+      row.target!.ig_source_evidence = "";
+    }),
+  },
+  {
+    name: "email verification time missing",
+    retired: "route_verification_missing",
+    build: () => input((row) => {
+      row.channel = "email";
+      row.record!.submission_channel = "email";
+      row.target!.contact_method = "email";
+      row.target!.curator_email = "curator@example.com";
+      row.target!.last_verified_at = null;
+    }),
+  },
+  {
+    name: "email verification time stale",
+    retired: "route_stale",
+    build: () => input((row) => {
+      row.channel = "email";
+      row.record!.submission_channel = "email";
+      row.target!.contact_method = "email";
+      row.target!.curator_email = "curator@example.com";
+      row.target!.last_verified_at = STALE;
+    }),
+  },
+  {
+    name: "web form route evidence missing",
+    retired: "route_evidence_missing",
+    build: () => input((row) => {
+      row.channel = "web_form";
+      row.record!.submission_channel = "web_form";
+      row.target!.contact_method = "web_form";
+      row.target!.form_url = "https://curator.example/submit";
+      row.target!.form_source_evidence = "submit on curator.example";
+      row.target!.form_verified_at = null;
+    }),
+  },
+  {
+    name: "web form uses form_verified_at",
+    retired: "route_evidence_stale",
+    build: () => input((row) => {
+      row.channel = "web_form";
+      row.record!.submission_channel = "web_form";
+      row.target!.contact_method = "web_form";
+      row.target!.form_url = "https://curator.example/submit";
+      row.target!.form_source_evidence = "submit on curator.example";
+      row.target!.form_verified_at = STALE;
+    }),
+  },
+  {
+    name: "target activity unknown",
+    retired: "target_activity_unknown",
+    build: () => input((row) => {
+      row.target!.is_active = null;
+    }),
+  },
+  {
+    name: "record held",
+    retired: "record_held",
+    build: () => input((row) => {
+      row.record!.packet = { review_defer: { reason: "wait" } };
+    }),
+  },
+  {
     name: "batch missing",
-    blockers: ["batch_missing"],
+    retired: "batch_missing",
     build: () => input((row) => {
       row.batch = null;
       row.batchStatus = "missing";
@@ -465,7 +480,7 @@ const specs: Spec[] = [
   },
   {
     name: "batch lookup failed",
-    blockers: ["batch_lookup_failed"],
+    retired: "batch_lookup_failed",
     build: () => input((row) => {
       row.batch = null;
       row.batchStatus = "lookup_failed";
@@ -473,14 +488,14 @@ const specs: Spec[] = [
   },
   {
     name: "batch not approved",
-    blockers: ["batch_not_approved"],
+    retired: "batch_not_approved",
     build: () => input((row) => {
       row.batch!.queue_state = "GROK_REVIEWED";
     }),
   },
   {
     name: "batch approval unnamed",
-    blockers: ["batch_approval_unnamed"],
+    retired: "batch_approval_unnamed",
     build: () => input((row) => {
       row.batch!.approved_by = "  ";
     }),
@@ -500,6 +515,15 @@ function assertWithheld(decision: ReturnType<typeof evaluatePreSendGate>, expect
 for (const spec of specs) {
   Deno.test(`pre-send gate: ${spec.name}`, () => {
     assertWithheld(evaluatePreSendGate(spec.build()), spec.blockers, spec.name);
+  });
+}
+
+for (const spec of cutSpecs) {
+  Deno.test(`pre-send gate (cut gate is sendable): ${spec.name}`, () => {
+    const decision = evaluatePreSendGate(spec.build());
+    assertEquals(decision.sendable, true, `${spec.name}: ${JSON.stringify(decision.blockers)}`);
+    assert(!(decision.blockers as string[]).includes(spec.retired), spec.name);
+    assertEquals(decision.dispatch?.body, SECRET);
   });
 }
 
@@ -555,25 +579,119 @@ Deno.test("pre-send gate: email does not require an Instagram evidence stamp", (
   assertEquals(decision.dispatch?.body, SECRET);
 });
 
-Deno.test("pre-send gate: a stamp exactly 7 days old is fresh and one millisecond older is stale", () => {
+Deno.test("pre-send gate: route age never blocks on any channel", () => {
   assertEquals(PRE_SEND_ROUTE_FRESHNESS_MS, 7 * 24 * 60 * 60 * 1000);
-  const exact = new Date(NOW - PRE_SEND_ROUTE_FRESHNESS_MS).toISOString();
-  const fresh = evaluatePreSendGate(input((row) => {
-    row.target!.last_verified_at = exact;
-    row.target!.ig_verified_at = exact;
-  }));
-  assertEquals(fresh.sendable, true, JSON.stringify(fresh.blockers));
+  const ancient = "2020-01-01T00:00:00.000Z";
+  const builds: Array<(row: PreSendInput) => void> = [
+    (row) => {
+      row.target!.last_verified_at = ancient;
+      row.target!.ig_verified_at = null;
+    },
+    (row) => {
+      row.channel = "email";
+      row.record!.submission_channel = "email";
+      row.target!.contact_method = "email";
+      row.target!.curator_email = "curator@example.com";
+      row.target!.last_verified_at = ancient;
+      row.blocklist = "clear";
+    },
+    (row) => {
+      row.channel = "web_form";
+      row.record!.submission_channel = "web_form";
+      row.target!.contact_method = "web_form";
+      row.target!.form_url = "https://curator.example/submit";
+      row.target!.last_verified_at = ancient;
+      row.target!.form_verified_at = null;
+    },
+  ];
+  for (const build of builds) {
+    const decision = evaluatePreSendGate(input(build));
+    assertEquals(decision.blockers, [], JSON.stringify(decision.blockers));
+    assertEquals(decision.sendable, true);
+  }
+});
 
-  const older = new Date(NOW - PRE_SEND_ROUTE_FRESHNESS_MS - 1).toISOString();
-  const stale = evaluatePreSendGate(input((row) => {
-    row.channel = "email";
-    row.record!.submission_channel = "email";
-    row.target!.contact_method = "email";
-    row.target!.curator_email = "curator@example.com";
-    row.target!.last_verified_at = older;
+Deno.test("pre-send gate: no retired code is emitted for a stripped, stale sendable row", () => {
+  const decision = evaluatePreSendGate(input((row) => {
+    row.batch = null;
+    row.batchStatus = "missing";
+    row.target!.is_active = null;
+    row.target!.path_verified = null;
+    row.target!.verification_status = null;
+    row.target!.last_verified_at = STALE;
+    row.target!.ig_verified_at = null;
+    row.target!.ig_source_evidence = "";
+    row.target!.research_context = {};
+    row.target!.lane = "unlisted_lane";
   }));
-  assertEquals(stale.blockers, ["route_stale"]);
-  assertEquals(stale.dispatch, null);
+  assertEquals(decision.sendable, true, JSON.stringify(decision.blockers));
+  for (const code of RETIRED_PRE_SEND_BLOCKERS) {
+    assert(!(decision.blockers as string[]).includes(code), code);
+    assert(!(PRE_SEND_BLOCKERS as readonly string[]).includes(code), `${code} still active`);
+  }
+});
+
+Deno.test("pre-send gate: no contact for the channel is identity_unresolved", () => {
+  const cases: Array<(row: PreSendInput) => void> = [
+    (row) => {
+      row.target!.ig_curator_account = null;
+      row.target!.curator_instagram = null;
+    },
+    (row) => {
+      row.channel = "email";
+      row.record!.submission_channel = "email";
+      row.target!.contact_method = "email";
+      row.target!.curator_email = "not-an-email";
+      row.blocklist = "clear";
+    },
+    (row) => {
+      row.channel = "web_form";
+      row.record!.submission_channel = "web_form";
+      row.target!.contact_method = "web_form";
+      row.target!.form_url = "curator.example/submit";
+      row.target!.submission_url = null;
+    },
+  ];
+  for (const build of cases) {
+    const decision = evaluatePreSendGate(input(build));
+    assert(decision.blockers.includes("identity_unresolved"), JSON.stringify(decision.blockers));
+    assertEquals(decision.sendable, false);
+  }
+});
+
+Deno.test("pre-send gate: a fetched paywall signal is held paid_for_fendi", () => {
+  const decision = evaluatePreSendGate(input((row) => {
+    row.target!.research_context = { route_fetch: { signals: { paywall_or_pay_to_play: true } } };
+  }));
+  assertEquals(decision.blockers, ["paid_for_fendi"]);
+  assertEquals(decision.sendable, false);
+  assertEquals(decision.dispatch, null);
+});
+
+Deno.test("pre-send gate: only is_active false blocks", () => {
+  for (const v of [null, undefined, true]) {
+    const decision = evaluatePreSendGate(input((row) => {
+      row.target!.is_active = v;
+    }));
+    assertEquals(decision.sendable, true, String(v));
+  }
+  const off = evaluatePreSendGate(input((row) => {
+    row.target!.is_active = false;
+  }));
+  assertEquals(off.blockers, ["target_inactive"]);
+});
+
+Deno.test("pre-send gate: fit blocks only on an excluded lane or no current owner DNA", () => {
+  for (const lane of ["ambient", null, ""]) {
+    const decision = evaluatePreSendGate(input((row) => {
+      row.target!.lane = lane;
+    }));
+    assertEquals(decision.sendable, true, JSON.stringify({ lane, b: decision.blockers }));
+  }
+  const noDna = evaluatePreSendGate(input((row) => {
+    row.dna!.approval_state = "pending_fendi_review";
+  }));
+  assert(noDna.blockers.includes("fit_not_explicit"));
 });
 
 Deno.test("pre-send gate: unknown submission cost does not block", () => {
@@ -600,16 +718,16 @@ Deno.test("pre-send gate: unknown submission cost does not block", () => {
 });
 
 Deno.test("pre-send gate: paid platforms and other positive fees still block unknown cost", () => {
-  const cases: Array<{ name: string; patch: Row; blocker: "terms_paid" | "terms_not_free" }> = [
-    { name: "submithub url", patch: { form_url: "https://www.submithub.com/blog/list" }, blocker: "terms_paid" },
-    { name: "groover host", patch: { curator_website: "https://groover.co/playlist" }, blocker: "terms_paid" },
-    { name: "playlist push method", patch: { submission_method: "playlist_push" }, blocker: "terms_paid" },
-    { name: "groover email", patch: { curator_email: "pitches@groover.co" }, blocker: "terms_paid" },
-    { name: "fee phrase", patch: { ig_source_evidence: "IG bio says DM for playlist submissions. Premium submission, $12 per submission." }, blocker: "terms_paid" },
-    { name: "priced form", patch: { form_cost: "$15 per review" }, blocker: "terms_paid" },
-    { name: "pay-to-play verdict", patch: { fraud_verdict: "pay_to_play" }, blocker: "terms_paid" },
-    { name: "tip", patch: { submission_cost: "tip_appreciated" }, blocker: "terms_not_free" },
-    { name: "free label on submithub", patch: { submission_cost: "free", form_url: "https://submithub.com/p" }, blocker: "terms_paid" },
+  const cases: Array<{ name: string; patch: Row; blocker: "paid_for_fendi" }> = [
+    { name: "submithub url", patch: { form_url: "https://www.submithub.com/blog/list" }, blocker: "paid_for_fendi" },
+    { name: "groover host", patch: { curator_website: "https://groover.co/playlist" }, blocker: "paid_for_fendi" },
+    { name: "playlist push method", patch: { submission_method: "playlist_push" }, blocker: "paid_for_fendi" },
+    { name: "groover email", patch: { curator_email: "pitches@groover.co" }, blocker: "paid_for_fendi" },
+    { name: "fee phrase", patch: { ig_source_evidence: "IG bio says DM for playlist submissions. Premium submission, $12 per submission." }, blocker: "paid_for_fendi" },
+    { name: "priced form", patch: { form_cost: "$15 per review" }, blocker: "paid_for_fendi" },
+    { name: "pay-to-play verdict", patch: { fraud_verdict: "pay_to_play" }, blocker: "paid_for_fendi" },
+    { name: "tip", patch: { submission_cost: "tip_appreciated" }, blocker: "paid_for_fendi" },
+    { name: "free label on submithub", patch: { submission_cost: "free", form_url: "https://submithub.com/p" }, blocker: "paid_for_fendi" },
   ];
   for (const spec of cases) {
     const decision = evaluatePreSendGate(input((row) => {

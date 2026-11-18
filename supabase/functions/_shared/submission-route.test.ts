@@ -346,7 +346,34 @@ Deno.test("boundary: approval fails closed when the hold RPC is not deployed", a
   assertEquals(tables.agh_handoff_batches[0].queue_state, "GROK_REVIEWED");
 });
 
-Deno.test("boundary: repair batches do not go back to Grok until holds are released", async () => {
+Deno.test("route holds no longer strand a mixed batch: free records move, held ones stay", async () => {
+  const tables: Record<string, Row[]> = {
+    agh_handoff_batches: [{ id: "mixed-1", batch_kind: "playlist", queue_state: "CLAUDE_BATCH_READY", discovered_by: "claude_playlist_discovery" }],
+    agh_handoff_records: [
+      { id: "r-free", batch_id: "mixed-1", queue_state: "CLAUDE_BATCH_READY", packet: {} },
+      { id: "r-frozen", batch_id: "mixed-1", queue_state: "CLAUDE_BATCH_READY", packet: { route_hold: { code: "pending_review_aged" } } },
+    ],
+  };
+  const calls: Row[] = [];
+  const sb = stubSb(tables, {
+    agh_promote_claude_ready_batches: (args) => {
+      calls.push(args);
+      return { data: { ok: true, promoted_batches: 1 }, error: null };
+    },
+  });
+  const ops = playlistDiscoveryActor();
+  const dry = await advanceClaudeReadyBatches(sb, { batch_ids: ["mixed-1"], dry_run: true }, ops);
+  assertEquals((dry.data.would_move as Row[])[0].record_count, 1);
+  assertEquals((dry.data.would_move as Row[])[0].held_left_behind, 1);
+  assertEquals(calls.length, 0);
+  const live = await advanceClaudeReadyBatches(sb, { batch_ids: ["mixed-1"] }, ops);
+  assertEquals(live.status, 200, JSON.stringify(live.data));
+  assertEquals((live.data.advanced as Row[])[0].split, true);
+  assertEquals(calls, [{ p_dry_run: false, p_business_date: null, p_batch_ids: ["mixed-1"] }]);
+  assertEquals((live.data.skipped as Row[]).length, 0);
+});
+
+Deno.test("boundary: a batch with only held records is not advanced", async () => {
   const tables: Record<string, Row[]> = {
     agh_handoff_batches: [{ id: "repair-1", batch_kind: "playlist", queue_state: "CLAUDE_BATCH_READY", discovered_by: "claude_playlist_discovery" }],
     agh_handoff_records: [
@@ -357,7 +384,7 @@ Deno.test("boundary: repair batches do not go back to Grok until holds are relea
   const sb = stubSb(tables, {});
   const ops = playlistDiscoveryActor();
   const blocked = await advanceClaudeReadyBatches(sb, { batch_ids: ["repair-1"] }, ops);
-  assertEquals((blocked.data.skipped as Row[])[0].reason, "route_hold_unresolved");
+  assertEquals((blocked.data.skipped as Row[])[0].reason, "all_records_held");
   assertEquals(tables.agh_handoff_batches[0].queue_state, "CLAUDE_BATCH_READY");
 
   // Still invalid → release keeps the hold.

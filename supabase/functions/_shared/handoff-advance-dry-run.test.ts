@@ -223,7 +223,7 @@ Deno.test("dry_run true previews the advance and writes nothing", async () => {
     skipped.map((s) => ({ batch_id: s.batch_id, from_status: s.from_status, reason: s.reason })),
     [
       { batch_id: "already-reviewed", from_status: "GROK_REVIEWED", reason: "not_claude_pending" },
-      { batch_id: "held-1", from_status: "CLAUDE_BATCH_READY", reason: "route_hold_unresolved" },
+      { batch_id: "held-1", from_status: "CLAUDE_BATCH_READY", reason: "all_records_held" },
     ],
   );
   assertEquals((res.data.failed as Row[]).map((f) => f.code), ["batch_not_found"]);
@@ -286,7 +286,7 @@ async function assertLiveAdvance(dryRun: unknown, includeFlag: boolean) {
   assertEquals(writes.some((w) => w.op === "rpc" && w.target === "advance_agh_handoff_batch"), true);
   assertEquals((res.data.skipped as Row[]).map((s) => s.reason), [
     "not_claude_pending",
-    "route_hold_unresolved",
+    "all_records_held",
   ]);
 }
 

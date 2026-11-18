@@ -1558,23 +1558,56 @@ export async function advanceClaudeReadyBatches(
       });
       continue;
     }
-    // Repair batches go back to Grok only once every route hold is resolved.
+    // Route holds are no longer a reason to leave a batch behind (Fendi, 2026-11-18).
+    // Records that still carry a hold (Soundplate freeze, no usable contact) stay put;
+    // everything else moves. A batch whose every movable record is held has nothing to move.
     const { data: heldRecs, error: hErr } = await sb
       .from("agh_handoff_records")
       .select("id, queue_state, packet")
       .eq("batch_id", batchId);
     if (hErr) return { status: 500, data: { error: hErr.message, dry_run: dryRun } };
     const records = (heldRecs ?? []) as Record<string, unknown>[];
-    const unresolved = records
-      .filter((r) => recordRouteHold(r))
+    const heldMovable = records
+      .filter((r) => String(r.queue_state ?? "") !== "REJECTED_BY_GROK" && recordRouteHold(r))
       .map((r) => ({ record_id: r.id, route_hold: recordRouteHold(r) }));
-    if (unresolved.length) {
+    const movable = movableRecordCount(records);
+    if (heldMovable.length > 0 && heldMovable.length >= movable) {
       skipped.push({
         batch_id: batchId,
         queue_state: state,
         from_status: state,
-        reason: "route_hold_unresolved",
-        held_records: unresolved,
+        reason: "all_records_held",
+        held_records: heldMovable,
+      });
+      continue;
+    }
+    if (heldMovable.length > 0) {
+      // Mixed batch: the SQL promotion splits the free records off and leaves the held ones.
+      if (dryRun) {
+        wouldMove.push({
+          batch_id: batchId,
+          record_count: movable - heldMovable.length,
+          from_status: state,
+          to_status: "AWAITING_GROK_REVIEW",
+          held_left_behind: heldMovable.length,
+        });
+        continue;
+      }
+      const { data: promo, error: pErr } = await sb.rpc("agh_promote_claude_ready_batches", {
+        p_dry_run: false,
+        p_business_date: null,
+        p_batch_ids: [batchId],
+      });
+      if (pErr) {
+        failed.push({ batch_id: batchId, code: "promote_failed", error: pErr.message });
+        continue;
+      }
+      advanced.push({
+        batch_id: batchId,
+        queue_state: "AWAITING_GROK_REVIEW",
+        split: true,
+        held_left_behind: heldMovable.length,
+        promotion: promo ?? null,
       });
       continue;
     }

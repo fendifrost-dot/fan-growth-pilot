@@ -1203,7 +1203,7 @@ export async function submitPlaylistCandidates(
   sb: SupabaseClient,
   ops: OpsActor,
   body: Record<string, unknown>,
-  deps?: { routeFetch?: RouteFetchDeps },
+  deps?: { routeFetch?: RouteFetchDeps; contactPolicy?: InventoryDeps["contactPolicy"] },
 ): Promise<ToolResult> {
   const denied = denyUnlessCan(ops, "submit_playlist_candidates");
   if (denied) return denied;
@@ -1521,18 +1521,32 @@ export async function submitPlaylistCandidates(
             retry_after: classified.cooldown_until ?? null,
           });
         } else if (classified.classification === "existing_verified_eligible") {
-          eligibleExistingIds.push(id);
-          acceptedVerified.push({
-            playlist_id: id,
-            lane,
-            channel: classified.channel,
-            path_verified: true,
-            verification_status: "existing_verified",
-            song_dna_version_id: dna.songDnaVersionId,
-            classification: classified.classification,
-            reused_existing_target: true,
-            ...(manualReverify?.reverified ? { reverified_manual_target: true } : {}),
-          });
+          // Same contact-policy check the draft step applies (per-curator 90-day cooldown
+          // across channels and songs, paid, blocklist, suppression). Without it a row is
+          // reported verified_eligible here and refused at create_playlist_draft_inventory,
+          // so verified_eligible_count overstates draftable supply.
+          const policy = await existingTargetPolicyDeferral(
+            sb,
+            { playlist_id: id, track_id: trackId, channel: classified.channel },
+            deps?.contactPolicy,
+          );
+          if (policy) {
+            deferred.push(policy);
+          } else {
+            eligibleExistingIds.push(id);
+            acceptedVerified.push({
+              playlist_id: id,
+              lane,
+              channel: classified.channel,
+              path_verified: true,
+              verification_status: "existing_verified",
+              song_dna_version_id: dna.songDnaVersionId,
+              classification: classified.classification,
+              reused_existing_target: true,
+              ...(classified.prior_pitch ? { prior_pitch: classified.prior_pitch } : {}),
+              ...(manualReverify?.reverified ? { reverified_manual_target: true } : {}),
+            });
+          }
         } else if (classified.classification === "existing_unverified") {
           acceptedUnverified.push({
             playlist_id: id,
@@ -1550,6 +1564,8 @@ export async function submitPlaylistCandidates(
             outreach_draft_id: classified.outreach_draft_id ?? null,
             handoff_record_id: classified.handoff_record_id ?? null,
             cooldown_until: classified.cooldown_until ?? null,
+            ...(classified.pitch_log_id ? { pitch_log_id: classified.pitch_log_id } : {}),
+            ...(classified.reason ? { detail: classified.reason } : {}),
           });
         }
         continue;
@@ -1680,6 +1696,15 @@ export async function submitPlaylistCandidates(
           });
           existingClassified.push(classified);
           if (classified.classification === "existing_verified_eligible") {
+            const policy = await existingTargetPolicyDeferral(
+              sb,
+              { playlist_id: id, track_id: trackId, channel: classified.channel },
+              deps?.contactPolicy,
+            );
+            if (policy) {
+              deferred.push(policy);
+              continue;
+            }
             eligibleExistingIds.push(id);
             acceptedVerified.push({
               playlist_id: id,
@@ -1690,6 +1715,7 @@ export async function submitPlaylistCandidates(
               song_dna_version_id: dna.songDnaVersionId,
               classification: classified.classification,
               reused_existing_target: true,
+              ...(classified.prior_pitch ? { prior_pitch: classified.prior_pitch } : {}),
             });
           } else if (classified.classification === "existing_pair_cooldown") {
             deferred.push({
@@ -1860,6 +1886,34 @@ export async function inventoryPolicyDeferral(
     code: String(policy.code ?? "blocked"),
     pitch_log_id: policy.pitch_log_id ?? null,
     cooldown_until: policy.cooldown_until ?? null,
+  };
+}
+
+/**
+ * Verify-time contact-policy check for an existing catalog target that classified as
+ * eligible. Returns a `deferred` entry (never a rejection: the curator frees up when the
+ * cooldown lapses) or null when the policy passes, cannot be read, or no channel is known.
+ */
+export async function existingTargetPolicyDeferral(
+  sb: SupabaseClient,
+  args: { playlist_id: string; track_id: string; channel: string | null },
+  check?: InventoryDeps["contactPolicy"],
+): Promise<Record<string, unknown> | null> {
+  if (!args.channel) return null;
+  const policy = await inventoryPolicyDeferral(
+    sb,
+    { playlist_id: args.playlist_id, track_id: args.track_id, channel: args.channel },
+    check,
+  );
+  if (!policy) return null;
+  return {
+    playlist_id: args.playlist_id,
+    channel: args.channel,
+    reason: "contact policy refuses this curator right now (the same check the draft step applies)",
+    code: String(policy.code ?? "policy_deferred"),
+    classification: "existing_policy_deferred",
+    retry_after: policy.cooldown_until ?? null,
+    pitch_log_id: policy.pitch_log_id ?? null,
   };
 }
 

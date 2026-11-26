@@ -31,7 +31,10 @@ Deno.test("song fit: stays song-specific — DFM excludes the rap lanes Meditate
   assertEquals(decideLaneFit(DFM, "rap_general").fit, true);
   assertEquals(decideLaneFit(MEDITATE, "house_club").code, "lane_excluded");
   assertEquals(decideLaneFit(MEDITATE, "nu_disco").code, "lane_not_in_approved_dna");
-  assertEquals(decideLaneFit(MEDITATE, null).code, "lane_missing");
+  assertEquals(decideLaneFit(MEDITATE, null).fit, true);
+  assertEquals(decideLaneFit(MEDITATE, null).code, "lane_unset");
+  assertEquals(decideLaneFit(MEDITATE, "").code, "lane_unset");
+  assertEquals(decideLaneFit(MEDITATE, "   ").fit, true);
   assertEquals(decideLaneFit(null, "rap_general").code, "dna_unavailable");
   assertEquals(decideLaneFit(MEDITATE, "RAP_TRAP_HYPE").fit, true); // case-insensitive
 });

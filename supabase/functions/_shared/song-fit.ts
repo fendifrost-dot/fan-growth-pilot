@@ -10,6 +10,10 @@
  *
  * Song-specific fit is preserved: each song's own approved/excluded lanes decide, and a
  * lane approved for one song grants nothing to another.
+ *
+ * A null or blank lane is a fit (code lane_unset). Only an explicit excluded lane
+ * blocks. Owner decision, Fendi, 2026-11-18: an unclassified playlist must not block
+ * approval or send.
  */
 
 export const SONG_FIT_POLICY_VERSION = "song_fit.v1-2026-09-28";
@@ -18,7 +22,7 @@ export type LaneFitCode =
   | "lane_approved"
   | "lane_excluded"
   | "lane_not_in_approved_dna"
-  | "lane_missing"
+  | "lane_unset"
   | "dna_unavailable"
   | "dna_has_no_approved_lanes";
 
@@ -67,7 +71,13 @@ export function decideLaneFit(dna: ApprovedDnaLanes | null | undefined, laneRaw:
     return { ...base, fit: false, code: "dna_unavailable", reason: "No current approved Song DNA for this song." };
   }
   if (!lane) {
-    return { ...base, fit: false, code: "lane_missing", reason: "Target lane is null — unclassified targets cannot be judged for fit." };
+    // Blank is not a block. lane_excluded, below, is the only lane that refuses fit.
+    return {
+      ...base,
+      fit: true,
+      code: "lane_unset",
+      reason: "Target lane is blank — an unclassified playlist counts as a fit. Only an explicit excluded lane blocks.",
+    };
   }
   if (excluded.includes(lane)) {
     return { ...base, fit: false, code: "lane_excluded", reason: `Lane "${lane}" is on the approved Song DNA excluded_lanes list.` };

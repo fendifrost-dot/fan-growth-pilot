@@ -624,6 +624,42 @@ Deno.test("live migration records record-level review and the confirmed-free hos
   assert(sql.includes("public.agh_host_is_paid_platform(public.agh_url_host(p_form_url))"));
 });
 
+Deno.test("record review: a null lane approves; an excluded lane still requires a passing fit", async () => {
+  const tables = fitTables();
+  tables.playlist_targets.push(webFormTarget({ playlist_id: "p-unset", lane: null }));
+  tables.agh_handoff_records.push({
+    id: "r-unset",
+    batch_id: "b-m",
+    track_id: "meditate",
+    playlist_target_id: "p-unset",
+    queue_state: "AWAITING_GROK_REVIEW",
+    submission_channel: "web_form",
+    packet: {},
+  });
+  const calls: Row[] = [];
+  const sb = stubSb(tables, {
+    agh_review_handoff_records: (args) => (calls.push(args), { data: { ok: true, applied_count: 1 }, error: null }),
+  });
+  const res = await reviewHandoffRecords(sb, {
+    batch_id: "b-m",
+    decisions: [
+      { record_id: "r-unset", decision: "approve", verdict: "PASS", reason: "unclassified playlist is still a fit" },
+      { record_id: "r-house", decision: "approve", verdict: "PASS", reason: "excluded lane must still block" },
+    ],
+  }, grokActor());
+  assertEquals(res.status, 200, JSON.stringify(res.data));
+  const conflicts = res.data.conflicts as Row[];
+  assertEquals(conflicts.map((c) => c.record_id), ["r-house"]);
+  assertEquals(conflicts[0].code, "pass_review_required");
+  assertEquals(calls.length, 1);
+  const sent = calls[0].p_decisions as Row[];
+  assertEquals(sent.map((d) => d.record_id), ["r-unset"]);
+  const fit = sent[0].song_fit as Row;
+  assertEquals(fit.fit, true);
+  assertEquals(fit.code, "lane_unset");
+  assertEquals(fit.lane, null);
+});
+
 Deno.test("approve checks readiness on the record channel (instagram DM is not an email route)", async () => {
   const tables = fitTables();
   tables.playlist_targets.push(
